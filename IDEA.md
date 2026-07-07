@@ -2,6 +2,8 @@
 
 Similar to [toad](https://github.com/batrachianai/toad), i want to create a unified interface for AI in your terminal, using bun, typescript, OpenTUI and [typescript-sdk](https://github.com/agentclientprotocol/typescript-sdk).
 
+It should run with Claude, Codex and cursor (in v1).
+
 ## Features
 
 - Text editor.
