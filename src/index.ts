@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * Kitten entry point.
  *
@@ -14,8 +15,16 @@
 
 import { createCliRenderer, type CliRenderer } from "@opentui/core"
 
-import { createSessionController, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
+import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
+import { runSelfCheck } from "./app/selfCheck.ts"
 import { loadAppConfig } from "./config/configLoader.ts"
+import {
+  buildFirstRunReport,
+  formatFirstRunReport,
+  isInsideRepo,
+  type AgentSetupState,
+  type FirstRunReport,
+} from "./config/firstRun.ts"
 import type { AppConfig } from "./core/types.ts"
 import { createAppStore } from "./store/appStore.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
@@ -91,6 +100,22 @@ export function exitProcess(): void {
   process.exit(0)
 }
 
+/** Reduce a live runtime standing to the neutral setup state the first-run flow reads. */
+export function runtimeSetup(state: AgentRuntimeState): AgentSetupState {
+  if (state.ready) return { agentId: state.agentId, displayName: state.displayName, ready: true }
+  return { agentId: state.agentId, displayName: state.displayName, ready: false, gap: state.error }
+}
+
+/** Print first-run guidance to stderr; the terminal must already be restored. */
+export function printFirstRunGuidance(report: FirstRunReport): void {
+  for (const line of formatFirstRunReport(report)) process.stderr.write(`${line}\n`)
+}
+
+/** Default block handler: leave with a non-zero status so a launcher sees the failure. */
+export function exitBlocked(): void {
+  process.exit(1)
+}
+
 /** Injectable dependencies for {@link main}. */
 export interface MainDeps {
   /** How to obtain the renderer; defaults to the real interactive renderer. */
@@ -104,6 +129,14 @@ export interface MainDeps {
   createSession?: SessionFactory
   /** What to run once the cockpit has torn down; defaults to a clean process exit. */
   onExit?: () => void
+  /** The working directory Kitten treats as the project; defaults to `process.cwd()`. */
+  cwd?: string
+  /** Whether `cwd` is inside a repository; defaults to walking up for a `.git` entry. */
+  checkRepo?: (cwd: string) => boolean
+  /** How first-run guidance is surfaced when boot is blocked; defaults to stderr. */
+  reportFirstRun?: (report: FirstRunReport) => void
+  /** What to run when the first-run gate blocks boot; defaults to a non-zero exit. */
+  onBlocked?: (report: FirstRunReport) => void
 }
 
 /** What {@link main} hands back so a caller (or a test) can inspect the booted app. */
@@ -117,13 +150,32 @@ export interface BootedCockpit {
 /**
  * Boot the cockpit for a real run.
  *
- * Ctrl+C destroys the renderer (restoring the terminal), which is the signal to tear
- * the agent subprocesses down before leaving. The exit waits on that teardown:
- * exiting first would orphan the spawned ACP adapters.
+ * Two first-run gates run before the cockpit mounts. The repo requirement is checked
+ * first and costs nothing: outside a repository Kitten refuses to launch, so no
+ * renderer is created and no agent is spawned. After the agents come up, boot stops
+ * again if none is ready, since a cockpit with two dead agents can do no useful work;
+ * either way the user gets the exact reason instead of an inert screen. When a gate
+ * blocks, `main` returns `null` rather than a booted cockpit.
+ *
+ * On a clean run, Ctrl+C destroys the renderer (restoring the terminal), which is the
+ * signal to tear the agent subprocesses down before leaving. The exit waits on that
+ * teardown: exiting first would orphan the spawned ACP adapters.
  */
-export async function main(deps: MainDeps = {}): Promise<BootedCockpit> {
+export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
   const createRenderer = deps.createRenderer ?? createCockpitRenderer
   const onExit = deps.onExit ?? exitProcess
+  const cwd = deps.cwd ?? process.cwd()
+  const checkRepo = deps.checkRepo ?? isInsideRepo
+  const reportFirstRun = deps.reportFirstRun ?? printFirstRunGuidance
+  const onBlocked = deps.onBlocked ?? exitBlocked
+
+  // Repo gate: cheapest check first, before touching the terminal or spawning agents.
+  if (!checkRepo(cwd)) {
+    const report = buildFirstRunReport({ insideRepo: false, agents: [] })
+    reportFirstRun(report)
+    onBlocked(report)
+    return null
+  }
 
   const renderer = await createRenderer()
 
@@ -144,6 +196,17 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit> {
     throw error
   }
 
+  // Readiness gate: with no agent ready, restore the terminal and explain the gaps
+  // rather than mounting a cockpit that cannot respond.
+  const report = buildFirstRunReport({ insideRepo: true, agents: controller.runtimes().map(runtimeSetup) })
+  if (report.blocked) {
+    renderer.destroy()
+    await controller.dispose()
+    reportFirstRun(report)
+    onBlocked(report)
+    return null
+  }
+
   const closed = new Promise<void>((resolve) => {
     renderer.on("destroy", () => {
       // `dispose()` never throws, so one continuation covers both outcomes.
@@ -158,6 +221,22 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit> {
   return { renderer, controller, closed }
 }
 
+/** Whether the CLI was asked to run the headless boot self-check. */
+export function wantsSelfCheck(argv: readonly string[]): boolean {
+  return argv.includes("--self-check")
+}
+
 if (import.meta.main) {
-  await main()
+  if (wantsSelfCheck(process.argv)) {
+    try {
+      const { frame } = await runSelfCheck()
+      process.stdout.write(`${frame}\nSELF-CHECK OK\n`)
+      process.exit(0)
+    } catch (error) {
+      process.stderr.write(`SELF-CHECK FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
+      process.exit(1)
+    }
+  } else {
+    await main()
+  }
 }

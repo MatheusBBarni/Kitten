@@ -8,11 +8,26 @@
 
 import { type CliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
+import type { ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { ConversationView } from "./ConversationView.tsx"
+
+/**
+ * The cockpit element tree for a booted controller.
+ *
+ * The one place the concrete view tree is assembled, so both the live renderer and the
+ * headless boot self-check mount exactly the same thing.
+ */
+export function cockpitElement(controller: SessionController, recorder?: TelemetryRecorder): ReactNode {
+  return (
+    <CockpitApp controller={controller} recorder={recorder}>
+      <ConversationView />
+    </CockpitApp>
+  )
+}
 
 /**
  * Mount the cockpit for a booted controller into a renderer.
@@ -27,10 +42,6 @@ export function renderCockpit(
   recorder?: TelemetryRecorder,
 ): ReturnType<typeof createRoot> {
   const root = createRoot(renderer)
-  root.render(
-    <CockpitApp controller={controller} recorder={recorder}>
-      <ConversationView />
-    </CockpitApp>,
-  )
+  root.render(cockpitElement(controller, recorder))
   return root
 }
