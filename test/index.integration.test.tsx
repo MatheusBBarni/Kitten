@@ -1,46 +1,28 @@
 import { describe, expect, it, spyOn } from "bun:test"
 
-import { type CliRenderer } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
-import { act } from "react"
 
-import { CockpitApp, COCKPIT_TITLE, EXIT_HINT } from "../src/app/CockpitApp.tsx"
+import { CockpitApp } from "../src/ui/CockpitApp.tsx"
 import { createCockpitRenderer, main } from "../src/index.ts"
-
-/** Run a callback with React's act environment enabled, restoring the flag after. */
-async function withActEnvironment(fn: () => Promise<void>): Promise<void> {
-  const globalWithFlag = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-  const previous = globalWithFlag.IS_REACT_ACT_ENVIRONMENT
-  globalWithFlag.IS_REACT_ACT_ENVIRONMENT = true
-  try {
-    await fn()
-  } finally {
-    globalWithFlag.IS_REACT_ACT_ENVIRONMENT = previous
-  }
-}
-
-/** Destroy a renderer that has a mounted React root, flushing teardown inside act. */
-async function destroyMounted(renderer: CliRenderer): Promise<void> {
-  await withActEnvironment(async () => {
-    await act(async () => {
-      renderer.destroy()
-    })
-  })
-}
+import { createFakeController } from "./fakeController.ts"
+import { actAsync, destroyMounted } from "./reactTui.ts"
 
 /**
  * Integration: boot the cockpit against an in-memory ("main-screen", memory
  * output) test renderer so nothing touches the real terminal, then confirm it
- * tears down cleanly without leaking terminal state.
+ * tears down cleanly - renderer destroyed, agents disposed, exit handler run.
  */
 describe("cockpit entry integration (non-TTY test renderer)", () => {
-  it("renders the placeholder cockpit and destroys the renderer without leaking", async () => {
-    const { renderer, waitForFrame } = await testRender(<CockpitApp />, { width: 80, height: 24 })
+  it("renders the cockpit and destroys the renderer without leaking", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await testRender(<CockpitApp controller={controller} />, {
+      width: 80,
+      height: 24,
+    })
 
-    const frame = await waitForFrame((f) => f.includes(COCKPIT_TITLE))
-    expect(frame).toContain(COCKPIT_TITLE)
-    expect(frame).toContain(EXIT_HINT)
+    const frame = await waitForFrame((f) => f.includes("Claude Code"))
+    expect(frame).toContain("Claude Code")
     expect(renderer.isDestroyed).toBe(false)
 
     // Tearing down a mounted root triggers React unmount work, so flush it inside act.
@@ -48,47 +30,67 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     expect(renderer.isDestroyed).toBe(true)
   })
 
-  it("main() mounts the cockpit and runs the injected exit handler on renderer destroy", async () => {
+  it("main() mounts the cockpit and disposes the controller before the exit handler runs", async () => {
     const { renderer } = await createTestRenderer({ width: 80, height: 24 })
-    let exitCount = 0
-    let returned: CliRenderer | undefined
+    const controller = createFakeController()
+    const exitOrder: string[] = []
 
-    await withActEnvironment(async () => {
-      await act(async () => {
-        returned = await main({
-          createRenderer: async () => renderer,
-          onExit: () => {
-            exitCount++
-          },
-        })
+    let booted: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      booted = await main({
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        onExit: () => exitOrder.push("exit"),
       })
     })
 
-    expect(returned).toBe(renderer)
-    expect(exitCount).toBe(0)
+    expect(booted?.renderer).toBe(renderer)
+    expect(booted?.controller).toBe(controller)
+    expect(exitOrder).toEqual([])
 
     // Ctrl+C in a real run calls renderer.destroy(); simulate that here.
     await destroyMounted(renderer)
-    expect(exitCount).toBe(1)
+    await booted!.closed
+
+    expect(controller.calls.dispose).toBe(1)
+    expect(exitOrder).toEqual(["exit"])
   })
 
-  it("main() defaults to a clean process exit when the renderer is destroyed", async () => {
+  it("main() defaults to a clean process exit once the cockpit has torn down", async () => {
     const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const controller = createFakeController()
     const exitSpy = spyOn(process, "exit").mockImplementation((() => undefined) as never)
 
     try {
-      await withActEnvironment(async () => {
-        await act(async () => {
-          await main({ createRenderer: async () => renderer })
-        })
+      let booted: Awaited<ReturnType<typeof main>> | undefined
+      await actAsync(async () => {
+        booted = await main({ createRenderer: async () => renderer, createController: async () => controller })
       })
 
       expect(exitSpy).not.toHaveBeenCalled()
       await destroyMounted(renderer)
+      await booted!.closed
       expect(exitSpy).toHaveBeenCalledWith(0)
     } finally {
       exitSpy.mockRestore()
     }
+  })
+
+  it("main() restores the terminal when the controller cannot be built", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const configError = new Error("kitten config is invalid")
+
+    const boot = main({
+      createRenderer: async () => renderer,
+      createController: async () => {
+        throw configError
+      },
+    })
+
+    // No React root was mounted, so the failure path needs no act() wrapping.
+    expect(boot).rejects.toThrow(configError)
+    await boot.catch(() => {})
+    expect(renderer.isDestroyed).toBe(true)
   })
 
   it("createCockpitRenderer forwards exitOnCtrlC through its factory", async () => {
