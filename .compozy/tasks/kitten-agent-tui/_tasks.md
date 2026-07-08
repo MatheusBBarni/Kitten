@@ -10,7 +10,7 @@
 | 04 | Config loading and agent readiness | completed | medium | task_03 |
 | 05 | Reactive app store | completed | medium | task_02, task_03 |
 | 06 | Deterministic hand-off bundle assembler and secret redactor | completed | medium | task_02 |
-| 07 | Session controller and orchestration | pending | high | task_03, task_04, task_05 |
+| 07 | Session controller and orchestration | completed | high | task_03, task_04, task_05 |
 | 08 | UI shell, cockpit, and status strip | pending | medium | task_05, task_07 |
 | 09 | Conversation view | pending | medium | task_08 |
 | 10 | Prompt editor and send flow | pending | medium | task_07, task_08 |

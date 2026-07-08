@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Session controller and orchestration"
 type: backend
 complexity: high
@@ -33,12 +33,12 @@ It keeps both sessions live and resumable within a run and routes permission req
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Construct and connect both `AgentConnection`s from config and open sessions
-- [ ] 7.2 Subscribe each connection's update stream into the store
-- [ ] 7.3 Expose `sendPrompt`, `cancel`, `switchFocus`, and `respondPermission` actions
-- [ ] 7.4 Route permission requests into the approval overlay slot and resolve outcomes
-- [ ] 7.5 Handle single-connection failure without crashing the app
-- [ ] 7.6 Cover orchestration and permission routing with tests against mock connections
+- [x] 7.1 Construct and connect both `AgentConnection`s from config and open sessions
+- [x] 7.2 Subscribe each connection's update stream into the store
+- [x] 7.3 Expose `sendPrompt`, `cancel`, `switchFocus`, and `respondPermission` actions
+- [x] 7.4 Route permission requests into the approval overlay slot and resolve outcomes
+- [x] 7.5 Handle single-connection failure without crashing the app
+- [x] 7.6 Cover orchestration and permission routing with tests against mock connections
 
 ## Implementation Details
 Create the controller/orchestrator that ties config, connections, and store together and exposes actions. See TechSpec "System Architecture → Data flow" for the wiring and ADR-005 for the connection model. This task deliberately extracts orchestration so the store stays a lean state container.
@@ -65,13 +65,13 @@ Create the controller/orchestrator that ties config, connections, and store toge
 
 ## Tests
 - Unit tests:
-  - [ ] `sendPrompt` on the focused agent calls that connection's `prompt` with the composed blocks
-  - [ ] `switchFocus` updates the store's focused agent and leaves both sessions alive
-  - [ ] A permission request from a connection opens the approval overlay slot with the request details
-  - [ ] `respondPermission` resolves the pending request with the chosen outcome
+  - [x] `sendPrompt` on the focused agent calls that connection's `prompt` with the composed blocks
+  - [x] `switchFocus` updates the store's focused agent and leaves both sessions alive
+  - [x] A permission request from a connection opens the approval overlay slot with the request details
+  - [x] `respondPermission` resolves the pending request with the chosen outcome
 - Integration tests:
-  - [ ] With two mock connections, a prompt to agent A streams into A's slice while B stays idle and addressable
-  - [ ] A mock connection that fails to connect is reported not-ready while the other agent remains usable
+  - [x] With two mock connections, a prompt to agent A streams into A's slice while B stays idle and addressable
+  - [x] A mock connection that fails to connect is reported not-ready while the other agent remains usable
 - Test coverage target: >=80%
 - All tests must pass
 
