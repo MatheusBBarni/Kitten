@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Deterministic hand-off bundle assembler and secret redactor"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This is the wedge's core logic and a flagged prototype risk: bundle quality deci
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Implement `DeterministicAssembler` building the referenced file set and pending diffs
-- [ ] 6.2 Produce a bounded transcript excerpt for the `continue` intent
-- [ ] 6.3 Implement the `SecretRedactor` pattern scan over text and diff content
-- [ ] 6.4 Return a `redactionCount` and apply redaction before the bundle is emitted
-- [ ] 6.5 Cover assembly and redaction with fixtures including embedded-secret and empty cases
+- [x] 6.1 Implement `DeterministicAssembler` building the referenced file set and pending diffs
+- [x] 6.2 Produce a bounded transcript excerpt for the `continue` intent
+- [x] 6.3 Implement the `SecretRedactor` pattern scan over text and diff content
+- [x] 6.4 Return a `redactionCount` and apply redaction before the bundle is emitted
+- [x] 6.5 Cover assembly and redaction with fixtures including embedded-secret and empty cases
 
 ## Implementation Details
 Create the pure assembler and redactor. See TechSpec "Core Interfaces" (`BundleAssembler`, `HandoffBundle`) and ADR-002 (deterministic-now, LLM-later behind the same interface). Keep the interface tiny so the Phase 2 implementation is a drop-in.
@@ -58,14 +58,14 @@ Create the pure assembler and redactor. See TechSpec "Core Interfaces" (`BundleA
 
 ## Tests
 - Unit tests:
-  - [ ] A session with one `read` and one `edit` tool call yields two referenced files with correct `reason` and one pending diff
-  - [ ] A session with no `edit` tool calls yields an empty `pendingDiffs` array
-  - [ ] The transcript excerpt is bounded (does not exceed the configured size for a long transcript)
-  - [ ] An API-key-shaped token in message text is redacted and counted
-  - [ ] A secret embedded inside a diff hunk is redacted without corrupting the surrounding diff
-  - [ ] An empty session produces a well-formed, empty `HandoffBundle` rather than throwing
+  - [x] A session with one `read` and one `edit` tool call yields two referenced files with correct `reason` and one pending diff
+  - [x] A session with no `edit` tool calls yields an empty `pendingDiffs` array
+  - [x] The transcript excerpt is bounded (does not exceed the configured size for a long transcript)
+  - [x] An API-key-shaped token in message text is redacted and counted
+  - [x] A secret embedded inside a diff hunk is redacted without corrupting the surrounding diff
+  - [x] An empty session produces a well-formed, empty `HandoffBundle` rather than throwing
 - Integration tests:
-  - [ ] Assembling from a realistic fixture `SessionState` produces a `HandoffBundle` whose files, diffs, and redaction count match expectations
+  - [x] Assembling from a realistic fixture `SessionState` produces a `HandoffBundle` whose files, diffs, and redaction count match expectations
 - Test coverage target: >=80%
 - All tests must pass
 
