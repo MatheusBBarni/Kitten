@@ -1,0 +1,46 @@
+import { describe, expect, it } from "bun:test"
+
+import type { AnyMessage } from "@agentclientprotocol/sdk"
+
+import type { AgentConfig } from "../core/types.ts"
+import { spawnAgentTransport } from "./transport.ts"
+
+/**
+ * Transport tests for the real `Bun.spawn` stdio wiring. These use trivial system
+ * processes (`cat`, `true`) rather than a full ACP agent: `cat` echoes to verify
+ * the stdin→stdout message round-trip and framing, and `true` verifies `onClose`
+ * fires with the child's exit code. The `createInMemoryTransportPair` path is
+ * covered by the adapter integration tests.
+ */
+
+const config = (command: string, args: string[] = []): AgentConfig => ({
+  id: "claude-code",
+  displayName: command,
+  command,
+  args,
+  env: {},
+})
+
+describe("spawnAgentTransport", () => {
+  it("round-trips an ndjson message through the child's stdio", async () => {
+    const transport = spawnAgentTransport(config("cat"))
+    const writer = transport.stream.writable.getWriter()
+    const reader = transport.stream.readable.getReader()
+
+    const message = { jsonrpc: "2.0", id: 1, method: "ping", params: { hello: "world" } } as unknown as AnyMessage
+    await writer.write(message)
+    const { value } = await reader.read()
+    expect(value).toEqual(message)
+
+    await reader.cancel()
+    await writer.close()
+    await transport.dispose()
+  })
+
+  it("fires onClose with the child's exit code", async () => {
+    const transport = spawnAgentTransport(config("true"))
+    const code = await new Promise<number | null>((resolve) => transport.onClose((info) => resolve(info.code)))
+    expect(code).toBe(0)
+    await transport.dispose()
+  })
+})
