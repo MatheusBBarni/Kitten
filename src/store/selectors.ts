@@ -68,6 +68,12 @@ export const selectAgentReferencedFiles =
 /** The pending permission request, or `null` when the approval overlay is closed. */
 export const selectApprovalOverlay: Selector<ApprovalOverlay | null> = (state) => state.overlays.approval
 
+/**
+ * Whether a permission request is awaiting the user. The shell reads this to stand
+ * down its own key bindings, since the approval overlay is modal while it is open.
+ */
+export const selectIsApprovalOpen: Selector<boolean> = (state) => state.overlays.approval !== null
+
 /** The hand-off bundle awaiting confirmation, or `null` when the preview is closed. */
 export const selectHandoffPreview: Selector<HandoffPreviewOverlay | null> = (state) => state.overlays.handoffPreview
 

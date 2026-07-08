@@ -14,6 +14,7 @@ import {
   selectFocusedSession,
   selectHandoffPreview,
   selectHasOpenOverlay,
+  selectIsApprovalOpen,
   selectIsFocused,
 } from "./selectors.ts"
 
@@ -118,6 +119,7 @@ describe("overlay selectors", () => {
     expect(selectApprovalOverlay(state)).toBeNull()
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
+    expect(selectIsApprovalOpen(state)).toBe(false)
   })
 
   it("report an open approval overlay", () => {
@@ -131,6 +133,15 @@ describe("overlay selectors", () => {
     expect(selectApprovalOverlay(state)?.agentId).toBe("claude-code")
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(true)
+    expect(selectIsApprovalOpen(state)).toBe(true)
+  })
+
+  it("keep the approval flag false for a hand-off preview, which is not modal", () => {
+    const store = createAppStore()
+    store.openHandoffPreview({ sourceAgentId: "claude-code", targetAgentId: "codex", bundle: HANDOFF_BUNDLE })
+
+    expect(selectHasOpenOverlay(store.getState())).toBe(true)
+    expect(selectIsApprovalOpen(store.getState())).toBe(false)
   })
 
   it("report an open hand-off preview", () => {

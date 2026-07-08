@@ -5,8 +5,9 @@
  * a real `AppStore` and records the action calls exercises exactly the surface a view
  * touches - without spawning an agent subprocess or opening an ACP session.
  *
- * `switchFocus` really moves focus in the store, so a test can assert both that the
- * action fired and that the strip repainted the marker.
+ * `switchFocus` really moves focus in the store, and `respondPermission` really closes
+ * the approval slot, so a test can assert both that the action fired and that the view
+ * repainted because of it.
  */
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
@@ -70,6 +71,10 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       respondPermission(outcome: PermissionOutcome): void {
         calls.respondPermission.push(outcome)
+        // The real controller settles the agent's promise and then advances its queue,
+        // clearing the slot when nothing else is waiting. With no queue here, an answer
+        // always closes the overlay - which is what lets a view test observe it close.
+        store.closeApproval()
       },
     },
     runtimes: () => runtimes,

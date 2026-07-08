@@ -1,10 +1,14 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  APPROVAL_HINT,
+  APPROVAL_KEYMAP,
+  approvalOptionIndex,
   COCKPIT_KEYMAP,
   EDITOR_KEYMAP,
   HELP_ENTRIES,
   KEYMAP_HINT,
+  matchApprovalCommand,
   matchCommand,
   PROMPT_KEY_BINDINGS,
   type CockpitKey,
@@ -106,5 +110,78 @@ describe("HELP_ENTRIES", () => {
     // Help first: while the panel is open it consumes Escape, and only then does the
     // editor's interrupt become reachable.
     expect(escapes.map((e) => e.index)).toEqual([2, 5])
+  })
+
+  it("omits the approval overlay's keys, which are unreachable from the cockpit", () => {
+    for (const binding of APPROVAL_KEYMAP) {
+      expect(HELP_ENTRIES).not.toContainEqual(binding)
+    }
+  })
+})
+
+describe("matchApprovalCommand", () => {
+  it("maps the arrows to the option the highlight moves to", () => {
+    expect(matchApprovalCommand(key("up"))).toBe("prev-option")
+    expect(matchApprovalCommand(key("down"))).toBe("next-option")
+  })
+
+  it("maps both Enter variants to confirm, since a terminal may report either", () => {
+    expect(matchApprovalCommand(key("return"))).toBe("confirm")
+    expect(matchApprovalCommand(key("kpenter"))).toBe("confirm")
+  })
+
+  it("maps Escape to cancel, outranking the editor's interrupt while the overlay is up", () => {
+    expect(matchApprovalCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("ignores a chord with modifiers held, so Shift+Enter cannot approve an edit", () => {
+    expect(matchApprovalCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchApprovalCommand(key("up", { ctrl: true }))).toBeNull()
+    expect(matchApprovalCommand(key("escape", { meta: true }))).toBeNull()
+  })
+
+  it("ignores keys the overlay does not claim", () => {
+    expect(matchApprovalCommand(key("o", { ctrl: true }))).toBeNull()
+    expect(matchApprovalCommand(key("f1"))).toBeNull()
+  })
+})
+
+describe("APPROVAL_KEYMAP", () => {
+  it("binds each command exactly once", () => {
+    const commands = APPROVAL_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["prev-option", "next-option", "confirm", "cancel"])
+    expect(new Set(commands).size).toBe(commands.length)
+  })
+
+  it("names every binding in the hint the overlay prints", () => {
+    for (const binding of APPROVAL_KEYMAP) {
+      expect(APPROVAL_HINT).toContain(binding.keys)
+    }
+    // The digit shortcut has no binding of its own, so pin it here.
+    expect(APPROVAL_HINT).toContain("1-9")
+  })
+})
+
+describe("approvalOptionIndex", () => {
+  it("maps a digit to the zero-based option it names", () => {
+    expect(approvalOptionIndex(key("1"))).toBe(0)
+    expect(approvalOptionIndex(key("9"))).toBe(8)
+  })
+
+  it("rejects zero, which names no option", () => {
+    expect(approvalOptionIndex(key("0"))).toBeNull()
+  })
+
+  it("rejects a digit with a modifier held, so Ctrl+1 stays free", () => {
+    expect(approvalOptionIndex(key("1", { ctrl: true }))).toBeNull()
+    expect(approvalOptionIndex(key("1", { meta: true }))).toBeNull()
+    expect(approvalOptionIndex(key("1", { shift: true }))).toBeNull()
+  })
+
+  it("rejects a non-digit, including a multi-character key name", () => {
+    expect(approvalOptionIndex(key("a"))).toBeNull()
+    expect(approvalOptionIndex(key("f1"))).toBeNull()
+    expect(approvalOptionIndex(key("escape"))).toBeNull()
+    expect(approvalOptionIndex(key(""))).toBeNull()
   })
 })

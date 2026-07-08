@@ -6,8 +6,10 @@
  * keeps the transcript readable at 80 columns and keeps the mental model small.
  * Beneath it sit the prompt editor and the status strip, both always visible, the
  * one naming what the user is about to say and the other what both agents are doing.
- * Overlays (help here, the approval prompt and hand-off preview in later tasks) are
- * absolutely-positioned boxes, since the React binding ships no Portal (ADR-004).
+ * Overlays (help and the approval prompt here, the hand-off preview in a later task)
+ * are absolutely-positioned boxes, since the React binding ships no Portal (ADR-004).
+ * The approval prompt is modal and swallows every key it sees, so the shell's own
+ * chords simply never fire while a permission request is pending.
  *
  * The frame is sized from the live terminal dimensions rather than percentages, so
  * a resize re-lays the whole tree out in one pass and nothing is left painted
@@ -19,7 +21,8 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useState, type ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
-import { selectFocusedAgentId } from "../store/selectors.ts"
+import { selectFocusedAgentId, selectIsApprovalOpen } from "../store/selectors.ts"
+import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
@@ -53,9 +56,15 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
   const palette = usePalette()
   const { width, height } = useTerminalDimensions()
   const [helpOpen, setHelpOpen] = useState(false)
+  const approvalOpen = useAppSelector(selectIsApprovalOpen)
 
   const onKey = useCallback(
     (key: KeyEvent) => {
+      // A pending permission request owns the keyboard outright. Precedence is declared
+      // here rather than left to the framework: global listeners fire in the order they
+      // mounted, and this one mounts before the overlay that would otherwise outrank it.
+      if (approvalOpen) return
+
       switch (matchCommand(key)) {
         case "switch-focus":
           controller.actions.switchFocus()
@@ -75,7 +84,7 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
           return
       }
     },
-    [controller, helpOpen],
+    [approvalOpen, controller, helpOpen],
   )
   useKeyboard(onKey)
 
@@ -120,6 +129,9 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
       <StatusStrip />
 
       {helpOpen ? <HelpOverlay /> : null}
+
+      {/* Last, so a pending permission request paints over anything else on screen. */}
+      <ApprovalPrompt />
     </box>
   )
 }

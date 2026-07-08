@@ -21,6 +21,18 @@ describe("createFakeController", () => {
     expect(controller.calls.dispose).toBe(1)
   })
 
+  it("closes the approval slot on an answer, like the real controller does", () => {
+    const controller = createFakeController()
+    controller.store.openApproval({
+      agentId: "claude-code",
+      request: { sessionId: "s1", toolCall: { toolCallId: "call-1" }, options: [] },
+    })
+
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+
+    expect(controller.store.getState().overlays.approval).toBeNull()
+  })
+
   it("cycles focus in the store, like the real controller does", () => {
     const controller = createFakeController()
     expect(controller.store.getState().focusedAgentId).toBe("claude-code")

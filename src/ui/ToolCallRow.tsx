@@ -13,7 +13,7 @@
 
 import { type ReactNode } from "react"
 
-import type { ToolCallKind, ToolCallRecord } from "../core/types.ts"
+import type { ToolCallDiff, ToolCallKind, ToolCallRecord } from "../core/types.ts"
 import { usePalette, useSyntaxStyle } from "./theme.ts"
 
 /** How each kind is written in the row. Short, lowercase, fixed width when padded. */
@@ -64,13 +64,14 @@ export function ToolCallRow({ record }: ToolCallRowProps): ReactNode {
         <span fg={palette.tool[status]}>{status}</span>
       </text>
 
-      {kind === "edit" && diff ? <EditDiff path={diff.path} unified={diff.unified} /> : null}
+      {kind === "edit" && diff ? <ToolCallDiffView diff={diff} /> : null}
     </box>
   )
 }
 
 /**
- * The proposed change, in unified view.
+ * The proposed change, in unified view. Shared with the approval overlay, which shows
+ * the same diff a moment earlier - before the user has agreed to it.
  *
  * The line-number gutter stays on. It carries the `+`/`-` signs as well as the
  * numbers, and OpenTUI marks the whole gutter unselectable - so a drag over the diff
@@ -78,13 +79,13 @@ export function ToolCallRow({ record }: ToolCallRowProps): ReactNode {
  * for. Turning the gutter off would also drop the signs, leaving added and removed
  * lines told apart by background color alone.
  */
-function EditDiff({ path, unified }: { path: string; unified: string }): ReactNode {
+export function ToolCallDiffView({ diff }: { diff: ToolCallDiff }): ReactNode {
   const palette = usePalette()
   const syntaxStyle = useSyntaxStyle()
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
-      <text fg={palette.accent}>{path}</text>
-      <diff diff={unified} view="unified" filetype={filetypeFor(path)} syntaxStyle={syntaxStyle} />
+      <text fg={palette.accent}>{diff.path}</text>
+      <diff diff={diff.unified} view="unified" filetype={filetypeFor(diff.path)} syntaxStyle={syntaxStyle} />
     </box>
   )
 }
