@@ -43,16 +43,13 @@ export function spawnAgentTransport(config: AgentConfig): AgentTransport {
     env: { ...process.env, ...config.env },
   })
 
+  // Only `write` is wired: `ndJsonStream` builds its own `WritableStream` over this
+  // sink and never forwards `close`/`abort` to it, so sink-level teardown hooks would
+  // be dead code. Ending stdin and reaping the child is `dispose`'s job.
   const writable = new WritableStream<Uint8Array>({
     write(chunk) {
       proc.stdin.write(chunk)
       proc.stdin.flush()
-    },
-    close() {
-      proc.stdin.end()
-    },
-    abort() {
-      proc.stdin.end()
     },
   })
 

@@ -13,6 +13,8 @@ import {
   AgentSideConnection,
   PROTOCOL_VERSION,
   type Agent,
+  type InitializeRequest,
+  type InitializeResponse,
   type PermissionOption,
   type PromptRequest,
   type RequestPermissionOutcome,
@@ -41,9 +43,15 @@ export type MockPromptScript = (
   ctx: MockAgentContext,
 ) => Promise<StopReason | void> | StopReason | void
 
+/** A scripted `initialize` handshake. Throw to make the agent reject the handshake. */
+export type MockInitializeScript = (request: InitializeRequest) => Promise<InitializeResponse> | InitializeResponse
+
 export interface MockAgentOptions {
   sessionId?: string
+  /** The protocol version the default `initialize` negotiates back to the client. */
   protocolVersion?: number
+  /** Override the whole handshake - to reject it, or to answer with odd capabilities. */
+  onInitialize?: MockInitializeScript
   onPrompt?: MockPromptScript
 }
 
@@ -66,7 +74,12 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   let connection!: AgentSideConnection
 
   const agent: Agent = {
-    initialize: () => ({ protocolVersion, agentCapabilities: {}, agentInfo: { name: "mock-agent", version: "0.0.0" } }),
+    initialize: (request: InitializeRequest) =>
+      options.onInitialize?.(request) ?? {
+        protocolVersion,
+        agentCapabilities: {},
+        agentInfo: { name: "mock-agent", version: "0.0.0" },
+      },
     newSession: () => ({ sessionId }),
     authenticate: () => ({}),
     cancel: () => {},

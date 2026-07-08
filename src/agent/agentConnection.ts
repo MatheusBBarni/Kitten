@@ -46,6 +46,15 @@ export interface PromptResult {
 /** Outcome of `connect`: a completed handshake, or a legible not-ready reason. */
 export type ReadyState = { ready: true; protocolVersion: number } | { ready: false; error: string }
 
+/**
+ * The ACP protocol version Kitten negotiates during `initialize`.
+ *
+ * Re-exported as a plain number so layers above this adapter (the readiness
+ * checker in `src/config`) can detect a capability mismatch without importing
+ * the ACP SDK, keeping the anti-corruption boundary intact (ADR-003).
+ */
+export const SUPPORTED_PROTOCOL_VERSION: number = PROTOCOL_VERSION
+
 /** A permission option surfaced to the user, translated from ACP. */
 export interface PermissionOptionView {
   optionId: string
@@ -160,7 +169,7 @@ class AgentConnectionImpl implements AgentConnection {
       })
       return { ready: true, protocolVersion: result.protocolVersion }
     } catch (error) {
-      return { ready: false, error: errorMessage(error) }
+      return { ready: false, error: handshakeErrorMessage(error) }
     }
   }
 
@@ -315,4 +324,28 @@ function toAcpOutcome(outcome: PermissionOutcome): RequestPermissionResponse["ou
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Describe a failed handshake as legibly as the wire allows.
+ *
+ * An agent that rejects `initialize` with a plain (non-JSON-RPC) error reaches us as
+ * a generic "Internal error", with the agent's actual complaint - "not logged in",
+ * "unsupported flag" - tucked into the error's `data.details`. The readiness checker
+ * shows this string to the user verbatim, so unwrap that detail here rather than
+ * letting a real, actionable cause be flattened into a useless word.
+ */
+function handshakeErrorMessage(error: unknown): string {
+  const message = errorMessage(error)
+  const details = errorDetails(error)
+  return details && !message.includes(details) ? `${message}: ${details}` : message
+}
+
+/** Pull the nested `data.details` string the SDK stores when wrapping a plain error. */
+function errorDetails(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("data" in error)) return null
+  const data = (error as { data: unknown }).data
+  if (typeof data !== "object" || data === null || !("details" in data)) return null
+  const details = (data as { details: unknown }).details
+  return typeof details === "string" && details.length > 0 ? details : null
 }
