@@ -20,12 +20,10 @@ import { useCallback, useState, type ReactNode } from "react"
 import type { SessionController } from "../app/controller.ts"
 import { selectFocusedAgentId } from "../store/selectors.ts"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
+import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { COCKPIT_KEYMAP, matchCommand, type CockpitKey } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
-
-/** Shown in the conversation region until task_09 mounts the real transcript. */
-export const EMPTY_CONVERSATION_HINT = "No messages yet. Type a prompt to start the conversation."
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
 export const HELP_TITLE = "Keyboard shortcuts"
@@ -34,7 +32,7 @@ export const HELP_TITLE = "Keyboard shortcuts"
 export interface CockpitAppProps {
   /** The booted controller. The only channel through which the shell reaches an agent. */
   controller: SessionController
-  /** The conversation region's contents. Defaults to an empty-state hint. */
+  /** The conversation region's contents - `<ConversationView>` in the real app. */
   children?: ReactNode
 }
 
@@ -107,7 +105,7 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
         {focused && !focused.ready ? (
           <NotReadyNotice error={focused.error} />
         ) : (
-          (children ?? <text fg={palette.muted}>{EMPTY_CONVERSATION_HINT}</text>)
+          (children ?? <text fg={palette.muted}>{EMPTY_TRANSCRIPT_HINT}</text>)
         )}
       </box>
 

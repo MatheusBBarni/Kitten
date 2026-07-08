@@ -12,11 +12,11 @@
  * merely low-contrast, while the reverse can be unreadable.
  */
 
-import type { ThemeMode } from "@opentui/core"
+import { SyntaxStyle, type ThemeMode, type ThemeTokenStyle } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
 import { useEffect, useState } from "react"
 
-import type { AgentStatus } from "../core/types.ts"
+import type { AgentStatus, ToolCallStatus } from "../core/types.ts"
 
 /** The status-strip slot for an agent whose connection never came up (task_07). */
 export const NOT_READY = "not_ready"
@@ -40,6 +40,10 @@ export interface CockpitPalette {
   readonly surface: string
   /** One color per agent state, so the strip reads at a glance. */
   readonly status: Readonly<Record<StatusTone, string>>
+  /** One color per tool-call state, so a transcript row reads at a glance. */
+  readonly tool: Readonly<Record<ToolCallStatus, string>>
+  /** The user's own words, set apart from the agent's. */
+  readonly userMessage: string
 }
 
 /** Tuned against a dark terminal background. */
@@ -56,6 +60,13 @@ export const DARK_PALETTE: CockpitPalette = {
     awaiting_approval: "#F5C542",
     not_ready: "#F26D6D",
   },
+  tool: {
+    pending: "#8A8A8A",
+    in_progress: "#4EC9B0",
+    completed: "#6FBF73",
+    failed: "#F26D6D",
+  },
+  userMessage: "#9BB8E0",
 }
 
 /** Tuned against a light terminal background: same hues, darkened for contrast. */
@@ -72,6 +83,13 @@ export const LIGHT_PALETTE: CockpitPalette = {
     awaiting_approval: "#8A5D00",
     not_ready: "#A32020",
   },
+  tool: {
+    pending: "#5A5A5A",
+    in_progress: "#136B55",
+    completed: "#2E6B33",
+    failed: "#A32020",
+  },
+  userMessage: "#26456E",
 }
 
 /** Resolve a palette; an unreported theme (`null`) falls back to dark. */
@@ -105,4 +123,51 @@ export function useThemeMode(): ThemeMode {
 /** The palette for the terminal's current theme. Re-renders the caller on a flip. */
 export function usePalette(): CockpitPalette {
   return paletteFor(useThemeMode())
+}
+
+/**
+ * How code is colored inside `<markdown>` fenced blocks and `<diff>` hunks.
+ *
+ * Keyed by tree-sitter capture name. OpenTUI ships no default theme - a bare
+ * `SyntaxStyle.create()` has no styles registered at all, so code would render in one
+ * flat color - and the cockpit's no-hard-coded-color rule applies to code just as it
+ * does to chrome. Hues track the palette so a light terminal reads as well as a dark
+ * one.
+ */
+function syntaxThemeFor(palette: CockpitPalette): ThemeTokenStyle[] {
+  const dark = palette.mode === "dark"
+  return [
+    { scope: ["comment"], style: { foreground: palette.muted, italic: true } },
+    { scope: ["keyword", "keyword.function", "keyword.return"], style: { foreground: dark ? "#C586C0" : "#7B2D8E" } },
+    { scope: ["string", "string.special"], style: { foreground: dark ? "#CE9178" : "#8A3B12" } },
+    { scope: ["number", "constant", "constant.builtin"], style: { foreground: dark ? "#B5CEA8" : "#2E6B33" } },
+    { scope: ["function", "function.method", "function.builtin"], style: { foreground: dark ? "#DCDCAA" : "#6A5A00" } },
+    { scope: ["type", "type.builtin"], style: { foreground: dark ? "#4EC9B0" : "#136B55" } },
+    { scope: ["variable", "variable.parameter", "property"], style: { foreground: dark ? "#9CDCFE" : "#1F5C86" } },
+    { scope: ["operator", "punctuation", "punctuation.delimiter"], style: { foreground: palette.muted } },
+  ]
+}
+
+/**
+ * One {@link SyntaxStyle} per theme mode, built on first use.
+ *
+ * `SyntaxStyle.fromTheme` allocates through the native render library, so it must not
+ * run at module load: `src/index.ts` promises that importing it has no side effects.
+ * The handles are immutable and outlive any single renderer, so caching them for the
+ * life of the process is safe and spares a native allocation per message.
+ */
+const SYNTAX_STYLES = new Map<ThemeMode, SyntaxStyle>()
+
+/** The syntax style for a theme mode, created once and reused. */
+export function syntaxStyleFor(mode: ThemeMode): SyntaxStyle {
+  const cached = SYNTAX_STYLES.get(mode)
+  if (cached) return cached
+  const style = SyntaxStyle.fromTheme(syntaxThemeFor(paletteFor(mode)))
+  SYNTAX_STYLES.set(mode, style)
+  return style
+}
+
+/** The syntax style for the terminal's current theme. Re-renders the caller on a flip. */
+export function useSyntaxStyle(): SyntaxStyle {
+  return syntaxStyleFor(useThemeMode())
 }

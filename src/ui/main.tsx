@@ -11,6 +11,7 @@ import { createRoot } from "@opentui/react"
 
 import type { SessionController } from "../app/controller.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
+import { ConversationView } from "./ConversationView.tsx"
 
 /**
  * Mount the cockpit for a booted controller into a renderer.
@@ -19,6 +20,10 @@ import { CockpitApp } from "./CockpitApp.tsx"
  */
 export function renderCockpit(renderer: CliRenderer, controller: SessionController): ReturnType<typeof createRoot> {
   const root = createRoot(renderer)
-  root.render(<CockpitApp controller={controller} />)
+  root.render(
+    <CockpitApp controller={controller}>
+      <ConversationView />
+    </CockpitApp>,
+  )
   return root
 }

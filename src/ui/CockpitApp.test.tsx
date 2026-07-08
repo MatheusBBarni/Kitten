@@ -6,7 +6,8 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { CockpitApp, EMPTY_CONVERSATION_HINT, HELP_TITLE } from "./CockpitApp.tsx"
+import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
+import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { COCKPIT_KEYMAP } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
@@ -45,7 +46,7 @@ describe("CockpitApp layout", () => {
 
     // The focused agent titles the conversation region.
     expect(rows[0]).toContain("Claude Code")
-    expect(frame).toContain(EMPTY_CONVERSATION_HINT)
+    expect(frame).toContain(EMPTY_TRANSCRIPT_HINT)
 
     // The strip is the last painted row, and it names both agents.
     const strip = rows.at(-1) ?? ""
@@ -76,7 +77,7 @@ describe("CockpitApp layout", () => {
     const frame = await waitForFrame((f) => f.includes("not ready"))
     expect(frame).toContain("This agent is not ready.")
     expect(frame).toContain("claude-agent-acp: command not found")
-    expect(frame).not.toContain(EMPTY_CONVERSATION_HINT)
+    expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
 
     await destroyMounted(renderer)
   })
@@ -102,7 +103,7 @@ describe("CockpitApp resize", () => {
     await actAsync(() => {
       resize(120, 40)
     })
-    const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(EMPTY_CONVERSATION_HINT))
+    const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(EMPTY_TRANSCRIPT_HINT))
 
     expectNoOverflow(grown, 120, 40)
     expect(lines(grown).at(-1)).toContain(`Codex: ${STATUS_LABELS.idle}`)
@@ -160,7 +161,7 @@ describe("CockpitApp keymap", () => {
       mockInput.pressKey("F1")
     })
     const closed = await waitForFrame((f) => !f.includes(HELP_TITLE))
-    expect(closed).toContain(EMPTY_CONVERSATION_HINT)
+    expect(closed).toContain(EMPTY_TRANSCRIPT_HINT)
 
     await destroyMounted(renderer)
   })
@@ -179,7 +180,7 @@ describe("CockpitApp keymap", () => {
       // A lone ESC is held briefly in case it prefixes a longer escape sequence.
       await sleep(ESCAPE_DISAMBIGUATION_MS)
     })
-    expect(await waitForFrame((f) => !f.includes(HELP_TITLE))).toContain(EMPTY_CONVERSATION_HINT)
+    expect(await waitForFrame((f) => !f.includes(HELP_TITLE))).toContain(EMPTY_TRANSCRIPT_HINT)
 
     await destroyMounted(renderer)
   })
@@ -196,7 +197,7 @@ describe("renderCockpit", () => {
     })
 
     expect(root).toBeDefined()
-    expect(await waitForFrame((f) => f.includes(EMPTY_CONVERSATION_HINT))).toContain("Claude Code")
+    expect(await waitForFrame((f) => f.includes(EMPTY_TRANSCRIPT_HINT))).toContain("Claude Code")
 
     await destroyMounted(renderer)
   })

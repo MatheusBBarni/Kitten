@@ -13,4 +13,26 @@ describe("src/index.ts entry module", () => {
     expect(typeof mod.createCockpitRenderer).toBe("function")
     expect(typeof mod.renderCockpit).toBe("function")
   })
+
+  it("allocates nothing from the native render library on import", async () => {
+    // The whole cockpit tree hangs off this import. A view that builds a native
+    // handle (a `SyntaxStyle`, a renderer) at module scope would run it here, long
+    // before `main()` decides a terminal exists. Importing must stay inert.
+    const proc = Bun.spawnSync([
+      "bun",
+      "-e",
+      `
+      const { resolveRenderLib } = await import("@opentui/core")
+      let allocations = 0
+      const lib = resolveRenderLib()
+      const original = lib.createSyntaxStyle.bind(lib)
+      lib.createSyntaxStyle = (...args) => { allocations++; return original(...args) }
+      await import("${import.meta.dir}/../src/index.ts")
+      if (allocations !== 0) throw new Error("import allocated " + allocations + " syntax style(s)")
+      `,
+    ])
+
+    expect(proc.stderr.toString()).toBe("")
+    expect(proc.exitCode).toBe(0)
+  })
 })
