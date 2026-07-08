@@ -148,10 +148,14 @@ describe("ConversationView streaming", () => {
 
   it("matches the expected frames as a message streams in", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller, WIDTH, 12)
+    // Tall enough that the transcript, the prompt editor and the strip all fit, so the
+    // snapshots capture the streaming message rather than a scrolled-away one.
+    const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller, WIDTH, 18)
 
     await actAsync(() => userMessage(controller, "claude-code", "m1", "hi"))
-    await waitForFrame((f) => f.includes("hi"))
+    // The prompt editor's own hint says "Shift+Enter", so a bare "hi" would match the
+    // very first frame, before the turn paints. Wait for the turn's role label.
+    await waitForFrame((f) => f.includes(ROLE_LABELS.user))
     expect(captureCharFrame()).toMatchSnapshot("01-user-turn")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))

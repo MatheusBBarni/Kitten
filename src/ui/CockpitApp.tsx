@@ -4,16 +4,17 @@
  * The layout is a focused pane, not a split. One agent owns the full-width
  * conversation region at a time and a single chord moves focus between them, which
  * keeps the transcript readable at 80 columns and keeps the mental model small.
- * Beneath it sits the status strip, always visible, always naming what both agents
- * are doing. Overlays (help here, the approval prompt and hand-off preview in later
- * tasks) are absolutely-positioned boxes, since the React binding ships no Portal
- * (ADR-004).
+ * Beneath it sit the prompt editor and the status strip, both always visible, the
+ * one naming what the user is about to say and the other what both agents are doing.
+ * Overlays (help here, the approval prompt and hand-off preview in later tasks) are
+ * absolutely-positioned boxes, since the React binding ships no Portal (ADR-004).
  *
  * The frame is sized from the live terminal dimensions rather than percentages, so
  * a resize re-lays the whole tree out in one pass and nothing is left painted
  * outside the new viewport.
  */
 
+import type { KeyEvent } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useState, type ReactNode } from "react"
 
@@ -21,8 +22,9 @@ import type { SessionController } from "../app/controller.ts"
 import { selectFocusedAgentId } from "../store/selectors.ts"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
+import { PromptEditor } from "./PromptEditor.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
-import { COCKPIT_KEYMAP, matchCommand, type CockpitKey } from "./keymap.ts"
+import { COCKPIT_KEYMAP, HELP_ENTRIES, matchCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
@@ -53,7 +55,7 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
   const [helpOpen, setHelpOpen] = useState(false)
 
   const onKey = useCallback(
-    (key: CockpitKey) => {
+    (key: KeyEvent) => {
       switch (matchCommand(key)) {
         case "switch-focus":
           controller.actions.switchFocus()
@@ -63,13 +65,17 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
           return
         case "close-help":
           // Escape belongs to the editor and the overlays unless help is showing.
+          // Consuming it here stops the focused textarea from ever seeing the key,
+          // so dismissing help cannot also interrupt a working agent.
+          if (!helpOpen) return
+          key.preventDefault()
           setHelpOpen(false)
           return
         default:
           return
       }
     },
-    [controller],
+    [controller, helpOpen],
   )
   useKeyboard(onKey)
 
@@ -109,6 +115,8 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
         )}
       </box>
 
+      <PromptEditor />
+
       <StatusStrip />
 
       {helpOpen ? <HelpOverlay /> : null}
@@ -128,9 +136,15 @@ function NotReadyNotice({ error }: { error: string }): ReactNode {
   )
 }
 
+/** Widest chord in the table, so the description column lines up under any binding. */
+const KEYS_COLUMN_WIDTH = Math.max(...HELP_ENTRIES.map((entry) => entry.keys.length)) + 2
+
 /**
  * The help panel: an absolutely-positioned overlay rendered straight from the
  * keymap table, so it can never describe a binding the shell does not have.
+ *
+ * Escape appears twice, and in precedence order: while the panel is open it closes
+ * the panel, and only once the panel is gone does it reach the editor.
  */
 export function HelpOverlay(): ReactNode {
   const palette = usePalette()
@@ -151,10 +165,10 @@ export function HelpOverlay(): ReactNode {
       title={HELP_TITLE}
       titleColor={palette.accent}
     >
-      {COCKPIT_KEYMAP.map((binding) => (
-        <text key={binding.command}>
-          <span fg={palette.accent}>{binding.keys.padEnd(8)}</span>
-          <span fg={palette.text}>{binding.description}</span>
+      {HELP_ENTRIES.map((entry) => (
+        <text key={entry.description}>
+          <span fg={palette.accent}>{entry.keys.padEnd(KEYS_COLUMN_WIDTH)}</span>
+          <span fg={palette.text}>{entry.description}</span>
         </text>
       ))}
     </box>

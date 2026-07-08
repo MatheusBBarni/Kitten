@@ -11,6 +11,12 @@ exports[`ConversationView streaming matches the expected frames as a message str
 │                                                                      │
 │                                                                      │
 │                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+┌─Prompt───────────────────────────────────────────────────────────────┐
+│ Enter sends, Shift+Enter adds a line, Esc interrupts                 │
+│                                                                      │
+│                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
  ▸ Claude Code: idle    Codex: idle                  ^O switch  F1 help 
 "
@@ -27,6 +33,12 @@ exports[`ConversationView streaming matches the expected frames as a message str
 │                                                                      │
 │                                                                      │
 │                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+┌─Prompt───────────────────────────────────────────────────────────────┐
+│ Enter sends, Shift+Enter adds a line, Esc interrupts                 │
+│                                                                      │
+│                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
  ▸ Claude Code: idle    Codex: idle                  ^O switch  F1 help 
 "
@@ -41,6 +53,12 @@ exports[`ConversationView streaming matches the expected frames as a message str
 │ Hello, world.                                                        │
 │                                                                      │
 │                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+┌─Prompt───────────────────────────────────────────────────────────────┐
+│ Enter sends, Shift+Enter adds a line, Esc interrupts                 │
 │                                                                      │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘

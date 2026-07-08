@@ -8,7 +8,7 @@ import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../..
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
-import { COCKPIT_KEYMAP } from "./keymap.ts"
+import { HELP_ENTRIES } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 
@@ -152,10 +152,11 @@ describe("CockpitApp keymap", () => {
       mockInput.pressKey("F1")
     })
     const opened = await waitForFrame((f) => f.includes(HELP_TITLE))
-    for (const binding of COCKPIT_KEYMAP) {
-      expect(opened).toContain(binding.keys)
+    // The panel documents the shell's chords and the editor's alike.
+    for (const entry of HELP_ENTRIES) {
+      expect(opened).toContain(entry.keys)
+      expect(opened).toContain(entry.description)
     }
-    expect(opened).toContain(COCKPIT_KEYMAP[0]!.description)
 
     await actAsync(() => {
       mockInput.pressKey("F1")
@@ -181,6 +182,34 @@ describe("CockpitApp keymap", () => {
       await sleep(ESCAPE_DISAMBIGUATION_MS)
     })
     expect(await waitForFrame((f) => !f.includes(HELP_TITLE))).toContain(EMPTY_TRANSCRIPT_HINT)
+
+    await destroyMounted(renderer)
+  })
+
+  it("spends Escape on the help panel rather than interrupting the working agent", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+
+    await actAsync(() => {
+      mockInput.pressKey("F1")
+    })
+    await waitForFrame((f) => f.includes(HELP_TITLE))
+
+    await actAsync(async () => {
+      mockInput.pressEscape()
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+    })
+    await waitForFrame((f) => !f.includes(HELP_TITLE))
+    // The shell consumed the key, so the editor never saw it and the turn survives.
+    expect(controller.calls.cancel).toEqual([])
+
+    // With help gone, the same key now reaches the editor.
+    await actAsync(async () => {
+      mockInput.pressEscape()
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+    })
+    expect(controller.calls.cancel).toEqual([undefined])
 
     await destroyMounted(renderer)
   })

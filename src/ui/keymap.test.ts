@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test"
 
-import { COCKPIT_KEYMAP, KEYMAP_HINT, matchCommand, type CockpitKey } from "./keymap.ts"
+import {
+  COCKPIT_KEYMAP,
+  EDITOR_KEYMAP,
+  HELP_ENTRIES,
+  KEYMAP_HINT,
+  matchCommand,
+  PROMPT_KEY_BINDINGS,
+  type CockpitKey,
+} from "./keymap.ts"
 
 /** A key event with no modifiers held. */
 function key(name: string, modifiers: Partial<CockpitKey> = {}): CockpitKey {
@@ -52,5 +60,51 @@ describe("COCKPIT_KEYMAP", () => {
   it("keeps the always-visible hint short enough for a narrow terminal", () => {
     expect(KEYMAP_HINT).toContain("F1")
     expect(KEYMAP_HINT.length).toBeLessThanOrEqual(20)
+  })
+})
+
+describe("PROMPT_KEY_BINDINGS", () => {
+  it("inverts OpenTUI's default so Enter submits and Shift+Enter breaks the line", () => {
+    expect(PROMPT_KEY_BINDINGS).toContainEqual({ name: "return", action: "submit" })
+    expect(PROMPT_KEY_BINDINGS).toContainEqual({ name: "return", shift: true, action: "newline" })
+  })
+
+  it("binds the keypad's Enter the same way as the main one", () => {
+    for (const action of ["submit", "newline"] as const) {
+      const named = PROMPT_KEY_BINDINGS.filter((binding) => binding.action === action)
+      expect(named.map((binding) => binding.name).sort()).toEqual(["kpenter", "return"])
+      // The two variants of a key must agree on their modifiers, or one terminal
+      // would submit where another breaks the line.
+      expect(new Set(named.map((binding) => binding.shift === true)).size).toBe(1)
+    }
+  })
+
+  it("leaves Escape to the editor, which interrupts rather than edits", () => {
+    expect(PROMPT_KEY_BINDINGS.some((binding) => binding.name === "escape")).toBe(false)
+  })
+})
+
+describe("HELP_ENTRIES", () => {
+  it("lists the shell's chords first, then the editor's", () => {
+    expect(HELP_ENTRIES).toEqual([...COCKPIT_KEYMAP, ...EDITOR_KEYMAP])
+  })
+
+  it("documents every entry with a chord and a description", () => {
+    for (const entry of HELP_ENTRIES) {
+      expect(entry.keys.length).toBeGreaterThan(0)
+      expect(entry.description.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("gives each entry its own description, since the panel keys on it", () => {
+    const descriptions = HELP_ENTRIES.map((entry) => entry.description)
+    expect(new Set(descriptions).size).toBe(descriptions.length)
+  })
+
+  it("names Escape twice, in the order the shell resolves it", () => {
+    const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
+    // Help first: while the panel is open it consumes Escape, and only then does the
+    // editor's interrupt become reachable.
+    expect(escapes.map((e) => e.index)).toEqual([2, 5])
   })
 })
