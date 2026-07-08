@@ -1,0 +1,38 @@
+# Bun configuration for Kitten.
+# See https://bun.sh/docs/runtime/bunfig
+
+[install]
+# Pin dependencies exactly as declared; never auto-widen ranges.
+exact = true
+
+# The global bun config enforces a minimum release age (supply-chain guard).
+# Kitten's three core dependencies are explicitly version-pinned to the exact
+# releases the TechSpec mandates (@opentui/* and the ACP SDK, both pre-1.0 and
+# fast-moving), so they are allow-listed here to keep the scaffold reproducible.
+# The age guard stays in force for every other (transitive) package.
+minimumReleaseAgeExcludes = [
+  "@opentui/core",
+  "@opentui/react",
+  "@agentclientprotocol/sdk",
+  # Transitive native dependency hard-pinned by @opentui/core.
+  "bun-ffi-structs",
+  # Platform-specific native (Zig) cores that @opentui/core loads via FFI.
+  # Bun only fetches the one matching the current platform, but all ADR-006
+  # target platforms are listed so CI on any of them stays reproducible.
+  "@opentui/core-darwin-arm64",
+  "@opentui/core-darwin-x64",
+  "@opentui/core-linux-x64",
+  "@opentui/core-linux-arm64",
+  "@opentui/core-linux-x64-musl",
+  "@opentui/core-linux-arm64-musl",
+  "@opentui/core-win32-x64",
+  "@opentui/core-win32-arm64",
+]
+
+[test]
+# `bun test` discovers *.test.ts / *.test.tsx files under src/ and test/.
+# Coverage is opt-in via `bun test --coverage` (the `test:coverage` script);
+# the threshold below is enforced whenever coverage runs.
+coverageThreshold = 0.8
+coverageReporter = ["text"]
+coverageSkipTestFiles = true

@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output (bun build --compile artifacts)
+/kitten
+/dist/
+*.tgz
+
+# Bun
+.bun/
+
+# Coverage
+coverage/
+
+# Logs
+*.log
+
+# Local telemetry output (opt-in, content-free JSONL)
+*.jsonl
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

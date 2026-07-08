@@ -1,0 +1,1 @@
+Domain Core (pure, no I/O): SessionState model + reducer, BundleAssembler, SecretRedactor, telemetry heuristics. See _techspec.md "Domain Core".

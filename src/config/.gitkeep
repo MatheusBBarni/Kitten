@@ -1,0 +1,1 @@
+Config & Readiness: ConfigLoader (AppConfig) and AgentReadinessChecker. See _techspec.md "Config & Readiness".
