@@ -10,6 +10,7 @@ import { type CliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 
 import type { SessionController } from "../app/controller.ts"
+import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { ConversationView } from "./ConversationView.tsx"
 
@@ -17,11 +18,17 @@ import { ConversationView } from "./ConversationView.tsx"
  * Mount the cockpit for a booted controller into a renderer.
  *
  * Returns the React root so callers can unmount it independently of the renderer.
+ * An optional telemetry recorder is threaded to the hand-off flow; omitting it (as the
+ * UI tests do) leaves the cockpit recording nothing.
  */
-export function renderCockpit(renderer: CliRenderer, controller: SessionController): ReturnType<typeof createRoot> {
+export function renderCockpit(
+  renderer: CliRenderer,
+  controller: SessionController,
+  recorder?: TelemetryRecorder,
+): ReturnType<typeof createRoot> {
   const root = createRoot(renderer)
   root.render(
-    <CockpitApp controller={controller}>
+    <CockpitApp controller={controller} recorder={recorder}>
       <ConversationView />
     </CockpitApp>,
   )

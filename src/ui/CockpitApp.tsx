@@ -29,6 +29,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
 import { createHandoffFlow } from "../app/handoff.ts"
+import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { selectFocusedAgentId, selectHasOpenOverlay } from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
@@ -48,19 +49,21 @@ export interface CockpitAppProps {
   controller: SessionController
   /** The conversation region's contents - `<ConversationView>` in the real app. */
   children?: ReactNode
+  /** Optional telemetry recorder; the hand-off flow records its metrics through it. */
+  recorder?: TelemetryRecorder
 }
 
 /** The cockpit root: provides the controller, then renders the frame. */
-export function CockpitApp({ controller, children }: CockpitAppProps): ReactNode {
+export function CockpitApp({ controller, children, recorder }: CockpitAppProps): ReactNode {
   return (
     <CockpitProvider controller={controller}>
-      <CockpitFrame>{children}</CockpitFrame>
+      <CockpitFrame recorder={recorder}>{children}</CockpitFrame>
     </CockpitProvider>
   )
 }
 
 /** The frame itself: conversation region, status strip, and the help overlay. */
-function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
+function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?: TelemetryRecorder }): ReactNode {
   const controller = useController()
   const palette = usePalette()
   const { width, height } = useTerminalDimensions()
@@ -69,7 +72,7 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
 
   // One flow for the life of the controller: a hand-off and a later hand-back are the
   // same mechanism pointed the other way, and it derives its direction from focus.
-  const handoff = useMemo(() => createHandoffFlow({ controller }), [controller])
+  const handoff = useMemo(() => createHandoffFlow({ controller, recorder }), [controller, recorder])
 
   const onKey = useCallback(
     (key: KeyEvent) => {

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Telemetry recorder and heuristics"
 type: backend
 complexity: medium
@@ -32,11 +32,11 @@ It writes local JSONL only, never captures prompt or code content, and is a flag
 </requirements>
 
 ## Subtasks
-- [ ] 13.1 Implement the opt-in gate driven by the config telemetry flag
-- [ ] 13.2 Implement the local JSONL recorder for the defined event set
-- [ ] 13.3 Implement the re-explanation heuristic predicate over post-hand-off events
-- [ ] 13.4 Emit hand-off, readiness, and first-response events from their sources
-- [ ] 13.5 Cover opt-in gating, content-free guarantees, and the heuristic with tests
+- [x] 13.1 Implement the opt-in gate driven by the config telemetry flag
+- [x] 13.2 Implement the local JSONL recorder for the defined event set
+- [x] 13.3 Implement the re-explanation heuristic predicate over post-hand-off events
+- [x] 13.4 Emit hand-off, readiness, and first-response events from their sources
+- [x] 13.5 Cover opt-in gating, content-free guarantees, and the heuristic with tests
 
 ## Implementation Details
 Create the telemetry recorder and heuristic. See TechSpec "Monitoring and Observability" for the event set and the re-explanation heuristic, and PRD Success Metrics/privacy constraints. The heuristic is a pure predicate in the core; the recorder subscribes to store transitions (task_05) and hand-off events (task_12).
@@ -60,13 +60,13 @@ Create the telemetry recorder and heuristic. See TechSpec "Monitoring and Observ
 
 ## Tests
 - Unit tests:
-  - [ ] With telemetry disabled, no events are written for a full hand-off sequence
-  - [ ] With telemetry enabled, a hand-off writes `handoff_invoked` and `handoff_sent` events
-  - [ ] A recorded event contains no prompt or code text (content-free assertion over the serialized record)
-  - [ ] The heuristic flags `reexplanation_detected` when a long context-restating message precedes the target's first action, and does not flag when the target acts immediately
-  - [ ] `bundle_edit_chars` is stored as a coarse bucket, not an exact character count
+  - [x] With telemetry disabled, no events are written for a full hand-off sequence
+  - [x] With telemetry enabled, a hand-off writes `handoff_invoked` and `handoff_sent` events
+  - [x] A recorded event contains no prompt or code text (content-free assertion over the serialized record)
+  - [x] The heuristic flags `reexplanation_detected` when a long context-restating message precedes the target's first action, and does not flag when the target acts immediately
+  - [x] `bundle_edit_chars` is stored as a coarse bucket, not an exact character count
 - Integration tests:
-  - [ ] A scripted hand-off session with telemetry enabled produces the expected ordered JSONL events with no content fields
+  - [x] A scripted hand-off session with telemetry enabled produces the expected ordered JSONL events with no content fields
 - Test coverage target: >=80%
 - All tests must pass
 

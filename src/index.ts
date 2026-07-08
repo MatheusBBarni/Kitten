@@ -14,8 +14,11 @@
 
 import { createCliRenderer, type CliRenderer } from "@opentui/core"
 
-import { createSessionController, type SessionController } from "./app/controller.ts"
+import { createSessionController, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
 import { loadAppConfig } from "./config/configLoader.ts"
+import type { AppConfig } from "./core/types.ts"
+import { createAppStore } from "./store/appStore.ts"
+import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderCockpit } from "./ui/main.tsx"
 
 export { renderCockpit }
@@ -25,6 +28,16 @@ export type RendererFactory = () => Promise<CliRenderer>
 
 /** Factory that produces a booted controller with both agent connections wired up. */
 export type ControllerFactory = () => Promise<SessionController>
+
+/** A booted controller paired with its telemetry recorder. */
+export interface CockpitSession {
+  controller: SessionController
+  /** The recorder wired to this run; a no-op when telemetry is disabled in config. */
+  recorder: TelemetryRecorder
+}
+
+/** Factory that produces a booted {@link CockpitSession}. */
+export type SessionFactory = () => Promise<CockpitSession>
 
 /**
  * Create the interactive terminal renderer used for a real run.
@@ -40,17 +53,37 @@ export function createCockpitRenderer(factory: typeof createCliRenderer = create
   })
 }
 
+/** Injectable seams for {@link createCockpitSession}, so it is testable without spawning. */
+export interface CockpitSessionDeps {
+  /** How to load the config; defaults to reading it from disk. */
+  loadConfig?: () => Promise<AppConfig>
+  /** How to build the controller; defaults to the real spawning controller. */
+  buildController?: (options: SessionControllerOptions) => Promise<SessionController>
+  /** How to build the recorder from the opt-in flag; defaults to the JSONL recorder. */
+  createRecorder?: (enabled: boolean) => TelemetryRecorder
+}
+
 /**
- * Load the config and bring both agents up.
+ * Load the config, bring both agents up, and wire telemetry.
  *
  * `createSessionController` never rejects: an agent that fails to spawn or hand
  * shake becomes a not-ready runtime the status strip explains, and the other agent
  * stays fully usable. A malformed config file, in contrast, throws - Kitten never
  * silently falls back to defaults the user did not ask for.
+ *
+ * The recorder is created from the config's opt-in flag (a no-op when off), handed
+ * the boot readiness snapshot, and subscribed to the store for the first-response and
+ * re-explanation metrics. It is returned alongside the controller so the hand-off
+ * flow can record through it.
  */
-export async function createCockpitController(): Promise<SessionController> {
-  const config = await loadAppConfig()
-  return createSessionController({ config })
+export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promise<CockpitSession> {
+  const config = await (deps.loadConfig ?? loadAppConfig)()
+  const store = createAppStore()
+  const recorder = (deps.createRecorder ?? ((enabled) => createTelemetryRecorder({ enabled })))(config.telemetryEnabled)
+  const controller = await (deps.buildController ?? createSessionController)({ config, store })
+  recordReadiness(recorder, controller.runtimes())
+  recorder.watch(store)
+  return { controller, recorder }
 }
 
 /** Default exit handler: exit the process cleanly once teardown has finished. */
@@ -62,8 +95,13 @@ export function exitProcess(): void {
 export interface MainDeps {
   /** How to obtain the renderer; defaults to the real interactive renderer. */
   createRenderer?: RendererFactory
-  /** How to obtain the controller; defaults to loading the config and connecting. */
+  /**
+   * How to obtain just the controller. When given, telemetry is not wired (the tests
+   * use this to drive a fake controller). Takes precedence over `createSession`.
+   */
   createController?: ControllerFactory
+  /** How to obtain the controller and its recorder; defaults to {@link createCockpitSession}. */
+  createSession?: SessionFactory
   /** What to run once the cockpit has torn down; defaults to a clean process exit. */
   onExit?: () => void
 }
@@ -85,14 +123,20 @@ export interface BootedCockpit {
  */
 export async function main(deps: MainDeps = {}): Promise<BootedCockpit> {
   const createRenderer = deps.createRenderer ?? createCockpitRenderer
-  const createController = deps.createController ?? createCockpitController
   const onExit = deps.onExit ?? exitProcess
 
   const renderer = await createRenderer()
 
   let controller: SessionController
+  let recorder: TelemetryRecorder | undefined
   try {
-    controller = await createController()
+    if (deps.createController) {
+      controller = await deps.createController()
+    } else {
+      const session = await (deps.createSession ?? createCockpitSession)()
+      controller = session.controller
+      recorder = session.recorder
+    }
   } catch (error) {
     // The renderer already owns the terminal (raw mode, alternate screen). Give it
     // back before the error escapes, or the user's shell is left unusable.
@@ -110,7 +154,7 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit> {
     })
   })
 
-  renderCockpit(renderer, controller)
+  renderCockpit(renderer, controller, recorder)
   return { renderer, controller, closed }
 }
 

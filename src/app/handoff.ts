@@ -26,7 +26,9 @@
 
 import type { PromptBlock, PromptResult } from "../agent/agentConnection.ts"
 import { createDeterministicAssembler, type BundleAssembler } from "../core/bundleAssembler.ts"
+import { editedCharCount } from "../core/telemetryHeuristics.ts"
 import type { HandoffBundle, PendingDiff } from "../core/types.ts"
+import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { nextAgentId } from "./actions.ts"
 import type { SessionController } from "./controller.ts"
 
@@ -142,11 +144,18 @@ export interface HandoffFlowOptions {
   controller: SessionController
   /** The assembly strategy. Defaults to the V1 deterministic one (ADR-002). */
   assembler?: BundleAssembler
+  /**
+   * The telemetry recorder. Optional: when omitted (or disabled) the flow behaves
+   * identically and records nothing. The flow is the source of the hand-off metrics
+   * (`handoff_invoked`, `handoff_sent`, `handoff_repeat`, `bundle_edit_chars`) and it
+   * arms the re-explanation watch on the target once a bundle is sent.
+   */
+  recorder?: TelemetryRecorder
 }
 
 /** Build the hand-off flow over one controller. */
 export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
-  const { controller } = options
+  const { controller, recorder } = options
   const assembler = options.assembler ?? createDeterministicAssembler()
   const { store, actions } = controller
 
@@ -169,6 +178,7 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
 
       // `assemble` redacts as it builds; the bundle is safe to display as it arrives.
       store.openHandoffPreview({ sourceAgentId, targetAgentId, bundle: assembler.assemble(session, targetAgentId) })
+      recorder?.handoffInvoked()
       return true
     },
 
@@ -185,6 +195,13 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       // Address the target explicitly: focus has not moved yet, and it must not have -
       // `sendPrompt` writes the user's turn into whichever agent it is given.
       const sent = actions.sendPrompt(blocks, overlay.targetAgentId)
+      // Record after the send so the bundle's own user turn is already applied: only a
+      // *later* developer message can then trip the re-explanation heuristic. The edit
+      // volume is the change the developer made to the summary in the preview.
+      recorder?.handoffSent({
+        targetAgentId: overlay.targetAgentId,
+        editChars: editedCharCount(overlay.bundle.summary, edits.summary),
+      })
       actions.switchFocus(overlay.targetAgentId)
       return sent
     },
