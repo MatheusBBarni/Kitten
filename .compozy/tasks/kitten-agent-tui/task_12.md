@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Hand-off and hand-back flow"
 type: frontend
 complexity: high
@@ -33,12 +33,12 @@ The same mechanism works in both directions, so a task can be handed off and lat
 </requirements>
 
 ## Subtasks
-- [ ] 12.1 Bind the hand-off keystroke to assemble and redact a bundle from the focused session
-- [ ] 12.2 Open the editable `HandoffPreview` overlay showing summary, files, diffs, and redaction count
-- [ ] 12.3 Allow the user to edit/trim the bundle before sending
-- [ ] 12.4 On confirm, compose prompt blocks, send to the target via `sendPrompt`, and switch focus
-- [ ] 12.5 Make the flow symmetric so hand-back works from either agent
-- [ ] 12.6 Cover assembly-to-send and edit/cancel paths with tests
+- [x] 12.1 Bind the hand-off keystroke to assemble and redact a bundle from the focused session
+- [x] 12.2 Open the editable `HandoffPreview` overlay showing summary, files, diffs, and redaction count
+- [x] 12.3 Allow the user to edit/trim the bundle before sending
+- [x] 12.4 On confirm, compose prompt blocks, send to the target via `sendPrompt`, and switch focus
+- [x] 12.5 Make the flow symmetric so hand-back works from either agent
+- [x] 12.6 Cover assembly-to-send and edit/cancel paths with tests
 
 ## Implementation Details
 Create the hand-off orchestration and preview overlay. See TechSpec "System Architecture → Data flow" (hand-off path), ADR-002 (human-curated deterministic bundle), and PRD F3/F4. Uses the assembler/redactor (task_06), the controller's `sendPrompt` and focus (task_07), and mounts over the shell (task_08).
@@ -63,13 +63,13 @@ Create the hand-off orchestration and preview overlay. See TechSpec "System Arch
 
 ## Tests
 - Unit tests:
-  - [ ] The hand-off keystroke assembles a bundle from the focused session and opens the preview with a redaction count
-  - [ ] Editing the preview to drop a file removes it from the composed prompt blocks
-  - [ ] Confirming sends the composed bundle to the target agent via `sendPrompt` and switches focus to the target
-  - [ ] Cancelling the preview sends nothing and leaves focus unchanged
-  - [ ] A hand-back from the target agent uses the same flow toward the original agent
+  - [x] The hand-off keystroke assembles a bundle from the focused session and opens the preview with a redaction count
+  - [x] Editing the preview to drop a file removes it from the composed prompt blocks
+  - [x] Confirming sends the composed bundle to the target agent via `sendPrompt` and switches focus to the target
+  - [x] Cancelling the preview sends nothing and leaves focus unchanged
+  - [x] A hand-back from the target agent uses the same flow toward the original agent
 - Integration tests:
-  - [ ] Against two mock connections, assemble → edit → confirm delivers the bundle to the target and focus moves, with no auto-send bypassing the preview
+  - [x] Against two mock connections, assemble → edit → confirm delivers the bundle to the target and focus moves, with no auto-send bypassing the preview
 - Test coverage target: >=80%
 - All tests must pass
 

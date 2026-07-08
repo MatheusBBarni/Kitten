@@ -6,10 +6,14 @@ import {
   approvalOptionIndex,
   COCKPIT_KEYMAP,
   EDITOR_KEYMAP,
+  HANDOFF_EDIT_HINT,
+  HANDOFF_HINT,
+  HANDOFF_KEYMAP,
   HELP_ENTRIES,
   KEYMAP_HINT,
   matchApprovalCommand,
   matchCommand,
+  matchHandoffCommand,
   PROMPT_KEY_BINDINGS,
   type CockpitKey,
 } from "./keymap.ts"
@@ -24,6 +28,10 @@ describe("matchCommand", () => {
     expect(matchCommand(key("o", { ctrl: true }))).toBe("switch-focus")
   })
 
+  it("maps Ctrl+T to hand-off", () => {
+    expect(matchCommand(key("t", { ctrl: true }))).toBe("hand-off")
+  })
+
   it("maps F1 to toggle-help and Escape to close-help", () => {
     expect(matchCommand(key("f1"))).toBe("toggle-help")
     expect(matchCommand(key("escape"))).toBe("close-help")
@@ -32,11 +40,13 @@ describe("matchCommand", () => {
   it("ignores a bare letter so the prompt editor keeps every printable key", () => {
     expect(matchCommand(key("o"))).toBeNull()
     expect(matchCommand(key("f"))).toBeNull()
+    expect(matchCommand(key("t"))).toBeNull()
   })
 
   it("ignores a chord with extra modifiers held", () => {
     expect(matchCommand(key("o", { ctrl: true, shift: true }))).toBeNull()
     expect(matchCommand(key("o", { ctrl: true, meta: true }))).toBeNull()
+    expect(matchCommand(key("t", { ctrl: true, shift: true }))).toBeNull()
     expect(matchCommand(key("f1", { ctrl: true }))).toBeNull()
     expect(matchCommand(key("escape", { meta: true }))).toBeNull()
   })
@@ -51,7 +61,17 @@ describe("COCKPIT_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
     expect(new Set(commands).size).toBe(commands.length)
-    expect(commands).toEqual(["switch-focus", "toggle-help", "close-help"])
+    expect(commands).toEqual(["switch-focus", "hand-off", "toggle-help", "close-help"])
+  })
+
+  it("keeps the hand-off chord clear of the ASCII control codes a terminal already sends", () => {
+    // Backspace is Ctrl+H, Tab is Ctrl+I, Enter is Ctrl+M. A chord bound to one of them
+    // would fire on an ordinary keystroke in the composer.
+    const reserved = new Set(["h", "i", "j", "m", "c", "d", "z"])
+    const handoff = COCKPIT_KEYMAP.find((binding) => binding.command === "hand-off")!
+    for (const name of reserved) {
+      expect(handoff.matches({ name, ctrl: true, shift: false, meta: false })).toBe(false)
+    }
   })
 
   it("documents every binding for the help panel", () => {
@@ -109,11 +129,15 @@ describe("HELP_ENTRIES", () => {
     const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
     // Help first: while the panel is open it consumes Escape, and only then does the
     // editor's interrupt become reachable.
-    expect(escapes.map((e) => e.index)).toEqual([2, 5])
+    expect(escapes.map((e) => e.index)).toEqual([3, 6])
   })
 
-  it("omits the approval overlay's keys, which are unreachable from the cockpit", () => {
-    for (const binding of APPROVAL_KEYMAP) {
+  it("documents the hand-off, since its chord is the one the product turns on", () => {
+    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+T")
+  })
+
+  it("omits both overlays' keys, which are unreachable from the cockpit", () => {
+    for (const binding of [...APPROVAL_KEYMAP, ...HANDOFF_KEYMAP]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
   })
@@ -159,6 +183,62 @@ describe("APPROVAL_KEYMAP", () => {
     }
     // The digit shortcut has no binding of its own, so pin it here.
     expect(APPROVAL_HINT).toContain("1-9")
+  })
+})
+
+describe("matchHandoffCommand", () => {
+  it("maps the arrows to the row the highlight moves to", () => {
+    expect(matchHandoffCommand(key("up"))).toBe("prev-item")
+    expect(matchHandoffCommand(key("down"))).toBe("next-item")
+  })
+
+  it("maps Space to keep/drop and a bare e to the summary editor", () => {
+    expect(matchHandoffCommand(key("space"))).toBe("toggle-item")
+    expect(matchHandoffCommand(key("e"))).toBe("edit-summary")
+  })
+
+  it("maps both Enter variants to confirm, since a terminal may report either", () => {
+    expect(matchHandoffCommand(key("return"))).toBe("confirm")
+    expect(matchHandoffCommand(key("kpenter"))).toBe("confirm")
+  })
+
+  it("maps Escape to cancel, so one key leaves the preview and the summary editor alike", () => {
+    expect(matchHandoffCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("ignores a chord with modifiers held, so Shift+Enter cannot send a bundle", () => {
+    expect(matchHandoffCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchHandoffCommand(key("e", { ctrl: true }))).toBeNull()
+    expect(matchHandoffCommand(key("space", { meta: true }))).toBeNull()
+  })
+
+  it("ignores keys the preview does not claim", () => {
+    expect(matchHandoffCommand(key("o", { ctrl: true }))).toBeNull()
+    expect(matchHandoffCommand(key("f1"))).toBeNull()
+    expect(matchHandoffCommand(key("a"))).toBeNull()
+  })
+})
+
+describe("HANDOFF_KEYMAP", () => {
+  it("binds each command exactly once", () => {
+    const commands = HANDOFF_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["prev-item", "next-item", "toggle-item", "edit-summary", "confirm", "cancel"])
+    expect(new Set(commands).size).toBe(commands.length)
+  })
+
+  it("names every binding in the hint the preview prints", () => {
+    for (const binding of HANDOFF_KEYMAP) {
+      expect(HANDOFF_HINT).toContain(binding.keys)
+    }
+  })
+
+  it("promises only Escape while the summary editor holds the keyboard", () => {
+    // Every other binding is plain text while editing, so the hint must not offer it.
+    // (A bare `e` is not checked: it is a letter, and the hint is written in English.)
+    expect(HANDOFF_EDIT_HINT).toContain("Esc")
+    for (const keys of ["↑", "↓", "Space", "Enter"]) {
+      expect(HANDOFF_EDIT_HINT).not.toContain(keys)
+    }
   })
 })
 

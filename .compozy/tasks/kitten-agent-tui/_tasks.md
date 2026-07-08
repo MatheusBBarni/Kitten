@@ -11,10 +11,10 @@
 | 05 | Reactive app store | completed | medium | task_02, task_03 |
 | 06 | Deterministic hand-off bundle assembler and secret redactor | completed | medium | task_02 |
 | 07 | Session controller and orchestration | completed | high | task_03, task_04, task_05 |
-| 08 | UI shell, cockpit, and status strip | pending | medium | task_05, task_07 |
-| 09 | Conversation view | pending | medium | task_08 |
-| 10 | Prompt editor and send flow | pending | medium | task_07, task_08 |
-| 11 | Approval prompt overlay | pending | medium | task_07, task_08 |
-| 12 | Hand-off and hand-back flow | pending | high | task_06, task_07, task_08 |
+| 08 | UI shell, cockpit, and status strip | completed | medium | task_05, task_07 |
+| 09 | Conversation view | completed | medium | task_08 |
+| 10 | Prompt editor and send flow | completed | medium | task_07, task_08 |
+| 11 | Approval prompt overlay | completed | medium | task_07, task_08 |
+| 12 | Hand-off and hand-back flow | completed | high | task_06, task_07, task_08 |
 | 13 | Telemetry recorder and heuristics | pending | medium | task_02, task_05, task_12 |
 | 14 | First-run flow and packaging | pending | medium | task_04, task_08 |

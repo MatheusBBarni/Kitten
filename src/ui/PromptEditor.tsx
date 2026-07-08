@@ -13,6 +13,13 @@
  * reaches this textarea: printable characters, Enter and Shift+Enter (rebound in
  * `PROMPT_KEY_BINDINGS`), and Escape.
  *
+ * The editor gives up the terminal's focus while a modal overlay is open, and takes it
+ * back when the overlay closes. That is not merely cosmetic: the hand-off preview owns
+ * a textarea of its own, and OpenTUI tracks exactly one focused renderable - so without
+ * this the composer would keep the cursor while the preview's summary editor typed, and
+ * would be left blurred once the preview unmounted. The draft survives, because the
+ * draft is the textarea's buffer and blurring does not clear it.
+ *
  * Bracketed paste never travels the keypress path at all. OpenTUI's stdin parser
  * accumulates everything between the paste markers - across as many stdin chunks as
  * a large paste takes - and hands the textarea one `PasteEvent`, which it inserts
@@ -22,7 +29,7 @@
 import type { KeyEvent, TextareaRenderable } from "@opentui/core"
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
-import { selectAgentStatus, selectFocusedAgentId } from "../store/selectors.ts"
+import { selectAgentStatus, selectFocusedAgentId, selectHasOpenOverlay } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { PROMPT_KEY_BINDINGS } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -72,6 +79,7 @@ export function PromptEditor(): ReactNode {
   // Readiness is a boot-time fact about the connection, not a store slice: an agent
   // whose handshake failed has no session, so nothing may be sent to it.
   const ready = controller.isReady(focusedAgentId)
+  const overlayOpen = useAppSelector(selectHasOpenOverlay)
 
   const textarea = useRef<TextareaRenderable | null>(null)
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
@@ -126,7 +134,7 @@ export function PromptEditor(): ReactNode {
     >
       <textarea
         ref={textarea}
-        focused
+        focused={!overlayOpen}
         style={{
           height: rows,
           wrapMode: "word",

@@ -6,10 +6,17 @@
  * keeps the transcript readable at 80 columns and keeps the mental model small.
  * Beneath it sit the prompt editor and the status strip, both always visible, the
  * one naming what the user is about to say and the other what both agents are doing.
- * Overlays (help and the approval prompt here, the hand-off preview in a later task)
- * are absolutely-positioned boxes, since the React binding ships no Portal (ADR-004).
- * The approval prompt is modal and swallows every key it sees, so the shell's own
- * chords simply never fire while a permission request is pending.
+ * Overlays (the help panel, the hand-off preview, and the approval prompt) are
+ * absolutely-positioned boxes, since the React binding ships no Portal (ADR-004).
+ * The hand-off preview and the approval prompt are modal and swallow every key they
+ * see, so the shell's own chords simply never fire while one of them is up. Modality
+ * takes both halves: global key listeners fire in mount order and the shell mounts
+ * first, so it must stand down here rather than leaving it to an overlay's
+ * `preventDefault`, which only reaches focused renderables.
+ *
+ * The hand-off is the product (PRD F3). Its keystroke lives in the same table as every
+ * other chord and does nothing but assemble a bundle and open the preview over it -
+ * `HandoffFlow` owns everything past that, and nothing sends without a confirm.
  *
  * The frame is sized from the live terminal dimensions rather than percentages, so
  * a resize re-lays the whole tree out in one pass and nothing is left painted
@@ -18,13 +25,15 @@
 
 import type { KeyEvent } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useState, type ReactNode } from "react"
+import { useCallback, useMemo, useState, type ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
-import { selectFocusedAgentId, selectIsApprovalOpen } from "../store/selectors.ts"
+import { createHandoffFlow } from "../app/handoff.ts"
+import { selectFocusedAgentId, selectHasOpenOverlay } from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
+import { HandoffPreview } from "./HandoffPreview.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { COCKPIT_KEYMAP, HELP_ENTRIES, matchCommand } from "./keymap.ts"
@@ -56,18 +65,28 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
   const palette = usePalette()
   const { width, height } = useTerminalDimensions()
   const [helpOpen, setHelpOpen] = useState(false)
-  const approvalOpen = useAppSelector(selectIsApprovalOpen)
+  const overlayOpen = useAppSelector(selectHasOpenOverlay)
+
+  // One flow for the life of the controller: a hand-off and a later hand-back are the
+  // same mechanism pointed the other way, and it derives its direction from focus.
+  const handoff = useMemo(() => createHandoffFlow({ controller }), [controller])
 
   const onKey = useCallback(
     (key: KeyEvent) => {
-      // A pending permission request owns the keyboard outright. Precedence is declared
-      // here rather than left to the framework: global listeners fire in the order they
-      // mounted, and this one mounts before the overlay that would otherwise outrank it.
-      if (approvalOpen) return
+      // A modal overlay owns the keyboard outright. Precedence is declared here rather
+      // than left to the framework: global listeners fire in the order they mounted, and
+      // this one mounts before the overlays that would otherwise outrank it.
+      if (overlayOpen) return
 
       switch (matchCommand(key)) {
         case "switch-focus":
           controller.actions.switchFocus()
+          return
+        case "hand-off":
+          // The panel would otherwise sit behind the preview with no key left to close
+          // it, since the preview spends Escape on discarding the bundle.
+          setHelpOpen(false)
+          handoff.begin()
           return
         case "toggle-help":
           setHelpOpen((open) => !open)
@@ -84,7 +103,7 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
           return
       }
     },
-    [approvalOpen, controller, helpOpen],
+    [controller, handoff, helpOpen, overlayOpen],
   )
   useKeyboard(onKey)
 
@@ -129,6 +148,8 @@ function CockpitFrame({ children }: { children?: ReactNode }): ReactNode {
       <StatusStrip />
 
       {helpOpen ? <HelpOverlay /> : null}
+
+      <HandoffPreview flow={handoff} />
 
       {/* Last, so a pending permission request paints over anything else on screen. */}
       <ApprovalPrompt />

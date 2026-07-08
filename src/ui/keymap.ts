@@ -11,9 +11,10 @@
  * listener, so its bindings are declared (`PROMPT_KEY_BINDINGS`) and documented
  * (`EDITOR_KEYMAP`) side by side instead of being buried in the component.
  *
- * The approval overlay's keys (`APPROVAL_KEYMAP`) are the exception to the chord rule:
- * while that overlay is up it swallows every keypress, so plain arrows, Enter, and
- * digits are its to spend without ever reaching the composer.
+ * The overlays' keys (`APPROVAL_KEYMAP`, `HANDOFF_KEYMAP`) are the exception to the
+ * chord rule: while an overlay is up it swallows every keypress, so plain arrows,
+ * Enter, Space, digits, and even a bare letter are its to spend without ever reaching
+ * the composer.
  */
 
 import type { KeyBinding as TextareaKeyBinding } from "@opentui/core"
@@ -32,10 +33,13 @@ export interface CockpitKey {
 }
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
-export type CockpitCommand = "switch-focus" | "toggle-help" | "close-help"
+export type CockpitCommand = "switch-focus" | "hand-off" | "toggle-help" | "close-help"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
+
+/** Every intent the hand-off preview handles while it is on screen. */
+export type HandoffCommand = "prev-item" | "next-item" | "toggle-item" | "edit-summary" | "confirm" | "cancel"
 
 /** One row of the help panel: the chord and what it does. */
 export interface HelpEntry {
@@ -73,6 +77,15 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Ctrl+O",
     description: "Switch focus to the other agent",
     matches: ctrl("o"),
+  },
+  {
+    // Ctrl+T for "transfer". The obvious mnemonic, Ctrl+H, is the ASCII backspace a
+    // terminal sends for the Backspace key, so binding it would eat a correction in
+    // the composer on every terminal that does not speak the Kitty protocol.
+    command: "hand-off",
+    keys: "Ctrl+T",
+    description: "Hand the task off to the other agent",
+    matches: ctrl("t"),
   },
   {
     command: "toggle-help",
@@ -166,12 +179,66 @@ export const APPROVAL_KEYMAP: readonly KeyBinding<ApprovalCommand>[] = [
 const MAX_DIGIT_OPTIONS = 9
 
 /**
+ * The hand-off preview's keys, live only while the preview is on screen.
+ *
+ * Like the approval overlay, the preview is modal, so plain keys are safe: nothing
+ * reaches the composer while a bundle is waiting to be sent. That buys `Space` for
+ * keep/drop and a bare `e` for opening the summary editor, which are the two things
+ * the developer does most.
+ *
+ * `edit-summary` is the one binding that changes what the rest of them mean. Inside
+ * the summary editor every key is text - the developer is writing the brief - so the
+ * preview hands the keyboard to the textarea and keeps only Escape, which is how they
+ * come back out. That is why Escape is bound to `cancel` here and interpreted as
+ * "leave the editor" while editing: one key, one way out, whichever layer is on top.
+ */
+export const HANDOFF_KEYMAP: readonly KeyBinding<HandoffCommand>[] = [
+  {
+    command: "prev-item",
+    keys: "↑",
+    description: "Highlight the previous file or diff",
+    matches: plain("up"),
+  },
+  {
+    command: "next-item",
+    keys: "↓",
+    description: "Highlight the next file or diff",
+    matches: plain("down"),
+  },
+  {
+    command: "toggle-item",
+    keys: "Space",
+    description: "Keep or drop the highlighted file or diff",
+    matches: plain("space"),
+  },
+  {
+    command: "edit-summary",
+    keys: "e",
+    description: "Edit the summary the target agent will read",
+    matches: plain("e"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Send the bundle and switch focus to the target agent",
+    matches: (key) => (key.name === "return" || key.name === "kpenter") && !key.ctrl && !key.meta && !key.shift,
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Discard the hand-off without sending anything",
+    matches: plain("escape"),
+  },
+]
+
+/**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
- * The approval overlay's keys are deliberately absent. It is modal, so F1 cannot open
- * this panel while those keys are live, and they do nothing while it is closed - a row
- * here would describe a binding that is never true when the reader can read it. The
- * overlay prints `APPROVAL_HINT` instead, in the one state where the keys work.
+ * Neither overlay's keys appear. Both are modal, so F1 cannot open this panel while
+ * their keys are live, and they do nothing while the overlay is closed - a row here
+ * would describe a binding that is never true when the reader can read it. Each
+ * overlay prints its own hint instead (`APPROVAL_HINT`, `HANDOFF_HINT`), in the one
+ * state where its keys work.
  */
 export const HELP_ENTRIES: readonly HelpEntry[] = [...COCKPIT_KEYMAP, ...EDITOR_KEYMAP]
 
@@ -181,6 +248,12 @@ export const KEYMAP_HINT = "^O switch  F1 help"
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
 
+/** The hint printed inside the hand-off preview while the developer curates the bundle. */
+export const HANDOFF_HINT = "↑↓ move  Space keep/drop  e edit summary  Enter send  Esc cancel"
+
+/** The hint printed while the summary editor holds the keyboard, where only Escape is ours. */
+export const HANDOFF_EDIT_HINT = "Esc returns to the bundle"
+
 /** The command a keypress maps to, or `null` when the shell does not claim it. */
 export function matchCommand(key: CockpitKey): CockpitCommand | null {
   return COCKPIT_KEYMAP.find((binding) => binding.matches(key))?.command ?? null
@@ -189,6 +262,11 @@ export function matchCommand(key: CockpitKey): CockpitCommand | null {
 /** The overlay command a keypress maps to, or `null` when the overlay does not claim it. */
 export function matchApprovalCommand(key: CockpitKey): ApprovalCommand | null {
   return APPROVAL_KEYMAP.find((binding) => binding.matches(key))?.command ?? null
+}
+
+/** The preview command a keypress maps to, or `null` when the preview does not claim it. */
+export function matchHandoffCommand(key: CockpitKey): HandoffCommand | null {
+  return HANDOFF_KEYMAP.find((binding) => binding.matches(key))?.command ?? null
 }
 
 /**
