@@ -20,6 +20,7 @@
 
 import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
+import { resolveSessions } from "../config/configLoader.ts"
 import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
 import { createAppStore, type AppStore, type Unsubscribe } from "../store/appStore.ts"
 import { createControllerActions, type AgentSession, type ControllerActions } from "./actions.ts"
@@ -87,13 +88,12 @@ export async function createSessionController(options: SessionControllerOptions)
   const create = options.createConnection ?? defaultCreateConnection
   const onError = options.onError ?? (() => {})
 
-  // One session per configured provider, in config order. The Kitten session id is
-  // seeded equal to the provider kind while there is one session per provider; the
-  // config-driven sessions list (task_02) assigns distinct ids without changing this.
-  const plan: { seed: SessionSeed; config: AgentConfig }[] = options.config.agents.map((config) => ({
-    seed: { id: config.id, providerKind: config.id, title: config.displayName, cwd },
-    config,
-  }))
+  // The resolved fleet, in declared order (ADR-005): one session per configured
+  // provider in the launch directory when the config declares none, else each
+  // declared session with its own `cwd`/`title`/`task` and a distinct session id.
+  const plan: { seed: SessionSeed; config: AgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
+    (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
+  )
 
   const store = options.store ?? createAppStore({ seeds: plan.map((entry) => entry.seed) })
 

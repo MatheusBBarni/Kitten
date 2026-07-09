@@ -31,7 +31,11 @@ import { createSessionController, type SessionController } from "./controller.ts
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
-const APP_CONFIG: AppConfig = { agents: [CLAUDE, CODEX], telemetryEnabled: false }
+const PROVIDERS: AppConfig["providers"] = {
+  "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
+  codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
+}
+const APP_CONFIG: AppConfig = { providers: PROVIDERS, sessions: [], telemetryEnabled: false }
 const CWD = "/workspace/kitten"
 
 const PERMISSION_REQUEST: PermissionRequest = {
@@ -352,7 +356,7 @@ describe("actions - sendPrompt", () => {
   it("Should swallow a failing prompt when no error reporter is configured", async () => {
     const connection = createStubConnection("claude-code", { promptThrows: new Error("broken pipe") })
     const controller = await createSessionController({
-      config: { agents: [CLAUDE], telemetryEnabled: false },
+      config: { providers: PROVIDERS, sessions: [{ provider: "claude-code", cwd: process.cwd() }], telemetryEnabled: false },
       cwd: CWD,
       createConnection: () => connection,
     })
@@ -510,7 +514,7 @@ describe("createSessionController - dispose", () => {
       throw new Error("kill failed")
     }
     const controller = await createSessionController({
-      config: { agents: [CLAUDE], telemetryEnabled: false },
+      config: { providers: PROVIDERS, sessions: [{ provider: "claude-code", cwd: process.cwd() }], telemetryEnabled: false },
       cwd: CWD,
       createConnection: () => connection,
     })

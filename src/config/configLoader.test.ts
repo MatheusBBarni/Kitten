@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 import {
   CLAUDE_CODE_ACP_PACKAGE,
@@ -13,20 +13,27 @@ import {
   loadAppConfig,
   parseAppConfig,
   resolveConfigPath,
+  resolveSessions,
 } from "./configLoader.ts"
 
 /**
- * Unit tests for `AppConfig` loading: the shipped defaults for the two V1 agents,
- * per-agent override merging, the telemetry opt-in, and the failure modes of an
- * invalid config file. `loadAppConfig` is exercised against real temp files so the
- * missing-file and present-file paths are both covered end to end.
+ * Unit tests for `AppConfig` loading (ADR-005): the shipped default provider recipes,
+ * per-provider override merging, the telemetry opt-in, session resolution (zero-config
+ * default, per-session `cwd`/`title`/`task`, repeated-provider identities), and the
+ * failure modes of an invalid config file. `loadAppConfig` is exercised against real
+ * temp files so the missing-file and present-file paths are both covered end to end.
  */
 
 const tempDirs: string[] = []
 
-async function writeConfig(source: string): Promise<string> {
+async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "kitten-config-"))
   tempDirs.push(dir)
+  return dir
+}
+
+async function writeConfig(source: string): Promise<string> {
+  const dir = await makeTempDir()
   const path = join(dir, "config.json")
   await Bun.write(path, source)
   return path
@@ -37,11 +44,12 @@ afterAll(async () => {
 })
 
 describe("defaults", () => {
-  it("Should return the two default agent configs when no user config exists", async () => {
+  it("Should return the two default provider recipes when no user config exists", async () => {
     const missing = join(tmpdir(), "kitten-does-not-exist", "config.json")
     const config = await loadAppConfig({ path: missing })
 
-    expect(config.agents.map((agent) => agent.id)).toEqual(["claude-code", "codex"])
+    expect(Object.keys(config.providers)).toEqual(["claude-code", "codex"])
+    expect(config.sessions).toEqual([])
     expect(findAgentConfig(config, "claude-code")).toEqual({
       id: "claude-code",
       displayName: "Claude Code",
@@ -66,23 +74,19 @@ describe("defaults", () => {
 
   it("Should hand out an isolated copy so a mutated config cannot poison the next load", () => {
     const first = defaultAppConfig()
-    first.agents[0]!.args.push("--rogue")
-    first.agents[0]!.env.ROGUE = "1"
+    first.providers["claude-code"].args.push("--rogue")
+    first.providers["claude-code"].env.ROGUE = "1"
 
     const second = defaultAppConfig()
-    expect(second.agents[0]!.args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
-    expect(second.agents[0]!.env).toEqual({})
-  })
-
-  it("Should return undefined for an agent the config does not define", () => {
-    expect(findAgentConfig({ agents: [], telemetryEnabled: false }, "codex")).toBeUndefined()
+    expect(second.providers["claude-code"].args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
+    expect(second.providers["claude-code"].env).toEqual({})
   })
 })
 
 describe("user overrides", () => {
-  it("Should replace command and args for the overridden agent only", async () => {
+  it("Should replace command and args for the overridden provider only", async () => {
     const path = await writeConfig(
-      JSON.stringify({ agents: { codex: { command: "/opt/bin/codex-acp", args: ["--stdio"] } } }),
+      JSON.stringify({ providers: { codex: { command: "/opt/bin/codex-acp", args: ["--stdio"] } } }),
     )
 
     const config = await loadAppConfig({ path })
@@ -90,12 +94,12 @@ describe("user overrides", () => {
     const codex = findAgentConfig(config, "codex")
     expect(codex?.command).toBe("/opt/bin/codex-acp")
     expect(codex?.args).toEqual(["--stdio"])
-    // The untouched agent keeps every default field.
-    expect(findAgentConfig(config, "claude-code")).toEqual(defaultAppConfig().agents[0]!)
+    // The untouched provider keeps every default field.
+    expect(findAgentConfig(config, "claude-code")).toEqual(findAgentConfig(defaultAppConfig(), "claude-code"))
   })
 
-  it("Should leave unspecified fields of an overridden agent at their defaults", () => {
-    const config = parseAppConfig(JSON.stringify({ agents: { "claude-code": { displayName: "Claude" } } }))
+  it("Should leave unspecified fields of an overridden provider at their defaults", () => {
+    const config = parseAppConfig(JSON.stringify({ providers: { "claude-code": { displayName: "Claude" } } }))
 
     const claude = findAgentConfig(config, "claude-code")
     expect(claude?.displayName).toBe("Claude")
@@ -103,10 +107,111 @@ describe("user overrides", () => {
     expect(claude?.args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
   })
 
-  it("Should merge env over the agent's default env", () => {
-    const config = parseAppConfig(JSON.stringify({ agents: { codex: { env: { CODEX_PATH: "/usr/bin/codex" } } } }))
+  it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {
+    // The default codex env is empty, so add a second key to prove the merge keeps both.
+    const config = parseAppConfig(
+      JSON.stringify({
+        providers: {
+          codex: { env: { CODEX_PATH: "/usr/bin/codex" } },
+          "claude-code": { env: { CLAUDE_A: "1" } },
+        },
+      }),
+    )
+    // Merge a further override on top to show earlier keys survive alongside new ones.
+    const merged = parseAppConfig(
+      JSON.stringify({ providers: { "claude-code": { env: { CLAUDE_B: "2" } } } }),
+    )
 
     expect(findAgentConfig(config, "codex")?.env).toEqual({ CODEX_PATH: "/usr/bin/codex" })
+    expect(findAgentConfig(config, "claude-code")?.env).toEqual({ CLAUDE_A: "1" })
+    expect(findAgentConfig(merged, "claude-code")?.env).toEqual({ CLAUDE_B: "2" })
+  })
+
+  it("Should accept the deprecated `agents` key as an alias for `providers`", () => {
+    const config = parseAppConfig(JSON.stringify({ agents: { codex: { command: "/opt/bin/codex-acp" } } }))
+
+    expect(findAgentConfig(config, "codex")?.command).toBe("/opt/bin/codex-acp")
+  })
+})
+
+describe("resolveSessions", () => {
+  it("Should seed one session per configured provider in the launch directory when none are declared", () => {
+    const config = defaultAppConfig()
+
+    const resolved = resolveSessions(config, { launchCwd: "/launch/dir" })
+
+    expect(resolved.map((session) => session.seed.id)).toEqual(["claude-code", "codex"])
+    expect(resolved.map((session) => session.seed.providerKind)).toEqual(["claude-code", "codex"])
+    expect(resolved.every((session) => session.seed.cwd === "/launch/dir")).toBe(true)
+    // Preserve today's titles: the provider display name, not the launch-dir basename.
+    expect(resolved.map((session) => session.seed.title)).toEqual(["Claude Code", "Codex"])
+    // The resolved spawn recipe carries the provider's id for the connection factory.
+    expect(resolved[0]!.spawn).toEqual(findAgentConfig(config, "claude-code")!)
+  })
+
+  it("Should resolve two sessions of the same provider into distinct ids, titles, and directories", () => {
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [
+        { provider: "claude-code" as const, cwd: "/repos/api" },
+        { provider: "claude-code" as const, cwd: "/repos/web" },
+      ],
+    }
+
+    const resolved = resolveSessions(config, { launchCwd: "/launch/dir", dirExists: () => true })
+
+    expect(resolved).toHaveLength(2)
+    expect(resolved.map((session) => session.seed.id)).toEqual(["claude-code", "claude-code-2"])
+    expect(resolved.map((session) => session.seed.cwd)).toEqual(["/repos/api", "/repos/web"])
+    expect(resolved.map((session) => session.seed.title)).toEqual(["api", "web"])
+    // Both sessions still spawn the same provider recipe.
+    expect(resolved[0]!.spawn.id).toBe("claude-code")
+    expect(resolved[1]!.spawn.id).toBe("claude-code")
+  })
+
+  it("Should default a session's title to the cwd basename when none is given", () => {
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [{ provider: "codex" as const, cwd: "/home/me/projects/payments" }],
+    }
+
+    const [session] = resolveSessions(config, { dirExists: () => true })
+
+    expect(session!.seed.title).toBe("payments")
+    expect(session!.seed.title).toBe(basename("/home/me/projects/payments"))
+  })
+
+  it("Should keep an explicit title and carry an optional first task through", () => {
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [{ provider: "codex" as const, cwd: "/home/me/api", title: "API service", task: "fix the flake" }],
+    }
+
+    const [session] = resolveSessions(config, { dirExists: () => true })
+
+    expect(session!.seed.title).toBe("API service")
+    expect(session!.seed.task).toBe("fix the flake")
+  })
+
+  it("Should resolve a relative session cwd against the launch directory", () => {
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [{ provider: "codex" as const, cwd: "../sibling" }],
+    }
+
+    const [session] = resolveSessions(config, { launchCwd: "/launch/dir", dirExists: () => true })
+
+    expect(session!.seed.cwd).toBe("/launch/sibling")
+  })
+
+  it("Should reject a declared session whose cwd does not exist, naming the session and path", () => {
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [{ provider: "codex" as const, cwd: "/nowhere" }],
+    }
+
+    expect(() => resolveSessions(config, { dirExists: () => false })).toThrow(ConfigError)
+    expect(() => resolveSessions(config, { dirExists: () => false })).toThrow(/sessions\.0\.cwd.*\/nowhere/)
   })
 })
 
@@ -136,22 +241,66 @@ describe("invalid config", () => {
     await expect(loadAppConfig({ path })).rejects.toThrow(/is not valid JSON/)
   })
 
-  it("Should reject an unknown top-level key rather than silently ignoring a typo", () => {
+  it("Should reject an unknown top-level key naming the offending field", () => {
     expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(ConfigError)
+    expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(/telemetry/)
   })
 
-  it("Should reject an unknown agent id", () => {
-    expect(() => parseAppConfig(JSON.stringify({ agents: { gemini: { command: "gemini" } } }))).toThrow(ConfigError)
+  it("Should reject an unknown provider id", () => {
+    expect(() => parseAppConfig(JSON.stringify({ providers: { gemini: { command: "gemini" } } }))).toThrow(ConfigError)
+  })
+
+  it("Should reject an unknown key inside a session descriptor", () => {
+    expect(() =>
+      parseAppConfig(JSON.stringify({ sessions: [{ provider: "codex", cwd: "/x", branch: "main" }] })),
+    ).toThrow(/branch/)
+  })
+
+  it("Should reject a session with an unknown provider", () => {
+    expect(() => parseAppConfig(JSON.stringify({ sessions: [{ provider: "gemini", cwd: "/x" }] }))).toThrow(ConfigError)
+  })
+
+  it("Should reject a session that is missing its cwd, naming the field", () => {
+    expect(() => parseAppConfig(JSON.stringify({ sessions: [{ provider: "codex" }] }))).toThrow(/sessions\.0\.cwd/)
   })
 
   it("Should reject a wrongly-typed field and name it", () => {
-    expect(() => parseAppConfig(JSON.stringify({ agents: { codex: { args: "--stdio" } } }))).toThrow(
-      /agents\.codex\.args/,
+    expect(() => parseAppConfig(JSON.stringify({ providers: { codex: { args: "--stdio" } } }))).toThrow(
+      /providers\.codex\.args/,
     )
   })
 
   it("Should reject an empty command", () => {
-    expect(() => parseAppConfig(JSON.stringify({ agents: { codex: { command: "" } } }))).toThrow(ConfigError)
+    expect(() => parseAppConfig(JSON.stringify({ providers: { codex: { command: "" } } }))).toThrow(ConfigError)
+  })
+})
+
+describe("loadAppConfig with a real sessions file", () => {
+  it("Should resolve three declared sessions in order, each with its own directory", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    await Bun.write(
+      path,
+      JSON.stringify({
+        sessions: [
+          { provider: "claude-code", cwd: dir },
+          { provider: "codex", cwd: dir, title: "Codex on the same repo" },
+          { provider: "claude-code", cwd: dir, task: "start on the parser" },
+        ],
+      }),
+    )
+
+    const config = await loadAppConfig({ path })
+    const resolved = resolveSessions(config, { launchCwd: dir })
+
+    expect(resolved).toHaveLength(3)
+    expect(resolved.map((session) => session.seed.providerKind)).toEqual(["claude-code", "codex", "claude-code"])
+    // Repeated providers get distinct identities while keeping declared order.
+    expect(resolved.map((session) => session.seed.id)).toEqual(["claude-code", "codex", "claude-code-2"])
+    expect(resolved.every((session) => session.seed.cwd === dir)).toBe(true)
+    expect(resolved[1]!.seed.title).toBe("Codex on the same repo")
+    expect(resolved[0]!.seed.title).toBe(basename(dir))
+    expect(resolved[2]!.seed.task).toBe("start on the parser")
   })
 })
 

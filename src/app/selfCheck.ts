@@ -16,6 +16,7 @@
 
 import type { AgentConnection } from "../agent/agentConnection.ts"
 import type { AgentConfig, AppConfig } from "../core/types.ts"
+import { PROVIDER_KINDS } from "../core/types.ts"
 import { loadAppConfig } from "../config/configLoader.ts"
 import { cockpitElement } from "../ui/main.tsx"
 import { createSessionController } from "./controller.ts"
@@ -86,7 +87,7 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
   })
 
   try {
-    const marker = config.agents[0]?.displayName ?? "Kitten"
+    const marker = PROVIDER_KINDS.map((kind) => config.providers[kind]?.displayName).find(Boolean) ?? "Kitten"
     const frame = await waitForFrame((f) => f.includes(marker))
     return { frame }
   } finally {

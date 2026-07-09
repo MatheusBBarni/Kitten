@@ -32,7 +32,14 @@ const CLAUDE: AgentConfig = {
 }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
 
-const APP_CONFIG: AppConfig = { agents: [CLAUDE, CODEX], telemetryEnabled: false }
+const APP_CONFIG: AppConfig = {
+  providers: {
+    "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
+    codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
+  },
+  sessions: [],
+  telemetryEnabled: false,
+}
 
 /** A stub connection: only `connect` and `dispose` are exercised by readiness. */
 function stubConnection(connect: () => Promise<ReadyState>): {

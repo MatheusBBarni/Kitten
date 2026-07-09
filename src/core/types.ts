@@ -193,19 +193,62 @@ export interface HandoffBundle {
   redactionCount: number // secrets stripped before preview
 }
 
-/** How to spawn one agent (BYO, config-driven; ADR-005). */
-export interface AgentConfig {
-  id: ProviderKind
+/**
+ * A provider's spawn recipe: how to launch its ACP adapter (BYO, config-driven;
+ * ADR-005). Keyed by {@link ProviderKind} in {@link AppConfig.providers}, so the
+ * kind is the map key rather than a field. Overridable per field; the defaults pin
+ * the adapter package versions.
+ */
+export interface ProviderRecipe {
   displayName: string
   command: string
   args: string[]
   env: Record<string, string>
 }
 
-/** The loaded application configuration. */
+/**
+ * A provider's spawn recipe paired with its own {@link ProviderKind}. This is the
+ * shape the agent adapter layer spawns from: a {@link ProviderRecipe} plus the `id`
+ * the map key carries in config. Renamed conceptually from the former per-agent
+ * config; still the connection/transport input.
+ */
+export interface AgentConfig extends ProviderRecipe {
+  id: ProviderKind
+}
+
+/**
+ * One declared session in the config file (ADR-005). Each session names the provider
+ * to spawn and the working directory to open it against; `title` defaults to the
+ * `cwd` basename, and `task`, when present, is sent as the session's first prompt.
+ * Two descriptors may share a `provider` - each resolves to its own {@link SessionId}.
+ */
+export interface SessionDescriptor {
+  provider: ProviderKind
+  cwd: string
+  title?: string
+  task?: string
+}
+
+/**
+ * The loaded application configuration (ADR-005). `providers` is the map of spawn
+ * recipes keyed by kind; `sessions` is the ordered fleet to open. An empty `sessions`
+ * list means zero-config: one session per configured provider in the launch directory.
+ */
 export interface AppConfig {
-  agents: AgentConfig[]
+  providers: Record<ProviderKind, ProviderRecipe>
+  sessions: SessionDescriptor[]
   telemetryEnabled: boolean
+}
+
+/**
+ * A {@link SessionDescriptor} resolved into the per-session input the controller
+ * consumes without further transformation: the {@link SessionSeed} that fixes the
+ * session's identity and placement, plus the {@link AgentConfig} its connection is
+ * spawned from.
+ */
+export interface ResolvedSession {
+  seed: SessionSeed
+  spawn: AgentConfig
 }
 
 /** A content-free telemetry record (opt-in, local JSONL only). */

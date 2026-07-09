@@ -561,7 +561,14 @@ describe("HandoffPreview modality", () => {
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
-const APP_CONFIG: AppConfig = { agents: [CLAUDE, CODEX], telemetryEnabled: false }
+const APP_CONFIG: AppConfig = {
+  providers: {
+    "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
+    codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
+  },
+  sessions: [],
+  telemetryEnabled: false,
+}
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
 function connectionToMockAgent(config: AgentConfig, onPrompt?: MockPromptScript) {
