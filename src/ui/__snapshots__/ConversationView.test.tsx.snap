@@ -1,0 +1,67 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`ConversationView streaming matches the expected frames as a message streams in: 01-user-turn 1`] = `
+"┌─Claude Code──────────────────────────────────────────────────────────┐
+│  ping                                                                │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+┌─Prompt───────────────────────────────────────────────────────────────┐
+│ Enter sends, Shift+Enter adds a line, Esc interrupts                 │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+ ▸ Claude Code: idle    Codex: idle                  ^O switch  F1 help 
+"
+`;
+
+exports[`ConversationView streaming matches the expected frames as a message streams in: 02-first-chunk 1`] = `
+"┌─Claude Code──────────────────────────────────────────────────────────┐
+│  ping                                                                │
+│                                                                      │
+│ agent                                                                │
+│ Hello                                                                │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+┌─Prompt───────────────────────────────────────────────────────────────┐
+│ Enter sends, Shift+Enter adds a line, Esc interrupts                 │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+ ▸ Claude Code: idle    Codex: idle                  ^O switch  F1 help 
+"
+`;
+
+exports[`ConversationView streaming matches the expected frames as a message streams in: 03-settled 1`] = `
+"┌─Claude Code──────────────────────────────────────────────────────────┐
+│  ping                                                                │
+│                                                                      │
+│ agent                                                                │
+│ Hello, world.                                                        │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+┌─Prompt───────────────────────────────────────────────────────────────┐
+│ Enter sends, Shift+Enter adds a line, Esc interrupts                 │
+│                                                                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+ ▸ Claude Code: idle    Codex: idle                  ^O switch  F1 help 
+"
+`;
