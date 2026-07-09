@@ -9,61 +9,64 @@
  * - Reference slices (turns, plan, pending diffs, overlay slots) keep their identity
  *   across unrelated updates, because the reducer and the store share structure.
  *
- * Per-agent selectors are curried: `selectAgentStatus("codex")` builds the selector
+ * Per-agent selectors are curried: `selectSessionStatus("codex")` builds the selector
  * once. React callers should memoize that call (`useMemo`) so the selector identity
  * is stable across renders.
  */
 
-import type { AgentId, AgentStatus, PendingDiff, PlanEntry, SessionState, Turn } from "../core/types.ts"
+import type { AgentStatus, PendingDiff, PlanEntry, SessionId, SessionState, Turn } from "../core/types.ts"
 import type { AppState, ApprovalOverlay, HandoffPreviewOverlay, Selector } from "./appStore.ts"
 
-/** The agent that currently owns keyboard focus. */
-export const selectFocusedAgentId: Selector<AgentId> = (state) => state.focusedAgentId
+/** The session that currently owns keyboard focus. */
+export const selectFocusedSessionId: Selector<SessionId> = (state) => state.focusedSessionId
 
-/** Whether the given agent owns keyboard focus. For the status strip's focus marker. */
+/** Whether the given session owns keyboard focus. For the status strip's focus marker. */
 export const selectIsFocused =
-  (agentId: AgentId): Selector<boolean> =>
+  (sessionId: SessionId): Selector<boolean> =>
   (state) =>
-    state.focusedAgentId === agentId
+    state.focusedSessionId === sessionId
 
-/** One agent's full session. Changes on every event for that agent. */
-export const selectAgentSession =
-  (agentId: AgentId): Selector<SessionState> =>
+/** One session's full state. Changes on every event for that session. */
+export const selectSessionState =
+  (sessionId: SessionId): Selector<SessionState> =>
   (state) =>
-    state.sessions[agentId]
+    state.sessions[sessionId]!
 
-/** The focused agent's full session. Changes when focus moves or that agent updates. */
-export const selectFocusedSession: Selector<SessionState> = (state) => state.sessions[state.focusedAgentId]
+/** The focused session's full state. Changes when focus moves or that session updates. */
+export const selectFocusedSession: Selector<SessionState> = (state) => state.sessions[state.focusedSessionId]!
 
-/** One agent's lifecycle status. The status strip subscribes to this per agent. */
-export const selectAgentStatus =
-  (agentId: AgentId): Selector<AgentStatus> =>
+/** One session's lifecycle status. The status strip subscribes to this per session. */
+export const selectSessionStatus =
+  (sessionId: SessionId): Selector<AgentStatus> =>
   (state) =>
-    state.sessions[agentId].status
+    state.sessions[sessionId]!.status
 
-/** One agent's transcript. The conversation view subscribes to this. */
-export const selectAgentTurns =
-  (agentId: AgentId): Selector<Turn[]> =>
+/** One session's transcript. The conversation view subscribes to this. */
+export const selectSessionTurns =
+  (sessionId: SessionId): Selector<Turn[]> =>
   (state) =>
-    state.sessions[agentId].turns
+    state.sessions[sessionId]!.turns
 
-/** One agent's most recent plan. */
-export const selectAgentPlan =
-  (agentId: AgentId): Selector<PlanEntry[]> =>
+/** One session's most recent plan. */
+export const selectSessionPlan =
+  (sessionId: SessionId): Selector<PlanEntry[]> =>
   (state) =>
-    state.sessions[agentId].plan
+    state.sessions[sessionId]!.plan
 
-/** One agent's proposed-but-unapplied edit diffs. */
-export const selectAgentPendingDiffs =
-  (agentId: AgentId): Selector<PendingDiff[]> =>
+/** One session's proposed-but-unapplied edit diffs. */
+export const selectSessionPendingDiffs =
+  (sessionId: SessionId): Selector<PendingDiff[]> =>
   (state) =>
-    state.sessions[agentId].pendingDiffs
+    state.sessions[sessionId]!.pendingDiffs
 
-/** One agent's referenced files and the strongest access seen for each. */
-export const selectAgentReferencedFiles =
-  (agentId: AgentId): Selector<Map<string, "read" | "edited">> =>
+/** One session's referenced files and the strongest access seen for each. */
+export const selectSessionReferencedFiles =
+  (sessionId: SessionId): Selector<Map<string, "read" | "edited">> =>
   (state) =>
-    state.sessions[agentId].referencedFiles
+    state.sessions[sessionId]!.referencedFiles
+
+/** Every session id in display order. */
+export const selectSessionOrder: Selector<SessionId[]> = (state) => state.order
 
 /** The pending permission request, or `null` when the approval overlay is closed. */
 export const selectApprovalOverlay: Selector<ApprovalOverlay | null> = (state) => state.overlays.approval

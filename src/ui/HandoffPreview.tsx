@@ -92,7 +92,7 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
   const { height } = useTerminalDimensions()
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
 
-  const { bundle, sourceAgentId, targetAgentId } = overlay
+  const { bundle, sourceSessionId, targetSessionId } = overlay
   const itemCount = bundle.files.length + bundle.pendingDiffs.length
 
   const [selected, setSelected] = useState(0)
@@ -174,8 +174,8 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
   )
   useKeyboard(onKey)
 
-  const sourceName = controller.runtime(sourceAgentId)?.displayName ?? sourceAgentId
-  const targetName = controller.runtime(targetAgentId)?.displayName ?? targetAgentId
+  const sourceName = controller.runtime(sourceSessionId)?.displayName ?? sourceSessionId
+  const targetName = controller.runtime(targetSessionId)?.displayName ?? targetSessionId
   const selectedDiff = bundle.pendingDiffs[selected - bundle.files.length]
 
   return (

@@ -17,7 +17,7 @@ const ANTHROPIC_KEY = "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
 const AWS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
 
 const fold = (events: DomainSessionEvent[]): SessionState =>
-  events.reduce(sessionReducer, createSessionState("claude-code", "session-1"))
+  events.reduce(sessionReducer, createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" }))
 
 const assembler = createDeterministicAssembler()
 
@@ -234,7 +234,7 @@ describe("transcript excerpt", () => {
 
 describe("empty session", () => {
   it("produces a well-formed empty bundle rather than throwing", () => {
-    const session = createSessionState("codex", "session-empty")
+    const session = createSessionState({ id: "codex", providerKind: "codex", title: "codex", cwd: "/w", acpSessionId: "session-empty" })
 
     const bundle = assembler.assemble(session, "claude-code")
 

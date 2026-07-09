@@ -3,7 +3,7 @@
  *
  * Two sources feed it, and they answer different questions. `controller.runtimes()`
  * answers "did this agent ever come up?" - a boot-time fact that never changes for
- * the life of the run. The store's `selectAgentStatus` answers "what is it doing
+ * the life of the run. The store's `selectSessionStatus` answers "what is it doing
  * right now?" - a fact that changes on every turn. A not-ready agent has no session
  * and therefore no meaningful status, so not-ready wins the display.
  *
@@ -14,7 +14,7 @@
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { selectAgentStatus, selectIsFocused } from "../store/selectors.ts"
+import { selectIsFocused, selectSessionStatus } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { KEYMAP_HINT } from "./keymap.ts"
 import { usePalette, type StatusTone } from "./theme.ts"
@@ -49,7 +49,7 @@ export function StatusStrip(): ReactNode {
       {/* The chips are the point of the strip; the hint yields its width first. */}
       <box style={{ flexDirection: "row", flexShrink: 0, gap: 2 }}>
         {controller.runtimes().map((runtime) => (
-          <AgentStatusChip key={runtime.agentId} runtime={runtime} />
+          <AgentStatusChip key={runtime.sessionId} runtime={runtime} />
         ))}
       </box>
       <box style={{ flexGrow: 1 }} />
@@ -68,12 +68,12 @@ export interface AgentStatusChipProps {
 /** One agent: focus marker, display name, and the state it is in. */
 export function AgentStatusChip({ runtime }: AgentStatusChipProps): ReactNode {
   const palette = usePalette()
-  const { agentId } = runtime
+  const { sessionId } = runtime
 
   // Curried selectors build a new function per call; memoize so the subscription
   // survives re-renders instead of tearing down and rebuilding on each one.
-  const statusSelector = useMemo(() => selectAgentStatus(agentId), [agentId])
-  const focusSelector = useMemo(() => selectIsFocused(agentId), [agentId])
+  const statusSelector = useMemo(() => selectSessionStatus(sessionId), [sessionId])
+  const focusSelector = useMemo(() => selectIsFocused(sessionId), [sessionId])
   const status = useAppSelector(statusSelector)
   const focused = useAppSelector(focusSelector)
 

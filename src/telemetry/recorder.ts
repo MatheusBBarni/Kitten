@@ -27,9 +27,9 @@ import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 
-import type { AgentId } from "../core/types.ts"
+import type { SessionId } from "../core/types.ts"
 import { bucketChars, detectReexplanation, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
-import { AGENT_IDS, type AppStore, type Unsubscribe } from "../store/appStore.ts"
+import type { AppStore, Unsubscribe } from "../store/appStore.ts"
 
 /** Every telemetry event Kitten records. Names match the TechSpec metric set. */
 export type TelemetryEventType =
@@ -53,8 +53,8 @@ export interface TelemetryRecord {
   at: number
   /** An anonymous reference to this app run - never an ACP session id or path. */
   sessionRef: string
-  /** Which agent the event concerns, when relevant. A fixed enum, not user content. */
-  agent?: AgentId
+  /** Which session the event concerns, when relevant. A Kitten session id, not user content. */
+  agent?: SessionId
   /** A coarse character bucket (see `bucketChars`), never an exact count. */
   charBucket?: number
   /** A measured duration in milliseconds, for `first_response_ms`. */
@@ -68,8 +68,8 @@ export interface TelemetrySink {
 
 /** What the hand-off flow reports when it sends a curated bundle to the target. */
 export interface HandoffSentInput {
-  /** The agent that received the bundle - the one to watch for re-explanation. */
-  targetAgentId: AgentId
+  /** The session that received the bundle - the one to watch for re-explanation. */
+  targetSessionId: SessionId
   /** How many characters the developer changed in the summary (see `editedCharCount`). */
   editChars: number
 }
@@ -82,10 +82,10 @@ export interface TelemetryRecorder {
   handoffInvoked(): void
   /** A curated bundle was sent to the target; also records edit volume and repeats. */
   handoffSent(input: HandoffSentInput): void
-  /** An agent completed its handshake and holds a live session. */
-  agentReady(agentId: AgentId): void
-  /** An agent failed to come up. */
-  agentUnready(agentId: AgentId): void
+  /** A session completed its handshake and holds a live ACP session. */
+  agentReady(sessionId: SessionId): void
+  /** A session failed to come up. */
+  agentUnready(sessionId: SessionId): void
   /**
    * Subscribe to store transitions to derive `first_response_ms` and
    * `reexplanation_detected`. Returns an unsubscribe; a no-op when disabled.
@@ -130,9 +130,9 @@ export function createTelemetryRecorder(options: TelemetryRecorderOptions): Tele
   return new ActiveRecorder(options)
 }
 
-/** Per-agent bookkeeping for the store-derived metrics. */
+/** Per-session bookkeeping for the store-derived metrics. */
 interface AgentWatch {
-  /** How many turns of this agent's transcript `watch` has already processed. */
+  /** How many turns of this session's transcript `watch` has already processed. */
   seenTurns: number
   /** When the pending prompt was sent, or `null` when no first response is awaited. */
   awaitingResponseAt: number | null
@@ -147,7 +147,7 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly sessionRef: string
   private readonly threshold: number
   private handoffCount = 0
-  private readonly watches = new Map<AgentId, AgentWatch>()
+  private readonly watches = new Map<SessionId, AgentWatch>()
 
   constructor(options: TelemetryRecorderOptions) {
     this.sink = options.sink ?? createJsonlFileSink(resolveTelemetryPath())
@@ -162,38 +162,38 @@ class ActiveRecorder implements TelemetryRecorder {
 
   handoffSent(input: HandoffSentInput): void {
     this.handoffCount += 1
-    this.record({ type: "handoff_sent", agent: input.targetAgentId })
+    this.record({ type: "handoff_sent", agent: input.targetSessionId })
     // A repeat hand-off in one run is a distinct signal for the 7-day-repeat metric.
-    if (this.handoffCount > 1) this.record({ type: "handoff_repeat", agent: input.targetAgentId })
-    this.record({ type: "bundle_edit_chars", agent: input.targetAgentId, charBucket: bucketChars(input.editChars) })
+    if (this.handoffCount > 1) this.record({ type: "handoff_repeat", agent: input.targetSessionId })
+    this.record({ type: "bundle_edit_chars", agent: input.targetSessionId, charBucket: bucketChars(input.editChars) })
     // Arm re-explanation detection on the target. This runs after the flow's own
     // `sendPrompt`, so the bundle's user turn is already consumed and only a
     // subsequent developer message can trip the heuristic.
-    this.watchFor(input.targetAgentId).reexplanationArmed = true
+    this.watchFor(input.targetSessionId).reexplanationArmed = true
   }
 
-  agentReady(agentId: AgentId): void {
-    this.record({ type: "agent_ready", agent: agentId })
+  agentReady(sessionId: SessionId): void {
+    this.record({ type: "agent_ready", agent: sessionId })
   }
 
-  agentUnready(agentId: AgentId): void {
-    this.record({ type: "agent_unready", agent: agentId })
+  agentUnready(sessionId: SessionId): void {
+    this.record({ type: "agent_unready", agent: sessionId })
   }
 
   watch(store: AppStore): Unsubscribe {
     // Prime the seen-turn counts so pre-existing transcript is not replayed as new.
     const initial = store.getState()
-    for (const agentId of AGENT_IDS) {
-      this.watchFor(agentId).seenTurns = initial.sessions[agentId].turns.length
+    for (const sessionId of initial.order) {
+      this.watchFor(sessionId).seenTurns = initial.sessions[sessionId]!.turns.length
     }
     return store.subscribe((state) => {
-      for (const agentId of AGENT_IDS) this.processAgent(agentId, state.sessions[agentId].turns)
+      for (const sessionId of state.order) this.processSession(sessionId, state.sessions[sessionId]!.turns)
     })
   }
 
-  /** Apply the turns newly appended to one agent's transcript since the last pass. */
-  private processAgent(agentId: AgentId, turns: readonly { kind: string; text?: string }[]): void {
-    const watch = this.watchFor(agentId)
+  /** Apply the turns newly appended to one session's transcript since the last pass. */
+  private processSession(sessionId: SessionId, turns: readonly { kind: string; text?: string }[]): void {
+    const watch = this.watchFor(sessionId)
     // A new session resets the transcript; drop stale timers/arming and resync.
     if (turns.length < watch.seenTurns) {
       watch.seenTurns = turns.length
@@ -201,36 +201,36 @@ class ActiveRecorder implements TelemetryRecorder {
       watch.reexplanationArmed = false
       return
     }
-    for (let i = watch.seenTurns; i < turns.length; i++) this.handleTurn(agentId, watch, turns[i]!)
+    for (let i = watch.seenTurns; i < turns.length; i++) this.handleTurn(sessionId, watch, turns[i]!)
     watch.seenTurns = turns.length
   }
 
-  private handleTurn(agentId: AgentId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
+  private handleTurn(sessionId: SessionId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
     if (turn.kind === "user") {
-      // A prompt was sent: start the first-response clock for this agent.
+      // A prompt was sent: start the first-response clock for this session.
       watch.awaitingResponseAt = this.now()
       if (watch.reexplanationArmed) {
         // The developer's first message after the hand-off decides re-explanation.
         watch.reexplanationArmed = false
         const result = detectReexplanation([{ kind: "developer_message", charCount: turn.text?.length ?? 0 }], this.threshold)
-        if (result.detected) this.record({ type: "reexplanation_detected", agent: agentId, charBucket: result.charBucket })
+        if (result.detected) this.record({ type: "reexplanation_detected", agent: sessionId, charBucket: result.charBucket })
       }
       return
     }
     // An agent message or tool call is the first response; a tool call also ends the
     // re-explanation window (the target started acting on the bundle).
     if (watch.awaitingResponseAt !== null) {
-      this.record({ type: "first_response_ms", agent: agentId, durationMs: this.now() - watch.awaitingResponseAt })
+      this.record({ type: "first_response_ms", agent: sessionId, durationMs: this.now() - watch.awaitingResponseAt })
       watch.awaitingResponseAt = null
     }
     if (turn.kind === "tool_call") watch.reexplanationArmed = false
   }
 
-  private watchFor(agentId: AgentId): AgentWatch {
-    let watch = this.watches.get(agentId)
+  private watchFor(sessionId: SessionId): AgentWatch {
+    let watch = this.watches.get(sessionId)
     if (!watch) {
       watch = { seenTurns: 0, awaitingResponseAt: null, reexplanationArmed: false }
-      this.watches.set(agentId, watch)
+      this.watches.set(sessionId, watch)
     }
     return watch
   }
@@ -248,11 +248,11 @@ class ActiveRecorder implements TelemetryRecorder {
  */
 export function recordReadiness(
   recorder: TelemetryRecorder,
-  runtimes: readonly { agentId: AgentId; ready: boolean }[],
+  runtimes: readonly { sessionId: SessionId; ready: boolean }[],
 ): void {
   for (const runtime of runtimes) {
-    if (runtime.ready) recorder.agentReady(runtime.agentId)
-    else recorder.agentUnready(runtime.agentId)
+    if (runtime.ready) recorder.agentReady(runtime.sessionId)
+    else recorder.agentUnready(runtime.sessionId)
   }
 }
 

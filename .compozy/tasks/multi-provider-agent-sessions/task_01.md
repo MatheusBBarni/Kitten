@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Session identity and store refactor"
 type: refactor
 complexity: critical
@@ -29,11 +29,11 @@ This is the behavior-preserving foundation every later task builds on: the app s
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Rename `AgentId` to `ProviderKind` and add the `SessionId` type in the core.
-- [ ] 1.2 Reshape `SessionState` with `id`, `providerKind`, `title`, `cwd`, `task`, and `acpSessionId`.
-- [ ] 1.3 Convert the store to `Record<SessionId>` + `order` + `focusedSessionId`, updating `startSession`, `setFocus`, and `applyEvent` to key by `SessionId`.
-- [ ] 1.4 Re-key all selectors and their UI call sites by `SessionId`.
-- [ ] 1.5 Seed two sessions from the existing default config and confirm the whole suite stays green.
+- [x] 1.1 Rename `AgentId` to `ProviderKind` and add the `SessionId` type in the core.
+- [x] 1.2 Reshape `SessionState` with `id`, `providerKind`, `title`, `cwd`, `task`, and `acpSessionId`.
+- [x] 1.3 Convert the store to `Record<SessionId>` + `order` + `focusedSessionId`, updating `startSession`, `setFocus`, and `applyEvent` to key by `SessionId`.
+- [x] 1.4 Re-key all selectors and their UI call sites by `SessionId`.
+- [x] 1.5 Seed two sessions from the existing default config and confirm the whole suite stays green.
 
 ## Implementation Details
 The change is a project-wide, behavior-preserving rename plus a store reshape.

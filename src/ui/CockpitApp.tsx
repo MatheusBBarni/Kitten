@@ -30,7 +30,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react"
 import type { SessionController } from "../app/controller.ts"
 import { createHandoffFlow } from "../app/handoff.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
-import { selectFocusedAgentId, selectHasOpenOverlay } from "../store/selectors.ts"
+import { selectFocusedSessionId, selectHasOpenOverlay } from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
@@ -110,8 +110,8 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
   )
   useKeyboard(onKey)
 
-  const focusedAgentId = useAppSelector(selectFocusedAgentId)
-  const focused = controller.runtime(focusedAgentId)
+  const focusedSessionId = useAppSelector(selectFocusedSessionId)
+  const focused = controller.runtime(focusedSessionId)
 
   return (
     <box
@@ -136,7 +136,7 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
           paddingRight: 1,
           overflow: "hidden",
         }}
-        title={focused?.displayName ?? focusedAgentId}
+        title={focused?.displayName ?? focusedSessionId}
         titleColor={palette.accent}
       >
         {focused && !focused.ready ? (

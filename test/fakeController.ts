@@ -11,16 +11,16 @@
  */
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
-import { nextAgentId, type PromptInput } from "../src/app/actions.ts"
+import { nextSessionId, type PromptInput } from "../src/app/actions.ts"
 import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
-import type { AgentId } from "../src/core/types.ts"
+import type { SessionId } from "../src/core/types.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
 
 /** Every action call the cockpit made, in order. */
 export interface RecordedCalls {
-  sendPrompt: { input: PromptInput; agentId: AgentId | undefined }[]
-  cancel: (AgentId | undefined)[]
-  switchFocus: (AgentId | undefined)[]
+  sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
+  cancel: (SessionId | undefined)[]
+  switchFocus: (SessionId | undefined)[]
   respondPermission: PermissionOutcome[]
   dispose: number
 }
@@ -30,19 +30,33 @@ export interface FakeController extends SessionController {
   readonly calls: RecordedCalls
 }
 
-/** Construction options; both agents are ready and idle by default. */
+/** Construction options; both sessions are ready and idle by default. */
 export interface FakeControllerOptions {
-  /** Per-agent standing, in cockpit order. */
+  /** Per-session standing, in cockpit order. */
   runtimes?: AgentRuntimeState[]
   /** The store to drive. Defaults to a fresh one. */
   store?: AppStore
 }
 
-/** Both agents up, sessions open. The ordinary case. */
+/** Both sessions up, ACP sessions open. The ordinary case. */
 export function readyRuntimes(): AgentRuntimeState[] {
   return [
-    { agentId: "claude-code", displayName: "Claude Code", ready: true, sessionId: "session-claude" },
-    { agentId: "codex", displayName: "Codex", ready: true, sessionId: "session-codex" },
+    {
+      sessionId: "claude-code",
+      providerKind: "claude-code",
+      displayName: "Claude Code",
+      title: "Claude Code",
+      ready: true,
+      acpSessionId: "session-claude",
+    },
+    {
+      sessionId: "codex",
+      providerKind: "codex",
+      displayName: "Codex",
+      title: "Codex",
+      ready: true,
+      acpSessionId: "session-codex",
+    },
   ]
 }
 
@@ -52,22 +66,22 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   const runtimes = options.runtimes ?? readyRuntimes()
   const calls: RecordedCalls = { sendPrompt: [], cancel: [], switchFocus: [], respondPermission: [], dispose: 0 }
 
-  const find = (agentId: AgentId): AgentRuntimeState | undefined => runtimes.find((r) => r.agentId === agentId)
+  const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
 
   return {
     store,
     calls,
     actions: {
-      async sendPrompt(input: PromptInput, agentId?: AgentId): Promise<PromptResult | null> {
-        calls.sendPrompt.push({ input, agentId })
+      async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
+        calls.sendPrompt.push({ input, sessionId })
         return null
       },
-      async cancel(agentId?: AgentId): Promise<void> {
-        calls.cancel.push(agentId)
+      async cancel(sessionId?: SessionId): Promise<void> {
+        calls.cancel.push(sessionId)
       },
-      switchFocus(agentId?: AgentId): void {
-        calls.switchFocus.push(agentId)
-        store.setFocus(agentId ?? nextAgentId(store.getState().focusedAgentId))
+      switchFocus(sessionId?: SessionId): void {
+        calls.switchFocus.push(sessionId)
+        store.setFocus(sessionId ?? nextSessionId(store.getState().order, store.getState().focusedSessionId))
       },
       respondPermission(outcome: PermissionOutcome): void {
         calls.respondPermission.push(outcome)
@@ -79,7 +93,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     },
     runtimes: () => runtimes,
     runtime: find,
-    isReady: (agentId) => find(agentId)?.ready === true,
+    isReady: (sessionId) => find(sessionId)?.ready === true,
     async dispose(): Promise<void> {
       calls.dispose++
     },

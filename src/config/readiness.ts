@@ -18,7 +18,7 @@ import {
   type AgentConnection,
   type ReadyState,
 } from "../agent/agentConnection.ts"
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
+import type { AgentConfig, ProviderKind, AppConfig } from "../core/types.ts"
 
 /** Why an agent is not ready. Each value maps to one distinct, actionable failure. */
 export type NotReadyReason =
@@ -33,8 +33,8 @@ export type NotReadyReason =
 
 /** One agent's startup verdict: handshake completed, or a legible reason it did not. */
 export type AgentReadiness =
-  | { agentId: AgentId; displayName: string; ready: true; protocolVersion: number }
-  | { agentId: AgentId; displayName: string; ready: false; reason: NotReadyReason; message: string }
+  | { agentId: ProviderKind; displayName: string; ready: true; protocolVersion: number }
+  | { agentId: ProviderKind; displayName: string; ready: false; reason: NotReadyReason; message: string }
 
 /** How long to wait for `initialize` before declaring the agent unresponsive. */
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000

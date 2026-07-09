@@ -14,44 +14,44 @@
  */
 
 import type { AgentConnection, PermissionOutcome, PromptBlock, PromptResult } from "../agent/agentConnection.ts"
-import type { AgentId } from "../core/types.ts"
-import { AGENT_IDS, type AppStore } from "../store/appStore.ts"
+import type { SessionId } from "../core/types.ts"
+import type { AppStore } from "../store/appStore.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
 
-/** One agent's live ACP session: the connection to drive and the session to drive it on. */
+/** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
-  readonly agentId: AgentId
-  readonly sessionId: string
+  readonly sessionId: SessionId
+  readonly acpSessionId: string
   readonly connection: AgentConnection
 }
 
 /** The seams the actions need. The controller supplies all of them. */
 export interface ActionDeps {
   store: AppStore
-  /** Resolve an agent's live session, or `undefined` when it has none (not ready). */
-  getSession(agentId: AgentId): AgentSession | undefined
+  /** Resolve a session's live connection, or `undefined` when it has none (not ready). */
+  getSession(sessionId: SessionId): AgentSession | undefined
   /** Settle the permission request currently shown in the approval overlay. */
   resolvePermission(outcome: PermissionOutcome): void
   /** Ids for the user turns this surface records. Defaults to a random UUID. */
   newMessageId?: () => string
   /** Where a failing connection is reported. Defaults to swallowing the failure. */
-  onError?: (agentId: AgentId, error: unknown) => void
+  onError?: (sessionId: SessionId, error: unknown) => void
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
 export interface ControllerActions {
   /**
-   * Send a prompt to `agentId` (default: the focused agent), recording the user's
+   * Send a prompt to `sessionId` (default: the focused session), recording the user's
    * turn in the transcript first. Resolves with the agent's stop reason, or `null`
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
-  sendPrompt(input: PromptInput, agentId?: AgentId): Promise<PromptResult | null>
-  /** Interrupt the running turn on `agentId` (default: the focused agent). */
-  cancel(agentId?: AgentId): Promise<void>
-  /** Focus `agentId`, or cycle to the next agent when omitted. Sessions stay live. */
-  switchFocus(agentId?: AgentId): void
+  sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
+  /** Interrupt the running turn on `sessionId` (default: the focused session). */
+  cancel(sessionId?: SessionId): Promise<void>
+  /** Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live. */
+  switchFocus(sessionId?: SessionId): void
   /** Answer the pending permission request with the user's decision. */
   respondPermission(outcome: PermissionOutcome): void
 }
@@ -72,38 +72,38 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const newMessageId = deps.newMessageId ?? (() => crypto.randomUUID())
   const onError = deps.onError ?? (() => {})
 
-  const focused = (): AgentId => store.getState().focusedAgentId
+  const focused = (): SessionId => store.getState().focusedSessionId
 
   return {
-    async sendPrompt(input, agentId = focused()): Promise<PromptResult | null> {
-      const session = getSession(agentId)
+    async sendPrompt(input, sessionId = focused()): Promise<PromptResult | null> {
+      const session = getSession(sessionId)
       if (!session) return null
       const blocks = composePromptBlocks(input)
       if (blocks.length === 0) return null
 
       // ACP never echoes the user's prompt back as a session update, so the
       // transcript only shows this turn if the controller records it.
-      store.applyEvent(agentId, { kind: "user_message", messageId: newMessageId(), text: joinBlocks(blocks) })
+      store.applyEvent(sessionId, { kind: "user_message", messageId: newMessageId(), text: joinBlocks(blocks) })
       try {
-        return await session.connection.prompt(session.sessionId, blocks)
+        return await session.connection.prompt(session.acpSessionId, blocks)
       } catch (error) {
-        onError(agentId, error)
+        onError(sessionId, error)
         return null
       }
     },
 
-    async cancel(agentId = focused()): Promise<void> {
-      const session = getSession(agentId)
+    async cancel(sessionId = focused()): Promise<void> {
+      const session = getSession(sessionId)
       if (!session) return
       try {
-        await session.connection.cancel(session.sessionId)
+        await session.connection.cancel(session.acpSessionId)
       } catch (error) {
-        onError(agentId, error)
+        onError(sessionId, error)
       }
     },
 
-    switchFocus(agentId = nextAgentId(focused())): void {
-      store.setFocus(agentId)
+    switchFocus(sessionId = nextSessionId(store.getState().order, focused())): void {
+      store.setFocus(sessionId)
     },
 
     respondPermission(outcome: PermissionOutcome): void {
@@ -112,10 +112,11 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   }
 }
 
-/** The next agent in cockpit order, wrapping around. */
-export function nextAgentId(current: AgentId): AgentId {
-  const index = AGENT_IDS.indexOf(current)
-  return AGENT_IDS[(index + 1) % AGENT_IDS.length]!
+/** The next session in display order, wrapping around. */
+export function nextSessionId(order: readonly SessionId[], current: SessionId): SessionId {
+  if (order.length === 0) return current
+  const index = order.indexOf(current)
+  return order[(index + 1) % order.length]!
 }
 
 /** The transcript text for a multi-block prompt: one block per line. */

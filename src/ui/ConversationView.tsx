@@ -17,7 +17,7 @@
 import { useMemo, type ReactNode } from "react"
 
 import type { Turn } from "../core/types.ts"
-import { selectAgentTurns, selectFocusedAgentId } from "../store/selectors.ts"
+import { selectFocusedSessionId, selectSessionTurns } from "../store/selectors.ts"
 import { useAppSelector } from "./cockpitContext.tsx"
 import { MessageView } from "./MessageView.tsx"
 import { ToolCallRow } from "./ToolCallRow.tsx"
@@ -41,11 +41,11 @@ const HIDDEN_SCROLLBAR = { visible: false } as const
 /** The scrollable transcript of whichever agent currently has focus. */
 export function ConversationView(): ReactNode {
   const palette = usePalette()
-  const focusedAgentId = useAppSelector(selectFocusedAgentId)
+  const focusedSessionId = useAppSelector(selectFocusedSessionId)
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
-  const turnsSelector = useMemo(() => selectAgentTurns(focusedAgentId), [focusedAgentId])
+  const turnsSelector = useMemo(() => selectSessionTurns(focusedSessionId), [focusedSessionId])
   const turns = useAppSelector(turnsSelector)
 
   if (turns.length === 0) {

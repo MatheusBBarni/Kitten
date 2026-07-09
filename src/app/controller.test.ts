@@ -9,10 +9,10 @@ import {
   type ReadyState,
 } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import type { AgentConfig, AgentId, AppConfig, DomainSessionEvent } from "../core/types.ts"
+import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
-import { composePromptBlocks, createControllerActions, nextAgentId } from "./actions.ts"
+import { composePromptBlocks, createControllerActions, nextSessionId } from "./actions.ts"
 import { createSessionController, type SessionController } from "./controller.ts"
 
 /**
@@ -64,7 +64,7 @@ interface StubOptions {
   cancelThrows?: unknown
 }
 
-function createStubConnection(id: AgentId, options: StubOptions = {}): StubConnection {
+function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
   const cancels: string[] = []
@@ -120,13 +120,13 @@ function createStubConnection(id: AgentId, options: StubOptions = {}): StubConne
 
 /** Build a controller over one stub connection per configured agent. */
 async function controllerWithStubs(
-  stubs: Partial<Record<AgentId, StubOptions>> = {},
-  overrides: { onError?: (agentId: AgentId, error: unknown) => void } = {},
-): Promise<{ controller: SessionController; connections: Record<AgentId, StubConnection> }> {
+  stubs: Partial<Record<ProviderKind, StubOptions>> = {},
+  overrides: { onError?: (sessionId: SessionId, error: unknown) => void } = {},
+): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection> }> {
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
     codex: createStubConnection("codex", stubs.codex),
-  } satisfies Record<AgentId, StubConnection>
+  } satisfies Record<ProviderKind, StubConnection>
 
   const controller = await createSessionController({
     config: APP_CONFIG,
@@ -160,10 +160,11 @@ describe("composePromptBlocks", () => {
   })
 })
 
-describe("nextAgentId", () => {
-  it("Should cycle through the agents in cockpit order", () => {
-    expect(nextAgentId("claude-code")).toBe("codex")
-    expect(nextAgentId("codex")).toBe("claude-code")
+describe("nextSessionId", () => {
+  it("Should cycle through the sessions in display order", () => {
+    const order = ["claude-code", "codex"]
+    expect(nextSessionId(order, "claude-code")).toBe("codex")
+    expect(nextSessionId(order, "codex")).toBe("claude-code")
   })
 })
 
@@ -173,11 +174,25 @@ describe("createSessionController - startup", () => {
 
     expect(connections["claude-code"].newSessionCwds).toEqual([CWD])
     expect(connections.codex.newSessionCwds).toEqual([CWD])
-    expect(controller.store.getState().sessions["claude-code"].sessionId).toBe("claude-code-session")
-    expect(controller.store.getState().sessions.codex.sessionId).toBe("codex-session")
+    expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-code-session")
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-session")
     expect(controller.runtimes()).toEqual([
-      { agentId: "claude-code", displayName: "Claude Code", ready: true, sessionId: "claude-code-session" },
-      { agentId: "codex", displayName: "Codex", ready: true, sessionId: "codex-session" },
+      {
+        sessionId: "claude-code",
+        providerKind: "claude-code",
+        displayName: "Claude Code",
+        title: "Claude Code",
+        ready: true,
+        acpSessionId: "claude-code-session",
+      },
+      {
+        sessionId: "codex",
+        providerKind: "codex",
+        displayName: "Codex",
+        title: "Codex",
+        ready: true,
+        acpSessionId: "codex-session",
+      },
     ])
     expect(controller.isReady("claude-code")).toBe(true)
 
@@ -186,7 +201,7 @@ describe("createSessionController - startup", () => {
 
   it("Should focus the first configured agent when it is ready", async () => {
     const { controller } = await controllerWithStubs()
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     await controller.dispose()
   })
 
@@ -196,8 +211,8 @@ describe("createSessionController - startup", () => {
     connections["claude-code"].emit({ kind: "agent_message", messageId: "m1", textDelta: "hello" })
 
     const state = controller.store.getState()
-    expect(state.sessions["claude-code"].turns).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
-    expect(state.sessions.codex.turns).toEqual([])
+    expect(state.sessions["claude-code"]!.turns).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
+    expect(state.sessions.codex!.turns).toEqual([])
 
     await controller.dispose()
   })
@@ -210,8 +225,10 @@ describe("createSessionController - degraded startup", () => {
     })
 
     expect(controller.runtime("claude-code")).toEqual({
-      agentId: "claude-code",
+      sessionId: "claude-code",
+      providerKind: "claude-code",
       displayName: "Claude Code",
+      title: "Claude Code",
       ready: false,
       error: "not logged in",
     })
@@ -222,7 +239,7 @@ describe("createSessionController - degraded startup", () => {
     expect(connections["claude-code"].newSessionCwds).toEqual([])
 
     // Focus falls through to the agent that did come up.
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
     await controller.actions.sendPrompt("still works")
     expect(connections.codex.prompts).toHaveLength(1)
 
@@ -230,10 +247,10 @@ describe("createSessionController - degraded startup", () => {
   })
 
   it("Should report a thrown connect as not-ready without rejecting", async () => {
-    const errors: Array<[AgentId, unknown]> = []
+    const errors: Array<[SessionId, unknown]> = []
     const { controller } = await controllerWithStubs(
       { codex: { connectThrows: new Error("spawn ENOENT") } },
-      { onError: (agentId, error) => errors.push([agentId, error]) },
+      { onError: (sessionId, error) => errors.push([sessionId, error]) },
     )
 
     expect(controller.runtime("codex")).toMatchObject({ ready: false, error: "spawn ENOENT" })
@@ -248,7 +265,7 @@ describe("createSessionController - degraded startup", () => {
     const { controller } = await controllerWithStubs({ codex: { newSessionThrows: "no session for you" } })
 
     expect(controller.runtime("codex")).toMatchObject({ ready: false, error: "no session for you" })
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -259,7 +276,7 @@ describe("createSessionController - degraded startup", () => {
       codex: { ready: { ready: false, error: "down" } },
     })
 
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(controller.runtimes().every((runtime) => !runtime.ready)).toBe(true)
     // A not-ready agent has no session, so the action surface is inert rather than fatal.
     expect(await controller.actions.sendPrompt("hello")).toBeNull()
@@ -270,8 +287,8 @@ describe("createSessionController - degraded startup", () => {
 
   it("Should not know an agent the config never named", async () => {
     const { controller } = await controllerWithStubs()
-    expect(controller.runtime("nope" as AgentId)).toBeUndefined()
-    expect(controller.isReady("nope" as AgentId)).toBe(false)
+    expect(controller.runtime("nope" as SessionId)).toBeUndefined()
+    expect(controller.isReady("nope" as SessionId)).toBe(false)
     await controller.dispose()
   })
 })
@@ -288,7 +305,7 @@ describe("actions - sendPrompt", () => {
     ])
     expect(connections.codex.prompts).toEqual([])
     // The user's turn is recorded: ACP never echoes the prompt back.
-    expect(controller.store.getState().sessions["claude-code"].turns).toEqual([
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
       { kind: "user", messageId: "msg-1", text: "refactor the reducer" },
     ])
 
@@ -304,7 +321,7 @@ describe("actions - sendPrompt", () => {
       { sessionId: "codex-session", blocks: [{ type: "text", text: "continue this" }] },
     ])
     expect(connections["claude-code"].prompts).toEqual([])
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -314,7 +331,7 @@ describe("actions - sendPrompt", () => {
 
     expect(await controller.actions.sendPrompt("  \n  ")).toBeNull()
     expect(connections["claude-code"].prompts).toEqual([])
-    expect(controller.store.getState().sessions["claude-code"].turns).toEqual([])
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([])
 
     await controller.dispose()
   })
@@ -379,10 +396,10 @@ describe("actions - switchFocus", () => {
     controller.actions.switchFocus("codex")
 
     const state = controller.store.getState()
-    expect(state.focusedAgentId).toBe("codex")
+    expect(state.focusedSessionId).toBe("codex")
     expect(state.sessions["claude-code"]).toBe(before["claude-code"])
-    expect(state.sessions["claude-code"].sessionId).toBe("claude-code-session")
-    expect(state.sessions.codex.sessionId).toBe("codex-session")
+    expect(state.sessions["claude-code"]!.acpSessionId).toBe("claude-code-session")
+    expect(state.sessions.codex!.acpSessionId).toBe("codex-session")
 
     // Both connections still accept work after the switch.
     await controller.actions.sendPrompt("now you")
@@ -397,9 +414,9 @@ describe("actions - switchFocus", () => {
     const { controller } = await controllerWithStubs()
 
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -412,7 +429,7 @@ describe("actions - respondPermission", () => {
     const pending = connections["claude-code"].ask(PERMISSION_REQUEST)
 
     expect(controller.store.getState().overlays.approval).toEqual({
-      agentId: "claude-code",
+      sessionId: "claude-code",
       request: PERMISSION_REQUEST,
     })
 
@@ -439,11 +456,11 @@ describe("actions - respondPermission", () => {
     const first = connections["claude-code"].ask(PERMISSION_REQUEST)
     const second = connections.codex.ask({ ...PERMISSION_REQUEST, sessionId: "codex-session" })
 
-    expect(controller.store.getState().overlays.approval?.agentId).toBe("claude-code")
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("claude-code")
 
     controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
     expect(await first).toEqual({ outcome: "selected", optionId: "allow" })
-    expect(controller.store.getState().overlays.approval?.agentId).toBe("codex")
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("codex")
 
     controller.actions.respondPermission({ outcome: "cancelled" })
     expect(await second).toEqual({ outcome: "cancelled" })
@@ -476,7 +493,7 @@ describe("createSessionController - dispose", () => {
 
     // A late update from a disposed connection reaches no slice.
     connections.codex.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
-    expect(controller.store.getState().sessions.codex.turns).toEqual([])
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([])
   })
 
   it("Should cancel a permission request raised after dispose", async () => {
@@ -509,7 +526,7 @@ describe("createControllerActions", () => {
     const connection = createStubConnection("claude-code")
     const actions = createControllerActions({
       store,
-      getSession: () => ({ agentId: "claude-code", sessionId: "s1", connection }),
+      getSession: () => ({ sessionId: "claude-code", acpSessionId: "s1", connection }),
       resolvePermission: () => {},
     })
 
@@ -518,7 +535,7 @@ describe("createControllerActions", () => {
 
     const messageIds = store
       .getState()
-      .sessions["claude-code"].turns.map((turn) => (turn.kind === "user" ? turn.messageId : null))
+      .sessions["claude-code"]!.turns.map((turn) => (turn.kind === "user" ? turn.messageId : null))
     expect(messageIds).toHaveLength(2)
     expect(messageIds[0]).toBeString()
     expect(messageIds[0]).not.toBe(messageIds[1]!)
@@ -532,7 +549,7 @@ describe("createControllerActions", () => {
     })
     const actions = createControllerActions({
       store,
-      getSession: () => ({ agentId: "codex", sessionId: "s1", connection }),
+      getSession: () => ({ sessionId: "codex", acpSessionId: "s1", connection }),
       resolvePermission: () => {},
     })
 
@@ -568,7 +585,7 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -583,19 +600,19 @@ describe("integration - two mock ACP agents", () => {
     expect(result).toEqual({ stopReason: "end_turn" })
 
     const state = controller.store.getState()
-    expect(state.sessions["claude-code"].turns.at(-1)).toEqual({ kind: "agent", messageId: "", text: "on it" })
-    expect(state.sessions["claude-code"].status).toBe("idle")
+    expect(state.sessions["claude-code"]!.turns.at(-1)).toEqual({ kind: "agent", messageId: "", text: "on it" })
+    expect(state.sessions["claude-code"]!.status).toBe("idle")
 
     // B never saw the prompt, stayed idle, and is still addressable.
     expect(codex.agent.prompts).toHaveLength(0)
-    expect(state.sessions.codex.turns).toEqual([])
-    expect(state.sessions.codex.status).toBe("idle")
-    expect(state.sessions.codex.sessionId).toBe("codex-session")
+    expect(state.sessions.codex!.turns).toEqual([])
+    expect(state.sessions.codex!.status).toBe("idle")
+    expect(state.sessions.codex!.acpSessionId).toBe("codex-session")
 
     controller.actions.switchFocus("codex")
     await controller.actions.sendPrompt("your turn")
     expect(codex.agent.prompts).toHaveLength(1)
-    expect(controller.store.getState().sessions.codex.turns.at(0)).toMatchObject({ kind: "user", text: "your turn" })
+    expect(controller.store.getState().sessions.codex!.turns.at(0)).toMatchObject({ kind: "user", text: "your turn" })
 
     await controller.dispose()
   })
@@ -611,7 +628,7 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -626,17 +643,17 @@ describe("integration - two mock ACP agents", () => {
     await waitFor(() => controller.store.getState().overlays.approval !== null, "the approval overlay to open")
 
     const approval = controller.store.getState().overlays.approval!
-    expect(approval.agentId).toBe("claude-code")
+    expect(approval.sessionId).toBe("claude-code")
     expect(approval.request.toolCall).toMatchObject({ toolCallId: "call-1", kind: "edit", title: "Edit README.md" })
     expect(approval.request.options.map((option) => option.optionId)).toEqual(["allow", "reject"])
-    expect(controller.store.getState().sessions["claude-code"].status).toBe("awaiting_approval")
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("awaiting_approval")
 
     controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
     await prompt
 
     expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: "allow" }])
     expect(controller.store.getState().overlays.approval).toBeNull()
-    expect(controller.store.getState().sessions["claude-code"].status).toBe("idle")
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("idle")
 
     await controller.dispose()
   })
@@ -648,7 +665,7 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -664,7 +681,7 @@ describe("integration - two mock ACP agents", () => {
     expect(claudeRuntime.ready === false && claudeRuntime.error).toContain("authenticate first")
 
     expect(controller.isReady("codex")).toBe(true)
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
 
     const result = await controller.actions.sendPrompt("carry on")
     expect(result).toEqual({ stopReason: "end_turn" })

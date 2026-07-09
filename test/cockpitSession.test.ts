@@ -17,14 +17,14 @@ function controllerOver(store: ReturnType<typeof createAppStore>): SessionContro
   const runtimes = readyRuntimes()
   const actions = createControllerActions({
     store,
-    getSession: (agentId) => ({ agentId, sessionId: `s-${agentId}`, connection: CONNECTION_STUB }),
+    getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: CONNECTION_STUB }),
     resolvePermission: () => {},
   })
   return {
     store,
     actions,
     runtimes: () => runtimes,
-    runtime: (agentId) => runtimes.find((runtime) => runtime.agentId === agentId),
+    runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
     dispose: async () => {},
   }

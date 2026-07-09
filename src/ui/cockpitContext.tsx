@@ -41,7 +41,7 @@ export function useController(): SessionController {
  * Read one narrow slice of application state and re-render only when it changes.
  *
  * `selector` must be referentially stable across renders: an inline arrow (or an
- * un-memoized curried selector such as `selectAgentStatus(id)`) re-subscribes on
+ * un-memoized curried selector such as `selectSessionStatus(id)`) re-subscribes on
  * every render. Hoist module-level selectors, and wrap per-agent ones in `useMemo`.
  */
 export function useAppSelector<T>(selector: Selector<T>, isEqual: (a: T, b: T) => boolean = Object.is): T {

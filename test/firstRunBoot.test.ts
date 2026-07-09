@@ -64,8 +64,8 @@ describe("main() readiness gate", () => {
   it("restores the terminal and reports gaps when no agent is ready", async () => {
     const { renderer } = await createTestRenderer({ width: 80, height: 24 })
     const notReady: AgentRuntimeState[] = [
-      { agentId: "claude-code", displayName: "Claude Code", ready: false, error: "Claude Code: command not found." },
-      { agentId: "codex", displayName: "Codex", ready: false, error: "Codex: not authenticated." },
+      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", ready: false, error: "Claude Code: command not found." },
+      { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: false, error: "Codex: not authenticated." },
     ]
     const controller = createFakeController({ runtimes: notReady })
     let reported: FirstRunReport | undefined
@@ -91,13 +91,13 @@ describe("main() readiness gate", () => {
 describe("runtimeSetup", () => {
   it("maps a ready runtime to a ready setup state", () => {
     expect(
-      runtimeSetup({ agentId: "codex", displayName: "Codex", ready: true, sessionId: "s" }),
+      runtimeSetup({ sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: true, acpSessionId: "s" }),
     ).toEqual({ agentId: "codex", displayName: "Codex", ready: true })
   })
 
   it("carries a not-ready runtime's error as the gap", () => {
     expect(
-      runtimeSetup({ agentId: "codex", displayName: "Codex", ready: false, error: "boom" }),
+      runtimeSetup({ sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: false, error: "boom" }),
     ).toEqual({ agentId: "codex", displayName: "Codex", ready: false, gap: "boom" })
   })
 })

@@ -68,9 +68,9 @@ function frameWith(setup: TestRendererSetup, ...needles: string[]): Promise<stri
 /** The single text argument the editor passed to `sendPrompt`. */
 function sentText(controller: FakeController): string {
   expect(controller.calls.sendPrompt).toHaveLength(1)
-  const { input, agentId } = controller.calls.sendPrompt[0]!
+  const { input, sessionId } = controller.calls.sendPrompt[0]!
   // The editor always addresses the focused agent, never one by name.
-  expect(agentId).toBeUndefined()
+  expect(sessionId).toBeUndefined()
   expect(typeof input).toBe("string")
   return input as string
 }
@@ -213,7 +213,7 @@ describe("PromptEditor paste", () => {
 
 describe("PromptEditor readiness gate", () => {
   const notReady: AgentRuntimeState[] = [
-    { agentId: "claude-code", displayName: "Claude Code", ready: false, error: "claude-agent-acp: not found" },
+    { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", ready: false, error: "claude-agent-acp: not found" },
     readyRuntimes()[1]!,
   ]
 

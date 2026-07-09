@@ -18,7 +18,7 @@ import { join } from "node:path"
 
 import { z } from "zod"
 
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
+import type { AgentConfig, ProviderKind, AppConfig } from "../core/types.ts"
 
 /**
  * The pinned ACP adapter packages the default config launches through `npx`.
@@ -194,7 +194,7 @@ export async function loadAppConfig(options: LoadAppConfigOptions = {}): Promise
 }
 
 /** Look one agent up by id. Returns `undefined` when the config omits it. */
-export function findAgentConfig(config: AppConfig, id: AgentId): AgentConfig | undefined {
+export function findAgentConfig(config: AppConfig, id: ProviderKind): AgentConfig | undefined {
   return config.agents.find((agent) => agent.id === id)
 }
 

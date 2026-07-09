@@ -4,7 +4,7 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import type { PromptBlock } from "../agent/agentConnection.ts"
 import type { BundleAssembler } from "../core/bundleAssembler.ts"
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
-import type { AgentId, HandoffBundle, ToolCallUpdate } from "../core/types.ts"
+import type { HandoffBundle, ProviderKind, SessionId, ToolCallUpdate } from "../core/types.ts"
 import type { AgentRuntimeState } from "./controller.ts"
 import {
   composeHandoffBlocks,
@@ -40,18 +40,18 @@ function editCall(overrides: Partial<ToolCallUpdate> = {}): ToolCallUpdate {
  * A controller whose focused agent has a transcript worth handing over: one user turn,
  * one agent turn, a file it read, and a diff it proposed.
  */
-function controllerWithWork(options: { runtimes?: AgentRuntimeState[]; agentId?: AgentId } = {}): FakeController {
+function controllerWithWork(options: { runtimes?: AgentRuntimeState[]; sessionId?: SessionId } = {}): FakeController {
   const controller = createFakeController({ runtimes: options.runtimes })
-  const agentId = options.agentId ?? "claude-code"
+  const sessionId = options.sessionId ?? "claude-code"
   const { store } = controller
-  store.setFocus(agentId)
-  store.applyEvent(agentId, { kind: "user_message", messageId: "m1", text: "bump b" })
-  store.applyEvent(agentId, { kind: "agent_message", messageId: "m2", textDelta: "On it." })
-  store.applyEvent(agentId, {
+  store.setFocus(sessionId)
+  store.applyEvent(sessionId, { kind: "user_message", messageId: "m1", text: "bump b" })
+  store.applyEvent(sessionId, { kind: "agent_message", messageId: "m2", textDelta: "On it." })
+  store.applyEvent(sessionId, {
     kind: "tool_call",
     call: { toolCallId: "call-read", kind: "read", title: "Read config", status: "completed", locations: ["cfg.json"] },
   })
-  store.applyEvent(agentId, { kind: "tool_call", call: editCall() })
+  store.applyEvent(sessionId, { kind: "tool_call", call: editCall() })
   return controller
 }
 
@@ -154,8 +154,8 @@ describe("HandoffFlow.begin", () => {
     expect(flow.begin()).toBe(true)
 
     const overlay = controller.store.getState().overlays.handoffPreview!
-    expect(overlay.sourceAgentId).toBe("claude-code")
-    expect(overlay.targetAgentId).toBe("codex")
+    expect(overlay.sourceSessionId).toBe("claude-code")
+    expect(overlay.targetSessionId).toBe("codex")
     expect(overlay.bundle.intent).toBe("continue")
     expect(overlay.bundle.summary).toContain("bump b")
     expect(overlay.bundle.files.map((file) => file.path)).toEqual(["cfg.json", "src/app.ts"])
@@ -168,7 +168,7 @@ describe("HandoffFlow.begin", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
   })
 
   it("redacts the bundle before it is shown, and reports how many secrets went", () => {
@@ -191,7 +191,14 @@ describe("HandoffFlow.begin", () => {
   it("does nothing when the agent that would receive the bundle never came up", () => {
     const runtimes: AgentRuntimeState[] = [
       readyRuntimes()[0]!,
-      { agentId: "codex", displayName: "Codex", ready: false, error: "codex-acp: command not found" },
+      {
+        sessionId: "codex",
+        providerKind: "codex",
+        displayName: "Codex",
+        title: "Codex",
+        ready: false,
+        error: "codex-acp: command not found",
+      },
     ]
     const controller = controllerWithWork({ runtimes })
 
@@ -202,7 +209,7 @@ describe("HandoffFlow.begin", () => {
   it("does not clobber a pending permission request, which has an agent blocked on it", () => {
     const controller = controllerWithWork()
     controller.store.openApproval({
-      agentId: "claude-code",
+      sessionId: "claude-code",
       request: { sessionId: "s", toolCall: { toolCallId: "call-1" }, options: [] },
     })
 
@@ -224,13 +231,13 @@ describe("HandoffFlow.begin", () => {
 
   it("assembles through the injected strategy, so Phase 2 swaps it without touching callers", () => {
     const controller = controllerWithWork()
-    const seen: AgentId[] = []
+    const seen: ProviderKind[] = []
     const assembler: BundleAssembler = {
       assemble(session, target) {
         seen.push(target)
         return {
           intent: "continue",
-          summary: `curated ${session.agentId}`,
+          summary: `curated ${session.providerKind}`,
           files: [],
           pendingDiffs: [],
           redactionCount: 7,
@@ -261,10 +268,10 @@ describe("HandoffFlow.confirm", () => {
     await flow.confirm(createHandoffEdits(bundle))
 
     expect(controller.calls.sendPrompt).toHaveLength(1)
-    expect(controller.calls.sendPrompt[0]!.agentId).toBe("codex")
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
     expect(controller.calls.switchFocus).toEqual(["codex"])
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
@@ -277,7 +284,7 @@ describe("HandoffFlow.confirm", () => {
 
     // The fake records the call rather than dispatching it; what matters is that the
     // agent id travelled with the prompt instead of being left to whatever holds focus.
-    expect(controller.calls.sendPrompt[0]!.agentId).toBe("codex")
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
   })
 
   it("sends the curated bundle, not the assembled one", async () => {
@@ -337,7 +344,7 @@ describe("HandoffFlow.cancel", () => {
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
   })
 
   it("is a no-op with no preview open", () => {
@@ -350,18 +357,18 @@ describe("HandoffFlow.cancel", () => {
 describe("hand-back", () => {
   it("runs the same flow in the other direction once the target holds focus", async () => {
     // Codex has been handed the task and has since done work of its own.
-    const controller = controllerWithWork({ agentId: "codex" })
+    const controller = controllerWithWork({ sessionId: "codex" })
     const flow = createHandoffFlow({ controller })
 
     expect(flow.begin()).toBe(true)
     const overlay = controller.store.getState().overlays.handoffPreview!
-    expect(overlay.sourceAgentId).toBe("codex")
-    expect(overlay.targetAgentId).toBe("claude-code")
+    expect(overlay.sourceSessionId).toBe("codex")
+    expect(overlay.targetSessionId).toBe("claude-code")
     expect(overlay.bundle.summary).toContain("codex")
 
     await flow.confirm(createHandoffEdits(overlay.bundle))
 
-    expect(controller.calls.sendPrompt[0]!.agentId).toBe("claude-code")
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
   })
 })

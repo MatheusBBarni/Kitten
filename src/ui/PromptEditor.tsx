@@ -29,7 +29,7 @@
 import type { KeyEvent, TextareaRenderable } from "@opentui/core"
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
-import { selectAgentStatus, selectFocusedAgentId, selectHasOpenOverlay } from "../store/selectors.ts"
+import { selectFocusedSessionId, selectHasOpenOverlay, selectSessionStatus } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { PROMPT_KEY_BINDINGS } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -69,16 +69,16 @@ function editorRows(lines: number): number {
 export function PromptEditor(): ReactNode {
   const controller = useController()
   const palette = usePalette()
-  const focusedAgentId = useAppSelector(selectFocusedAgentId)
+  const focusedSessionId = useAppSelector(selectFocusedSessionId)
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
-  const statusSelector = useMemo(() => selectAgentStatus(focusedAgentId), [focusedAgentId])
+  const statusSelector = useMemo(() => selectSessionStatus(focusedSessionId), [focusedSessionId])
   const status = useAppSelector(statusSelector)
 
-  // Readiness is a boot-time fact about the connection, not a store slice: an agent
-  // whose handshake failed has no session, so nothing may be sent to it.
-  const ready = controller.isReady(focusedAgentId)
+  // Readiness is a boot-time fact about the connection, not a store slice: a session
+  // whose handshake failed has no ACP session, so nothing may be sent to it.
+  const ready = controller.isReady(focusedSessionId)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
 
   const textarea = useRef<TextareaRenderable | null>(null)

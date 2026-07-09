@@ -10,7 +10,7 @@ import { createAgentConnection, type AgentConnection, type PromptBlock } from ".
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import { createSessionController } from "../app/controller.ts"
 import { FILES_HEADING as BLOCK_FILES_HEADING, HANDOFF_INSTRUCTION, pendingDiffHeading } from "../app/handoff.ts"
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
+import type { AgentConfig, AppConfig, ProviderKind, SessionId } from "../core/types.ts"
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
@@ -50,14 +50,14 @@ const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"
 const UNIFIED = ["--- a/src/app.ts", "+++ b/src/app.ts", "@@ -1,1 +1,1 @@", "-const b = 2", "+const b = 3"].join("\n")
 
 /** Give `agentId` a transcript worth handing over: a turn, a file it read, a diff. */
-function seed(controller: FakeController, agentId: AgentId, text = "bump b"): void {
+function seed(controller: FakeController, sessionId: SessionId, text = "bump b"): void {
   const { store } = controller
-  store.applyEvent(agentId, { kind: "user_message", messageId: "m1", text })
-  store.applyEvent(agentId, {
+  store.applyEvent(sessionId, { kind: "user_message", messageId: "m1", text })
+  store.applyEvent(sessionId, {
     kind: "tool_call",
     call: { toolCallId: "call-read", kind: "read", title: "Read config", status: "completed", locations: ["cfg.json"] },
   })
-  store.applyEvent(agentId, {
+  store.applyEvent(sessionId, {
     kind: "tool_call",
     call: {
       toolCallId: "call-edit",
@@ -175,7 +175,14 @@ describe("HandoffPreview visibility", () => {
   it("does not open when the agent that would receive the bundle never came up", async () => {
     const runtimes: AgentRuntimeState[] = [
       readyRuntimes()[0]!,
-      { agentId: "codex", displayName: "Codex", ready: false, error: "codex-acp: command not found" },
+      {
+        sessionId: "codex",
+        providerKind: "codex",
+        displayName: "Codex",
+        title: "Codex",
+        ready: false,
+        error: "codex-acp: command not found",
+      },
     ]
     const controller = createFakeController({ runtimes })
     seed(controller, "claude-code")
@@ -227,7 +234,7 @@ describe("HandoffPreview visibility", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await destroyMounted(setup.renderer)
   })
@@ -385,9 +392,9 @@ describe("HandoffPreview outcome", () => {
     })
 
     expect(controller.calls.sendPrompt).toHaveLength(1)
-    expect(controller.calls.sendPrompt[0]!.agentId).toBe("codex")
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
 
     // The preview is gone and the focused pane has retitled to the receiving agent.
     const closed = await setup.waitForFrame((f) => !f.includes(HANDOFF_HINT))
@@ -409,7 +416,7 @@ describe("HandoffPreview outcome", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(closed.split("\n")[0]).toContain("Claude Code")
 
     await destroyMounted(setup.renderer)
@@ -468,8 +475,8 @@ describe("HandoffPreview outcome", () => {
       setup.mockInput.pressEnter()
     })
 
-    expect(controller.calls.sendPrompt[0]!.agentId).toBe("claude-code")
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await destroyMounted(setup.renderer)
   })
@@ -490,7 +497,7 @@ describe("HandoffPreview modality", () => {
     // `toEqual([])` would also accept `[undefined]`, which is exactly the call the focus
     // chord makes. Assert on the length so a leaked chord cannot hide here.
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it lands,
@@ -513,7 +520,7 @@ describe("HandoffPreview modality", () => {
 
     await actAsync(() => {
       controller.store.openApproval({
-        agentId: "claude-code",
+        sessionId: "claude-code",
         request: {
           sessionId: "s",
           toolCall: { toolCallId: "call-1", kind: "edit", title: "Bump b" },
@@ -595,7 +602,7 @@ describe("integration - hand-off across two mock agents", () => {
       })
     })
     const codex = connectionToMockAgent(CODEX)
-    const connections: Record<AgentId, AgentConnection> = { "claude-code": claude.connection, codex: codex.connection }
+    const connections: Record<ProviderKind, AgentConnection> = { "claude-code": claude.connection, codex: codex.connection }
 
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -647,8 +654,8 @@ describe("integration - hand-off across two mock agents", () => {
 
     // The source agent was prompted once, by the user, and never by the hand-off.
     expect(claude.agent.prompts).toHaveLength(1)
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
-    expect(controller.store.getState().sessions.codex.turns).toHaveLength(1)
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().sessions.codex!.turns).toHaveLength(1)
 
     await destroyMounted(setup.renderer)
     await controller.dispose()

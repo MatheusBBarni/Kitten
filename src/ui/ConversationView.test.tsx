@@ -6,7 +6,7 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import type { AgentId, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
+import type { ProviderKind, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { ConversationView, EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
@@ -37,17 +37,17 @@ async function renderConversation(controller: FakeController, width = WIDTH, hei
 }
 
 /** Push a user turn onto an agent's transcript. */
-function userMessage(controller: FakeController, agentId: AgentId, messageId: string, text: string): void {
+function userMessage(controller: FakeController, agentId: ProviderKind, messageId: string, text: string): void {
   controller.store.applyEvent(agentId, { kind: "user_message", messageId, text })
 }
 
 /** Append a streamed delta to an agent's message, exactly as the coalescer would. */
-function agentDelta(controller: FakeController, agentId: AgentId, messageId: string, textDelta: string): void {
+function agentDelta(controller: FakeController, agentId: ProviderKind, messageId: string, textDelta: string): void {
   controller.store.applyEvent(agentId, { kind: "agent_message", messageId, textDelta })
 }
 
 /** Upsert a tool call by id. */
-function toolCall(controller: FakeController, agentId: AgentId, call: ToolCallUpdate): void {
+function toolCall(controller: FakeController, agentId: ProviderKind, call: ToolCallUpdate): void {
   controller.store.applyEvent(agentId, { kind: "tool_call", call })
 }
 

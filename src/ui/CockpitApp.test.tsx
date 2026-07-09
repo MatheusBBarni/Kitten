@@ -68,7 +68,7 @@ describe("CockpitApp layout", () => {
 
   it("explains a not-ready focused agent instead of an empty transcript", async () => {
     const runtimes: AgentRuntimeState[] = [
-      { agentId: "claude-code", displayName: "Claude Code", ready: false, error: "claude-agent-acp: command not found" },
+      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", ready: false, error: "claude-agent-acp: command not found" },
       readyRuntimes()[1]!,
     ]
     const controller = createFakeController({ runtimes })

@@ -5,14 +5,14 @@ import { useMemo } from "react"
 
 import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import { selectAgentStatus } from "../store/selectors.ts"
+import { selectSessionStatus } from "../store/selectors.ts"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 
 /** Counts how many times each agent's status subscriber actually re-rendered. */
 const renders: Record<string, number> = {}
 
 function StatusProbe({ agentId }: { agentId: "claude-code" | "codex" }) {
-  const selector = useMemo(() => selectAgentStatus(agentId), [agentId])
+  const selector = useMemo(() => selectSessionStatus(agentId), [agentId])
   const status = useAppSelector(selector)
   renders[agentId] = (renders[agentId] ?? 0) + 1
   return <text>{`${agentId}=${status}`}</text>

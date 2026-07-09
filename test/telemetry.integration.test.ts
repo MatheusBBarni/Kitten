@@ -8,7 +8,7 @@ import { createControllerActions } from "../src/app/actions.ts"
 import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
 import { createHandoffEdits, createHandoffFlow } from "../src/app/handoff.ts"
 import { REEXPLANATION_CHAR_THRESHOLD } from "../src/core/telemetryHeuristics.ts"
-import type { AgentId } from "../src/core/types.ts"
+import type { SessionId } from "../src/core/types.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
 import { createJsonlFileSink, createTelemetryRecorder, recordReadiness, type TelemetryRecord } from "../src/telemetry/recorder.ts"
 import { readyRuntimes } from "./fakeController.ts"
@@ -27,7 +27,7 @@ const CONNECTION_STUB = {
 function realController(store: AppStore, runtimes: AgentRuntimeState[]): SessionController {
   const actions = createControllerActions({
     store,
-    getSession: (agentId) => ({ agentId, sessionId: `s-${agentId}`, connection: CONNECTION_STUB }),
+    getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: CONNECTION_STUB }),
     resolvePermission: () => {},
     newMessageId: () => "fixed-id",
   })
@@ -35,8 +35,8 @@ function realController(store: AppStore, runtimes: AgentRuntimeState[]): Session
     store,
     actions,
     runtimes: () => runtimes,
-    runtime: (agentId) => runtimes.find((runtime) => runtime.agentId === agentId),
-    isReady: (agentId) => runtimes.find((runtime) => runtime.agentId === agentId)?.ready === true,
+    runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
+    isReady: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId)?.ready === true,
     dispose: async () => {},
   }
 }
@@ -68,7 +68,7 @@ describe("telemetry over a scripted hand-off session", () => {
       store.applyEvent("claude-code", { kind: "agent_message", messageId: "a1", textDelta: "On it, editing app.ts." })
 
       // Boot: both agents came up.
-      recordReadiness(recorder, runtimes.map((runtime): { agentId: AgentId; ready: boolean } => ({ agentId: runtime.agentId, ready: runtime.ready })))
+      recordReadiness(recorder, runtimes.map((runtime): { sessionId: SessionId; ready: boolean } => ({ sessionId: runtime.sessionId, ready: runtime.ready })))
       recorder.watch(store)
 
       // Hand off to Codex, editing the summary in the preview before sending.

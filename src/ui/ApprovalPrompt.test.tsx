@@ -6,7 +6,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { createAgentConnection, type AgentConnection, type PermissionRequest } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import { createSessionController } from "../app/controller.ts"
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
+import type { AgentConfig, AppConfig, ProviderKind, SessionId } from "../core/types.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -65,9 +65,9 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
 }
 
 /** Park `request` in the approval slot, exactly as the controller does on `requestPermission`. */
-async function openApproval(controller: FakeController, agentId: AgentId, request: PermissionRequest): Promise<void> {
+async function openApproval(controller: FakeController, sessionId: SessionId, request: PermissionRequest): Promise<void> {
   await actAsync(() => {
-    controller.store.openApproval({ agentId, request })
+    controller.store.openApproval({ sessionId, request })
   })
 }
 
@@ -122,7 +122,7 @@ describe("ApprovalPrompt visibility", () => {
     const frame = await waitForFrame((f) => f.includes(approvalTitleFor("Codex")))
 
     expect(frame).not.toContain(approvalTitleFor("Claude Code"))
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await destroyMounted(renderer)
   })
@@ -357,7 +357,7 @@ describe("ApprovalPrompt modality", () => {
     // `toEqual([])` would also accept `[undefined]`, which is exactly the call the
     // focus chord makes. Assert on the length so a leaked chord cannot hide here.
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(await waitForFrame((f) => f.includes(APPROVAL_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it
@@ -413,7 +413,7 @@ describe("integration - a mock agent's permission request", () => {
       await ctx.requestPermission({ toolCallId: "call-1", kind: "edit", title: "Bump b" }, [ALLOW, REJECT])
     })
     const codex = connectionToMockAgent(CODEX)
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -439,7 +439,7 @@ describe("integration - a mock agent's permission request", () => {
     const opened = await setup.waitForFrame((frame) => frame.includes(approvalTitleFor("Claude Code")))
     expect(opened).toContain("Bump b")
     expect(opened).toContain(ALLOW.name)
-    expect(controller.store.getState().sessions["claude-code"].status).toBe("awaiting_approval")
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("awaiting_approval")
 
     // The user rejects, by number.
     await actAsync(async () => {

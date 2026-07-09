@@ -30,7 +30,7 @@ import { editedCharCount } from "../core/telemetryHeuristics.ts"
 import type { HandoffBundle, PendingDiff } from "../core/types.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
-import { nextAgentId } from "./actions.ts"
+import { nextSessionId } from "./actions.ts"
 import type { SessionController } from "./controller.ts"
 
 /**
@@ -169,16 +169,22 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       // preview would strand the agent waiting on it.
       if (selectHasOpenOverlay(state)) return false
 
-      const sourceAgentId = state.focusedAgentId
-      const targetAgentId = nextAgentId(sourceAgentId)
+      const sourceSessionId = state.focusedSessionId
+      const targetSessionId = nextSessionId(state.order, sourceSessionId)
       // No session on the far side means no one to hand to.
-      if (!controller.isReady(targetAgentId)) return false
+      if (targetSessionId === sourceSessionId || !controller.isReady(targetSessionId)) return false
 
-      const session = state.sessions[sourceAgentId]
-      if (session.turns.length === 0) return false
+      const session = state.sessions[sourceSessionId]
+      if (!session || session.turns.length === 0) return false
 
+      // The bundle header names the target provider kind, unchanged by the identity split.
+      const targetProviderKind = state.sessions[targetSessionId]!.providerKind
       // `assemble` redacts as it builds; the bundle is safe to display as it arrives.
-      store.openHandoffPreview({ sourceAgentId, targetAgentId, bundle: assembler.assemble(session, targetAgentId) })
+      store.openHandoffPreview({
+        sourceSessionId,
+        targetSessionId,
+        bundle: assembler.assemble(session, targetProviderKind),
+      })
       recorder?.handoffInvoked()
       return true
     },
@@ -194,16 +200,16 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
 
       store.closeHandoffPreview()
       // Address the target explicitly: focus has not moved yet, and it must not have -
-      // `sendPrompt` writes the user's turn into whichever agent it is given.
-      const sent = actions.sendPrompt(blocks, overlay.targetAgentId)
+      // `sendPrompt` writes the user's turn into whichever session it is given.
+      const sent = actions.sendPrompt(blocks, overlay.targetSessionId)
       // Record after the send so the bundle's own user turn is already applied: only a
       // *later* developer message can then trip the re-explanation heuristic. The edit
       // volume is the change the developer made to the summary in the preview.
       recorder?.handoffSent({
-        targetAgentId: overlay.targetAgentId,
+        targetSessionId: overlay.targetSessionId,
         editChars: editedCharCount(overlay.bundle.summary, edits.summary),
       })
-      actions.switchFocus(overlay.targetAgentId)
+      actions.switchFocus(overlay.targetSessionId)
       return sent
     },
 

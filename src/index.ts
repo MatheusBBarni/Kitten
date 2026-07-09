@@ -88,6 +88,8 @@ export interface CockpitSessionDeps {
  */
 export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promise<CockpitSession> {
   const config = await (deps.loadConfig ?? loadAppConfig)()
+  // Seed the store with the default fleet (one session per provider); the controller
+  // binds each session's ACP id onto it once the handshake completes.
   const store = createAppStore()
   const recorder = (deps.createRecorder ?? ((enabled) => createTelemetryRecorder({ enabled })))(config.telemetryEnabled)
   const controller = await (deps.buildController ?? createSessionController)({ config, store })
@@ -103,8 +105,8 @@ export function exitProcess(): void {
 
 /** Reduce a live runtime standing to the neutral setup state the first-run flow reads. */
 export function runtimeSetup(state: AgentRuntimeState): AgentSetupState {
-  if (state.ready) return makeSetupState(state.agentId, state.displayName, true)
-  return makeSetupState(state.agentId, state.displayName, false, state.error)
+  if (state.ready) return makeSetupState(state.providerKind, state.displayName, true)
+  return makeSetupState(state.providerKind, state.displayName, false, state.error)
 }
 
 /** Print first-run guidance to stderr; the terminal must already be restored. */

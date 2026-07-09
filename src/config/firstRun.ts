@@ -21,7 +21,7 @@
 import { existsSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 
-import type { AgentId } from "../core/types.ts"
+import type { ProviderKind } from "../core/types.ts"
 import type { AgentReadiness } from "./readiness.ts"
 
 /** The one-line reason Kitten refuses to run outside a repository. */
@@ -34,7 +34,7 @@ export const REPO_REQUIREMENT_MESSAGE =
  * (at boot pre-check) and a live runtime state (post-boot) map onto this shape.
  */
 export interface AgentSetupState {
-  agentId: AgentId
+  agentId: ProviderKind
   displayName: string
   ready: boolean
   /** The setup gap to fix, present only when the agent is not ready. */
@@ -65,7 +65,7 @@ export interface FirstRunReport {
  * two boot paths that produce it (a readiness verdict pre-boot, a live runtime state
  * post-boot) cannot drift. `gap` is carried only when the agent is not ready.
  */
-export function makeSetupState(agentId: AgentId, displayName: string, ready: boolean, gap?: string): AgentSetupState {
+export function makeSetupState(agentId: ProviderKind, displayName: string, ready: boolean, gap?: string): AgentSetupState {
   if (ready) return { agentId, displayName, ready: true }
   return { agentId, displayName, ready: false, gap }
 }

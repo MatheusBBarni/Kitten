@@ -25,7 +25,7 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
 
-import type { AgentConfig, AgentId, AgentStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
+import type { AgentConfig, ProviderKind, AgentStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
 import { translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
 import { spawnAgentTransport, type AgentTransport, type TransportFactory } from "./transport.ts"
 
@@ -76,7 +76,7 @@ type Unsubscribe = () => void
 
 /** The adapter boundary the rest of the app depends on (TechSpec "Core Interfaces"). */
 export interface AgentConnection {
-  readonly id: AgentId
+  readonly id: ProviderKind
   connect(): Promise<ReadyState>
   newSession(cwd: string): Promise<string>
   prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult>
@@ -136,7 +136,7 @@ interface BufferedMessage {
 }
 
 class AgentConnectionImpl implements AgentConnection {
-  readonly id: AgentId
+  readonly id: ProviderKind
 
   private readonly config: AgentConfig
   private readonly transportFactory: TransportFactory

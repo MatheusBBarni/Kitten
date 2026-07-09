@@ -3,14 +3,14 @@ import { describe, expect, it } from "bun:test"
 import type { DomainSessionEvent, HandoffBundle } from "../core/types.ts"
 import { createAppStore } from "./appStore.ts"
 import {
-  selectAgentPendingDiffs,
-  selectAgentPlan,
-  selectAgentReferencedFiles,
-  selectAgentSession,
-  selectAgentStatus,
-  selectAgentTurns,
+  selectSessionPendingDiffs,
+  selectSessionPlan,
+  selectSessionReferencedFiles,
+  selectSessionState,
+  selectSessionStatus,
+  selectSessionTurns,
   selectApprovalOverlay,
-  selectFocusedAgentId,
+  selectFocusedSessionId,
   selectFocusedSession,
   selectHandoffPreview,
   selectHasOpenOverlay,
@@ -48,21 +48,26 @@ const EDIT_CALL: DomainSessionEvent = {
 describe("focus selectors", () => {
   it("project the focused agent and per-agent focus flags", () => {
     const store = createAppStore()
-    expect(selectFocusedAgentId(store.getState())).toBe("claude-code")
+    expect(selectFocusedSessionId(store.getState())).toBe("claude-code")
     expect(selectIsFocused("claude-code")(store.getState())).toBe(true)
     expect(selectIsFocused("codex")(store.getState())).toBe(false)
 
     store.setFocus("codex")
-    expect(selectFocusedAgentId(store.getState())).toBe("codex")
+    expect(selectFocusedSessionId(store.getState())).toBe("codex")
     expect(selectIsFocused("codex")(store.getState())).toBe(true)
   })
 
-  it("follows the focused agent's session", () => {
-    const store = createAppStore({ sessionIds: { codex: "session-codex" } })
-    expect(selectFocusedSession(store.getState()).agentId).toBe("claude-code")
+  it("follows the focused session", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "claude-code", providerKind: "claude-code", title: "Claude Code", cwd: "/w" },
+        { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w", acpSessionId: "session-codex" },
+      ],
+    })
+    expect(selectFocusedSession(store.getState()).providerKind).toBe("claude-code")
 
     store.setFocus("codex")
-    expect(selectFocusedSession(store.getState()).sessionId).toBe("session-codex")
+    expect(selectFocusedSession(store.getState()).acpSessionId).toBe("session-codex")
   })
 })
 
@@ -75,28 +80,28 @@ describe("per-agent session selectors", () => {
     store.applyEvent("codex", EDIT_CALL)
     const state = store.getState()
 
-    expect(selectAgentSession("codex")(state)).toBe(state.sessions.codex)
-    expect(selectAgentStatus("codex")(state)).toBe("working")
-    expect(selectAgentTurns("codex")(state)).toHaveLength(2)
-    expect(selectAgentPlan("codex")(state)).toEqual([{ content: "Step one" }])
-    expect(selectAgentPendingDiffs("codex")(state)).toEqual([
+    expect(selectSessionState("codex")(state)).toBe(state.sessions.codex!)
+    expect(selectSessionStatus("codex")(state)).toBe("working")
+    expect(selectSessionTurns("codex")(state)).toHaveLength(2)
+    expect(selectSessionPlan("codex")(state)).toEqual([{ content: "Step one" }])
+    expect(selectSessionPendingDiffs("codex")(state)).toEqual([
       { toolCallId: "c1", path: "src/parser.ts", unified: "@@ -1 +1 @@" },
     ])
-    expect(selectAgentReferencedFiles("codex")(state)).toEqual(new Map([["src/parser.ts", "edited"]]))
+    expect(selectSessionReferencedFiles("codex")(state)).toEqual(new Map([["src/parser.ts", "edited"]]))
   })
 
   it("keeps an untouched agent's slices referentially stable", () => {
     const store = createAppStore()
     const before = store.getState()
-    const claudeTurns = selectAgentTurns("claude-code")(before)
+    const claudeTurns = selectSessionTurns("claude-code")(before)
 
     store.applyEvent("codex", { kind: "agent_message", messageId: "m1", textDelta: "hi" })
     store.setFocus("codex")
 
     const after = store.getState()
-    expect(selectAgentSession("claude-code")(after)).toBe(before.sessions["claude-code"])
-    expect(selectAgentTurns("claude-code")(after)).toBe(claudeTurns)
-    expect(selectAgentStatus("claude-code")(after)).toBe("idle")
+    expect(selectSessionState("claude-code")(after)).toBe(before.sessions["claude-code"]!)
+    expect(selectSessionTurns("claude-code")(after)).toBe(claudeTurns)
+    expect(selectSessionStatus("claude-code")(after)).toBe("idle")
   })
 
   it("keeps a streaming agent's status and plan stable while its transcript grows", () => {
@@ -107,9 +112,9 @@ describe("per-agent session selectors", () => {
     store.applyEvent("claude-code", { kind: "agent_message", messageId: "m1", textDelta: "tok" })
 
     const after = store.getState()
-    expect(selectAgentPlan("claude-code")(after)).toBe(selectAgentPlan("claude-code")(before))
-    expect(selectAgentStatus("claude-code")(after)).toBe(selectAgentStatus("claude-code")(before))
-    expect(selectAgentTurns("claude-code")(after)).not.toBe(selectAgentTurns("claude-code")(before))
+    expect(selectSessionPlan("claude-code")(after)).toBe(selectSessionPlan("claude-code")(before))
+    expect(selectSessionStatus("claude-code")(after)).toBe(selectSessionStatus("claude-code")(before))
+    expect(selectSessionTurns("claude-code")(after)).not.toBe(selectSessionTurns("claude-code")(before))
   })
 })
 
@@ -125,12 +130,12 @@ describe("overlay selectors", () => {
   it("report an open approval overlay", () => {
     const store = createAppStore()
     store.openApproval({
-      agentId: "claude-code",
+      sessionId: "claude-code",
       request: { sessionId: "s1", toolCall: { toolCallId: "c1" }, options: [] },
     })
     const state = store.getState()
 
-    expect(selectApprovalOverlay(state)?.agentId).toBe("claude-code")
+    expect(selectApprovalOverlay(state)?.sessionId).toBe("claude-code")
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(true)
     expect(selectIsApprovalOpen(state)).toBe(true)
@@ -138,7 +143,7 @@ describe("overlay selectors", () => {
 
   it("keep the approval flag false for a hand-off preview, which is not modal", () => {
     const store = createAppStore()
-    store.openHandoffPreview({ sourceAgentId: "claude-code", targetAgentId: "codex", bundle: HANDOFF_BUNDLE })
+    store.openHandoffPreview({ sourceSessionId: "claude-code", targetSessionId: "codex", bundle: HANDOFF_BUNDLE })
 
     expect(selectHasOpenOverlay(store.getState())).toBe(true)
     expect(selectIsApprovalOpen(store.getState())).toBe(false)
@@ -146,7 +151,7 @@ describe("overlay selectors", () => {
 
   it("report an open hand-off preview", () => {
     const store = createAppStore()
-    store.openHandoffPreview({ sourceAgentId: "claude-code", targetAgentId: "codex", bundle: HANDOFF_BUNDLE })
+    store.openHandoffPreview({ sourceSessionId: "claude-code", targetSessionId: "codex", bundle: HANDOFF_BUNDLE })
     const state = store.getState()
 
     expect(selectHandoffPreview(state)?.bundle).toBe(HANDOFF_BUNDLE)

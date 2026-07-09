@@ -12,9 +12,9 @@
  */
 
 import type {
-  AgentId,
   DomainSessionEvent,
   PendingDiff,
+  SessionSeed,
   SessionState,
   ToolCallRecord,
   ToolCallTurn,
@@ -22,11 +22,21 @@ import type {
   Turn,
 } from "./types.ts"
 
-/** Create the empty starting state for one agent's session. */
-export function createSessionState(agentId: AgentId, sessionId: string): SessionState {
+/**
+ * Create the empty starting state for one session from its {@link SessionSeed}.
+ *
+ * Identity fields (`id`, `providerKind`, `title`, `cwd`, `task`) come from the seed
+ * and survive a later `startSession`; the transcript, status, and derived fields
+ * start empty. `acpSessionId` defaults to `""` until the ACP handshake binds one.
+ */
+export function createSessionState(seed: SessionSeed): SessionState {
   return {
-    agentId,
-    sessionId,
+    id: seed.id,
+    providerKind: seed.providerKind,
+    title: seed.title,
+    cwd: seed.cwd,
+    task: seed.task,
+    acpSessionId: seed.acpSessionId ?? "",
     turns: [],
     status: "idle",
     referencedFiles: new Map(),

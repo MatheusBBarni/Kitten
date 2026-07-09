@@ -9,7 +9,7 @@ import type { DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
  * immutable state. No ACP SDK is imported anywhere in `src/core`.
  */
 
-const initial = (): SessionState => createSessionState("claude-code", "session-1")
+const initial = (): SessionState => createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" })
 
 /** Fold a sequence of events over a fresh session state. */
 const fold = (events: DomainSessionEvent[], start: SessionState = initial()): SessionState =>
@@ -20,11 +20,15 @@ const toolTurns = (state: SessionState): ToolCallTurn[] =>
   state.turns.filter((t): t is ToolCallTurn => t.kind === "tool_call")
 
 describe("createSessionState", () => {
-  it("starts empty and idle for the given agent and session", () => {
-    const state = createSessionState("codex", "s-42")
+  it("starts empty and idle for the given session seed", () => {
+    const state = createSessionState({ id: "codex", providerKind: "codex", title: "codex", cwd: "/w", acpSessionId: "s-42" })
     expect(state).toEqual({
-      agentId: "codex",
-      sessionId: "s-42",
+      id: "codex",
+      providerKind: "codex",
+      title: "codex",
+      cwd: "/w",
+      task: undefined,
+      acpSessionId: "s-42",
       turns: [],
       status: "idle",
       referencedFiles: new Map(),

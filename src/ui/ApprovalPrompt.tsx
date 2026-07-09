@@ -71,7 +71,7 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
-  const { agentId, request } = overlay
+  const { sessionId, request } = overlay
   const { options, toolCall } = request
 
   const [selected, setSelected] = useState(0)
@@ -144,7 +144,7 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
   )
   useKeyboard(onKey)
 
-  const displayName = controller.runtime(agentId)?.displayName ?? agentId
+  const displayName = controller.runtime(sessionId)?.displayName ?? sessionId
   const kind = toolCall.kind ?? "other"
 
   return (

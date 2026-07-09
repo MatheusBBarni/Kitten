@@ -24,24 +24,33 @@
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
-import type { AgentId, DomainSessionEvent, HandoffBundle, SessionState } from "../core/types.ts"
+import {
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_KINDS,
+  type DomainSessionEvent,
+  type HandoffBundle,
+  type ProviderKind,
+  type SessionId,
+  type SessionSeed,
+  type SessionState,
+} from "../core/types.ts"
 
-/** Every agent Kitten drives, in cockpit display order (ADR-001). */
-export const AGENT_IDS: readonly AgentId[] = ["claude-code", "codex"]
+/** Every provider kind Kitten seeds a default session for, in cockpit order (ADR-001). */
+export const AGENT_IDS: readonly ProviderKind[] = PROVIDER_KINDS
 
 /** Releases a subscription. Calling it more than once is a no-op. */
 export type Unsubscribe = () => void
 
-/** The approval overlay slot: one agent's pending permission request. */
+/** The approval overlay slot: one session's pending permission request. */
 export interface ApprovalOverlay {
-  agentId: AgentId
+  sessionId: SessionId
   request: PermissionRequest
 }
 
 /** The hand-off preview slot: the bundle awaiting the user's curation and confirm. */
 export interface HandoffPreviewOverlay {
-  sourceAgentId: AgentId
-  targetAgentId: AgentId
+  sourceSessionId: SessionId
+  targetSessionId: SessionId
   bundle: HandoffBundle
 }
 
@@ -57,14 +66,19 @@ export interface OverlayState {
 /**
  * The whole application state.
  *
- * Per-agent status is not stored beside the session: it lives in
- * `sessions[agentId].status`, written by the reducer from `status` domain events.
- * Keeping one copy means the status strip and the transcript can never disagree.
- * Read it with the `selectAgentStatus` selector.
+ * Sessions are keyed by their Kitten {@link SessionId}, with an explicit `order`
+ * array fixing display order (ADR-004): a plain object plus an order array, not a
+ * `Map`, so the store keeps its immutable structural-sharing and `Object.is`
+ * selector-equality invariants. Two sessions may share a provider kind; each has a
+ * distinct id. Per-session status lives in `sessions[id].status`, written by the
+ * reducer, so the status strip and the transcript can never disagree. Read it with
+ * the `selectSessionStatus` selector.
  */
 export interface AppState {
-  sessions: Record<AgentId, SessionState>
-  focusedAgentId: AgentId
+  sessions: Record<SessionId, SessionState>
+  /** The session ids in stable display order. */
+  order: SessionId[]
+  focusedSessionId: SessionId
   overlays: OverlayState
 }
 
@@ -88,12 +102,12 @@ export interface AppStore {
     isEqual?: (a: T, b: T) => boolean,
   ): Unsubscribe
 
-  /** Apply one already-coalesced domain event to that agent's session slice. */
-  applyEvent(agentId: AgentId, event: DomainSessionEvent): void
-  /** Bind an agent to a (new) ACP session, resetting its transcript and status. */
-  startSession(agentId: AgentId, sessionId: string): void
-  /** Move keyboard focus to an agent. Focusing the focused agent is a no-op. */
-  setFocus(agentId: AgentId): void
+  /** Apply one already-coalesced domain event to that session's slice. */
+  applyEvent(sessionId: SessionId, event: DomainSessionEvent): void
+  /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
+  startSession(sessionId: SessionId, acpSessionId: string): void
+  /** Move keyboard focus to a session. Focusing the focused session is a no-op. */
+  setFocus(sessionId: SessionId): void
 
   /** Open the approval overlay for a pending permission request. */
   openApproval(overlay: ApprovalOverlay): void
@@ -105,15 +119,18 @@ export interface AppStore {
   closeHandoffPreview(): void
 }
 
-/** Construction options. Sessions start empty and idle unless a `sessionId` is given. */
+/** Construction options. Defaults to one seeded session per provider kind. */
 export interface AppStoreOptions {
-  /** Pre-bound ACP session ids per agent; defaults to `""` until `startSession`. */
-  sessionIds?: Partial<Record<AgentId, string>>
-  /** Which agent holds focus at startup. Defaults to the first agent. */
-  focusedAgentId?: AgentId
+  /**
+   * The sessions to seed, in display order. Defaults to one per provider kind in the
+   * process working directory (today's two-session boot).
+   */
+  seeds?: SessionSeed[]
+  /** Which session holds focus at startup. Defaults to the first seeded session. */
+  focusedSessionId?: SessionId
 }
 
-/** Create an {@link AppStore} holding one empty session slice per agent. */
+/** Create an {@link AppStore} holding one empty session slice per seed. */
 export function createAppStore(options: AppStoreOptions = {}): AppStore {
   return new AppStoreImpl(options)
 }
@@ -123,9 +140,17 @@ class AppStoreImpl implements AppStore {
   private readonly listeners = new Set<(state: AppState, previous: AppState) => void>()
 
   constructor(options: AppStoreOptions) {
+    const seeds = options.seeds ?? defaultSessionSeeds()
+    const sessions = {} as Record<SessionId, SessionState>
+    const order: SessionId[] = []
+    for (const seed of seeds) {
+      sessions[seed.id] = createSessionState(seed)
+      order.push(seed.id)
+    }
     this.state = {
-      sessions: initialSessions(options.sessionIds),
-      focusedAgentId: options.focusedAgentId ?? AGENT_IDS[0]!,
+      sessions,
+      order,
+      focusedSessionId: options.focusedSessionId ?? order[0]!,
       overlays: { approval: null, handoffPreview: null },
     }
   }
@@ -156,21 +181,34 @@ class AppStoreImpl implements AppStore {
     })
   }
 
-  applyEvent(agentId: AgentId, event: DomainSessionEvent): void {
-    const session = this.state.sessions[agentId]
+  applyEvent(sessionId: SessionId, event: DomainSessionEvent): void {
+    const session = this.state.sessions[sessionId]
+    if (!session) return
     const next = sessionReducer(session, event)
     if (next === session) return
-    this.commit({ ...this.state, sessions: { ...this.state.sessions, [agentId]: next } })
+    this.commit({ ...this.state, sessions: { ...this.state.sessions, [sessionId]: next } })
   }
 
-  startSession(agentId: AgentId, sessionId: string): void {
-    const fresh = createSessionState(agentId, sessionId)
-    this.commit({ ...this.state, sessions: { ...this.state.sessions, [agentId]: fresh } })
+  startSession(sessionId: SessionId, acpSessionId: string): void {
+    const existing = this.state.sessions[sessionId]
+    if (!existing) return
+    // Reset the transcript and bind the ACP id, but keep the session's identity
+    // (provider kind, title, cwd, task) fixed at seed time.
+    const fresh = createSessionState({
+      id: existing.id,
+      providerKind: existing.providerKind,
+      title: existing.title,
+      cwd: existing.cwd,
+      task: existing.task,
+      acpSessionId,
+    })
+    this.commit({ ...this.state, sessions: { ...this.state.sessions, [sessionId]: fresh } })
   }
 
-  setFocus(agentId: AgentId): void {
-    if (this.state.focusedAgentId === agentId) return
-    this.commit({ ...this.state, focusedAgentId: agentId })
+  setFocus(sessionId: SessionId): void {
+    if (this.state.focusedSessionId === sessionId) return
+    if (!this.state.sessions[sessionId]) return
+    this.commit({ ...this.state, focusedSessionId: sessionId })
   }
 
   openApproval(overlay: ApprovalOverlay): void {
@@ -211,11 +249,18 @@ class AppStoreImpl implements AppStore {
   }
 }
 
-/** One empty, idle session slice per agent, optionally pre-bound to a session id. */
-function initialSessions(sessionIds: Partial<Record<AgentId, string>> = {}): Record<AgentId, SessionState> {
-  const sessions = {} as Record<AgentId, SessionState>
-  for (const agentId of AGENT_IDS) {
-    sessions[agentId] = createSessionState(agentId, sessionIds[agentId] ?? "")
-  }
-  return sessions
+/**
+ * The default seed fleet: one session per provider kind in the process working
+ * directory, titled by the provider display name. Each session's {@link SessionId}
+ * is seeded equal to its provider kind, which is unambiguous while there is exactly
+ * one session per provider; the config-driven sessions list (task_02) assigns
+ * distinct ids for repeated providers without any change here.
+ */
+export function defaultSessionSeeds(cwd: string = process.cwd()): SessionSeed[] {
+  return AGENT_IDS.map((providerKind) => ({
+    id: providerKind,
+    providerKind,
+    title: PROVIDER_DISPLAY_NAMES[providerKind],
+    cwd,
+  }))
 }

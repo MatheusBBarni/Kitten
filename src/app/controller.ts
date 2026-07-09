@@ -20,28 +20,28 @@
 
 import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
+import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
 import { createAppStore, type AppStore, type Unsubscribe } from "../store/appStore.ts"
 import { createControllerActions, type AgentSession, type ControllerActions } from "./actions.ts"
 
-/** One agent's run-time standing, as the status strip and prompt gate read it. */
+/** One session's run-time standing, as the status strip and prompt gate read it. */
 export type AgentRuntimeState =
-  | { agentId: AgentId; displayName: string; ready: true; sessionId: string }
-  | { agentId: AgentId; displayName: string; ready: false; error: string }
+  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; ready: true; acpSessionId: string }
+  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; ready: false; error: string }
 
 /** Injectable seams so the controller can be driven against mock connections. */
 export interface SessionControllerOptions {
   config: AppConfig
-  /** The working directory each agent session is opened against. Defaults to `process.cwd()`. */
+  /** The working directory each session is opened against. Defaults to `process.cwd()`. */
   cwd?: string
-  /** The store to drive. Defaults to a fresh one holding an empty slice per agent. */
+  /** The store to drive. Defaults to one seeded from the config's providers. */
   store?: AppStore
-  /** How to build a connection for an agent. Defaults to a real spawning connection. */
+  /** How to build a connection for a provider. Defaults to a real spawning connection. */
   createConnection?: (config: AgentConfig) => AgentConnection
   /** Ids for recorded user turns. Defaults to a random UUID. */
   newMessageId?: () => string
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
-  onError?: (agentId: AgentId, error: unknown) => void
+  onError?: (sessionId: SessionId, error: unknown) => void
 }
 
 /** The orchestrator the UI is handed at boot. */
@@ -50,29 +50,30 @@ export interface SessionController {
   readonly store: AppStore
   /** The only surface through which the UI drives the agents. */
   readonly actions: ControllerActions
-  /** Every agent's standing, in config order. */
+  /** Every session's standing, in display order. */
   runtimes(): AgentRuntimeState[]
-  /** One agent's standing, or `undefined` when the config does not name it. */
-  runtime(agentId: AgentId): AgentRuntimeState | undefined
-  /** Whether the agent completed its handshake and holds a live session. */
-  isReady(agentId: AgentId): boolean
+  /** One session's standing, or `undefined` when no session has that id. */
+  runtime(sessionId: SessionId): AgentRuntimeState | undefined
+  /** Whether the session completed its handshake and holds a live ACP session. */
+  isReady(sessionId: SessionId): boolean
   /** Cancel pending approvals and tear every connection down. Never throws. */
   dispose(): Promise<void>
 }
 
 /** A permission request waiting on the user, and the promise the agent is blocked on. */
 interface PendingPermission {
-  agentId: AgentId
+  sessionId: SessionId
   request: PermissionRequest
   resolve: (outcome: PermissionOutcome) => void
 }
 
-/** Everything the controller owns for one agent. */
+/** Everything the controller owns for one session. */
 interface AgentRuntime {
+  seed: SessionSeed
   config: AgentConfig
   state: AgentRuntimeState
   connection: AgentConnection | null
-  sessionId: string | null
+  acpSessionId: string | null
   unsubscribe: Unsubscribe | null
 }
 
@@ -82,12 +83,21 @@ interface AgentRuntime {
  * marked not-ready - never rejects, because a broken agent is a state, not a crash.
  */
 export async function createSessionController(options: SessionControllerOptions): Promise<SessionController> {
-  const store = options.store ?? createAppStore()
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
   const onError = options.onError ?? (() => {})
 
-  const runtimes = new Map<AgentId, AgentRuntime>()
+  // One session per configured provider, in config order. The Kitten session id is
+  // seeded equal to the provider kind while there is one session per provider; the
+  // config-driven sessions list (task_02) assigns distinct ids without changing this.
+  const plan: { seed: SessionSeed; config: AgentConfig }[] = options.config.agents.map((config) => ({
+    seed: { id: config.id, providerKind: config.id, title: config.displayName, cwd },
+    config,
+  }))
+
+  const store = options.store ?? createAppStore({ seeds: plan.map((entry) => entry.seed) })
+
+  const runtimes = new Map<SessionId, AgentRuntime>()
   const pending: PendingPermission[] = []
   let disposed = false
 
@@ -99,11 +109,11 @@ export async function createSessionController(options: SessionControllerOptions)
    * surface in arrival order. The agent stays blocked on this promise meanwhile,
    * which is exactly the back-pressure ACP expects.
    */
-  function enqueuePermission(agentId: AgentId, request: PermissionRequest): Promise<PermissionOutcome> {
+  function enqueuePermission(sessionId: SessionId, request: PermissionRequest): Promise<PermissionOutcome> {
     if (disposed) return Promise.resolve({ outcome: "cancelled" })
     return new Promise<PermissionOutcome>((resolve) => {
-      pending.push({ agentId, request, resolve })
-      if (pending.length === 1) store.openApproval({ agentId, request })
+      pending.push({ sessionId, request, resolve })
+      if (pending.length === 1) store.openApproval({ sessionId, request })
     })
   }
 
@@ -113,59 +123,80 @@ export async function createSessionController(options: SessionControllerOptions)
     if (!current) return
     current.resolve(outcome)
     const next = pending[0]
-    if (next) store.openApproval({ agentId: next.agentId, request: next.request })
+    if (next) store.openApproval({ sessionId: next.sessionId, request: next.request })
     else store.closeApproval()
   }
 
-  function getSession(agentId: AgentId): AgentSession | undefined {
-    const runtime = runtimes.get(agentId)
-    if (!runtime?.connection || runtime.sessionId === null) return undefined
-    return { agentId, sessionId: runtime.sessionId, connection: runtime.connection }
+  function getSession(sessionId: SessionId): AgentSession | undefined {
+    const runtime = runtimes.get(sessionId)
+    if (!runtime?.connection || runtime.acpSessionId === null) return undefined
+    return { sessionId, acpSessionId: runtime.acpSessionId, connection: runtime.connection }
   }
 
-  /** Bring one agent up, or record precisely why it did not come up. */
-  async function startAgent(config: AgentConfig): Promise<void> {
+  /** Bring one session up, or record precisely why it did not come up. */
+  async function startSession(seed: SessionSeed, config: AgentConfig): Promise<void> {
     let connection: AgentConnection | undefined
     try {
       connection = create(config)
       const ready = await connection.connect()
       if (!ready.ready) {
-        await failAgent(config, connection, ready.error)
+        await failSession(seed, config, connection, ready.error)
         return
       }
-      const sessionId = await connection.newSession(cwd)
+      const acpSessionId = await connection.newSession(seed.cwd)
       // Bind the slice before subscribing: `startSession` resets the transcript, so
       // an event that arrived first would be thrown away.
-      store.startSession(config.id, sessionId)
-      const unsubscribe = connection.onUpdate((event) => store.applyEvent(config.id, event))
-      connection.onPermission((request) => enqueuePermission(config.id, request))
-      runtimes.set(config.id, {
+      store.startSession(seed.id, acpSessionId)
+      const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
+      connection.onPermission((request) => enqueuePermission(seed.id, request))
+      runtimes.set(seed.id, {
+        seed,
         config,
-        state: { agentId: config.id, displayName: config.displayName, ready: true, sessionId },
+        state: {
+          sessionId: seed.id,
+          providerKind: seed.providerKind,
+          displayName: config.displayName,
+          title: seed.title,
+          ready: true,
+          acpSessionId,
+        },
         connection,
-        sessionId,
+        acpSessionId,
         unsubscribe,
       })
     } catch (error) {
-      onError(config.id, error)
-      await failAgent(config, connection, errorMessage(error))
+      onError(seed.id, error)
+      await failSession(seed, config, connection, errorMessage(error))
     }
   }
 
-  /** Record an agent as not-ready and release the connection it never got to use. */
-  async function failAgent(config: AgentConfig, connection: AgentConnection | undefined, error: string): Promise<void> {
-    runtimes.set(config.id, {
+  /** Record a session as not-ready and release the connection it never got to use. */
+  async function failSession(
+    seed: SessionSeed,
+    config: AgentConfig,
+    connection: AgentConnection | undefined,
+    error: string,
+  ): Promise<void> {
+    runtimes.set(seed.id, {
+      seed,
       config,
-      state: { agentId: config.id, displayName: config.displayName, ready: false, error },
+      state: {
+        sessionId: seed.id,
+        providerKind: seed.providerKind,
+        displayName: config.displayName,
+        title: seed.title,
+        ready: false,
+        error,
+      },
       connection: null,
-      sessionId: null,
+      acpSessionId: null,
       unsubscribe: null,
     })
     await disposeQuietly(connection)
   }
 
-  await Promise.all(options.config.agents.map(startAgent))
-  focusReadyAgent(store, options.config, runtimes)
+  await Promise.all(plan.map((entry) => startSession(entry.seed, entry.config)))
+  focusReadySession(store, plan, runtimes)
 
   const actions = createControllerActions({
     store,
@@ -178,9 +209,9 @@ export async function createSessionController(options: SessionControllerOptions)
   return {
     store,
     actions,
-    runtimes: () => options.config.agents.map((agent) => runtimes.get(agent.id)!.state),
-    runtime: (agentId) => runtimes.get(agentId)?.state,
-    isReady: (agentId) => runtimes.get(agentId)?.state.ready === true,
+    runtimes: () => plan.map((entry) => runtimes.get(entry.seed.id)!.state),
+    runtime: (sessionId) => runtimes.get(sessionId)?.state,
+    isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
     async dispose(): Promise<void> {
       disposed = true
       // Nothing will ever answer these now; unblock the agents rather than leak
@@ -201,15 +232,19 @@ export async function createSessionController(options: SessionControllerOptions)
 }
 
 /**
- * Keep focus on a usable agent: if the agent the store starts focused on failed to
- * come up, focus the first one that did. When neither is ready, focus is left where
- * it was so the status strip still names an agent to explain.
+ * Keep focus on a usable session: if the session the store starts focused on failed
+ * to come up, focus the first one that did. When none is ready, focus is left where
+ * it was so the status strip still names a session to explain.
  */
-function focusReadyAgent(store: AppStore, config: AppConfig, runtimes: Map<AgentId, AgentRuntime>): void {
-  const focused = store.getState().focusedAgentId
+function focusReadySession(
+  store: AppStore,
+  plan: { seed: SessionSeed }[],
+  runtimes: Map<SessionId, AgentRuntime>,
+): void {
+  const focused = store.getState().focusedSessionId
   if (runtimes.get(focused)?.state.ready) return
-  const firstReady = config.agents.find((agent) => runtimes.get(agent.id)?.state.ready)
-  if (firstReady) store.setFocus(firstReady.id)
+  const firstReady = plan.find((entry) => runtimes.get(entry.seed.id)?.state.ready)
+  if (firstReady) store.setFocus(firstReady.seed.id)
 }
 
 function defaultCreateConnection(config: AgentConfig): AgentConnection {

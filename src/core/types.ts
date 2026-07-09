@@ -10,10 +10,30 @@
  * Type shapes follow the TechSpec "Data Models" and "Core Interfaces" sections.
  */
 
-/** The two agents Kitten drives in V1 (ADR-001). */
-export type AgentId = "claude-code" | "codex"
+/**
+ * The kind of agent a session runs - the spawn-recipe identity, not the session's
+ * own identity (ADR-004). Two sessions can share a `ProviderKind`; each still gets
+ * its own {@link SessionId}. Renamed from the former `AgentId`.
+ */
+export type ProviderKind = "claude-code" | "codex"
 
-/** Coarse per-agent lifecycle state surfaced to the UI status strip. */
+/**
+ * A Kitten-assigned session instance identity, opaque and stable from config load,
+ * assigned before any ACP handshake (ADR-004). This is what the store keys by, so a
+ * not-ready session - one with no ACP id yet - still exists in the collection.
+ */
+export type SessionId = string
+
+/** Every provider kind Kitten drives, in default cockpit seed order (ADR-001). */
+export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex"]
+
+/** The human-facing name for each provider kind; the default session title. */
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+}
+
+/** Coarse per-session lifecycle state surfaced to the UI status strip. */
 export type AgentStatus = "idle" | "working" | "awaiting_approval"
 
 /** Normalized classification of a tool call, translated from the agent's own kinds. */
@@ -110,14 +130,35 @@ export interface PendingDiff {
 }
 
 /**
- * The full state of one agent's session, and the sole thing the reducer writes.
+ * The seed that fixes a session's identity at construction (ADR-004): everything
+ * the reducer needs to build an empty session slice before any handshake. `cwd` and
+ * `title` come from config; `acpSessionId` is empty until the ACP session opens.
+ */
+export interface SessionSeed {
+  id: SessionId
+  providerKind: ProviderKind
+  title: string
+  cwd: string
+  task?: string
+  /** The ACP session id, when already known; defaults to `""` (not yet handshaken). */
+  acpSessionId?: string
+}
+
+/**
+ * The full state of one session, and the sole thing the reducer writes.
  *
- * `referencedFiles` and `pendingDiffs` are pure derivations of the tool-call turns
- * and are recomputed on every reduction, so they never drift from the transcript.
+ * `id` is the Kitten instance identity the store keys by; `providerKind` is the kind
+ * of agent it runs; `acpSessionId` is the ACP session id (empty until the handshake
+ * completes). `referencedFiles` and `pendingDiffs` are pure derivations of the
+ * tool-call turns and are recomputed on every reduction, so they never drift.
  */
 export interface SessionState {
-  agentId: AgentId
-  sessionId: string
+  id: SessionId
+  providerKind: ProviderKind
+  title: string
+  cwd: string
+  task?: string
+  acpSessionId: string
   turns: Turn[]
   status: AgentStatus
   /** File path -> strongest access seen. `edited` takes precedence over `read`. */
@@ -154,7 +195,7 @@ export interface HandoffBundle {
 
 /** How to spawn one agent (BYO, config-driven; ADR-005). */
 export interface AgentConfig {
-  id: AgentId
+  id: ProviderKind
   displayName: string
   command: string
   args: string[]

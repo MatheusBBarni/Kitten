@@ -4,7 +4,7 @@
 
 | # | Title | Status | Complexity | Dependencies |
 |---|-------|--------|------------|--------------|
-| 01 | Session identity and store refactor | pending | critical | - |
+| 01 | Session identity and store refactor | completed | critical | - |
 | 02 | Fleet configuration model | pending | high | task_01 |
 | 03 | Controller: one runtime per session with its own working directory | pending | high | task_01, task_02 |
 | 04 | Extended session states and attention derivation | pending | high | task_01 |

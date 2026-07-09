@@ -38,11 +38,11 @@ describe("opt-in gating", () => {
 
     const unsubscribe = recorder.watch(store)
     recordReadiness(recorder, [
-      { agentId: "claude-code", ready: true },
-      { agentId: "codex", ready: false },
+      { sessionId: "claude-code", ready: true },
+      { sessionId: "codex", ready: false },
     ])
     recorder.handoffInvoked()
-    recorder.handoffSent({ targetAgentId: "codex", editChars: 400 })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: 400 })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -57,7 +57,7 @@ describe("hand-off events", () => {
     const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
 
     recorder.handoffInvoked()
-    recorder.handoffSent({ targetAgentId: "codex", editChars: 137 })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: 137 })
 
     expect(types(sink.records)).toEqual(["handoff_invoked", "handoff_sent", "bundle_edit_chars"])
     const edit = sink.records.find((record) => record.type === "bundle_edit_chars")!
@@ -72,10 +72,10 @@ describe("hand-off events", () => {
     const sink = memorySink()
     const recorder = createTelemetryRecorder({ enabled: true, sink })
 
-    recorder.handoffSent({ targetAgentId: "codex", editChars: 0 })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: 0 })
     expect(types(sink.records)).not.toContain("handoff_repeat")
 
-    recorder.handoffSent({ targetAgentId: "claude-code", editChars: 0 })
+    recorder.handoffSent({ targetSessionId: "claude-code", editChars: 0 })
     expect(types(sink.records)).toContain("handoff_repeat")
   })
 })
@@ -86,8 +86,8 @@ describe("readiness events", () => {
     const recorder = createTelemetryRecorder({ enabled: true, sink })
 
     recordReadiness(recorder, [
-      { agentId: "claude-code", ready: true },
-      { agentId: "codex", ready: false },
+      { sessionId: "claude-code", ready: true },
+      { sessionId: "codex", ready: false },
     ])
 
     expect(sink.records).toEqual([
@@ -106,7 +106,7 @@ describe("content-free guarantee", () => {
 
     const secret = "sk-ant-0123456789 THE-USER-TYPED-THIS-SENTENCE and this code: const x = 1"
     const promptText = `${secret} ${"and more context ".repeat(40)}`
-    recorder.handoffSent({ targetAgentId: "codex", editChars: promptText.length })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: promptText.length })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: promptText })
 
     const serialized = JSON.stringify(sink.records)
@@ -161,7 +161,7 @@ describe("reexplanation (store-derived over the heuristic)", () => {
     recorder.watch(store)
 
     // Arm the watch on the target, as a completed hand-off does.
-    recorder.handoffSent({ targetAgentId: "codex", editChars: 0 })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: 0 })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(REEXPLANATION_CHAR_THRESHOLD + 10) })
 
     const flagged = sink.records.find((record) => record.type === "reexplanation_detected")
@@ -176,7 +176,7 @@ describe("reexplanation (store-derived over the heuristic)", () => {
     const recorder = createTelemetryRecorder({ enabled: true, sink })
     recorder.watch(store)
 
-    recorder.handoffSent({ targetAgentId: "codex", editChars: 0 })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: 0 })
     store.applyEvent("codex", {
       kind: "tool_call",
       call: { toolCallId: "c1", kind: "edit", title: "edit", status: "in_progress", locations: ["a.ts"] },
@@ -192,7 +192,7 @@ describe("reexplanation (store-derived over the heuristic)", () => {
     const recorder = createTelemetryRecorder({ enabled: true, sink })
     recorder.watch(store)
 
-    recorder.handoffSent({ targetAgentId: "codex", editChars: 0 })
+    recorder.handoffSent({ targetSessionId: "codex", editChars: 0 })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "keep going" })
 
     expect(types(sink.records)).not.toContain("reexplanation_detected")

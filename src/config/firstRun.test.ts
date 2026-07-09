@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import type { AgentId } from "../core/types.ts"
+import type { ProviderKind } from "../core/types.ts"
 import type { AgentReadiness } from "./readiness.ts"
 import {
   buildFirstRunReport,
@@ -12,12 +12,12 @@ import {
 } from "./firstRun.ts"
 
 /** A ready readiness verdict for `agentId`. */
-function ready(agentId: AgentId, displayName: string): AgentReadiness {
+function ready(agentId: ProviderKind, displayName: string): AgentReadiness {
   return { agentId, displayName, ready: true, protocolVersion: 1 }
 }
 
 /** A not-ready readiness verdict carrying the setup gap message. */
-function notReady(agentId: AgentId, displayName: string, message: string): AgentReadiness {
+function notReady(agentId: ProviderKind, displayName: string, message: string): AgentReadiness {
   return { agentId, displayName, ready: false, reason: "binary_not_found", message }
 }
 

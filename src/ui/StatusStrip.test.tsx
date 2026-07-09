@@ -53,7 +53,7 @@ describe("StatusStrip", () => {
   it("marks an agent that never came up as not ready, whatever its session status says", async () => {
     const runtimes: AgentRuntimeState[] = [
       readyRuntimes()[0]!,
-      { agentId: "codex", displayName: "Codex", ready: false, error: "codex-acp: command not found" },
+      { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: false, error: "codex-acp: command not found" },
     ]
     const controller = createFakeController({ runtimes })
     const { renderer, waitForFrame } = await renderStrip(controller)
