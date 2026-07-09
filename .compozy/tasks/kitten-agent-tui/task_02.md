@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Domain core types and session reducer"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This is the stable core that the adapter, store, assembler, and UI all depend on
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Author the domain type definitions from the TechSpec data models
-- [ ] 2.2 Implement the pure `SessionState` reducer over `DomainSessionEvent`
-- [ ] 2.3 Implement tool-call upsert-by-id with field-preservation and null-clear semantics
-- [ ] 2.4 Derive `referencedFiles` and `pendingDiffs` as the reducer folds events
-- [ ] 2.5 Cover the reducer with fixtures for each event kind and edge case
+- [x] 2.1 Author the domain type definitions from the TechSpec data models
+- [x] 2.2 Implement the pure `SessionState` reducer over `DomainSessionEvent`
+- [x] 2.3 Implement tool-call upsert-by-id with field-preservation and null-clear semantics
+- [x] 2.4 Derive `referencedFiles` and `pendingDiffs` as the reducer folds events
+- [x] 2.5 Cover the reducer with fixtures for each event kind and edge case
 
 ## Implementation Details
 Create the pure core module. See TechSpec "Data Models" and "Core Interfaces" for the exact type shapes; reference them rather than reproducing here. The reducer is the single writer of `SessionState` and must be deterministic and side-effect free.
@@ -59,14 +59,14 @@ Create the pure core module. See TechSpec "Data Models" and "Core Interfaces" fo
 
 ## Tests
 - Unit tests:
-  - [ ] Applying an `agent_message` event with a new `messageId` appends a new agent turn
-  - [ ] A second `agent_message` with the same `messageId` concatenates `textDelta` onto the existing turn
-  - [ ] A `tool_call` then a `tool_call_update` for the same `toolCallId` merges, preserving omitted fields and clearing fields set to null
-  - [ ] An `edit`-kind tool call adds its path to `referencedFiles` as `"edited"` and its diff to `pendingDiffs`
-  - [ ] A `read`-kind tool call adds its path to `referencedFiles` as `"read"` and does not create a pending diff
-  - [ ] A `status` event updates `SessionState.status` without altering turns
+  - [x] Applying an `agent_message` event with a new `messageId` appends a new agent turn
+  - [x] A second `agent_message` with the same `messageId` concatenates `textDelta` onto the existing turn
+  - [x] A `tool_call` then a `tool_call_update` for the same `toolCallId` merges, preserving omitted fields and clearing fields set to null
+  - [x] An `edit`-kind tool call adds its path to `referencedFiles` as `"edited"` and its diff to `pendingDiffs`
+  - [x] A `read`-kind tool call adds its path to `referencedFiles` as `"read"` and does not create a pending diff
+  - [x] A `status` event updates `SessionState.status` without altering turns
 - Integration tests:
-  - [ ] Folding a fixture sequence (user message → agent messages → two tool calls → status) yields the expected final `SessionState`
+  - [x] Folding a fixture sequence (user message → agent messages → two tool calls → status) yields the expected final `SessionState`
 - Test coverage target: >=80%
 - All tests must pass
 

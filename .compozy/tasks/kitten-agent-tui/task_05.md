@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Reactive app store"
 type: frontend
 complexity: medium
@@ -31,11 +31,11 @@ It exposes narrow selectors so React components subscribe only to what they rend
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Define the store shape (per-agent sessions, focus, status, overlay slots)
-- [ ] 5.2 Apply domain events to the correct agent slice through the core reducer
-- [ ] 5.3 Implement narrow selectors for status strip, conversation, and overlays
-- [ ] 5.4 Implement focus and overlay open/close actions
-- [ ] 5.5 Cover event application, focus switching, and selector isolation with tests
+- [x] 5.1 Define the store shape (per-agent sessions, focus, status, overlay slots)
+- [x] 5.2 Apply domain events to the correct agent slice through the core reducer
+- [x] 5.3 Implement narrow selectors for status strip, conversation, and overlays
+- [x] 5.4 Implement focus and overlay open/close actions
+- [x] 5.5 Cover event application, focus switching, and selector isolation with tests
 
 ## Implementation Details
 Create the store using an external store with targeted subscriptions (per ADR-004; a scoped store such as Zustand or a narrowly-scoped reducer). See TechSpec "System Architecture → Reactive Store" for responsibilities. The store consumes the domain event stream from task_03 and the reducer from task_02.
@@ -61,12 +61,12 @@ Create the store using an external store with targeted subscriptions (per ADR-00
 
 ## Tests
 - Unit tests:
-  - [ ] An `agent_message` event for `claude-code` updates only that agent's slice, leaving `codex` untouched
-  - [ ] Setting focus to `codex` changes the focused selector's value and nothing else
-  - [ ] Opening the approval overlay slot exposes it via the overlay selector; closing clears it
-  - [ ] A selector for agent A's status does not notify when agent B's status changes (subscription isolation)
+  - [x] An `agent_message` event for `claude-code` updates only that agent's slice, leaving `codex` untouched
+  - [x] Setting focus to `codex` changes the focused selector's value and nothing else
+  - [x] Opening the approval overlay slot exposes it via the overlay selector; closing clears it
+  - [x] A selector for agent A's status does not notify when agent B's status changes (subscription isolation)
 - Integration tests:
-  - [ ] Dispatching a scripted stream (both agents interleaved) produces the expected per-agent `SessionState`
+  - [x] Dispatching a scripted stream (both agents interleaved) produces the expected per-agent `SessionState`
 - Test coverage target: >=80%
 - All tests must pass
 

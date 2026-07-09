@@ -17,4 +17,4 @@
 | 11 | Approval prompt overlay | completed | medium | task_07, task_08 |
 | 12 | Hand-off and hand-back flow | completed | high | task_06, task_07, task_08 |
 | 13 | Telemetry recorder and heuristics | completed | medium | task_02, task_05, task_12 |
-| 14 | First-run flow and packaging | pending | medium | task_04, task_08 |
+| 14 | First-run flow and packaging | completed | medium | task_04, task_08 |

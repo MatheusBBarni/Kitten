@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Project scaffold and tooling"
 type: infra
 complexity: medium
@@ -29,11 +29,11 @@ This establishes the dependency set (OpenTUI React binding, the ACP TypeScript S
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Initialize `package.json`, `bunfig.toml`, and `.gitignore` with pinned OpenTUI/React/ACP dependencies
-- [ ] 1.2 Configure `tsconfig.json` for the `@opentui/react` JSX runtime and strict type-checking
-- [ ] 1.3 Create the source directory skeleton matching the TechSpec component layers
-- [ ] 1.4 Add a runnable entry point that renders a placeholder cockpit frame and exits on Ctrl+C
-- [ ] 1.5 Wire `bun test` and add a smoke test that asserts the entry module loads
+- [x] 1.1 Initialize `package.json`, `bunfig.toml`, and `.gitignore` with pinned OpenTUI/React/ACP dependencies
+- [x] 1.2 Configure `tsconfig.json` for the `@opentui/react` JSX runtime and strict type-checking
+- [x] 1.3 Create the source directory skeleton matching the TechSpec component layers
+- [x] 1.4 Add a runnable entry point that renders a placeholder cockpit frame and exits on Ctrl+C
+- [x] 1.5 Wire `bun test` and add a smoke test that asserts the entry module loads
 
 ## Implementation Details
 Create the project root configuration and directory skeleton. See TechSpec "System Architecture" for the component layers that determine the folder layout, and "Development Sequencing → Technical Dependencies" for the pinned dependencies. The entry point should follow the OpenTUI React bootstrap pattern (`createCliRenderer` then `createRoot(renderer).render(...)`).
@@ -61,11 +61,11 @@ Create the project root configuration and directory skeleton. See TechSpec "Syst
 
 ## Tests
 - Unit tests:
-  - [ ] Smoke: importing `src/index.ts` resolves without throwing
-  - [ ] Config: `tsconfig.json` sets `jsxImportSource` to `@opentui/react` (assert parsed value)
-  - [ ] Dependencies: `package.json` pins exact versions for OpenTUI and the ACP SDK (no `^`/`~` ranges)
+  - [x] Smoke: importing `src/index.ts` resolves without throwing
+  - [x] Config: `tsconfig.json` sets `jsxImportSource` to `@opentui/react` (assert parsed value)
+  - [x] Dependencies: `package.json` pins exact versions for OpenTUI and the ACP SDK (no `^`/`~` ranges)
 - Integration tests:
-  - [ ] Entry point creates and then destroys a renderer in a non-TTY test mode without leaking the terminal
+  - [x] Entry point creates and then destroys a renderer in a non-TTY test mode without leaking the terminal
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Agent adapter layer and ACP translation"
 type: backend
 complexity: high
@@ -32,12 +32,12 @@ This is the anti-corruption boundary and the highest-integration-risk component,
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Implement the `Bun.spawn` stdio transport and ACP `ClientSideConnection` wiring
-- [ ] 3.2 Implement the ACP `Client` callbacks (`requestPermission`, filesystem) and the `initialize` handshake in `connect`
-- [ ] 3.3 Translate the `SessionNotification` union into `DomainSessionEvent`s
-- [ ] 3.4 Add per-frame coalescing of streamed agent-message deltas
-- [ ] 3.5 Build the mock in-process ACP agent test double
-- [ ] 3.6 Cover translation, permission round-trip, and coalescing with tests against the mock
+- [x] 3.1 Implement the `Bun.spawn` stdio transport and ACP `ClientSideConnection` wiring
+- [x] 3.2 Implement the ACP `Client` callbacks (`requestPermission`, filesystem) and the `initialize` handshake in `connect`
+- [x] 3.3 Translate the `SessionNotification` union into `DomainSessionEvent`s
+- [x] 3.4 Add per-frame coalescing of streamed agent-message deltas
+- [x] 3.5 Build the mock in-process ACP agent test double
+- [x] 3.6 Cover translation, permission round-trip, and coalescing with tests against the mock
 
 ## Implementation Details
 Create the adapter layer. See TechSpec "Core Interfaces" for the `AgentConnection` contract, "Integration Points" for transport and error handling, and ADR-005 for the config-driven spawn model. The ACP SDK is imported only in this layer. Streaming buffer lives here so the store receives batched updates.
@@ -66,14 +66,14 @@ Create the adapter layer. See TechSpec "Core Interfaces" for the `AgentConnectio
 
 ## Tests
 - Unit tests:
-  - [ ] `agent_message_chunk` notifications translate to `agent_message` domain events carrying `textDelta`
-  - [ ] `tool_call` and `tool_call_update` translate to `tool_call` domain events preserving `kind`, `locations`, and diff content
-  - [ ] Two chunk deltas arriving within one frame flush as a single coalesced update
-  - [ ] No object emitted by `onUpdate` contains an ACP-only field (translation completeness)
+  - [x] `agent_message_chunk` notifications translate to `agent_message` domain events carrying `textDelta`
+  - [x] `tool_call` and `tool_call_update` translate to `tool_call` domain events preserving `kind`, `locations`, and diff content
+  - [x] Two chunk deltas arriving within one frame flush as a single coalesced update
+  - [x] No object emitted by `onUpdate` contains an ACP-only field (translation completeness)
 - Integration tests:
-  - [ ] Against the mock agent: `connect` completes the `initialize` handshake and returns ready
-  - [ ] A scripted `requestPermission` is routed to `onPermission` and the selected outcome is returned to the agent
-  - [ ] A full scripted prompt turn (message → tool_call → completion) yields the expected ordered `DomainSessionEvent`s
+  - [x] Against the mock agent: `connect` completes the `initialize` handshake and returns ready
+  - [x] A scripted `requestPermission` is routed to `onPermission` and the selected outcome is returned to the agent
+  - [x] A full scripted prompt turn (message → tool_call → completion) yields the expected ordered `DomainSessionEvent`s
 - Test coverage target: >=80%
 - All tests must pass
 

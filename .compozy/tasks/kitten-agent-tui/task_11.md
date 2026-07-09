@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Approval prompt overlay"
 type: frontend
 complexity: medium
@@ -31,11 +31,11 @@ This keeps the developer in control of what touches their code, which is a core 
 </requirements>
 
 ## Subtasks
-- [ ] 11.1 Render the overlay from the store's approval slot
-- [ ] 11.2 Present the request options and the pending action's title/kind/diff
-- [ ] 11.3 Return the chosen outcome via `respondPermission` and close the overlay
-- [ ] 11.4 Position the overlay as an absolute box above the cockpit
-- [ ] 11.5 Cover option selection and outcome routing with tests
+- [x] 11.1 Render the overlay from the store's approval slot
+- [x] 11.2 Present the request options and the pending action's title/kind/diff
+- [x] 11.3 Return the chosen outcome via `respondPermission` and close the overlay
+- [x] 11.4 Position the overlay as an absolute box above the cockpit
+- [x] 11.5 Cover option selection and outcome routing with tests
 
 ## Implementation Details
 Create the approval overlay. See TechSpec "System Architecture → UI Shell" (`ApprovalPrompt`) and Integration Points (ACP `requestPermission`). The overlay reads the approval slot populated by task_07 and calls `respondPermission`. Mounts over the shell from task_08.
@@ -58,12 +58,12 @@ Create the approval overlay. See TechSpec "System Architecture → UI Shell" (`A
 
 ## Tests
 - Unit tests:
-  - [ ] The overlay renders only when the approval slot holds a request, and is hidden otherwise
-  - [ ] The overlay shows the pending action's title, kind, and diff for an `edit` request
-  - [ ] Selecting "allow once" calls `respondPermission` with the allow outcome and closes the overlay
-  - [ ] Selecting "reject" calls `respondPermission` with the reject outcome and closes the overlay
+  - [x] The overlay renders only when the approval slot holds a request, and is hidden otherwise
+  - [x] The overlay shows the pending action's title, kind, and diff for an `edit` request
+  - [x] Selecting "allow once" calls `respondPermission` with the allow outcome and closes the overlay
+  - [x] Selecting "reject" calls `respondPermission` with the reject outcome and closes the overlay
 - Integration tests:
-  - [ ] A mock connection's permission request opens the overlay and the chosen outcome is delivered back to the connection
+  - [x] A mock connection's permission request opens the overlay and the chosen outcome is delivered back to the connection
 - Test coverage target: >=80%
 - All tests must pass
 

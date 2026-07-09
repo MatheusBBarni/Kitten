@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Conversation view"
 type: frontend
 complexity: medium
@@ -31,11 +31,11 @@ This is where the user actually reads what an agent is doing, so it must stream 
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Render the turn list (user/agent/thought) for the focused session
-- [ ] 9.2 Render streamed agent Markdown with stable, flicker-free updates
-- [ ] 9.3 Render tool-call rows with kind/title/status and in-place updates
-- [ ] 9.4 Render edit diffs via the `<diff>` component
-- [ ] 9.5 Add `testRender` snapshots for streaming, tool calls, and diffs
+- [x] 9.1 Render the turn list (user/agent/thought) for the focused session
+- [x] 9.2 Render streamed agent Markdown with stable, flicker-free updates
+- [x] 9.3 Render tool-call rows with kind/title/status and in-place updates
+- [x] 9.4 Render edit diffs via the `<diff>` component
+- [x] 9.5 Add `testRender` snapshots for streaming, tool calls, and diffs
 
 ## Implementation Details
 Create the conversation view and its row/message subcomponents. See TechSpec "System Architecture → UI Shell" (`ConversationView`) and PRD UX (flicker-free, clean copy). Use OpenTUI `<markdown>` and `<diff>`. Mounts into the shell's conversation region from task_08.
@@ -59,12 +59,12 @@ Create the conversation view and its row/message subcomponents. See TechSpec "Sy
 
 ## Tests
 - Unit tests:
-  - [ ] A user turn and an agent turn render in order with distinct styling
-  - [ ] A tool-call row shows `edit` kind and `in_progress` status, then updates to `completed` in place
-  - [ ] An edit tool call renders its diff via the `<diff>` component
-  - [ ] The view subscribes only to the focused agent's session (switching focus swaps the rendered transcript)
+  - [x] A user turn and an agent turn render in order with distinct styling
+  - [x] A tool-call row shows `edit` kind and `in_progress` status, then updates to `completed` in place
+  - [x] An edit tool call renders its diff via the `<diff>` component
+  - [x] The view subscribes only to the focused agent's session (switching focus swaps the rendered transcript)
 - Integration tests:
-  - [ ] `testRender` snapshot of a streaming agent message settling over several coalesced updates matches the expected frames
+  - [x] `testRender` snapshot of a streaming agent message settling over several coalesced updates matches the expected frames
 - Test coverage target: >=80%
 - All tests must pass
 

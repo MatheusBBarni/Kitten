@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "UI shell, cockpit, and status strip"
 type: frontend
 complexity: medium
@@ -32,12 +32,12 @@ This is the frame every other view mounts into, and it must render cleanly on re
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Boot the renderer and mount the React root
-- [ ] 8.2 Lay out the focused conversation region and persistent status strip
-- [ ] 8.3 Render per-agent status from store selectors
-- [ ] 8.4 Bind the focus-switch keymap and a help affordance
-- [ ] 8.5 Handle resize and theme changes cleanly
-- [ ] 8.6 Add `testRender` snapshots for the shell and status states
+- [x] 8.1 Boot the renderer and mount the React root
+- [x] 8.2 Lay out the focused conversation region and persistent status strip
+- [x] 8.3 Render per-agent status from store selectors
+- [x] 8.4 Bind the focus-switch keymap and a help affordance
+- [x] 8.5 Handle resize and theme changes cleanly
+- [x] 8.6 Add `testRender` snapshots for the shell and status states
 
 ## Implementation Details
 Create the shell and status strip. See TechSpec "System Architecture → UI Shell" and the UX section of the PRD (focused pane + quick switch, keyboard-first, flicker-free). Use `useKeyboard`/`useOnResize` from `@opentui/react`. Focus switching calls the controller action from task_07.
@@ -64,13 +64,13 @@ Create the shell and status strip. See TechSpec "System Architecture → UI Shel
 
 ## Tests
 - Unit tests:
-  - [ ] The status strip shows `working` for an agent whose store status is working and `idle` for the other
-  - [ ] A not-ready agent renders a distinct not-ready indicator in the strip
-  - [ ] The focus-switch keybinding invokes the controller's `switchFocus`
-  - [ ] Toggling the help affordance shows and hides the help content
+  - [x] The status strip shows `working` for an agent whose store status is working and `idle` for the other
+  - [x] A not-ready agent renders a distinct not-ready indicator in the strip
+  - [x] The focus-switch keybinding invokes the controller's `switchFocus`
+  - [x] Toggling the help affordance shows and hides the help content
 - Integration tests:
-  - [ ] `testRender` snapshot of the cockpit at a fixed size matches the expected frame
-  - [ ] A simulated resize re-lays out the frame without overflow artifacts
+  - [x] `testRender` snapshot of the cockpit at a fixed size matches the expected frame
+  - [x] A simulated resize re-lays out the frame without overflow artifacts
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Prompt editor and send flow"
 type: frontend
 complexity: medium
@@ -31,12 +31,12 @@ Submitting routes through the controller's `sendPrompt`, and interrupting a runn
 </requirements>
 
 ## Subtasks
-- [ ] 10.1 Render the multi-line editor bound to the focused agent
-- [ ] 10.2 Implement Enter-submit, Shift+Enter-newline, and Esc-interrupt
-- [ ] 10.3 Route submit to `sendPrompt` and interrupt to `cancel`
-- [ ] 10.4 Handle bracketed paste including large pastes
-- [ ] 10.5 Gate submission when the focused agent is not ready
-- [ ] 10.6 Cover key handling and send/cancel routing with tests
+- [x] 10.1 Render the multi-line editor bound to the focused agent
+- [x] 10.2 Implement Enter-submit, Shift+Enter-newline, and Esc-interrupt
+- [x] 10.3 Route submit to `sendPrompt` and interrupt to `cancel`
+- [x] 10.4 Handle bracketed paste including large pastes
+- [x] 10.5 Gate submission when the focused agent is not ready
+- [x] 10.6 Cover key handling and send/cancel routing with tests
 
 ## Implementation Details
 Create the prompt editor. See TechSpec "System Architecture → UI Shell" (`PromptEditor`) and PRD UX (Enter/Shift+Enter/Esc). Use the `@opentui/react` `<textarea>`, `useKeyboard`, and `usePaste`. Send/cancel call controller actions from task_07; mounts under the conversation region from task_08.
@@ -59,13 +59,13 @@ Create the prompt editor. See TechSpec "System Architecture → UI Shell" (`Prom
 
 ## Tests
 - Unit tests:
-  - [ ] Enter with non-empty content calls `sendPrompt` with the composed text and clears the editor
-  - [ ] Shift+Enter inserts a newline and does not submit
-  - [ ] Esc while the focused agent is working calls `cancel`
-  - [ ] A large bracketed paste is inserted intact without truncating editor state
-  - [ ] Submission is gated when the focused agent is not ready
+  - [x] Enter with non-empty content calls `sendPrompt` with the composed text and clears the editor
+  - [x] Shift+Enter inserts a newline and does not submit
+  - [x] Esc while the focused agent is working calls `cancel`
+  - [x] A large bracketed paste is inserted intact without truncating editor state
+  - [x] Submission is gated when the focused agent is not ready
 - Integration tests:
-  - [ ] Against a mock controller, composing then submitting then interrupting invokes `sendPrompt` and `cancel` in order
+  - [x] Against a mock controller, composing then submitting then interrupting invokes `sendPrompt` and `cancel` in order
 - Test coverage target: >=80%
 - All tests must pass
 

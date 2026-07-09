@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "First-run flow and packaging"
 type: infra
 complexity: medium
@@ -32,12 +32,12 @@ It guides per-agent setup using readiness results and produces the compiled stan
 </requirements>
 
 ## Subtasks
-- [ ] 14.1 Implement the first-run flow surfacing per-agent readiness gaps and repo requirement
-- [ ] 14.2 Add the `bun build --compile` build script for the four platform targets
-- [ ] 14.3 Add the checksummed one-line curl installer script
-- [ ] 14.4 Configure the npm package for `bunx kitten`
-- [ ] 14.5 Validate each compiled artifact boots on its platform in CI
-- [ ] 14.6 Cover the first-run guidance and build configuration with tests
+- [x] 14.1 Implement the first-run flow surfacing per-agent readiness gaps and repo requirement
+- [x] 14.2 Add the `bun build --compile` build script for the four platform targets
+- [x] 14.3 Add the checksummed one-line curl installer script
+- [x] 14.4 Configure the npm package for `bunx kitten`
+- [x] 14.5 Validate each compiled artifact boots on its platform in CI
+- [x] 14.6 Cover the first-run guidance and build configuration with tests
 
 ## Implementation Details
 Create the first-run flow and packaging pipeline. See PRD "User Experience → Onboarding", ADR-006 (compiled binary distribution), and ADR-005 (BYO readiness). First-run uses readiness reasons from task_04; packaging bundles the runnable app from task_08 onward.

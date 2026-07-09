@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Config loading and agent readiness"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This produces the clear per-agent ready / not-ready state the cockpit needs so a
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Implement `AppConfig`/`AgentConfig` loading with defaults for the two agents
-- [ ] 4.2 Implement a readiness checker that runs the `initialize` handshake via `AgentConnection.connect`
-- [ ] 4.3 Map each failure mode to a distinct, human-readable not-ready reason
-- [ ] 4.4 Ensure independent per-agent readiness (one failure does not fail the other)
-- [ ] 4.5 Cover config parsing and each readiness outcome with tests
+- [x] 4.1 Implement `AppConfig`/`AgentConfig` loading with defaults for the two agents
+- [x] 4.2 Implement a readiness checker that runs the `initialize` handshake via `AgentConnection.connect`
+- [x] 4.3 Map each failure mode to a distinct, human-readable not-ready reason
+- [x] 4.4 Ensure independent per-agent readiness (one failure does not fail the other)
+- [x] 4.5 Cover config parsing and each readiness outcome with tests
 
 ## Implementation Details
 Create the config and readiness modules. See TechSpec "Integration Points" (readiness via handshake) and ADR-005 (config-driven spawn). Readiness uses `AgentConnection.connect` from task_03.
@@ -58,13 +58,13 @@ Create the config and readiness modules. See TechSpec "Integration Points" (read
 
 ## Tests
 - Unit tests:
-  - [ ] Loading with no user overrides returns the two default `AgentConfig` entries
-  - [ ] A user override for an agent's `command`/`args` replaces the default for that agent only
-  - [ ] Telemetry opt-in defaults to off and is honored when set true
-  - [ ] A missing agent binary yields a not-ready result with a "binary not found" reason
+  - [x] Loading with no user overrides returns the two default `AgentConfig` entries
+  - [x] A user override for an agent's `command`/`args` replaces the default for that agent only
+  - [x] Telemetry opt-in defaults to off and is honored when set true
+  - [x] A missing agent binary yields a not-ready result with a "binary not found" reason
 - Integration tests:
-  - [ ] Against a mock agent that completes `initialize`, readiness returns ready
-  - [ ] Against a mock agent that rejects `initialize`, readiness returns not-ready with a handshake reason, and the other agent still reports independently
+  - [x] Against a mock agent that completes `initialize`, readiness returns ready
+  - [x] Against a mock agent that rejects `initialize`, readiness returns not-ready with a handshake reason, and the other agent still reports independently
 - Test coverage target: >=80%
 - All tests must pass
 
