@@ -2,8 +2,8 @@
 
 exports[`ConversationView streaming matches the expected frames as a message streams in: 01-user-turn 1`] = `
 "┌─Claude Code──────────────────────────────────────────────────────────┐
-│ you                                                                  │
-│ hi                                                                   │
+│  ping                                                                │
+│                                                                      │
 │                                                                      │
 │                                                                      │
 │                                                                      │
@@ -24,11 +24,11 @@ exports[`ConversationView streaming matches the expected frames as a message str
 
 exports[`ConversationView streaming matches the expected frames as a message streams in: 02-first-chunk 1`] = `
 "┌─Claude Code──────────────────────────────────────────────────────────┐
-│ you                                                                  │
-│ hi                                                                   │
+│  ping                                                                │
 │                                                                      │
 │ agent                                                                │
 │ Hello                                                                │
+│                                                                      │
 │                                                                      │
 │                                                                      │
 │                                                                      │
@@ -46,11 +46,11 @@ exports[`ConversationView streaming matches the expected frames as a message str
 
 exports[`ConversationView streaming matches the expected frames as a message streams in: 03-settled 1`] = `
 "┌─Claude Code──────────────────────────────────────────────────────────┐
-│ you                                                                  │
-│ hi                                                                   │
+│  ping                                                                │
 │                                                                      │
 │ agent                                                                │
 │ Hello, world.                                                        │
+│                                                                      │
 │                                                                      │
 │                                                                      │
 │                                                                      │

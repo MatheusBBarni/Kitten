@@ -1,15 +1,22 @@
 import { describe, expect, it } from "bun:test"
 
+import { RGBA } from "@opentui/core"
 import { createMockMouse, type TestRenderer } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import type { AgentId, ToolCallUpdate } from "../core/types.ts"
+import type { AgentId, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { ConversationView, EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
-import { filetypeFor, TOOL_KIND_LABELS } from "./ToolCallRow.tsx"
+import { DARK_PALETTE } from "./theme.ts"
+import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
+
+/** The `rgba(...)` string OpenTUI stores for a palette hex, for comparing to a captured cell. */
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
+}
 
 const WIDTH = 72
 const HEIGHT = 20
@@ -70,7 +77,7 @@ describe("ConversationView turns", () => {
     await destroyMounted(renderer)
   })
 
-  it("renders a user turn and an agent turn in order, each labelled by role", async () => {
+  it("renders the user turn unlabelled and the agent turn under its role label, in order", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame } = await renderConversation(controller)
 
@@ -81,21 +88,21 @@ describe("ConversationView turns", () => {
     const frame = await waitForFrame((f) => f.includes("Renaming it now."))
 
     const rows = frame.split("\n")
-    const userLabel = rows.findIndex((r) => r.includes(ROLE_LABELS.user))
     const userText = rows.findIndex((r) => r.includes("rename the flag"))
     const agentLabel = rows.findIndex((r) => r.includes(ROLE_LABELS.agent))
     const agentText = rows.findIndex((r) => r.includes("Renaming it now."))
 
-    // Each message sits under its own role label, and the user spoke first.
-    expect(userLabel).toBeGreaterThanOrEqual(0)
-    expect(userText).toBe(userLabel + 1)
+    // The user's turn carries no "you" label - its tinted band alone sets it apart.
+    expect(frame).not.toContain("you")
+    // The agent still sits under its role label, and the user spoke first.
+    expect(userText).toBeGreaterThanOrEqual(0)
     expect(agentText).toBe(agentLabel + 1)
     expect(userText).toBeLessThan(agentLabel)
 
     await destroyMounted(renderer)
   })
 
-  it("paints the two roles in different colors", async () => {
+  it("sets the user's words on a tinted band the agent's words do not share", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
 
@@ -105,17 +112,20 @@ describe("ConversationView turns", () => {
     })
     await waitForFrame((f) => f.includes("AGENTWORD"))
 
-    const colorOf = (needle: string): string | undefined =>
+    const spanOf = (needle: string) =>
       captureSpans()
         .lines.flatMap((line) => line.spans)
         .find((span) => span.text.includes(needle))
-        ?.fg?.toString()
 
-    const userColor = colorOf("USERWORD")
-    const agentColor = colorOf("AGENTWORD")
-    expect(userColor).toBeDefined()
-    expect(agentColor).toBeDefined()
-    expect(userColor).not.toBe(agentColor)
+    const userWord = spanOf("USERWORD")
+    const agentWord = spanOf("AGENTWORD")
+    expect(userWord).toBeDefined()
+    expect(agentWord).toBeDefined()
+
+    // The user's words sit on the band; the agent's sit on the plain surface. The band
+    // is a background attribute, not a border, so it never lands in a copied selection.
+    expect(userWord!.bg.toString()).toBe(paletteColor(DARK_PALETTE.userMessageSurface))
+    expect(agentWord!.bg.toString()).not.toBe(userWord!.bg.toString())
 
     await destroyMounted(renderer)
   })
@@ -152,10 +162,11 @@ describe("ConversationView streaming", () => {
     // snapshots capture the streaming message rather than a scrolled-away one.
     const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller, WIDTH, 18)
 
-    await actAsync(() => userMessage(controller, "claude-code", "m1", "hi"))
-    // The prompt editor's own hint says "Shift+Enter", so a bare "hi" would match the
-    // very first frame, before the turn paints. Wait for the turn's role label.
-    await waitForFrame((f) => f.includes(ROLE_LABELS.user))
+    await actAsync(() => userMessage(controller, "claude-code", "m1", "ping"))
+    // The user turn carries no label now, and the prompt editor's hint already holds
+    // "Shift" (which contains "hi"), so the sentinel must be a word the chrome never
+    // paints. "ping" appears only once the user's band renders.
+    await waitForFrame((f) => f.includes("ping"))
     expect(captureCharFrame()).toMatchSnapshot("01-user-turn")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))
@@ -171,9 +182,9 @@ describe("ConversationView streaming", () => {
 })
 
 describe("ConversationView tool calls", () => {
-  it("shows kind, title and status, then updates the status in place", async () => {
+  it("heads the row with `● Name(title)`, the status carried by the bullet's color, no status word", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame } = await renderConversation(controller)
+    const { renderer, waitForFrame, waitFor, captureSpans, captureCharFrame } = await renderConversation(controller)
 
     await actAsync(() =>
       toolCall(controller, "claude-code", {
@@ -183,17 +194,74 @@ describe("ConversationView tool calls", () => {
         status: "in_progress",
       }),
     )
-    const running = await waitForFrame((f) => f.includes("in_progress"))
-    expect(running).toContain(TOOL_KIND_LABELS.edit)
+    const running = await waitForFrame((f) => f.includes("Update app.ts"))
+
+    // The header reads `● Edit(Update app.ts)`: capitalized name, title in parentheses,
+    // and none of the old trailing status words.
+    expect(running).toContain(STATUS_BULLET)
+    expect(running).toContain(TOOL_KIND_NAMES.edit)
     expect(running).toContain("Update app.ts")
+    for (const word of ["in_progress", "completed", "pending", "failed"]) {
+      expect(running).not.toContain(word)
+    }
 
+    // The bullet, not a word, carries the status - here the in-progress tool color.
+    const bulletColor = () =>
+      captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes(STATUS_BULLET))
+        ?.fg?.toString()
+    expect(bulletColor()).toBe(paletteColor(DARK_PALETTE.tool.in_progress))
+
+    // Upserted by id: the same single row restyles the bullet in place on completion.
     await actAsync(() => toolCall(controller, "claude-code", { toolCallId: "t1", status: "completed" }))
-    const done = await waitForFrame((f) => f.includes("completed"))
+    await waitFor(() => bulletColor() === paletteColor(DARK_PALETTE.tool.completed))
 
-    // Upserted by id: the same single row now reads `completed`, kind and title intact.
-    expect(done).not.toContain("in_progress")
-    expect(done).toContain(TOOL_KIND_LABELS.edit)
+    const done = captureCharFrame()
     expect(done.match(/Update app\.ts/g)).toHaveLength(1)
+    expect(done).toContain(TOOL_KIND_NAMES.edit)
+
+    await destroyMounted(renderer)
+  })
+
+  it("colors the bullet by status for pending and failed too", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
+
+    // The test above pins in_progress and completed; these are the other two states, so
+    // every ToolCallStatus now asserts a rendered bullet in its own palette color.
+    await actAsync(() => {
+      toolCall(controller, "claude-code", { toolCallId: "t1", kind: "read", title: "queued.ts", status: "pending" })
+      toolCall(controller, "claude-code", { toolCallId: "t2", kind: "read", title: "broken.ts", status: "failed" })
+    })
+    await waitForFrame((f) => f.includes("broken.ts"))
+
+    // Only tool rows paint the bullet glyph, so every match here is a status light.
+    const bulletColors = captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .filter((span) => span.text.includes(STATUS_BULLET))
+      .map((span) => span.fg?.toString())
+    expect(bulletColors).toContain(paletteColor(DARK_PALETTE.tool.pending))
+    expect(bulletColors).toContain(paletteColor(DARK_PALETTE.tool.failed))
+
+    await destroyMounted(renderer)
+  })
+
+  it("renders a bold tool name so the header reads like a Claude Code action", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
+
+    await actAsync(() =>
+      toolCall(controller, "claude-code", { toolCallId: "t1", kind: "read", title: "app.ts", status: "completed" }),
+    )
+    await waitForFrame((f) => f.includes(TOOL_KIND_NAMES.read))
+
+    const nameSpan = captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((span) => span.text.trim() === TOOL_KIND_NAMES.read)
+    expect(nameSpan).toBeDefined()
+    // `TextAttributes.BOLD` is bit 0; the name span sets it, the title does not.
+    expect(nameSpan!.attributes & 1).toBe(1)
 
     await destroyMounted(renderer)
   })
@@ -213,8 +281,64 @@ describe("ConversationView tool calls", () => {
     )
     const frame = await waitForFrame((f) => f.includes("Read app.ts"))
 
-    expect(frame).toContain(TOOL_KIND_LABELS.read)
+    expect(frame).toContain(TOOL_KIND_NAMES.read)
     expect(frame).not.toContain("const b = 3")
+
+    await destroyMounted(renderer)
+  })
+
+  it("hangs a non-edit call's extra locations off a `└ ` connector, and suppresses an echo of the title", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller)
+
+    // Locations that add nothing beyond the title earn no connector line.
+    await actAsync(() =>
+      toolCall(controller, "claude-code", {
+        toolCallId: "t1",
+        kind: "search",
+        title: "src/app.ts",
+        status: "completed",
+        locations: ["src/app.ts"],
+      }),
+    )
+    await waitForFrame((f) => f.includes("Search"))
+    expect(captureCharFrame()).not.toContain(CONNECTOR)
+
+    // Locations that do add information hang off the connector in muted.
+    await actAsync(() =>
+      toolCall(controller, "claude-code", {
+        toolCallId: "t2",
+        kind: "search",
+        title: "TODO",
+        status: "completed",
+        locations: ["src/app.ts", "src/main.ts"],
+      }),
+    )
+    const frame = await waitForFrame((f) => f.includes("src/main.ts"))
+    const connector = frame.split("\n").find((row) => row.includes(CONNECTOR))
+    expect(connector).toBeDefined()
+    expect(connector).toContain("src/app.ts, src/main.ts")
+
+    await destroyMounted(renderer)
+  })
+
+  it("draws no connector for a non-edit call whose locations are empty", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller)
+
+    // An empty locations array collapses to an empty summary - the other way the connector
+    // is suppressed, alongside a title echo - so the header stands alone.
+    await actAsync(() =>
+      toolCall(controller, "claude-code", {
+        toolCallId: "t1",
+        kind: "read",
+        title: "app.ts",
+        status: "completed",
+        locations: [],
+      }),
+    )
+    await waitForFrame((f) => f.includes("app.ts"))
+    expect(captureCharFrame()).not.toContain(CONNECTOR)
 
     await destroyMounted(renderer)
   })
@@ -245,6 +369,30 @@ describe("ConversationView tool calls", () => {
     const rows = frame.split("\n")
     expect(rows.find((r) => r.includes("const b = 2"))).toContain("-")
     expect(rows.find((r) => r.includes("const b = 3"))).toContain("+")
+
+    await destroyMounted(renderer)
+  })
+
+  it("hangs an edit call's diff path off a `└ ` connector, above the diff body", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderConversation(controller)
+
+    await actAsync(() =>
+      toolCall(controller, "claude-code", {
+        toolCallId: "t1",
+        kind: "edit",
+        title: "Bump b",
+        status: "in_progress",
+        diff: { path: "src/app.ts", unified: UNIFIED },
+      }),
+    )
+    const frame = await waitForFrame((f) => f.includes("const b = 3"))
+
+    // The path rides the connector in the same quiet shape a non-edit call's locations do;
+    // the diff's own gutter uses line numbers, not `└ `, so this row is unambiguous.
+    const connector = frame.split("\n").find((row) => row.includes(CONNECTOR))
+    expect(connector).toBeDefined()
+    expect(connector).toContain(`${CONNECTOR}src/app.ts`)
 
     await destroyMounted(renderer)
   })
@@ -394,5 +542,26 @@ describe("filetypeFor", () => {
     // A trailing dot names nothing either.
     expect(filetypeFor("weird.")).toBeUndefined()
     expect(filetypeFor("")).toBeUndefined()
+  })
+})
+
+describe("TOOL_KIND_NAMES", () => {
+  it("gives every kind a capitalized header name", () => {
+    const expected: Record<ToolCallKind, string> = {
+      read: "Read",
+      edit: "Edit",
+      delete: "Delete",
+      move: "Move",
+      search: "Search",
+      execute: "Run",
+      think: "Think",
+      fetch: "Fetch",
+      other: "Tool",
+    }
+    expect(TOOL_KIND_NAMES).toEqual(expected)
+    // Every name leads with an uppercase letter, so a header reads as a proper noun.
+    for (const name of Object.values(TOOL_KIND_NAMES)) {
+      expect(name[0]).toBe(name[0]!.toUpperCase())
+    }
   })
 })

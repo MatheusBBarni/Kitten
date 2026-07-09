@@ -36,10 +36,12 @@ describe("paletteFor", () => {
     }
   })
 
-  it("sets the user's words apart from the agent's in both modes", () => {
+  it("tints the user's message band a shade off the surface in both modes", () => {
     for (const palette of [DARK_PALETTE, LIGHT_PALETTE] satisfies CockpitPalette[]) {
-      expect(palette.userMessage).not.toBe(palette.text)
-      expect(palette.userMessage).not.toBe(palette.muted)
+      // A band distinct from the surface, so the user's turn reads as its own block, but
+      // not the text color, so words never vanish into their own background.
+      expect(palette.userMessageSurface).not.toBe(palette.surface)
+      expect(palette.userMessageSurface).not.toBe(palette.text)
     }
   })
 })

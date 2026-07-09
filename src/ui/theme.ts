@@ -42,8 +42,16 @@ export interface CockpitPalette {
   readonly status: Readonly<Record<StatusTone, string>>
   /** One color per tool-call state, so a transcript row reads at a glance. */
   readonly tool: Readonly<Record<ToolCallStatus, string>>
-  /** The user's own words, set apart from the agent's. */
-  readonly userMessage: string
+  /**
+   * The tinted band a user message sits on.
+   *
+   * A background is a cell attribute, not a glyph, so it never reaches
+   * `getSelectedText()` the way a box border would - the band sets the user's turn
+   * apart without dragging box-drawing characters into their clipboard. Kept a shade
+   * off `surface` so the band reads as its own thing, and dark enough (light enough,
+   * on a light terminal) that `text` stays legible on top of it.
+   */
+  readonly userMessageSurface: string
 }
 
 /** Tuned against a dark terminal background. */
@@ -66,7 +74,9 @@ export const DARK_PALETTE: CockpitPalette = {
     completed: "#6FBF73",
     failed: "#F26D6D",
   },
-  userMessage: "#9BB8E0",
+  // A dark navy a step off `surface` (#1C1C1C): bluer and slightly lighter, so the
+  // band is visible without shouting, and `text` (#E6E6E6) sits at high contrast on it.
+  userMessageSurface: "#22303F",
 }
 
 /** Tuned against a light terminal background: same hues, darkened for contrast. */
@@ -89,7 +99,9 @@ export const LIGHT_PALETTE: CockpitPalette = {
     completed: "#2E6B33",
     failed: "#A32020",
   },
-  userMessage: "#26456E",
+  // A soft blue a step off `surface` (#F4F4F4): faintly darker with a blue lean, so the
+  // band is visible without shouting, and `text` (#1C1C1C) sits at high contrast on it.
+  userMessageSurface: "#E4ECF7",
 }
 
 /** Resolve a palette; an unreported theme (`null`) falls back to dark. */
