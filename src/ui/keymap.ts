@@ -55,9 +55,14 @@ export interface KeyBinding<Command extends string = CockpitCommand> extends Hel
   readonly matches: (key: CockpitKey) => boolean
 }
 
+/** A plain, unmodified press of any one of `names` - for a key a terminal may report under more than one name. */
+function plainAny(...names: string[]): (key: CockpitKey) => boolean {
+  return (key) => names.includes(key.name) && !key.ctrl && !key.meta && !key.shift
+}
+
 /** A plain, unmodified press of `name`. */
 function plain(name: string): (key: CockpitKey) => boolean {
-  return (key) => key.name === name && !key.ctrl && !key.meta && !key.shift
+  return plainAny(name)
 }
 
 /** `Ctrl` plus `name`, with no other modifier. */
@@ -165,7 +170,7 @@ export const APPROVAL_KEYMAP: readonly KeyBinding<ApprovalCommand>[] = [
     command: "confirm",
     keys: "Enter",
     description: "Answer the agent with the highlighted option",
-    matches: (key) => (key.name === "return" || key.name === "kpenter") && !key.ctrl && !key.meta && !key.shift,
+    matches: plainAny("return", "kpenter"),
   },
   {
     command: "cancel",
@@ -221,7 +226,7 @@ export const HANDOFF_KEYMAP: readonly KeyBinding<HandoffCommand>[] = [
     command: "confirm",
     keys: "Enter",
     description: "Send the bundle and switch focus to the target agent",
-    matches: (key) => (key.name === "return" || key.name === "kpenter") && !key.ctrl && !key.meta && !key.shift,
+    matches: plainAny("return", "kpenter"),
   },
   {
     command: "cancel",
@@ -254,20 +259,21 @@ export const HANDOFF_HINT = "↑↓ move  Space keep/drop  e edit summary  Enter
 /** The hint printed while the summary editor holds the keyboard, where only Escape is ours. */
 export const HANDOFF_EDIT_HINT = "Esc returns to the bundle"
 
-/** The command a keypress maps to, or `null` when the shell does not claim it. */
-export function matchCommand(key: CockpitKey): CockpitCommand | null {
-  return COCKPIT_KEYMAP.find((binding) => binding.matches(key))?.command ?? null
+/** Build the "first binding whose predicate matches, else null" lookup a keymap needs. */
+function makeMatcher<Command extends string>(
+  keymap: readonly KeyBinding<Command>[],
+): (key: CockpitKey) => Command | null {
+  return (key) => keymap.find((binding) => binding.matches(key))?.command ?? null
 }
+
+/** The command a keypress maps to, or `null` when the shell does not claim it. */
+export const matchCommand = makeMatcher(COCKPIT_KEYMAP)
 
 /** The overlay command a keypress maps to, or `null` when the overlay does not claim it. */
-export function matchApprovalCommand(key: CockpitKey): ApprovalCommand | null {
-  return APPROVAL_KEYMAP.find((binding) => binding.matches(key))?.command ?? null
-}
+export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)
 
 /** The preview command a keypress maps to, or `null` when the preview does not claim it. */
-export function matchHandoffCommand(key: CockpitKey): HandoffCommand | null {
-  return HANDOFF_KEYMAP.find((binding) => binding.matches(key))?.command ?? null
-}
+export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)
 
 /**
  * The zero-based option a digit key names, or `null` for any other key.

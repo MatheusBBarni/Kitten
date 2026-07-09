@@ -89,6 +89,14 @@ jobs:
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
+      # The release tag is the source of truth for the version. package.json ships 0.0.0,
+      # so without this every release would try to publish 0.0.0 - a version/tag mismatch
+      # on the first release and a hard 403 (cannot republish a version) on every one
+      # after. Stamp the tag in before publishing so npm gets a matching, monotonic version.
+      - name: Stamp version from release tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: npm version "${TAG#v}" --no-git-tag-version --allow-same-version
       - name: Publish
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}

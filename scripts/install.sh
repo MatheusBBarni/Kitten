@@ -131,8 +131,11 @@ main() {
   esac
 }
 
-# Only run the installer when executed directly, so tests can source the file and
-# exercise verify_checksum / detect_platform in isolation.
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+# Only run the installer when executed, not when sourced, so tests can source the file
+# and exercise verify_checksum / detect_platform in isolation. The fallback to "$0"
+# covers the documented `curl -fsSL ... | bash` path: bash reads the script from stdin,
+# so BASH_SOURCE is empty - a bare "${BASH_SOURCE[0]}" would both trip `set -u` and never
+# equal "$0", leaving `main` uncalled and the one-line install a silent no-op.
+if [ "${BASH_SOURCE[0]:-$0}" = "${0}" ]; then
   main "$@"
 fi

@@ -60,17 +60,20 @@ export interface FirstRunReport {
   blocked: boolean
 }
 
+/**
+ * Build a setup state, keeping the {@link AgentSetupState} shape in one place so the
+ * two boot paths that produce it (a readiness verdict pre-boot, a live runtime state
+ * post-boot) cannot drift. `gap` is carried only when the agent is not ready.
+ */
+export function makeSetupState(agentId: AgentId, displayName: string, ready: boolean, gap?: string): AgentSetupState {
+  if (ready) return { agentId, displayName, ready: true }
+  return { agentId, displayName, ready: false, gap }
+}
+
 /** Reduce a readiness verdict (task_04) to the setup state the guidance consumes. */
 export function readinessSetup(readiness: AgentReadiness): AgentSetupState {
-  if (readiness.ready) {
-    return { agentId: readiness.agentId, displayName: readiness.displayName, ready: true }
-  }
-  return {
-    agentId: readiness.agentId,
-    displayName: readiness.displayName,
-    ready: false,
-    gap: readiness.message,
-  }
+  if (readiness.ready) return makeSetupState(readiness.agentId, readiness.displayName, true)
+  return makeSetupState(readiness.agentId, readiness.displayName, false, readiness.message)
 }
 
 /**

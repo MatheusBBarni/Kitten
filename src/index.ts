@@ -22,6 +22,7 @@ import {
   buildFirstRunReport,
   formatFirstRunReport,
   isInsideRepo,
+  makeSetupState,
   type AgentSetupState,
   type FirstRunReport,
 } from "./config/firstRun.ts"
@@ -102,8 +103,8 @@ export function exitProcess(): void {
 
 /** Reduce a live runtime standing to the neutral setup state the first-run flow reads. */
 export function runtimeSetup(state: AgentRuntimeState): AgentSetupState {
-  if (state.ready) return { agentId: state.agentId, displayName: state.displayName, ready: true }
-  return { agentId: state.agentId, displayName: state.displayName, ready: false, gap: state.error }
+  if (state.ready) return makeSetupState(state.agentId, state.displayName, true)
+  return makeSetupState(state.agentId, state.displayName, false, state.error)
 }
 
 /** Print first-run guidance to stderr; the terminal must already be restored. */

@@ -28,6 +28,7 @@ import type { PromptBlock, PromptResult } from "../agent/agentConnection.ts"
 import { createDeterministicAssembler, type BundleAssembler } from "../core/bundleAssembler.ts"
 import { editedCharCount } from "../core/telemetryHeuristics.ts"
 import type { HandoffBundle, PendingDiff } from "../core/types.ts"
+import { selectHasOpenOverlay } from "../store/selectors.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { nextAgentId } from "./actions.ts"
 import type { SessionController } from "./controller.ts"
@@ -166,7 +167,7 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       // is open, so this is a guard rather than a reachable path - but the flow is
       // callable without the shell, and clobbering a pending permission request with a
       // preview would strand the agent waiting on it.
-      if (state.overlays.approval !== null || state.overlays.handoffPreview !== null) return false
+      if (selectHasOpenOverlay(state)) return false
 
       const sourceAgentId = state.focusedAgentId
       const targetAgentId = nextAgentId(sourceAgentId)

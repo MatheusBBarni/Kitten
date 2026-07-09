@@ -273,13 +273,14 @@ export function resolveTelemetryPath(env: Record<string, string | undefined> = p
 
 /**
  * A sink that appends one JSON object per line to a local file. Creates the parent
- * directory on first write. Synchronous: telemetry events are infrequent, and a
- * blocking append is simpler and safer than juggling an async write queue on exit.
+ * directory once, when the sink is built, rather than on every append. Synchronous:
+ * telemetry events are infrequent, and a blocking append is simpler and safer than
+ * juggling an async write queue on exit.
  */
 export function createJsonlFileSink(path: string): TelemetrySink {
+  mkdirSync(dirname(path), { recursive: true })
   return {
     write(record: TelemetryRecord): void {
-      mkdirSync(dirname(path), { recursive: true })
       appendFileSync(path, `${JSON.stringify(record)}\n`)
     },
   }

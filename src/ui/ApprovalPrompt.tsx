@@ -87,11 +87,19 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
 
   const answer = useCallback(
     (outcome: PermissionOutcome): void => {
+      // Answer at most once per displayed request. A second synchronous keypress
+      // (key-repeat, or two bytes arriving in one stdin chunk) would otherwise re-fire
+      // this stale closure before React re-homes the overlay onto the next queued
+      // request, and the controller would settle *that* request - which was never shown
+      // to the user - with this one's outcome. Re-reading the store the way
+      // HandoffPreview.confirm does gates it: once the slot no longer holds our request,
+      // the answer has already been given.
+      if (controller.store.getState().overlays.approval !== overlay) return
       // The controller settles the agent's promise and advances the queue, which is
       // what closes this overlay. See the module comment.
       controller.actions.respondPermission(outcome)
     },
-    [controller],
+    [controller, overlay],
   )
 
   const choose = useCallback(
