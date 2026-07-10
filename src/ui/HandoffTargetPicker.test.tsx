@@ -103,7 +103,10 @@ describe("HandoffTargetPicker visibility", () => {
     // Both candidates, and not the source: you cannot hand a task to yourself.
     expect(frame).toContain("Beta")
     expect(frame).toContain("Gamma")
-    expect(frame).not.toContain("Alpha")
+    // The source is absent from the candidate list. Assert on its directory, which the
+    // picker card shows but the status strip (now labeled by title) does not, so the
+    // source's title appearing in the strip cannot mask a leak into the picker.
+    expect(frame).not.toContain("/work/alpha")
     // The picker is up; the redacted preview is not, and nothing has been sent.
     expect(controller.store.getState().overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
@@ -252,7 +255,9 @@ describe("integration - hand-off and hand-back across three sessions", () => {
     // C now holds the handed-over turn, so hand-back is the same flow pointed back.
     // From C the candidates are A and B; A (Alpha) is the first row - choose it directly.
     await openPicker(setup)
-    expect(setup.captureCharFrame()).not.toContain("Gamma")
+    // Source C (Gamma) is excluded from the picker; assert on its directory, which the
+    // strip does not show, rather than its title, which the strip now does.
+    expect(setup.captureCharFrame()).not.toContain("/work/gamma")
     await setup.waitForFrame((frame) => {
       const line = frame.split("\n").find((l) => l.includes("Alpha"))
       return line?.includes(SESSION_MARKER) === true

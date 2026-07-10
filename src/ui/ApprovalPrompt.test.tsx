@@ -1,3 +1,5 @@
+import { join } from "node:path"
+
 import { describe, expect, it } from "bun:test"
 
 import type { TestRendererSetup } from "@opentui/core/testing"
@@ -203,6 +205,52 @@ describe("ApprovalPrompt contents", () => {
     expect(frame).toContain(TOOL_KIND_LABELS.other)
     // Nothing to show, so nothing is drawn where a diff would be.
     expect(frame).not.toContain("const b = 3")
+
+    await destroyMounted(renderer)
+  })
+
+  it("labels the overlay with the requesting session's title and working directory (task_07)", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderCockpit(controller)
+
+    await actAsync(() => {
+      controller.store.openApproval({
+        sessionId: "claude-code",
+        title: "backend-api",
+        cwd: "/srv/backend-api",
+        request: editRequest(),
+      })
+    })
+
+    // The prompt names which session, in which directory, is asking - not merely the
+    // provider - so an answer can never land in the wrong repository.
+    const frame = await waitForFrame((f) => f.includes(APPROVAL_HINT))
+    expect(frame).toContain("backend-api")
+    expect(frame).toContain("/srv/backend-api")
+
+    await destroyMounted(renderer)
+  })
+
+  it("gives two sessions of the same provider visibly distinct headers (task_07)", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderCockpit(controller)
+
+    // Same provider (claude-code) share the frame's display name; the session title and
+    // full working directory are what tell the two apart.
+    await actAsync(() => {
+      controller.store.openApproval({ sessionId: "claude-code", title: "web", cwd: "/repos/web", request: editRequest() })
+    })
+    const first = await waitForFrame((f) => f.includes("/repos/web"))
+    expect(first).toContain("web")
+    expect(first).not.toContain("/repos/api")
+
+    // The next queued request replaces the slot in place; the header re-homes onto it.
+    await actAsync(() => {
+      controller.store.openApproval({ sessionId: "claude-code", title: "api", cwd: "/repos/api", request: editRequest() })
+    })
+    const second = await waitForFrame((f) => f.includes("/repos/api"))
+    expect(second).toContain("api")
+    expect(second).not.toContain("/repos/web")
 
     await destroyMounted(renderer)
   })
@@ -457,6 +505,87 @@ describe("integration - a mock agent's permission request", () => {
     expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: REJECT.optionId }])
     expect(controller.store.getState().overlays.approval).toBeNull()
     expect(await setup.waitForFrame((f) => !f.includes(APPROVAL_HINT))).toContain(PROMPT_PLACEHOLDER)
+
+    await destroyMounted(setup.renderer)
+    await controller.dispose()
+  })
+})
+
+describe("integration - two sessions of the same provider requesting permission (task_07)", () => {
+  it("names each prompt by its own session and directory and routes each decision to the right agent", async () => {
+    // Two claude-code sessions in two real, distinct directories - the same-provider
+    // fleet where a provider display name alone cannot tell the prompts apart.
+    const root = process.cwd()
+    const dirA = join(root, "src")
+    const dirB = join(root, "test")
+
+    const permission: MockPromptScript = async (_request, ctx) => {
+      await ctx.requestPermission({ toolCallId: "call-1", kind: "edit", title: "Bump b" }, [ALLOW, REJECT])
+    }
+    const agentA = connectionToMockAgent(CLAUDE, permission)
+    const agentB = connectionToMockAgent(CLAUDE, permission)
+    // Both sessions share the claude-code provider, so the controller asks for a
+    // connection twice with the same config; hand out a fresh one per call, in plan order.
+    const queue = [agentA.connection, agentB.connection]
+
+    const config: AppConfig = {
+      providers: APP_CONFIG.providers,
+      sessions: [
+        { provider: "claude-code", cwd: dirA, title: "repo-a" },
+        { provider: "claude-code", cwd: dirB, title: "repo-b" },
+      ],
+      telemetryEnabled: false,
+    }
+    const controller = await createSessionController({ config, cwd: root, createConnection: () => queue.shift()! })
+
+    const setup = await testRender(<CockpitApp controller={controller} />, {
+      width: WIDTH,
+      height: HEIGHT,
+      kittyKeyboard: true,
+    })
+    await setup.waitForFrame((frame) => frame.includes("repo-a"))
+
+    // Session A (repo-a) asks first; the prompt is labeled with A's directory alone.
+    let promptA: Promise<unknown> = Promise.resolve()
+    await actAsync(() => {
+      promptA = controller.actions.sendPrompt("edit a", "claude-code")
+    })
+    const openedA = await setup.waitForFrame((frame) => frame.includes(dirA))
+    expect(openedA).toContain("repo-a")
+    expect(openedA).not.toContain(dirB)
+
+    // Session B (repo-b) asks while A is still on screen; its request queues behind A's
+    // rather than replacing it, and B's own status flips to awaiting-approval.
+    let promptB: Promise<unknown> = Promise.resolve()
+    await actAsync(() => {
+      promptB = controller.actions.sendPrompt("edit b", "claude-code-2")
+    })
+    await actAsync(async () => {
+      while (controller.store.getState().sessions["claude-code-2"]!.status !== "awaiting_approval") {
+        await Bun.sleep(1)
+      }
+    })
+
+    // Answer A. Only A's agent hears the decision; B, still queued, hears nothing -
+    // there is no path by which one session's answer settles another's request.
+    await actAsync(async () => {
+      controller.actions.respondPermission({ outcome: "selected", optionId: REJECT.optionId })
+      await promptA
+    })
+    expect(agentA.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: REJECT.optionId }])
+    expect(agentB.agent.permissionOutcomes).toEqual([])
+
+    // The slot now belongs to B, labeled with B's directory alone.
+    const openedB = await setup.waitForFrame((frame) => frame.includes(dirB))
+    expect(openedB).toContain("repo-b")
+    expect(openedB).not.toContain(dirA)
+
+    // Answer B. Its own agent, and only now, hears its own decision.
+    await actAsync(async () => {
+      controller.actions.respondPermission({ outcome: "selected", optionId: ALLOW.optionId })
+      await promptB
+    })
+    expect(agentB.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: ALLOW.optionId }])
 
     await destroyMounted(setup.renderer)
     await controller.dispose()

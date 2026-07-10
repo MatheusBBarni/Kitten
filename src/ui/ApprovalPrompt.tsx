@@ -18,9 +18,12 @@
  * - **It does not close itself.** `respondPermission` settles the request and the
  *   controller then either opens the next queued one or clears the slot. Closing here
  *   too would clobber a freshly-opened second request in the same tick.
- * - **It shows the whole proposed action** - which agent, what kind, what title, and
- *   the unified diff when one is attached - because a decision made on a truncated
- *   description is not consent.
+ * - **It shows the whole proposed action** - which agent, in which working directory,
+ *   what kind, what title, and the unified diff when one is attached - because a
+ *   decision made on a truncated description is not consent. The session title and
+ *   directory are what keep a permission answer from ever landing in the wrong
+ *   repository when several agents - even two of the same provider - run at once
+ *   (task_07, ADR-004).
  *
  * It renders as a conditional, absolutely-positioned box: the React binding ships no
  * Portal (ADR-004).
@@ -71,7 +74,7 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
-  const { sessionId, request } = overlay
+  const { sessionId, title, cwd, request } = overlay
   const { options, toolCall } = request
 
   const [selected, setSelected] = useState(0)
@@ -169,6 +172,19 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
       title={approvalTitleFor(displayName)}
       titleColor={palette.status.awaiting_approval}
     >
+      {/*
+        Which session is asking, and the directory it works in. The provider display
+        name in the frame title is not enough on its own - two sessions of the same
+        provider share it - so the session's own title and working directory are what
+        make an approval unmistakably attributable to one agent and one repository
+        (task_07). The directory is shown in full: a basename can collide across clones,
+        the path cannot.
+      */}
+      <text style={{ flexShrink: 0 }}>
+        <span fg={palette.text}>{title}</span>
+        <span fg={palette.muted}>{`  ${cwd}`}</span>
+      </text>
+
       <text style={{ flexShrink: 0 }}>
         <span fg={palette.muted}>{`${TOOL_KIND_LABELS[kind]} `}</span>
         <span fg={palette.text}>{toolCall.title ?? UNTITLED_ACTION}</span>

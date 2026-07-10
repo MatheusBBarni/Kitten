@@ -67,7 +67,17 @@ export interface AgentStatusChipProps {
   runtime: AgentRuntimeState
 }
 
-/** One agent: focus marker, display name, and the state it is in. */
+/**
+ * One agent: focus marker, session title, and the state it is in.
+ *
+ * The chip is labeled by the session's own `title`, not the provider display name:
+ * two sessions of the same provider share a display name and would otherwise read
+ * identically here (ADR-004). A session's title defaults to its working directory's
+ * basename, so a same-provider fleet reads as distinct directories at a glance; the
+ * full working directory - the absolute disambiguator - lives in the Ctrl+S overview
+ * and on every approval prompt (task_07), which is where a decision actually lands.
+ * The strip stays a single compact line by design.
+ */
 export function AgentStatusChip({ runtime }: AgentStatusChipProps): ReactNode {
   const palette = usePalette()
   const { sessionId } = runtime
@@ -84,7 +94,7 @@ export function AgentStatusChip({ runtime }: AgentStatusChipProps): ReactNode {
   return (
     <text style={{ flexShrink: 0 }}>
       <span fg={focused ? palette.accent : palette.muted}>{focused ? FOCUS_MARKER : " "}</span>
-      <span fg={focused ? palette.text : palette.muted}>{` ${runtime.displayName}: `}</span>
+      <span fg={focused ? palette.text : palette.muted}>{` ${runtime.title}: `}</span>
       <span fg={palette.status[tone]}>{STATUS_LABELS[tone]}</span>
     </text>
   )

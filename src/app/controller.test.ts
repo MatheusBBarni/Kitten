@@ -609,6 +609,44 @@ describe("actions - respondPermission", () => {
 
     await controller.dispose()
   })
+
+  it("Should settle only the answered same-provider session and keep the other's request pending (task_07)", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+
+    // The two claude-code sessions - identical provider, distinct identity - both ask.
+    let betaSettled = false
+    const askAlpha = created[0]!.ask(PERMISSION_REQUEST)
+    const askBeta = created[1]!.ask(PERMISSION_REQUEST).then((outcome) => {
+      betaSettled = true
+      return outcome
+    })
+
+    // Alpha is on screen, labeled unmistakably as itself and not its same-provider sibling.
+    expect(controller.store.getState().overlays.approval).toMatchObject({
+      sessionId: "claude-code",
+      title: "Alpha",
+      cwd: FLEET_DIRS.alpha,
+    })
+
+    // Answering Alpha settles Alpha alone.
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    expect(await askAlpha).toEqual({ outcome: "selected", optionId: "allow" })
+
+    // Beta's request was never auto-approved by Alpha's decision: it is still waiting on
+    // its own explicit answer, and it - not Alpha - now owns the slot.
+    await Bun.sleep(1)
+    expect(betaSettled).toBe(false)
+    expect(controller.store.getState().overlays.approval).toMatchObject({
+      sessionId: "claude-code-2",
+      title: "Beta",
+      cwd: FLEET_DIRS.beta,
+    })
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    expect(await askBeta).toEqual({ outcome: "cancelled" })
+
+    await controller.dispose()
+  })
 })
 
 describe("createSessionController - dispose", () => {
