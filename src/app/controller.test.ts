@@ -38,7 +38,7 @@ const PROVIDERS: AppConfig["providers"] = {
   "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
   codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
 }
-const APP_CONFIG: AppConfig = { providers: PROVIDERS, sessions: [], telemetryEnabled: false }
+const APP_CONFIG: AppConfig = { providers: PROVIDERS, sessions: [], telemetryEnabled: false, theme: "auto" }
 const CWD = "/workspace/kitten"
 
 const PERMISSION_REQUEST: PermissionRequest = {
@@ -200,6 +200,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
     { provider: "codex", cwd: FLEET_DIRS.gamma, title: "Gamma" },
   ],
   telemetryEnabled: false,
+  theme: "auto",
 }
 
 /**
@@ -460,6 +461,7 @@ describe("createSessionController - multi-session fleet", () => {
       providers: PROVIDERS,
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       telemetryEnabled: false,
+      theme: "auto",
     }
     const { controller, created } = await controllerOverFleet(config)
 
@@ -533,7 +535,12 @@ describe("actions - sendPrompt", () => {
   it("Should swallow a failing prompt when no error reporter is configured", async () => {
     const connection = createStubConnection("claude-code", { promptThrows: new Error("broken pipe") })
     const controller = await createSessionController({
-      config: { providers: PROVIDERS, sessions: [{ provider: "claude-code", cwd: process.cwd() }], telemetryEnabled: false },
+      config: {
+        providers: PROVIDERS,
+        sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        telemetryEnabled: false,
+        theme: "auto",
+      },
       cwd: CWD,
       createConnection: () => connection,
     })
@@ -847,7 +854,12 @@ describe("createSessionController - dispose", () => {
       throw new Error("kill failed")
     }
     const controller = await createSessionController({
-      config: { providers: PROVIDERS, sessions: [{ provider: "claude-code", cwd: process.cwd() }], telemetryEnabled: false },
+      config: {
+        providers: PROVIDERS,
+        sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        telemetryEnabled: false,
+        theme: "auto",
+      },
       cwd: CWD,
       createConnection: () => connection,
     })

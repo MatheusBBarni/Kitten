@@ -32,6 +32,7 @@ import type {
   ProviderRecipe,
   ResolvedSession,
   SessionDescriptor,
+  ThemePreference,
 } from "../core/types.ts"
 import { PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
 
@@ -63,6 +64,11 @@ const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
 
 /** Telemetry is opt-in and off until the user says otherwise (PRD privacy stance). */
 const DEFAULT_TELEMETRY_ENABLED = false
+
+/** The default follows the terminal-reported theme unless the user selects an override. */
+const DEFAULT_THEME: ThemePreference = "auto"
+
+const THEME_PREFERENCES = ["auto", "light", "dark", "catppuccin-mocha", "catppuccin-latte"] as const satisfies readonly ThemePreference[]
 
 /** A configuration file that is missing, malformed, or fails validation. */
 export class ConfigError extends Error {
@@ -117,6 +123,7 @@ const SESSION_DESCRIPTOR_SCHEMA = z
 const USER_CONFIG_SCHEMA = z
   .object({
     telemetryEnabled: z.boolean().optional(),
+    theme: z.enum(THEME_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
     /** @deprecated Use `providers`. Kept as an alias for one migration window. */
     agents: PROVIDERS_SCHEMA.optional(),
@@ -144,6 +151,7 @@ export function defaultAppConfig(): AppConfig {
     providers: cloneProviders(DEFAULT_PROVIDERS),
     sessions: [],
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
+    theme: DEFAULT_THEME,
   }
 }
 
@@ -176,6 +184,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     providers: config.providers,
     sessions: user.sessions?.map((session) => ({ ...session })) ?? [],
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
+    theme: user.theme ?? config.theme,
   }
 }
 

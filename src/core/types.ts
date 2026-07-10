@@ -303,6 +303,12 @@ export interface SessionDescriptor {
   task?: string
 }
 
+/** A curated, named theme palette that can be persisted as a user preference. */
+export type ThemePresetId = "catppuccin-mocha" | "catppuccin-latte"
+
+/** The user's persisted theme choice; `auto` follows the terminal-reported mode. */
+export type ThemePreference = "auto" | "light" | "dark" | ThemePresetId
+
 /**
  * The loaded application configuration (ADR-005). `providers` is the map of spawn
  * recipes keyed by kind; `sessions` is the ordered fleet to open. An empty `sessions`
@@ -312,6 +318,7 @@ export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
   sessions: SessionDescriptor[]
   telemetryEnabled: boolean
+  theme: ThemePreference
 }
 
 /**

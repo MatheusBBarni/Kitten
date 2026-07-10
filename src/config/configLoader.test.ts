@@ -18,10 +18,10 @@ import {
 
 /**
  * Unit tests for `AppConfig` loading (ADR-005): the shipped default provider recipes,
- * per-provider override merging, the telemetry opt-in, session resolution (zero-config
- * default, per-session `cwd`/`title`/`task`, repeated-provider identities), and the
- * failure modes of an invalid config file. `loadAppConfig` is exercised against real
- * temp files so the missing-file and present-file paths are both covered end to end.
+ * per-provider override merging, theme and telemetry preferences, session resolution
+ * (zero-config default, per-session `cwd`/`title`/`task`, repeated-provider identities),
+ * and the failure modes of an invalid config file. `loadAppConfig` is exercised against
+ * real temp files so the missing-file and present-file paths are both covered end to end.
  */
 
 const tempDirs: string[] = []
@@ -233,6 +233,29 @@ describe("telemetry opt-in", () => {
   })
 })
 
+describe("theme preference", () => {
+  it("Should default the theme to auto", () => {
+    expect(defaultAppConfig().theme).toBe("auto")
+  })
+
+  it("Should merge an omitted theme delta to auto", () => {
+    expect(parseAppConfig("{}").theme).toBe("auto")
+  })
+
+  it("Should accept a valid named theme preference", () => {
+    expect(parseAppConfig('{"theme":"catppuccin-mocha"}').theme).toBe("catppuccin-mocha")
+  })
+
+  it("Should load a theme delta from a real config file", async () => {
+    const path = await writeConfig(JSON.stringify({ theme: "catppuccin-latte" }))
+
+    const config = await loadAppConfig({ path })
+
+    expect(config.theme).toBe("catppuccin-latte")
+    expect(config.providers).toEqual(defaultAppConfig().providers)
+  })
+})
+
 describe("invalid config", () => {
   it("Should reject malformed JSON with the offending path", async () => {
     const path = await writeConfig("{ not json")
@@ -244,6 +267,11 @@ describe("invalid config", () => {
   it("Should reject an unknown top-level key naming the offending field", () => {
     expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(ConfigError)
     expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(/telemetry/)
+  })
+
+  it("Should reject an invalid theme preference naming the offending field", () => {
+    expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(ConfigError)
+    expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(/theme/)
   })
 
   it("Should reject an unknown provider id", () => {
