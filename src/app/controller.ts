@@ -21,7 +21,7 @@
 import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { resolveSessions } from "../config/configLoader.ts"
-import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
+import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
 import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
 import { createControllerActions, type AgentSession, type ControllerActions, type FocusTelemetry } from "./actions.ts"
 
@@ -159,10 +159,21 @@ export async function createSessionController(options: SessionControllerOptions)
         await failSession(seed, config, connection, ready.error)
         return
       }
+      // The agent may advertise its current model/effort in the `session/new` response,
+      // which the adapter emits as a `config_options` event *during* `newSession`. The
+      // permanent subscription below is bound only after `startSession` resets the slice,
+      // so capture that seed here and replay it after the reset - otherwise the selector
+      // starts empty and the picker is blank until the first switch (ADR-004).
+      let seededConfig: DomainSessionEvent | null = null
+      const captureSeed = connection.onUpdate((event) => {
+        if (event.kind === "config_options") seededConfig = event
+      })
       const acpSessionId = await connection.newSession(seed.cwd)
+      captureSeed()
       // Bind the slice before subscribing: `startSession` resets the transcript, so
       // an event that arrived first would be thrown away.
       store.startSession(seed.id, acpSessionId)
+      if (seededConfig) store.applyEvent(seed.id, seededConfig)
       const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
       connection.onPermission((request) => enqueuePermission(seed.id, request))
       runtimes.set(seed.id, {

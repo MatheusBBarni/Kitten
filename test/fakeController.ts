@@ -21,6 +21,7 @@ import { selectNextNeedy } from "../src/store/selectors.ts"
 export interface RecordedCalls {
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
+  setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
   switchFocus: (SessionId | undefined)[]
   jumpToNextNeedy: number
   respondPermission: PermissionOutcome[]
@@ -76,6 +77,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   const calls: RecordedCalls = {
     sendPrompt: [],
     cancel: [],
+    setSessionConfigOption: [],
     switchFocus: [],
     jumpToNextNeedy: 0,
     respondPermission: [],
@@ -94,6 +96,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       async cancel(sessionId?: SessionId): Promise<void> {
         calls.cancel.push(sessionId)
+      },
+      async setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<void> {
+        calls.setSessionConfigOption.push({ configId, value, sessionId })
       },
       switchFocus(sessionId?: SessionId): void {
         calls.switchFocus.push(sessionId)

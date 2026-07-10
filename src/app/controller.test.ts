@@ -11,7 +11,8 @@ import {
   type ReadyState,
 } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId } from "../core/types.ts"
+import type { AgentConfig, AppConfig, ConfigOption, DomainSessionEvent, ProviderKind, SessionId } from "../core/types.ts"
+import { selectAgentModel } from "../store/selectors.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
 import { composePromptBlocks, createControllerActions, nextSessionId } from "./actions.ts"
@@ -49,6 +50,20 @@ const PERMISSION_REQUEST: PermissionRequest = {
   ],
 }
 
+/** A `model`-category config option with the given confirmed value, for seeding/switch tests. */
+function modelOption(currentValue: string): ConfigOption {
+  return {
+    id: "model",
+    category: "model",
+    label: "Model",
+    currentValue,
+    options: [
+      { value: "opus", name: "Opus" },
+      { value: "sonnet", name: "Sonnet" },
+    ],
+  }
+}
+
 /** A stub `AgentConnection` recording what the controller asked of it. */
 interface StubConnection extends AgentConnection {
   /** Push a domain event as if the agent had streamed it. */
@@ -58,6 +73,8 @@ interface StubConnection extends AgentConnection {
   readonly prompts: Array<{ sessionId: string; blocks: PromptBlock[] }>
   readonly cancels: string[]
   readonly newSessionCwds: string[]
+  /** Every `setSessionConfigOption` call the controller made, in order. */
+  readonly configCalls: Array<{ sessionId: string; configId: string; value: string }>
   readonly isDisposed: () => boolean
 }
 
@@ -68,6 +85,12 @@ interface StubOptions {
   newSessionThrows?: unknown
   promptThrows?: unknown
   cancelThrows?: unknown
+  /** The full option set `setSessionConfigOption` echoes back (the confirmed state). */
+  configResponse?: ConfigOption[]
+  /** Make `setSessionConfigOption` reject, to exercise the action's error path. */
+  setConfigThrows?: unknown
+  /** Options the agent advertises during `newSession`, emitted so the controller can seed them. */
+  newSessionConfig?: ConfigOption[]
 }
 
 function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
@@ -75,14 +98,20 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
   const cancels: string[] = []
   const newSessionCwds: string[] = []
+  const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   let disposed = false
+
+  const emit = (event: DomainSessionEvent): void => {
+    for (const subscriber of subscribers) subscriber(event)
+  }
 
   return {
     id,
     prompts,
     cancels,
     newSessionCwds,
+    configCalls,
     isDisposed: () => disposed,
     async connect() {
       if (options.connectThrows !== undefined) throw options.connectThrows
@@ -91,6 +120,10 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     async newSession(cwd) {
       newSessionCwds.push(cwd)
       if (options.newSessionThrows !== undefined) throw options.newSessionThrows
+      // Mirror the adapter: an agent that advertises config at session start emits it
+      // as a `config_options` event during `newSession`, before the controller binds
+      // its permanent subscription - the seed the controller must capture and replay.
+      if (options.newSessionConfig !== undefined) emit({ kind: "config_options", options: options.newSessionConfig })
       return options.sessionId ?? `${id}-session`
     },
     async prompt(sessionId, blocks) {
@@ -102,8 +135,10 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
       cancels.push(sessionId)
       if (options.cancelThrows !== undefined) throw options.cancelThrows
     },
-    async setSessionConfigOption() {
-      return []
+    async setSessionConfigOption(sessionId, configId, value) {
+      configCalls.push({ sessionId, configId, value })
+      if (options.setConfigThrows !== undefined) throw options.setConfigThrows
+      return options.configResponse ?? []
     },
     onUpdate(cb) {
       subscribers.add(cb)
@@ -117,9 +152,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     async dispose() {
       disposed = true
     },
-    emit(event) {
-      for (const subscriber of subscribers) subscriber(event)
-    },
+    emit,
     ask(request) {
       if (!permissionHandler) throw new Error("no permission handler registered")
       return permissionHandler(request)
@@ -257,6 +290,20 @@ describe("createSessionController - startup", () => {
   it("Should focus the first configured agent when it is ready", async () => {
     const { controller } = await controllerWithStubs()
     expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    await controller.dispose()
+  })
+
+  it("Should seed the session-start config options into the store as a config_options event", async () => {
+    const { controller } = await controllerWithStubs({
+      "claude-code": { newSessionConfig: [modelOption("opus")] },
+    })
+
+    // The options the agent advertised during newSession populate the selector before
+    // first use, surviving the transcript reset startSession performs.
+    expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([modelOption("opus")])
+    // A session that advertised none stays empty rather than fabricating options.
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([])
+
     await controller.dispose()
   })
 
@@ -516,6 +563,82 @@ describe("actions - cancel", () => {
 
     await controller.actions.cancel("codex")
     expect(errors).toEqual([new Error("already gone")])
+
+    await controller.dispose()
+  })
+})
+
+describe("actions - setSessionConfigOption", () => {
+  it("Should target an explicitly addressed session and call the adapter with the args", async () => {
+    const { controller, connections } = await controllerWithStubs({
+      codex: { configResponse: [modelOption("opus")] },
+    })
+
+    await controller.actions.setSessionConfigOption("model", "opus", "codex")
+
+    expect(connections.codex.configCalls).toEqual([{ sessionId: "codex-session", configId: "model", value: "opus" }])
+    expect(connections["claude-code"].configCalls).toEqual([])
+    // The store reflects the adapter-reported set.
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([modelOption("opus")])
+
+    await controller.dispose()
+  })
+
+  it("Should default to the focused session when no session id is given", async () => {
+    const { controller, connections } = await controllerWithStubs({
+      "claude-code": { configResponse: [modelOption("sonnet")] },
+    })
+
+    await controller.actions.setSessionConfigOption("model", "sonnet")
+
+    expect(connections["claude-code"].configCalls).toEqual([
+      { sessionId: "claude-code-session", configId: "model", value: "sonnet" },
+    ])
+    expect(connections.codex.configCalls).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("Should no-op without throwing when the session has no live connection", async () => {
+    const { controller } = await controllerWithStubs({
+      "claude-code": { ready: { ready: false, error: "down" } },
+    })
+
+    // The not-ready claude-code session resolves to no live session, so this is inert.
+    await controller.actions.setSessionConfigOption("model", "opus", "claude-code")
+    expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("Should route an adapter error to onError and leave the store's confirmed state intact", async () => {
+    const errors: Array<[SessionId, unknown]> = []
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { newSessionConfig: [modelOption("opus")], setConfigThrows: new Error("switch failed") } },
+      { onError: (sessionId, error) => errors.push([sessionId, error]) },
+    )
+
+    await controller.actions.setSessionConfigOption("model", "sonnet", "claude-code")
+
+    // The adapter was called, but its failure never reached the store.
+    expect(connections["claude-code"].configCalls).toHaveLength(1)
+    expect(errors).toEqual([["claude-code", new Error("switch failed")]])
+    // The last confirmed value survives, so the overlay can mark the option unverified.
+    expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([modelOption("opus")])
+
+    await controller.dispose()
+  })
+
+  it("Should reflect the adapter-reported value through selectAgentModel, not the requested one", async () => {
+    // The agent honors the switch with a different value than requested (asked opus,
+    // confirmed sonnet); the store must follow the confirmed state, never the request.
+    const { controller } = await controllerWithStubs({
+      "claude-code": { newSessionConfig: [modelOption("opus")], configResponse: [modelOption("sonnet")] },
+    })
+
+    await controller.actions.setSessionConfigOption("model", "opus", "claude-code")
+
+    expect(selectAgentModel("claude-code")(controller.store.getState())).toBe("sonnet")
 
     await controller.dispose()
   })

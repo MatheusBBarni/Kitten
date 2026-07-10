@@ -73,6 +73,15 @@ export interface ControllerActions {
   /** Interrupt the running turn on `sessionId` (default: the focused session). */
   cancel(sessionId?: SessionId): Promise<void>
   /**
+   * Change one config option (model, reasoning effort, ...) on `sessionId` (default:
+   * the focused session) and store the agent-confirmed full option set (ADR-004). The
+   * store is updated only from what the adapter reports back, never optimistically:
+   * on a live session it applies the returned set; a no-live-session call is a no-op
+   * and a failed switch routes through `onError`, leaving the last confirmed state in
+   * place so the overlay can mark the option `unverified`.
+   */
+  setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<void>
+  /**
    * Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live.
    * `options.viaOverview` records the switch as one made through the Ctrl+S overview
    * (task_09); the default is a blind cycle.
@@ -130,6 +139,19 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       if (!session) return
       try {
         await session.connection.cancel(session.acpSessionId)
+      } catch (error) {
+        onError(sessionId, error)
+      }
+    },
+
+    async setSessionConfigOption(configId, value, sessionId = focused()): Promise<void> {
+      const session = getSession(sessionId)
+      if (!session) return
+      try {
+        // The agent echoes the full refreshed option set; apply that confirmed state
+        // (never the requested value) so the store reflects only what the agent reports.
+        const options = await session.connection.setSessionConfigOption(session.acpSessionId, configId, value)
+        store.applyEvent(sessionId, { kind: "config_options", options })
       } catch (error) {
         onError(sessionId, error)
       }
