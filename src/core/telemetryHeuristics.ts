@@ -101,3 +101,33 @@ export function detectReexplanation(
   }
   return { detected: false, charBucket: 0 }
 }
+
+/**
+ * The content-free event stream for one confirmed effort change. The recorder starts
+ * a stream with `effort_change`, appends another when that setting changes again, and
+ * closes it with `next_turn` when the pane receives its next developer turn.
+ */
+export type EffortRetentionEvent =
+  | { kind: "effort_change" }
+  | { kind: "next_turn" }
+
+/**
+ * Did a confirmed effort change survive through the pane's next turn?
+ *
+ * The first `effort_change` arms the metric. A second one before `next_turn` means
+ * the selected effort was changed (including a revert) before it could be used, so
+ * the original change was not kept. The predicate intentionally receives no option
+ * values, prompt text, or code content.
+ */
+export function effortChangeKept(events: readonly EffortRetentionEvent[]): boolean {
+  let armed = false
+  for (const event of events) {
+    if (event.kind === "effort_change") {
+      if (armed) return false
+      armed = true
+      continue
+    }
+    if (armed) return true
+  }
+  return false
+}

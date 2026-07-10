@@ -14,7 +14,7 @@
  */
 
 import type { AgentConnection, PermissionOutcome, PromptBlock, PromptResult } from "../agent/agentConnection.ts"
-import type { SessionId } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } from "../core/types.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
 
@@ -38,8 +38,20 @@ export interface FocusTelemetry {
   focusSwitch(sessionId: SessionId, viaOverview: boolean): void
 }
 
+/** The switch-outcome slice of telemetry the action surface can report. */
+export interface SwitchTelemetry {
+  recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+}
+
+/**
+ * The recorder surface actions drive. Switch telemetry is optional so focused action
+ * unit tests can keep injecting only the focus counter; the real recorder implements
+ * both slices.
+ */
+export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry>
+
 /** The default when no recorder is injected: record nothing. */
-const NOOP_FOCUS_TELEMETRY: FocusTelemetry = { focusSwitch() {} }
+const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
 
 /** How a focus switch was initiated, so the overview-reliance metric can tell them apart. */
 export interface SwitchFocusOptions {
@@ -58,8 +70,8 @@ export interface ActionDeps {
   newMessageId?: () => string
   /** Where a failing connection is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
-  /** The telemetry recorder to report focus switches to. Defaults to a no-op. */
-  recorder?: FocusTelemetry
+  /** The telemetry recorder to report navigation and adapter-confirmed switches to. */
+  recorder?: ActionTelemetry
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
@@ -112,7 +124,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const { store, getSession } = deps
   const newMessageId = deps.newMessageId ?? (() => crypto.randomUUID())
   const onError = deps.onError ?? (() => {})
-  const recorder = deps.recorder ?? NOOP_FOCUS_TELEMETRY
+  const recorder = deps.recorder ?? NOOP_ACTION_TELEMETRY
 
   const focused = (): SessionId => store.getState().focusedSessionId
 
@@ -147,12 +159,32 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     async setSessionConfigOption(configId, value, sessionId = focused()): Promise<void> {
       const session = getSession(sessionId)
       if (!session) return
+      // Keep the pre-call option only long enough to identify the allowlisted category
+      // and whether an effort value actually changed. Neither value reaches telemetry.
+      const previous = store.getState().sessions[sessionId]?.configOptions.find((option) => option.id === configId)
       try {
         // The agent echoes the full refreshed option set; apply that confirmed state
         // (never the requested value) so the store reflects only what the agent reports.
         const options = await session.connection.setSessionConfigOption(session.acpSessionId, configId, value)
+        const reported = options.find((option) => option.id === configId)
+        const kind = switchKind(reported ?? previous)
+        // Store first so the recorder's watcher establishes the adapter-confirmed value
+        // as its baseline before an effort-retention window is armed below.
         store.applyEvent(sessionId, { kind: "config_options", options })
+        if (kind) {
+          const confirmed = reported?.currentValue === value
+          recorder.recordSwitch?.(
+            sessionId,
+            kind,
+            confirmed,
+            kind === "effort" && confirmed && reported?.currentValue !== previous?.currentValue,
+          )
+        }
       } catch (error) {
+        // A failed request has no adapter-confirmed value. It is therefore unverified,
+        // never counted as confirmed from the developer's requested value alone.
+        const kind = switchKind(previous)
+        if (kind) recorder.recordSwitch?.(sessionId, kind, false, false)
         onError(sessionId, error)
       }
     },
@@ -189,4 +221,11 @@ export function nextSessionId(order: readonly SessionId[], current: SessionId): 
 /** The transcript text for a multi-block prompt: one block per line. */
 function joinBlocks(blocks: PromptBlock[]): string {
   return blocks.map((block) => block.text).join("\n")
+}
+
+/** Map only the two allowlisted config categories to their content-free metric kind. */
+function switchKind(option: ConfigOption | undefined): "model" | "effort" | undefined {
+  if (option?.category === MODEL_CATEGORY) return "model"
+  if (option?.category === EFFORT_CATEGORY) return "effort"
+  return undefined
 }

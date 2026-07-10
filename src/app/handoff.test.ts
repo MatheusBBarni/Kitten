@@ -7,6 +7,7 @@ import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
 import type { ConfigOption, HandoffBundle, ProviderKind, SessionId, SessionSeed, ToolCallUpdate } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
+import { createTelemetryRecorder, type TelemetryRecord } from "../telemetry/recorder.ts"
 import type { AgentRuntimeState } from "./controller.ts"
 import {
   composeHandoffBlocks,
@@ -421,6 +422,35 @@ describe("HandoffFlow.confirm", () => {
     ])
     expect(order).toEqual(["config:model:opus", "config:effort:high", "send"])
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
+  })
+
+  it("records an effort-linked hand-off only when it carries target configuration", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({ enabled: true, sink: { write: (record) => records.push(record) } })
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller, recorder })
+    flow.begin()
+
+    await flow.confirm({
+      ...createHandoffEdits(openBundle(controller)),
+      targetConfig: [{ configId: "effort", value: "high" }],
+    })
+
+    expect(records.filter((record) => record.type === "effort_linked_handoff")).toEqual([
+      expect.objectContaining({ agent: "codex" }),
+    ])
+  })
+
+  it("does not record an effort-linked hand-off when no target configuration is selected", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({ enabled: true, sink: { write: (record) => records.push(record) } })
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller, recorder })
+    flow.begin()
+
+    await flow.confirm(createHandoffEdits(openBundle(controller)))
+
+    expect(records.some((record) => record.type === "effort_linked_handoff")).toBe(false)
   })
 
   it("sends unchanged hand-offs without a target config call", async () => {

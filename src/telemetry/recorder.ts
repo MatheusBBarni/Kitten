@@ -28,8 +28,14 @@ import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 
-import { needsAttention, type SessionId, type SessionStatus } from "../core/types.ts"
-import { bucketChars, detectReexplanation, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
+import { EFFORT_CATEGORY, needsAttention, type ConfigOption, type SessionId, type SessionStatus } from "../core/types.ts"
+import {
+  bucketChars,
+  detectReexplanation,
+  effortChangeKept,
+  REEXPLANATION_CHAR_THRESHOLD,
+  type EffortRetentionEvent,
+} from "../core/telemetryHeuristics.ts"
 import type { AppStore, Unsubscribe } from "../store/appStore.ts"
 
 /** Every telemetry event Kitten records. Names match the TechSpec metric set. */
@@ -37,8 +43,14 @@ export type TelemetryEventType =
   | "handoff_invoked"
   | "handoff_sent"
   | "handoff_repeat"
+  | "effort_linked_handoff"
   | "reexplanation_detected"
   | "bundle_edit_chars"
+  | "model_switched"
+  | "effort_switched"
+  | "switch_confirmed"
+  | "switch_unverified"
+  | "effort_change_kept"
   | "agent_ready"
   | "agent_unready"
   | "first_response_ms"
@@ -92,6 +104,13 @@ export interface TelemetryRecorder {
   handoffInvoked(): void
   /** A curated bundle was sent to the target; also records edit volume and repeats. */
   handoffSent(input: HandoffSentInput): void
+  /** A hand-off carried one or more target model/effort changes. */
+  effortLinkedHandoff(sessionId: SessionId): void
+  /**
+   * Record a model or effort switch from the adapter-reported outcome. `effortChanged`
+   * arms the content-free kept-change watch only for a confirmed value change.
+   */
+  recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
   /** A session completed its handshake and holds a live ACP session. */
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
@@ -134,6 +153,8 @@ const NOOP_RECORDER: TelemetryRecorder = {
   enabled: false,
   handoffInvoked() {},
   handoffSent() {},
+  effortLinkedHandoff() {},
+  recordSwitch() {},
   agentReady() {},
   agentUnready() {},
   focusSwitch() {},
@@ -164,6 +185,10 @@ interface AgentWatch {
   seenAcpSessionId: string
   /** How many turns of this session's transcript `watch` has already processed. */
   seenTurns: number
+  /** Last observed confirmed effort value; transient only, never written to telemetry. */
+  seenEffortValue: string | undefined
+  /** A pending confirmed effort change, reduced to content-free event kinds. */
+  effortRetention: EffortRetentionEvent[] | null
   /** When the pending prompt was sent, or `null` when no first response is awaited. */
   awaitingResponseAt: number | null
   /** True while the next developer message could count as re-explanation. */
@@ -212,6 +237,20 @@ class ActiveRecorder implements TelemetryRecorder {
     this.watchFor(input.targetSessionId).reexplanationArmed = true
   }
 
+  effortLinkedHandoff(sessionId: SessionId): void {
+    this.record({ type: "effort_linked_handoff", agent: sessionId })
+  }
+
+  recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void {
+    this.record({ type: kind === "model" ? "model_switched" : "effort_switched", agent: sessionId })
+    this.record({ type: confirmed ? "switch_confirmed" : "switch_unverified", agent: sessionId })
+    // Only a confirmed, actual effort change can contribute to the kept-change metric.
+    // The transient stream carries event kinds only, never the option's value.
+    if (kind === "effort" && confirmed && effortChanged) {
+      this.watchFor(sessionId).effortRetention = [{ kind: "effort_change" }]
+    }
+  }
+
   agentReady(sessionId: SessionId): void {
     this.record({ type: "agent_ready", agent: sessionId })
   }
@@ -241,6 +280,7 @@ class ActiveRecorder implements TelemetryRecorder {
       const watch = this.watchFor(sessionId)
       watch.seenAcpSessionId = session.acpSessionId
       watch.seenTurns = session.turns.length
+      watch.seenEffortValue = effortValue(session.configOptions)
       const needy = needsAttention(session.status)
       watch.neededSince = needy ? this.now() : null
       watch.idleFleetSince = needy && initial.focusedSessionId !== sessionId ? this.now() : null
@@ -254,12 +294,15 @@ class ActiveRecorder implements TelemetryRecorder {
         if (session.acpSessionId !== watch.seenAcpSessionId) {
           watch.seenAcpSessionId = session.acpSessionId
           watch.seenTurns = session.turns.length
+          watch.seenEffortValue = effortValue(session.configOptions)
           watch.awaitingResponseAt = null
           watch.reexplanationArmed = false
+          watch.effortRetention = null
           watch.neededSince = null
           watch.idleFleetSince = null
           continue
         }
+        this.processEffortChange(sessionId, session.configOptions)
         this.processSession(sessionId, session.turns)
         this.processAttention(sessionId, session.status, state.focusedSessionId === sessionId)
       }
@@ -275,6 +318,7 @@ class ActiveRecorder implements TelemetryRecorder {
       watch.seenTurns = turns.length
       watch.awaitingResponseAt = null
       watch.reexplanationArmed = false
+      watch.effortRetention = null
       watch.neededSince = null
       watch.idleFleetSince = null
       return
@@ -314,6 +358,7 @@ class ActiveRecorder implements TelemetryRecorder {
 
   private handleTurn(sessionId: SessionId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
     if (turn.kind === "user") {
+      this.resolveEffortRetention(sessionId, watch)
       // A prompt was sent: start the first-response clock for this session.
       watch.awaitingResponseAt = this.now()
       if (watch.reexplanationArmed) {
@@ -339,6 +384,8 @@ class ActiveRecorder implements TelemetryRecorder {
       watch = {
         seenAcpSessionId: "",
         seenTurns: 0,
+        seenEffortValue: undefined,
+        effortRetention: null,
         awaitingResponseAt: null,
         reexplanationArmed: false,
         neededSince: null,
@@ -353,6 +400,32 @@ class ActiveRecorder implements TelemetryRecorder {
   private record(event: Omit<TelemetryRecord, "at" | "sessionRef">): void {
     this.sink.write({ ...event, at: this.now(), sessionRef: this.sessionRef })
   }
+
+  /** Compare one store snapshot's confirmed effort to the prior snapshot. */
+  private processEffortChange(sessionId: SessionId, options: readonly ConfigOption[]): void {
+    const watch = this.watchFor(sessionId)
+    const current = effortValue(options)
+    if (current === watch.seenEffortValue) return
+
+    // A pending metric sees any subsequent effort change as the original choice not
+    // surviving. Whether that new value is an exact revert is immaterial to retention.
+    watch.effortRetention?.push({ kind: "effort_change" })
+    watch.seenEffortValue = current
+  }
+
+  /** Close a pending effort-change window at the pane's next developer turn. */
+  private resolveEffortRetention(sessionId: SessionId, watch: AgentWatch): void {
+    const events = watch.effortRetention
+    if (!events) return
+    events.push({ kind: "next_turn" })
+    if (effortChangeKept(events)) this.record({ type: "effort_change_kept", agent: sessionId })
+    watch.effortRetention = null
+  }
+}
+
+/** Read an effort's current value from the generic, adapter-owned option surface. */
+function effortValue(options: readonly ConfigOption[]): string | undefined {
+  return options.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
 }
 
 /**

@@ -23,7 +23,7 @@ import { createAgentConnection } from "../agent/agentConnection.ts"
 import { resolveSessions } from "../config/configLoader.ts"
 import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
 import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
-import { createControllerActions, type AgentSession, type ControllerActions, type FocusTelemetry } from "./actions.ts"
+import { createControllerActions, type ActionTelemetry, type AgentSession, type ControllerActions } from "./actions.ts"
 
 /**
  * One session's run-time standing, as the status strip and prompt gate read it.
@@ -47,8 +47,8 @@ export interface SessionControllerOptions {
   newMessageId?: () => string
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
-  /** The telemetry recorder focus switches are reported to (task_09). Defaults to a no-op. */
-  recorder?: FocusTelemetry
+  /** The telemetry recorder actions report navigation and switch outcomes to. */
+  recorder?: ActionTelemetry
 }
 
 /** The orchestrator the UI is handed at boot. */

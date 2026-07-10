@@ -164,8 +164,9 @@ export interface HandoffFlowOptions {
   /**
    * The telemetry recorder. Optional: when omitted (or disabled) the flow behaves
    * identically and records nothing. The flow is the source of the hand-off metrics
-   * (`handoff_invoked`, `handoff_sent`, `handoff_repeat`, `bundle_edit_chars`) and it
-   * arms the re-explanation watch on the target once a bundle is sent.
+   * (`handoff_invoked`, `handoff_sent`, `handoff_repeat`, `bundle_edit_chars`, and
+   * `effort_linked_handoff`) and it arms the re-explanation watch on the target once a
+   * bundle is sent.
    */
   recorder?: TelemetryRecorder
 }
@@ -272,6 +273,9 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
         targetSessionId: overlay.targetSessionId,
         editChars: editedCharCount(overlay.bundle.summary, edits.summary),
       })
+      // A non-empty target configuration is the PRD's hand-off correlation signal.
+      // The recorder stores only the target session id, never the selected values.
+      if (edits.targetConfig.length > 0) recorder?.effortLinkedHandoff(overlay.targetSessionId)
       actions.switchFocus(overlay.targetSessionId)
       return sent
     },

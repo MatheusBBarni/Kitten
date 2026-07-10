@@ -43,6 +43,9 @@ describe("opt-in gating", () => {
     ])
     recorder.handoffInvoked()
     recorder.handoffSent({ targetSessionId: "codex", editChars: 400 })
+    recorder.effortLinkedHandoff("codex")
+    recorder.recordSwitch("codex", "model", true, false)
+    recorder.recordSwitch("codex", "effort", false, false)
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -77,6 +80,74 @@ describe("hand-off events", () => {
 
     recorder.handoffSent({ targetSessionId: "claude-code", editChars: 0 })
     expect(types(sink.records)).toContain("handoff_repeat")
+  })
+})
+
+describe("switch events", () => {
+  it("records a confirmed model switch with its agent id and no text-bearing field", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.recordSwitch("codex", "model", true, false)
+
+    expect(types(sink.records)).toEqual(["model_switched", "switch_confirmed"])
+    for (const record of sink.records) {
+      expect(record).toMatchObject({ agent: "codex", at: 42, sessionRef: "run-1" })
+      expect(Object.keys(record)).not.toContain("text")
+    }
+  })
+
+  it("records an unverified switch without recording it as confirmed", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+
+    recorder.recordSwitch("claude-code", "effort", false, false)
+
+    expect(types(sink.records)).toEqual(["effort_switched", "switch_unverified"])
+    expect(types(sink.records)).not.toContain("switch_confirmed")
+  })
+})
+
+describe("kept effort changes (store-derived over the heuristic)", () => {
+  const effortOption = (currentValue: string) => ({
+    id: "effort",
+    category: "thought_level",
+    label: "Effort",
+    currentValue,
+    options: [
+      { value: "low", name: "Low" },
+      { value: "high", name: "High" },
+    ],
+  })
+
+  it("records a confirmed effort change when it survives to the next turn", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    store.applyEvent("codex", { kind: "config_options", options: [effortOption("low")] })
+    recorder.watch(store)
+
+    // The action applies the adapter-reported value before it arms the retention watch.
+    store.applyEvent("codex", { kind: "config_options", options: [effortOption("high")] })
+    recorder.recordSwitch("codex", "effort", true, true)
+    store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "continue" })
+
+    expect(types(sink.records)).toContain("effort_change_kept")
+  })
+
+  it("does not record a kept change when the effort is reverted before the next turn", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    store.applyEvent("codex", { kind: "config_options", options: [effortOption("low")] })
+    recorder.watch(store)
+
+    store.applyEvent("codex", { kind: "config_options", options: [effortOption("high")] })
+    recorder.recordSwitch("codex", "effort", true, true)
+    store.applyEvent("codex", { kind: "config_options", options: [effortOption("low")] })
+    store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "continue" })
+
+    expect(types(sink.records)).not.toContain("effort_change_kept")
   })
 })
 

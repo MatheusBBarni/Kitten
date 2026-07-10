@@ -5,7 +5,9 @@ import {
   CHAR_BUCKETS,
   detectReexplanation,
   editedCharCount,
+  effortChangeKept,
   REEXPLANATION_CHAR_THRESHOLD,
+  type EffortRetentionEvent,
   type PostHandoffEvent,
 } from "./telemetryHeuristics.ts"
 
@@ -89,5 +91,23 @@ describe("detectReexplanation", () => {
   it("honours a caller-supplied threshold", () => {
     expect(detectReexplanation([{ kind: "developer_message", charCount: 100 }], 50).detected).toBe(true)
     expect(detectReexplanation([{ kind: "developer_message", charCount: 100 }], 500).detected).toBe(false)
+  })
+})
+
+describe("effortChangeKept", () => {
+  const changed: EffortRetentionEvent = { kind: "effort_change" }
+  const nextTurn: EffortRetentionEvent = { kind: "next_turn" }
+
+  it("fires when a confirmed effort change reaches the pane's next turn", () => {
+    expect(effortChangeKept([changed, nextTurn])).toBe(true)
+  })
+
+  it("does not fire when the effort is changed again before the next turn", () => {
+    expect(effortChangeKept([changed, changed, nextTurn])).toBe(false)
+  })
+
+  it("does not fire until a next turn exists", () => {
+    expect(effortChangeKept([changed])).toBe(false)
+    expect(effortChangeKept([])).toBe(false)
   })
 })

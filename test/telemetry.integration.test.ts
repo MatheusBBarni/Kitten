@@ -8,9 +8,15 @@ import { createControllerActions } from "../src/app/actions.ts"
 import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
 import { createHandoffEdits, createHandoffFlow } from "../src/app/handoff.ts"
 import { REEXPLANATION_CHAR_THRESHOLD } from "../src/core/telemetryHeuristics.ts"
-import type { SessionId } from "../src/core/types.ts"
+import type { ConfigOption, SessionId } from "../src/core/types.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
-import { createJsonlFileSink, createTelemetryRecorder, recordReadiness, type TelemetryRecord } from "../src/telemetry/recorder.ts"
+import {
+  createJsonlFileSink,
+  createTelemetryRecorder,
+  recordReadiness,
+  type TelemetryRecord,
+  type TelemetryRecorder,
+} from "../src/telemetry/recorder.ts"
 import { readyRuntimes } from "./fakeController.ts"
 
 /** A connection stub whose prompt/cancel resolve; the flow only needs those two. */
@@ -19,17 +25,43 @@ const CONNECTION_STUB = {
   cancel: async () => {},
 } as unknown as AgentConnection
 
+/** A configurable ACP seam that confirms the requested model or effort value. */
+const SWITCHABLE_CONNECTION = {
+  prompt: async () => ({ stopReason: "end_turn" as const }),
+  cancel: async () => {},
+  setSessionConfigOption: async (_sessionId: string, configId: string, value: string): Promise<ConfigOption[]> => [
+    configId === "model"
+      ? configOption("model", "model", value)
+      : configOption("effort", "thought_level", value),
+  ],
+} as unknown as AgentConnection
+
+function configOption(id: string, category: string, currentValue: string): ConfigOption {
+  return {
+    id,
+    category,
+    label: category,
+    currentValue,
+    options: [{ value: currentValue, name: currentValue }],
+  }
+}
+
 /**
  * A controller backed by a real store and the real action surface, so `sendPrompt`
  * records the user turn into the store exactly as it would in production - which is
  * what makes the hand-off's re-explanation arming order faithful.
  */
-function realController(store: AppStore, runtimes: AgentRuntimeState[]): SessionController {
+function realController(
+  store: AppStore,
+  runtimes: AgentRuntimeState[],
+  options: { recorder?: TelemetryRecorder; connection?: AgentConnection } = {},
+): SessionController {
   const actions = createControllerActions({
     store,
-    getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: CONNECTION_STUB }),
+    getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: options.connection ?? CONNECTION_STUB }),
     resolvePermission: () => {},
     newMessageId: () => "fixed-id",
+    recorder: options.recorder,
   })
   return {
     store,
@@ -44,6 +76,51 @@ function realController(store: AppStore, runtimes: AgentRuntimeState[]): Session
 const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"
 
 describe("telemetry over a scripted hand-off session", () => {
+  it("writes the content-free switch and effort-linked hand-off sequence to an injected memory sink", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 1000,
+      sessionRef: "run-fixed",
+    })
+    const store = createAppStore()
+    const runtimes = readyRuntimes()
+    const controller = realController(store, runtimes, { recorder, connection: SWITCHABLE_CONNECTION })
+
+    // Seed confirmed state and enough source work to open the redacted hand-off preview.
+    store.applyEvent("claude-code", { kind: "config_options", options: [configOption("model", "model", "sonnet")] })
+    store.applyEvent("codex", { kind: "config_options", options: [configOption("effort", "thought_level", "low")] })
+    store.applyEvent("claude-code", { kind: "user_message", messageId: "u1", text: `carry ${SECRET}` })
+    store.applyEvent("claude-code", { kind: "agent_message", messageId: "a1", textDelta: "working" })
+    recorder.watch(store)
+
+    // A confirmed model switch, then an effort-tagged hand-off to the other pane.
+    await controller.actions.setSessionConfigOption("model", "opus", "claude-code")
+    const flow = createHandoffFlow({ controller, recorder })
+    expect(flow.begin()).toBe(true)
+    await flow.confirm({
+      ...createHandoffEdits(store.getState().overlays.handoffPreview!.bundle),
+      targetConfig: [{ configId: "effort", value: "high" }],
+    })
+
+    expect(records.map((record) => record.type)).toEqual([
+      "model_switched",
+      "switch_confirmed",
+      "handoff_invoked",
+      "effort_switched",
+      "switch_confirmed",
+      "effort_change_kept",
+      "handoff_sent",
+      "bundle_edit_chars",
+      "effort_linked_handoff",
+      "focus_switch",
+    ])
+    expect(records.filter((record) => record.type === "switch_confirmed")).toHaveLength(2)
+    expect(records.every((record) => Object.keys(record).every((key) => ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count"].includes(key)))).toBe(true)
+    expect(JSON.stringify(records)).not.toContain(SECRET)
+  })
+
   it("writes the ordered, content-free event stream to a local JSONL file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "kitten-telemetry-int-"))
     try {

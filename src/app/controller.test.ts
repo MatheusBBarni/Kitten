@@ -15,7 +15,7 @@ import type { AgentConfig, AppConfig, ConfigOption, DomainSessionEvent, Provider
 import { selectAgentModel } from "../store/selectors.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
-import { composePromptBlocks, createControllerActions, nextSessionId } from "./actions.ts"
+import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
 import { createSessionController, type SessionController } from "./controller.ts"
 
 /**
@@ -163,7 +163,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
 /** Build a controller over one stub connection per configured agent. */
 async function controllerWithStubs(
   stubs: Partial<Record<ProviderKind, StubOptions>> = {},
-  overrides: { onError?: (sessionId: SessionId, error: unknown) => void } = {},
+  overrides: { onError?: (sessionId: SessionId, error: unknown) => void; recorder?: ActionTelemetry } = {},
 ): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection> }> {
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
@@ -176,6 +176,7 @@ async function controllerWithStubs(
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
     onError: overrides.onError,
+    recorder: overrides.recorder,
   })
   return { controller, connections }
 }
@@ -584,6 +585,40 @@ describe("actions - setSessionConfigOption", () => {
     await controller.dispose()
   })
 
+  it("records a model switch as confirmed only when the adapter reports the requested value", async () => {
+    const switches: Array<{ sessionId: SessionId; kind: "model" | "effort"; confirmed: boolean; effortChanged: boolean }> = []
+    const recorder: ActionTelemetry = {
+      focusSwitch() {},
+      recordSwitch: (sessionId, kind, confirmed, effortChanged) => switches.push({ sessionId, kind, confirmed, effortChanged }),
+    }
+    const { controller } = await controllerWithStubs(
+      { codex: { configResponse: [modelOption("opus")] } },
+      { recorder },
+    )
+
+    await controller.actions.setSessionConfigOption("model", "opus", "codex")
+
+    expect(switches).toEqual([{ sessionId: "codex", kind: "model", confirmed: true, effortChanged: false }])
+    await controller.dispose()
+  })
+
+  it("records an adapter-reported mismatch as unverified rather than confirmed", async () => {
+    const switches: Array<{ sessionId: SessionId; kind: "model" | "effort"; confirmed: boolean; effortChanged: boolean }> = []
+    const recorder: ActionTelemetry = {
+      focusSwitch() {},
+      recordSwitch: (sessionId, kind, confirmed, effortChanged) => switches.push({ sessionId, kind, confirmed, effortChanged }),
+    }
+    const { controller } = await controllerWithStubs(
+      { codex: { configResponse: [modelOption("sonnet")] } },
+      { recorder },
+    )
+
+    await controller.actions.setSessionConfigOption("model", "opus", "codex")
+
+    expect(switches).toEqual([{ sessionId: "codex", kind: "model", confirmed: false, effortChanged: false }])
+    await controller.dispose()
+  })
+
   it("Should default to the focused session when no session id is given", async () => {
     const { controller, connections } = await controllerWithStubs({
       "claude-code": { configResponse: [modelOption("sonnet")] },
@@ -613,9 +648,14 @@ describe("actions - setSessionConfigOption", () => {
 
   it("Should route an adapter error to onError and leave the store's confirmed state intact", async () => {
     const errors: Array<[SessionId, unknown]> = []
+    const switches: Array<{ sessionId: SessionId; kind: "model" | "effort"; confirmed: boolean; effortChanged: boolean }> = []
+    const recorder: ActionTelemetry = {
+      focusSwitch() {},
+      recordSwitch: (sessionId, kind, confirmed, effortChanged) => switches.push({ sessionId, kind, confirmed, effortChanged }),
+    }
     const { controller, connections } = await controllerWithStubs(
       { "claude-code": { newSessionConfig: [modelOption("opus")], setConfigThrows: new Error("switch failed") } },
-      { onError: (sessionId, error) => errors.push([sessionId, error]) },
+      { onError: (sessionId, error) => errors.push([sessionId, error]), recorder },
     )
 
     await controller.actions.setSessionConfigOption("model", "sonnet", "claude-code")
@@ -625,6 +665,7 @@ describe("actions - setSessionConfigOption", () => {
     expect(errors).toEqual([["claude-code", new Error("switch failed")]])
     // The last confirmed value survives, so the overlay can mark the option unverified.
     expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([modelOption("opus")])
+    expect(switches).toEqual([{ sessionId: "claude-code", kind: "model", confirmed: false, effortChanged: false }])
 
     await controller.dispose()
   })
