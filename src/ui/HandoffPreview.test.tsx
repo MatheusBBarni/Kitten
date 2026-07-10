@@ -180,6 +180,7 @@ describe("HandoffPreview visibility", () => {
         providerKind: "codex",
         displayName: "Codex",
         title: "Codex",
+        cwd: "/workspace/kitten",
         ready: false,
         error: "codex-acp: command not found",
       },
@@ -521,6 +522,8 @@ describe("HandoffPreview modality", () => {
     await actAsync(() => {
       controller.store.openApproval({
         sessionId: "claude-code",
+        title: "Claude Code",
+        cwd: "/workspace/kitten",
         request: {
           sessionId: "s",
           toolCall: { toolCallId: "call-1", kind: "edit", title: "Bump b" },

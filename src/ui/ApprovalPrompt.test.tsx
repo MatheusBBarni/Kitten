@@ -67,7 +67,7 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
 /** Park `request` in the approval slot, exactly as the controller does on `requestPermission`. */
 async function openApproval(controller: FakeController, sessionId: SessionId, request: PermissionRequest): Promise<void> {
   await actAsync(() => {
-    controller.store.openApproval({ sessionId, request })
+    controller.store.openApproval({ sessionId, title: sessionId, cwd: "/workspace/kitten", request })
   })
 }
 

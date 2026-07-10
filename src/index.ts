@@ -22,12 +22,11 @@ import {
   buildFirstRunReport,
   formatFirstRunReport,
   isInsideRepo,
-  makeSetupState,
+  sessionSetup,
   type AgentSetupState,
   type FirstRunReport,
 } from "./config/firstRun.ts"
 import type { AppConfig } from "./core/types.ts"
-import { createAppStore } from "./store/appStore.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderCockpit } from "./ui/main.tsx"
 
@@ -88,13 +87,13 @@ export interface CockpitSessionDeps {
  */
 export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promise<CockpitSession> {
   const config = await (deps.loadConfig ?? loadAppConfig)()
-  // Seed the store with the default fleet (one session per provider); the controller
-  // binds each session's ACP id onto it once the handshake completes.
-  const store = createAppStore()
   const recorder = (deps.createRecorder ?? ((enabled) => createTelemetryRecorder({ enabled })))(config.telemetryEnabled)
-  const controller = await (deps.buildController ?? createSessionController)({ config, store })
+  // Let the controller seed its own store from the resolved sessions, so a non-default
+  // `sessions` config (custom directories, repeated providers) can never desync the
+  // store's slices from the runtimes it drives. The recorder watches that same store.
+  const controller = await (deps.buildController ?? createSessionController)({ config })
   recordReadiness(recorder, controller.runtimes())
-  recorder.watch(store)
+  recorder.watch(controller.store)
   return { controller, recorder }
 }
 
@@ -103,10 +102,24 @@ export function exitProcess(): void {
   process.exit(0)
 }
 
-/** Reduce a live runtime standing to the neutral setup state the first-run flow reads. */
-export function runtimeSetup(state: AgentRuntimeState): AgentSetupState {
-  if (state.ready) return makeSetupState(state.providerKind, state.displayName, true)
-  return makeSetupState(state.providerKind, state.displayName, false, state.error)
+/**
+ * Reduce a live runtime standing to the setup state the first-run flow reads, folding
+ * in the per-session repository check (ADR-005): a connected session whose own `cwd`
+ * is not inside a repository is reported not-ready with a directory-specific reason,
+ * without blocking a sibling session that is usable.
+ */
+export function runtimeSetup(state: AgentRuntimeState, insideRepo?: (cwd: string) => boolean): AgentSetupState {
+  return sessionSetup(
+    {
+      agentId: state.providerKind,
+      displayName: state.displayName,
+      title: state.title,
+      cwd: state.cwd,
+      ready: state.ready,
+      ...(state.ready ? {} : { error: state.error }),
+    },
+    { insideRepo },
+  )
 }
 
 /** Print first-run guidance to stderr; the terminal must already be restored. */
@@ -201,7 +214,10 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
 
   // Readiness gate: with no agent ready, restore the terminal and explain the gaps
   // rather than mounting a cockpit that cannot respond.
-  const report = buildFirstRunReport({ insideRepo: true, agents: controller.runtimes().map(runtimeSetup) })
+  const report = buildFirstRunReport({
+    insideRepo: true,
+    agents: controller.runtimes().map((state) => runtimeSetup(state, checkRepo)),
+  })
   if (report.blocked) {
     renderer.destroy()
     await controller.dispose()

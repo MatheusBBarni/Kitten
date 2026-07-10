@@ -62,6 +62,8 @@ export interface MockAgentHandle {
   readonly prompts: PromptRequest[]
   /** Every permission outcome the client returned to the agent, in order. */
   readonly permissionOutcomes: RequestPermissionOutcome[]
+  /** The working directory of every `session/new` the agent received, in order. */
+  readonly newSessionCwds: string[]
 }
 
 /** Start a scripted mock agent listening on the agent side of an in-memory stream. */
@@ -70,6 +72,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION
   const prompts: PromptRequest[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
+  const newSessionCwds: string[] = []
 
   let connection!: AgentSideConnection
 
@@ -80,7 +83,10 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
         agentCapabilities: {},
         agentInfo: { name: "mock-agent", version: "0.0.0" },
       },
-    newSession: () => ({ sessionId }),
+    newSession: (request) => {
+      newSessionCwds.push(request.cwd)
+      return { sessionId }
+    },
     authenticate: () => ({}),
     cancel: () => {},
     async prompt(request: PromptRequest) {
@@ -116,5 +122,5 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   }
 
   connection = new AgentSideConnection(() => agent, stream)
-  return { connection, prompts, permissionOutcomes }
+  return { connection, prompts, permissionOutcomes, newSessionCwds }
 }

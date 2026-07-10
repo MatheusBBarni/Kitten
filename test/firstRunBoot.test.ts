@@ -64,8 +64,8 @@ describe("main() readiness gate", () => {
   it("restores the terminal and reports gaps when no agent is ready", async () => {
     const { renderer } = await createTestRenderer({ width: 80, height: 24 })
     const notReady: AgentRuntimeState[] = [
-      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", ready: false, error: "Claude Code: command not found." },
-      { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: false, error: "Codex: not authenticated." },
+      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", cwd: "/workspace/kitten", ready: false, error: "Claude Code: command not found." },
+      { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", cwd: "/workspace/kitten", ready: false, error: "Codex: not authenticated." },
     ]
     const controller = createFakeController({ runtimes: notReady })
     let reported: FirstRunReport | undefined
@@ -89,15 +89,31 @@ describe("main() readiness gate", () => {
 })
 
 describe("runtimeSetup", () => {
-  it("maps a ready runtime to a ready setup state", () => {
+  it("maps a ready runtime in a repository to a ready setup state", () => {
     expect(
-      runtimeSetup({ sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: true, acpSessionId: "s" }),
+      runtimeSetup(
+        { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", cwd: "/repo", ready: true, acpSessionId: "s" },
+        () => true,
+      ),
     ).toEqual({ agentId: "codex", displayName: "Codex", ready: true })
+  })
+
+  it("reports a ready runtime whose directory is not a repository as not ready", () => {
+    const setup = runtimeSetup(
+      { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", cwd: "/tmp/loose", ready: true, acpSessionId: "s" },
+      () => false,
+    )
+    expect(setup.ready).toBe(false)
+    expect(setup.gap).toContain("/tmp/loose")
+    expect(setup.gap).toContain("not inside a git repository")
   })
 
   it("carries a not-ready runtime's error as the gap", () => {
     expect(
-      runtimeSetup({ sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", ready: false, error: "boom" }),
+      runtimeSetup(
+        { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", cwd: "/repo", ready: false, error: "boom" },
+        () => true,
+      ),
     ).toEqual({ agentId: "codex", displayName: "Codex", ready: false, gap: "boom" })
   })
 })

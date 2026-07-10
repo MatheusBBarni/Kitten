@@ -22,13 +22,17 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { resolveSessions } from "../config/configLoader.ts"
 import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
-import { createAppStore, type AppStore, type Unsubscribe } from "../store/appStore.ts"
+import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
 import { createControllerActions, type AgentSession, type ControllerActions } from "./actions.ts"
 
-/** One session's run-time standing, as the status strip and prompt gate read it. */
+/**
+ * One session's run-time standing, as the status strip and prompt gate read it.
+ * `cwd` is the session's own working directory (ADR-005): it labels approvals and
+ * feeds the per-session repo check the first-run gate runs.
+ */
 export type AgentRuntimeState =
-  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; ready: true; acpSessionId: string }
-  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; ready: false; error: string }
+  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; cwd: string; ready: true; acpSessionId: string }
+  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; cwd: string; ready: false; error: string }
 
 /** Injectable seams so the controller can be driven against mock connections. */
 export interface SessionControllerOptions {
@@ -113,7 +117,7 @@ export async function createSessionController(options: SessionControllerOptions)
     if (disposed) return Promise.resolve({ outcome: "cancelled" })
     return new Promise<PermissionOutcome>((resolve) => {
       pending.push({ sessionId, request, resolve })
-      if (pending.length === 1) store.openApproval({ sessionId, request })
+      if (pending.length === 1) store.openApproval(approvalOverlay(sessionId, request))
     })
   }
 
@@ -123,8 +127,18 @@ export async function createSessionController(options: SessionControllerOptions)
     if (!current) return
     current.resolve(outcome)
     const next = pending[0]
-    if (next) store.openApproval({ sessionId: next.sessionId, request: next.request })
+    if (next) store.openApproval(approvalOverlay(next.sessionId, next.request))
     else store.closeApproval()
+  }
+
+  /**
+   * Label a parked approval with the session it belongs to. `title` and `cwd` come
+   * from the session's seed so the prompt names which agent, in which directory, is
+   * asking - the answer can never be misattributed across a multi-session fleet.
+   */
+  function approvalOverlay(sessionId: SessionId, request: PermissionRequest): ApprovalOverlay {
+    const seed = runtimes.get(sessionId)?.seed
+    return { sessionId, title: seed?.title ?? sessionId, cwd: seed?.cwd ?? "", request }
   }
 
   function getSession(sessionId: SessionId): AgentSession | undefined {
@@ -157,6 +171,7 @@ export async function createSessionController(options: SessionControllerOptions)
           providerKind: seed.providerKind,
           displayName: config.displayName,
           title: seed.title,
+          cwd: seed.cwd,
           ready: true,
           acpSessionId,
         },
@@ -185,6 +200,7 @@ export async function createSessionController(options: SessionControllerOptions)
         providerKind: seed.providerKind,
         displayName: config.displayName,
         title: seed.title,
+        cwd: seed.cwd,
         ready: false,
         error,
       },
@@ -205,6 +221,16 @@ export async function createSessionController(options: SessionControllerOptions)
     newMessageId: options.newMessageId,
     onError,
   })
+
+  // Send each ready session its optional first task as the opening prompt (ADR-005).
+  // Fire-and-forget: the opening turn must not block boot on the agent's full reply,
+  // and `sendPrompt` already records the user turn and routes failures to `onError`.
+  for (const entry of plan) {
+    const task = entry.seed.task
+    if (task && runtimes.get(entry.seed.id)?.state.ready) {
+      void actions.sendPrompt(task, entry.seed.id)
+    }
+  }
 
   return {
     store,

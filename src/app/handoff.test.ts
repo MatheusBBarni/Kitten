@@ -196,6 +196,7 @@ describe("HandoffFlow.begin", () => {
         providerKind: "codex",
         displayName: "Codex",
         title: "Codex",
+        cwd: "/workspace/kitten",
         ready: false,
         error: "codex-acp: command not found",
       },
@@ -210,6 +211,8 @@ describe("HandoffFlow.begin", () => {
     const controller = controllerWithWork()
     controller.store.openApproval({
       sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
       request: { sessionId: "s", toolCall: { toolCallId: "call-1" }, options: [] },
     })
 

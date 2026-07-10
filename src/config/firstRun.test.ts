@@ -8,6 +8,7 @@ import {
   isInsideRepo,
   readinessSetup,
   REPO_REQUIREMENT_MESSAGE,
+  sessionSetup,
   type AgentSetupState,
 } from "./firstRun.ts"
 
@@ -118,6 +119,52 @@ describe("formatFirstRunReport", () => {
   it("produces no lines when everything is ready and inside a repo", () => {
     const report = buildFirstRunReport({ insideRepo: true, agents: [ready("codex", "Codex")].map(readinessSetup) })
     expect(formatFirstRunReport(report)).toEqual([])
+  })
+})
+
+describe("sessionSetup - per-session repository check", () => {
+  const standing = {
+    agentId: "codex" as ProviderKind,
+    displayName: "Codex",
+    title: "Codex on services",
+    cwd: "/work/services",
+    ready: true,
+  }
+
+  it("keeps a ready session whose directory is a repository ready", () => {
+    expect(sessionSetup(standing, { insideRepo: () => true })).toEqual({
+      agentId: "codex",
+      displayName: "Codex",
+      ready: true,
+    })
+  })
+
+  it("reports a ready session pointed at a non-repository directory as not ready, with its reason", () => {
+    const setup = sessionSetup(standing, { insideRepo: () => false })
+    expect(setup.ready).toBe(false)
+    expect(setup.gap).toContain("/work/services")
+    expect(setup.gap).toContain("not inside a git repository")
+    // Its title names the offending session so a multi-session fleet is unambiguous.
+    expect(setup.gap).toContain("Codex on services")
+  })
+
+  it("does not block the whole report when one session sits outside a repository", () => {
+    const inRepo = sessionSetup({ ...standing, cwd: "/work/app" }, { insideRepo: (cwd) => cwd === "/work/app" })
+    const outOfRepo = sessionSetup(standing, { insideRepo: (cwd) => cwd === "/work/app" })
+
+    const report = buildFirstRunReport({ insideRepo: true, agents: [inRepo, outOfRepo] })
+
+    expect(report.blocked).toBe(false)
+    expect(report.anyReady).toBe(true)
+    expect(report.gaps.some((gap) => gap.includes("not inside a git repository"))).toBe(true)
+  })
+
+  it("surfaces a connection failure over the repository check", () => {
+    const setup = sessionSetup(
+      { ...standing, ready: false, error: "Codex: not authenticated." },
+      { insideRepo: () => true },
+    )
+    expect(setup).toEqual({ agentId: "codex", displayName: "Codex", ready: false, gap: "Codex: not authenticated." })
   })
 })
 

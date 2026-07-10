@@ -213,7 +213,7 @@ describe("PromptEditor paste", () => {
 
 describe("PromptEditor readiness gate", () => {
   const notReady: AgentRuntimeState[] = [
-    { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", ready: false, error: "claude-agent-acp: not found" },
+    { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", cwd: "/workspace/kitten", ready: false, error: "claude-agent-acp: not found" },
     readyRuntimes()[1]!,
   ]
 

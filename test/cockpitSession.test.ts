@@ -53,7 +53,9 @@ describe("createCockpitSession", () => {
     })
 
     expect(enabledSeen).toBe(true)
-    expect(builtWithStore).toBe(true)
+    // The controller now seeds its own store from the resolved sessions, so the
+    // session no longer injects one - the recorder watches `controller.store`.
+    expect(builtWithStore).toBe(false)
     expect(recorder.enabled).toBe(true)
 
     // Readiness was recorded from the controller's runtimes at boot.

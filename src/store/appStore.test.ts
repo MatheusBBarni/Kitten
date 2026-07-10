@@ -233,7 +233,7 @@ describe("setFocus", () => {
 describe("overlay slots", () => {
   it("exposes an opened approval request and clears it on close", () => {
     const store = createAppStore()
-    const overlay = { sessionId: "claude-code" as SessionId, request: APPROVAL_REQUEST }
+    const overlay = { sessionId: "claude-code" as SessionId, title: "Claude Code", cwd: "/workspace/kitten", request: APPROVAL_REQUEST }
 
     store.openApproval(overlay)
     expect(selectApprovalOverlay(store.getState())).toEqual(overlay)
@@ -259,7 +259,7 @@ describe("overlay slots", () => {
 
   it("keeps the two slots independent", () => {
     const store = createAppStore()
-    store.openApproval({ sessionId: "codex", request: APPROVAL_REQUEST })
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
     store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE })
 
     store.closeApproval()
@@ -327,7 +327,7 @@ describe("subscriptions", () => {
     const turns = trackSelector(store, selectSessionTurns("claude-code"))
 
     store.setFocus("codex")
-    store.openApproval({ sessionId: "codex", request: APPROVAL_REQUEST })
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
 
     expect(turns).toEqual([])
   })
@@ -464,7 +464,7 @@ describe("integration: a scripted interleaved event stream", () => {
   it("keeps focus and overlays independent of the event stream", () => {
     const store = createAppStore()
     store.setFocus("codex")
-    store.openApproval({ sessionId: "codex", request: APPROVAL_REQUEST })
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
 
     for (const { sessionId, event } of script) {
       store.applyEvent(sessionId, event)

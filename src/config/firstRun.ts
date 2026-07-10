@@ -76,6 +76,50 @@ export function readinessSetup(readiness: AgentReadiness): AgentSetupState {
   return makeSetupState(readiness.agentId, readiness.displayName, false, readiness.message)
 }
 
+/** The one-line reason a session is not ready because its own directory is not a repo. */
+export function repoGap(title: string, cwd: string): string {
+  return `${title}: its working directory (${cwd}) is not inside a git repository. Point this session at a directory tracked by git, then restart Kitten.`
+}
+
+/**
+ * A live session's standing plus the directory it opened against - the input the boot
+ * readiness gate reduces to a per-session setup state.
+ */
+export interface SessionRuntimeStanding {
+  agentId: ProviderKind
+  displayName: string
+  /** The session's own title, used to name it in a per-session repo gap. */
+  title: string
+  /** The session's own working directory (ADR-005), checked for repository membership. */
+  cwd: string
+  /** Whether the session's agent completed its handshake and holds a live ACP session. */
+  ready: boolean
+  /** The connection failure, present only when the session's agent did not come up. */
+  error?: string
+}
+
+/**
+ * Reduce one live session standing to its first-run setup state, folding in the
+ * per-session repository check (ADR-005).
+ *
+ * A session is ready only when its agent came up AND its own working directory sits
+ * inside a git repository. A connected session pointed at a non-repository directory
+ * is reported not-ready with a directory-specific reason rather than blocking the
+ * fleet: the report is blocked only when no session at all is usable, so one session
+ * in the wrong directory leaves every other session fully usable.
+ */
+export function sessionSetup(
+  standing: SessionRuntimeStanding,
+  options: { insideRepo?: (cwd: string) => boolean } = {},
+): AgentSetupState {
+  const insideRepo = options.insideRepo ?? ((cwd: string) => isInsideRepo(cwd))
+  if (!standing.ready) return makeSetupState(standing.agentId, standing.displayName, false, standing.error)
+  if (!insideRepo(standing.cwd)) {
+    return makeSetupState(standing.agentId, standing.displayName, false, repoGap(standing.title, standing.cwd))
+  }
+  return makeSetupState(standing.agentId, standing.displayName, true)
+}
+
 /**
  * Assemble the first-run report from the repo verdict and per-agent setup states.
  *

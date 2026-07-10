@@ -25,6 +25,8 @@ describe("createFakeController", () => {
     const controller = createFakeController()
     controller.store.openApproval({
       sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
       request: { sessionId: "s1", toolCall: { toolCallId: "call-1" }, options: [] },
     })
 

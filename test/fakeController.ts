@@ -38,14 +38,20 @@ export interface FakeControllerOptions {
   store?: AppStore
 }
 
-/** Both sessions up, ACP sessions open. The ordinary case. */
+/**
+ * Both sessions up, ACP sessions open. The ordinary case. The working directory is
+ * the process cwd (this repo, a git repository) so a runtime that flows through the
+ * boot readiness gate passes its per-session repo check (ADR-005).
+ */
 export function readyRuntimes(): AgentRuntimeState[] {
+  const cwd = process.cwd()
   return [
     {
       sessionId: "claude-code",
       providerKind: "claude-code",
       displayName: "Claude Code",
       title: "Claude Code",
+      cwd,
       ready: true,
       acpSessionId: "session-claude",
     },
@@ -54,6 +60,7 @@ export function readyRuntimes(): AgentRuntimeState[] {
       providerKind: "codex",
       displayName: "Codex",
       title: "Codex",
+      cwd,
       ready: true,
       acpSessionId: "session-codex",
     },

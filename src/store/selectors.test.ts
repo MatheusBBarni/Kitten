@@ -131,6 +131,8 @@ describe("overlay selectors", () => {
     const store = createAppStore()
     store.openApproval({
       sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
       request: { sessionId: "s1", toolCall: { toolCallId: "c1" }, options: [] },
     })
     const state = store.getState()

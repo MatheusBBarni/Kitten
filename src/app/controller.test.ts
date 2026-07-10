@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
+import { join } from "node:path"
+
 import {
   createAgentConnection,
   type AgentConnection,
@@ -142,6 +144,50 @@ async function controllerWithStubs(
   return { controller, connections }
 }
 
+/**
+ * Three declared sessions in three real, distinct directories inside this repository,
+ * two of them sharing the `claude-code` provider - the multi-session fleet task_03
+ * generalizes the controller to. Real directories so {@link resolveSessions}' existence
+ * probe passes.
+ */
+const FLEET_DIRS = {
+  alpha: process.cwd(),
+  beta: join(process.cwd(), "src"),
+  gamma: join(process.cwd(), "test"),
+} as const
+const THREE_SESSION_CONFIG: AppConfig = {
+  providers: PROVIDERS,
+  sessions: [
+    { provider: "claude-code", cwd: FLEET_DIRS.alpha, title: "Alpha" },
+    { provider: "claude-code", cwd: FLEET_DIRS.beta, title: "Beta" },
+    { provider: "codex", cwd: FLEET_DIRS.gamma, title: "Gamma" },
+  ],
+  telemetryEnabled: false,
+}
+
+/**
+ * Build a controller over a fresh stub per session, capturing every stub created in
+ * plan order. Lets a test inspect the `newSession` directory and permission handler of
+ * each individual session - including two sessions that share a provider kind.
+ */
+async function controllerOverFleet(
+  config: AppConfig,
+  optionsFor: (index: number) => StubOptions = () => ({}),
+): Promise<{ controller: SessionController; created: StubConnection[] }> {
+  const created: StubConnection[] = []
+  const controller = await createSessionController({
+    config,
+    cwd: process.cwd(),
+    createConnection: (agentConfig) => {
+      const stub = createStubConnection(agentConfig.id, { sessionId: `acp-${created.length}`, ...optionsFor(created.length) })
+      created.push(stub)
+      return stub
+    },
+    newMessageId: () => "msg-1",
+  })
+  return { controller, created }
+}
+
 /** Poll until `predicate` holds, so a test can await an async round-trip. */
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -186,6 +232,7 @@ describe("createSessionController - startup", () => {
         providerKind: "claude-code",
         displayName: "Claude Code",
         title: "Claude Code",
+        cwd: CWD,
         ready: true,
         acpSessionId: "claude-code-session",
       },
@@ -194,6 +241,7 @@ describe("createSessionController - startup", () => {
         providerKind: "codex",
         displayName: "Codex",
         title: "Codex",
+        cwd: CWD,
         ready: true,
         acpSessionId: "codex-session",
       },
@@ -233,6 +281,7 @@ describe("createSessionController - degraded startup", () => {
       providerKind: "claude-code",
       displayName: "Claude Code",
       title: "Claude Code",
+      cwd: CWD,
       ready: false,
       error: "not logged in",
     })
@@ -293,6 +342,83 @@ describe("createSessionController - degraded startup", () => {
     const { controller } = await controllerWithStubs()
     expect(controller.runtime("nope" as SessionId)).toBeUndefined()
     expect(controller.isReady("nope" as SessionId)).toBe(false)
+    await controller.dispose()
+  })
+})
+
+describe("createSessionController - multi-session fleet", () => {
+  it("Should start one runtime per session, keyed by SessionId, in three distinct directories", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+
+    // Two sessions share the claude-code provider; each still gets its own SessionId.
+    expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["claude-code", "claude-code-2", "codex"])
+    expect(controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
+
+    // Each session opened its ACP session against its own working directory.
+    const cwds = created.map((stub) => stub.newSessionCwds)
+    expect(cwds).toEqual([[FLEET_DIRS.alpha], [FLEET_DIRS.beta], [FLEET_DIRS.gamma]])
+    expect(new Set(cwds.flat()).size).toBe(3)
+
+    // The store carries each session's own directory.
+    const state = controller.store.getState()
+    expect(state.sessions["claude-code"]!.cwd).toBe(FLEET_DIRS.alpha)
+    expect(state.sessions["claude-code-2"]!.cwd).toBe(FLEET_DIRS.beta)
+    expect(state.sessions.codex!.cwd).toBe(FLEET_DIRS.gamma)
+
+    // No descriptor carries a task, so no opening prompt is sent.
+    expect(created.every((stub) => stub.prompts.length === 0)).toBe(true)
+
+    await controller.dispose()
+  })
+
+  it("Should record one session not-ready with its reason while the rest of the fleet stays usable", async () => {
+    const { controller } = await controllerOverFleet(THREE_SESSION_CONFIG, (index) =>
+      index === 1 ? { connectThrows: new Error("spawn ENOENT") } : {},
+    )
+
+    expect(controller.runtime("claude-code-2")).toMatchObject({ ready: false, error: "spawn ENOENT" })
+    expect(controller.isReady("claude-code")).toBe(true)
+    expect(controller.isReady("codex")).toBe(true)
+
+    // A sibling session is fully usable despite the one that failed to spawn.
+    expect(await controller.actions.sendPrompt("carry on", "codex")).toEqual({ stopReason: "end_turn" })
+
+    await controller.dispose()
+  })
+
+  it("Should label a parked approval with its session's id, title, and directory", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+
+    // The second claude-code session (title Beta, dir src) raises the request.
+    const pending = created[1]!.ask(PERMISSION_REQUEST)
+
+    expect(controller.store.getState().overlays.approval).toMatchObject({
+      sessionId: "claude-code-2",
+      title: "Beta",
+      cwd: FLEET_DIRS.beta,
+      request: PERMISSION_REQUEST,
+    })
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    await pending
+    await controller.dispose()
+  })
+
+  it("Should send a session's optional first task as its opening prompt", async () => {
+    const config: AppConfig = {
+      providers: PROVIDERS,
+      sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      telemetryEnabled: false,
+    }
+    const { controller, created } = await controllerOverFleet(config)
+
+    await waitFor(() => created[0]!.prompts.length === 1, "the opening task prompt to be sent")
+    expect(created[0]!.prompts[0]!.blocks).toEqual([{ type: "text", text: "start the build" }])
+    // The opening prompt is recorded as the session's first user turn.
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([
+      { kind: "user", messageId: "msg-1", text: "start the build" },
+    ])
+
     await controller.dispose()
   })
 })
@@ -434,6 +560,8 @@ describe("actions - respondPermission", () => {
 
     expect(controller.store.getState().overlays.approval).toEqual({
       sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: CWD,
       request: PERMISSION_REQUEST,
     })
 
@@ -658,6 +786,29 @@ describe("integration - two mock ACP agents", () => {
     expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: "allow" }])
     expect(controller.store.getState().overlays.approval).toBeNull()
     expect(controller.store.getState().sessions["claude-code"]!.status).toBe("idle")
+
+    await controller.dispose()
+  })
+
+  it("Should boot a three-session fleet, focus the first ready session, and open each against its own directory", async () => {
+    const agents: MockAgentHandle[] = []
+    const controller = await createSessionController({
+      config: THREE_SESSION_CONFIG,
+      cwd: process.cwd(),
+      createConnection: (config) => {
+        const { connection, agent } = connectionToMockAgent(config, { sessionId: `acp-${agents.length}` })
+        agents.push(agent)
+        return connection
+      },
+    })
+
+    // Three live runtimes, two sharing a provider, each with a distinct SessionId.
+    expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["claude-code", "claude-code-2", "codex"])
+    expect(controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+
+    // Each mock agent opened its session against its descriptor's own directory.
+    expect(agents.map((agent) => agent.newSessionCwds)).toEqual([[FLEET_DIRS.alpha], [FLEET_DIRS.beta], [FLEET_DIRS.gamma]])
 
     await controller.dispose()
   })

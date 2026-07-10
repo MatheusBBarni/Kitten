@@ -41,9 +41,16 @@ export const AGENT_IDS: readonly ProviderKind[] = PROVIDER_KINDS
 /** Releases a subscription. Calling it more than once is a no-op. */
 export type Unsubscribe = () => void
 
-/** The approval overlay slot: one session's pending permission request. */
+/**
+ * The approval overlay slot: one session's pending permission request, labeled with
+ * the session it belongs to. `title` and `cwd` name the requesting session and its
+ * working directory so a multi-session approval can never be answered for the wrong
+ * agent (the labeling UI is task_07).
+ */
 export interface ApprovalOverlay {
   sessionId: SessionId
+  title: string
+  cwd: string
   request: PermissionRequest
 }
 
