@@ -16,13 +16,13 @@ import { SyntaxStyle, type ThemeMode, type ThemeTokenStyle } from "@opentui/core
 import { useRenderer } from "@opentui/react"
 import { useEffect, useState } from "react"
 
-import type { AgentStatus, ToolCallStatus } from "../core/types.ts"
+import type { SessionStatus, ToolCallStatus } from "../core/types.ts"
 
 /** The status-strip slot for an agent whose connection never came up (task_07). */
 export const NOT_READY = "not_ready"
 
 /** Every state the status strip can paint: the domain statuses plus not-ready. */
-export type StatusTone = AgentStatus | typeof NOT_READY
+export type StatusTone = SessionStatus | typeof NOT_READY
 
 /** The full set of colors any cockpit view is allowed to use. */
 export interface CockpitPalette {
@@ -66,6 +66,10 @@ export const DARK_PALETTE: CockpitPalette = {
     idle: "#5FA8D3",
     working: "#4EC9B0",
     awaiting_approval: "#F5C542",
+    // Done, your move: a calm green, distinct from working's teal.
+    finished: "#6FBF73",
+    // A session that crashed mid-run: a red distinct from the boot-time not-ready red.
+    error: "#E06C75",
     not_ready: "#F26D6D",
   },
   tool: {
@@ -91,6 +95,10 @@ export const LIGHT_PALETTE: CockpitPalette = {
     idle: "#1F5C86",
     working: "#136B55",
     awaiting_approval: "#8A5D00",
+    // Done, your move: a darkened green for contrast on a light terminal.
+    finished: "#2E6B33",
+    // A session that crashed mid-run: a red distinct from the boot-time not-ready red.
+    error: "#8C1D18",
     not_ready: "#A32020",
   },
   tool: {

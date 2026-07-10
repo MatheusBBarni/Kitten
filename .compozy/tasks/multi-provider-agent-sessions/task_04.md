@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Extended session states and attention derivation"
 type: backend
 complexity: high
@@ -30,11 +30,17 @@ This gives the status strip, the overview, and the notifier one truthful, shared
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Extend `SessionStatus` and the `status` domain event with `finished` and `error`.
-- [ ] 4.2 Map the stop reason and connection failures to the new states in the adapter, replacing the unconditional `idle` emit.
-- [ ] 4.3 Add `needsAttention`, `selectSessionList`, and `selectNextNeedy` with the defined priority and wrap-around.
-- [ ] 4.4 Add status labels and theme tones for `finished` and `error`.
-- [ ] 4.5 Investigate the transport close signal for `error` detection and record the fallback if it is absent.
+- [x] 4.1 Extend `SessionStatus` and the `status` domain event with `finished` and `error`.
+- [x] 4.2 Map the stop reason and connection failures to the new states in the adapter, replacing the unconditional `idle` emit.
+- [x] 4.3 Add `needsAttention`, `selectSessionList`, and `selectNextNeedy` with the defined priority and wrap-around.
+- [x] 4.4 Add status labels and theme tones for `finished` and `error`.
+- [x] 4.5 Investigate the transport close signal for `error` detection and record the fallback if it is absent.
+
+## Findings (subtask 4.5): transport-close detection
+The ACP transport already surfaces a close/exit signal, so `error` detection needs no fallback.
+`AgentTransport.onClose(cb)` is backed by the subprocess `exited` promise (`src/agent/transport.ts`) and is already covered by `transport.test.ts`.
+It was defined but never consumed by `AgentConnection`; task_04 wires it to emit a `status: "error"` domain event on close, guarded by a `closing` flag set at the start of `dispose()` so an intentional teardown's close is not reported as a crash.
+Because the signal is real, the ADR-006 fallback (hold the last known state rather than show a false `finished`) is not needed; it would only apply if a future transport could not report exit.
 
 ## Implementation Details
 Follow the TechSpec "Core Interfaces" section for the status mapping and ADR-006 for the needs-you derivation and priority.
@@ -64,13 +70,13 @@ Keep the mapping driven only by terminal stop reasons so `finished` never flicke
 
 ## Tests
 - Unit tests:
-  - [ ] `end_turn`, `max_tokens`, `max_turn_requests`, and `refusal` each map to `finished`; `cancelled` maps to `idle`.
-  - [ ] A prompt call that throws and a transport that closes each map to `error`.
-  - [ ] `needsAttention` is true for `awaiting_approval`, `error`, and `finished`, and false for `working` and `idle`.
-  - [ ] `selectNextNeedy` returns an `awaiting_approval` session ahead of a `finished` one, and wraps past the focused session to an earlier needy one.
-  - [ ] `selectNextNeedy` returns null when no session needs attention.
+  - [x] `end_turn`, `max_tokens`, `max_turn_requests`, and `refusal` each map to `finished`; `cancelled` maps to `idle`.
+  - [x] A prompt call that throws and a transport that closes each map to `error`.
+  - [x] `needsAttention` is true for `awaiting_approval`, `error`, and `finished`, and false for `working` and `idle`.
+  - [x] `selectNextNeedy` returns an `awaiting_approval` session ahead of a `finished` one, and wraps past the focused session to an earlier needy one.
+  - [x] `selectNextNeedy` returns null when no session needs attention.
 - Integration tests:
-  - [ ] Drive a mock session to an `end_turn` stop and assert the store shows `finished` and the status strip renders the `finished` label.
+  - [x] Drive a mock session to an `end_turn` stop and assert the store shows `finished` and the status strip renders the `finished` label.
 - Test coverage target: >=80%
 - All tests must pass
 

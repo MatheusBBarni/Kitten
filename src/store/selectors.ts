@@ -14,8 +14,25 @@
  * is stable across renders.
  */
 
-import type { AgentStatus, PendingDiff, PlanEntry, SessionId, SessionState, Turn } from "../core/types.ts"
+import { needsAttention } from "../core/types.ts"
+import type {
+  PendingDiff,
+  PlanEntry,
+  ProviderKind,
+  SessionId,
+  SessionState,
+  SessionStatus,
+  Turn,
+} from "../core/types.ts"
 import type { AppState, ApprovalOverlay, HandoffPreviewOverlay, Selector } from "./appStore.ts"
+
+/**
+ * The needs-you predicate, re-exported from the core (ADR-006). It is the pure
+ * domain function {@link needsAttention} defined beside {@link SessionStatus}; the
+ * store surfaces it here so every attention reader - the overview, the notifier,
+ * and {@link selectNextNeedy} below - reaches one definition.
+ */
+export { needsAttention }
 
 /** The session that currently owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId> = (state) => state.focusedSessionId
@@ -37,7 +54,7 @@ export const selectFocusedSession: Selector<SessionState> = (state) => state.ses
 
 /** One session's lifecycle status. The status strip subscribes to this per session. */
 export const selectSessionStatus =
-  (sessionId: SessionId): Selector<AgentStatus> =>
+  (sessionId: SessionId): Selector<SessionStatus> =>
   (state) =>
     state.sessions[sessionId]!.status
 
@@ -67,6 +84,81 @@ export const selectSessionReferencedFiles =
 
 /** Every session id in display order. */
 export const selectSessionOrder: Selector<SessionId[]> = (state) => state.order
+
+/** One row of {@link selectSessionList}: a session's identity plus its live status. */
+export interface SessionListItem {
+  id: SessionId
+  title: string
+  providerKind: ProviderKind
+  status: SessionStatus
+  /** Whether this session's status is one the developer must act on (ADR-006). */
+  needsAttention: boolean
+}
+
+/**
+ * Every session with its status, in display order (ADR-006). The Ctrl+S overview
+ * (task_05) reads this to draw its card list and mark which rows need you. Unlike a
+ * per-session selector it builds a fresh array each call, so a subscriber wakes on
+ * any session's change - which is exactly what the attention overview wants.
+ */
+export const selectSessionList: Selector<SessionListItem[]> = (state) =>
+  state.order.map((id) => {
+    const session = state.sessions[id]!
+    return {
+      id,
+      title: session.title,
+      providerKind: session.providerKind,
+      status: session.status,
+      needsAttention: needsAttention(session.status),
+    }
+  })
+
+/**
+ * The rank a needs-you status carries when several sessions want attention at once
+ * (ADR-006): an approval blocks an agent and is answered first, a crash is next, a
+ * finished turn last. Non-attention statuses never appear as candidates.
+ */
+const ATTENTION_RANK: Readonly<Record<SessionStatus, number>> = {
+  awaiting_approval: 0,
+  error: 1,
+  finished: 2,
+  working: Number.POSITIVE_INFINITY,
+  idle: Number.POSITIVE_INFINITY,
+}
+
+/**
+ * The next session that needs you after `afterSessionId`, or `null` when none does
+ * (ADR-006). This is what the jump-to-next action (task_05) sets focus to.
+ *
+ * Candidates are every needs-you session except `afterSessionId` itself. They are
+ * ranked first by status priority (`awaiting_approval` before `error` before
+ * `finished`), then by distance walking the `order` array forward from the pivot and
+ * wrapping around - so among equal-priority sessions the one just after the pivot
+ * wins, and a lone needy session earlier in the order is still found by wrapping.
+ */
+export const selectNextNeedy =
+  (afterSessionId: SessionId): Selector<SessionId | null> =>
+  (state) => {
+    const { order } = state
+    const count = order.length
+    if (count === 0) return null
+    const pivot = order.indexOf(afterSessionId)
+
+    // Walk the order forward from just after the pivot, wrapping around, so ties in
+    // rank are broken by nearest-after-pivot (a strict `<` keeps the first, i.e. the
+    // closest, of each rank). When the pivot is absent (-1) this starts at index 0
+    // and visits every session once.
+    let best: { id: SessionId; rank: number } | null = null
+    for (let step = 1; step <= count; step++) {
+      const id = order[(pivot + step) % count]!
+      if (id === afterSessionId) continue
+      const status = state.sessions[id]!.status
+      if (!needsAttention(status)) continue
+      const rank = ATTENTION_RANK[status]
+      if (best === null || rank < best.rank) best = { id, rank }
+    }
+    return best?.id ?? null
+  }
 
 /** The pending permission request, or `null` when the approval overlay is closed. */
 export const selectApprovalOverlay: Selector<ApprovalOverlay | null> = (state) => state.overlays.approval

@@ -33,8 +33,28 @@ export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
   codex: "Codex",
 }
 
-/** Coarse per-session lifecycle state surfaced to the UI status strip. */
-export type AgentStatus = "idle" | "working" | "awaiting_approval"
+/**
+ * Coarse per-session lifecycle state surfaced to the UI status strip and the
+ * attention derivation (ADR-006).
+ *
+ * `finished` and `error` are the terminal states the overview routes attention to:
+ * `finished` means the turn ended and the developer's input is expected; `error`
+ * means the prompt threw or the transport/subprocess was lost. `idle` is the
+ * quiescent "nothing to do" state (including after the developer cancels a turn).
+ * The adapter derives `finished`/`error` only from terminal signals, never from a
+ * streaming update, so `finished` cannot flicker mid-turn.
+ */
+export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished" | "error"
+
+/**
+ * Whether a session's status is one the developer must act on: an approval to
+ * answer, a crash to look at, or a finished turn awaiting their next move (ADR-006).
+ * A pure predicate every attention surface reads - the status strip, the Ctrl+S
+ * overview, the jump-to-next action, and the notifier - so they can never disagree
+ * about which sessions need you.
+ */
+export const needsAttention = (status: SessionStatus): boolean =>
+  status === "awaiting_approval" || status === "error" || status === "finished"
 
 /** Normalized classification of a tool call, translated from the agent's own kinds. */
 export type ToolCallKind =
@@ -160,7 +180,7 @@ export interface SessionState {
   task?: string
   acpSessionId: string
   turns: Turn[]
-  status: AgentStatus
+  status: SessionStatus
   /** File path -> strongest access seen. `edited` takes precedence over `read`. */
   referencedFiles: Map<string, "read" | "edited">
   /** Edit diffs proposed but not yet applied/approved. */
@@ -178,7 +198,7 @@ export type DomainSessionEvent =
   | { kind: "user_message"; messageId: string; text: string }
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
-  | { kind: "status"; status: AgentStatus } // idle | working | awaiting_approval
+  | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic

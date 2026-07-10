@@ -72,6 +72,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 
 const messageEvents = (events: DomainSessionEvent[]) => events.filter((e) => e.kind === "agent_message")
 
+/** The most recent status the adapter emitted, or `undefined` if it emitted none. */
+function lastStatus(events: DomainSessionEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.kind === "status") return event.status
+  }
+  return undefined
+}
+
 async function connected(mockOptions?: MockAgentOptions, scheduler?: FrameScheduler): Promise<ReturnType<typeof setup>> {
   const ctx = setup(mockOptions, scheduler)
   await ctx.conn.connect()
@@ -213,10 +222,11 @@ describe("full prompt turn", () => {
     )
     const sessionId = await conn.newSession("/tmp")
     const result = await conn.prompt(sessionId, [{ type: "text", text: "go" }])
-    await waitFor(() => events.some((e) => e.kind === "status" && e.status === "idle"))
+    await waitFor(() => events.some((e) => e.kind === "status" && e.status === "finished"))
     await delay(10)
 
     expect(result).toEqual({ stopReason: "end_turn" })
+    // `end_turn` leaves the session `finished` (your move), not `idle` (ADR-006).
     expect(events).toEqual([
       { kind: "status", status: "working" },
       { kind: "agent_message", messageId: "m1", textDelta: "Hello" },
@@ -224,7 +234,7 @@ describe("full prompt turn", () => {
         kind: "tool_call",
         call: { toolCallId: "t1", title: "Read", kind: "read", status: "completed", locations: ["/a.ts"] },
       },
-      { kind: "status", status: "idle" },
+      { kind: "status", status: "finished" },
     ])
     await conn.dispose()
   })
@@ -264,6 +274,86 @@ describe("full prompt turn", () => {
     walk(events)
     for (const key of forbidden) expect(keys.has(key)).toBe(false)
     await conn.dispose()
+  })
+})
+
+describe("status mapping (ADR-006)", () => {
+  const finishedReasons = ["end_turn", "max_tokens", "max_turn_requests", "refusal"] as const
+
+  for (const reason of finishedReasons) {
+    it(`maps the ${reason} stop reason to a finished status`, async () => {
+      const { conn, events } = await connected({ onPrompt: async () => reason })
+      const sessionId = await conn.newSession("/tmp")
+      await conn.prompt(sessionId, [{ type: "text", text: "go" }])
+      expect(lastStatus(events)).toBe("finished")
+      await conn.dispose()
+    })
+  }
+
+  it("maps the cancelled stop reason to idle, not finished", async () => {
+    const { conn, events } = await connected({ onPrompt: async () => "cancelled" as const })
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "stop" }])
+    expect(lastStatus(events)).toBe("idle")
+    await conn.dispose()
+  })
+
+  it("maps a thrown prompt to error and rethrows the failure", async () => {
+    const { conn, events } = await connected({
+      onPrompt: async () => {
+        throw new Error("model exploded")
+      },
+    })
+    const sessionId = await conn.newSession("/tmp")
+    await expect(conn.prompt(sessionId, [{ type: "text", text: "go" }])).rejects.toThrow()
+    expect(lastStatus(events)).toBe("error")
+    await conn.dispose()
+  })
+
+  it("maps an unexpected transport close to error", async () => {
+    let fireClose: ((info: { code: number | null }) => void) | undefined
+    const pair = createInMemoryTransportPair()
+    startMockAgent(pair.agent)
+    const events: DomainSessionEvent[] = []
+    const conn = createAgentConnection({
+      config: CONFIG,
+      transport: () => ({
+        stream: pair.client,
+        onClose: (cb) => {
+          fireClose = cb
+        },
+        dispose: async () => {},
+      }),
+    })
+    conn.onUpdate((event) => events.push(event))
+    await conn.connect()
+
+    fireClose!({ code: 1 })
+    expect(lastStatus(events)).toBe("error")
+    await conn.dispose()
+  })
+
+  it("does not report error when dispose closes the transport intentionally", async () => {
+    let fireClose: ((info: { code: number | null }) => void) | undefined
+    const pair = createInMemoryTransportPair()
+    startMockAgent(pair.agent)
+    const events: DomainSessionEvent[] = []
+    const conn = createAgentConnection({
+      config: CONFIG,
+      transport: () => ({
+        stream: pair.client,
+        onClose: (cb) => {
+          fireClose = cb
+        },
+        // A real transport's close fires as `dispose` reaps the subprocess.
+        dispose: async () => fireClose?.({ code: 0 }),
+      }),
+    })
+    conn.onUpdate((event) => events.push(event))
+    await conn.connect()
+    await conn.dispose()
+
+    expect(events.some((event) => event.kind === "status" && event.status === "error")).toBe(false)
   })
 })
 

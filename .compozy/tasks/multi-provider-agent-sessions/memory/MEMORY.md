@@ -1,0 +1,32 @@
+# Workflow Memory
+
+Keep only durable, cross-task context here. Do not duplicate facts that are obvious from the repository, PRD documents, or git history.
+
+## Current State
+- task_01 complete: session-identity + store refactor landed and committed. `AgentId`→`ProviderKind`, new opaque `SessionId`; store keyed by `sessions: Record<SessionId, SessionState>` + `order: SessionId[]` + `focusedSessionId`.
+- task_02 complete: config model reworked. `AppConfig = { providers: Record<ProviderKind, ProviderRecipe>; sessions: SessionDescriptor[]; telemetryEnabled }`. `resolveSessions(config, { launchCwd, dirExists? }) -> ResolvedSession[]` produces the ordered per-session inputs; the controller already consumes it.
+- task_03 complete: controller runs one runtime per resolved session, each `newSession(seed.cwd)` against its own dir, keyed by `SessionId`; approvals carry session id+title+cwd; optional first `task` sent as the opening prompt; per-session repo readiness. Store-seeding divergence fixed.
+- task_04 complete: `SessionStatus` extended with `finished`/`error`; adapter maps stop reasons + failures to status; `needsAttention`/`selectSessionList`/`selectNextNeedy` added; strip labels + theme tones for the new states.
+
+## Shared Decisions
+- **Default-fleet `SessionId` == `providerKind`.** The zero-config two-session boot seeds each session's id equal to its provider kind ("claude-code"/"codex"). The store SHAPE already supports N same-provider sessions (opaque id + order); task_02's `sessions` list must assign distinct ids for repeated providers. No store change needed for that.
+- Provider kinds + display names are centralized in `src/core/types.ts`: `PROVIDER_KINDS`, `PROVIDER_DISPLAY_NAMES`. `store.AGENT_IDS` re-exports `PROVIDER_KINDS` as the default seed order.
+- Selectors renamed `selectAgent*`→`selectSession*`, `selectFocusedAgentId`→`selectFocusedSessionId`; all keyed by `SessionId`.
+- `createSessionState(seed: SessionSeed)`; `SessionSeed = { id, providerKind, title, cwd, task?, acpSessionId? }`. `store.defaultSessionSeeds(cwd?)` builds the default fleet.
+- `SessionState.acpSessionId` is the ACP id (renamed from `sessionId`, empty until handshake). Overlays carry `sessionId` (approval) / `sourceSessionId`+`targetSessionId` (handoff).
+- Provider-level structs (`AgentConfig.id`, `AgentConnection.id`, `AgentReadiness.agentId`, `AgentSetupState.agentId`, telemetry `agent`) kept their field NAMES but are typed `ProviderKind`/`SessionId`; only the type changed.
+- Controller owns the session→ACP mapping via `Map<SessionId, AgentRuntime>`. It builds its plan from `resolveSessions(config, { launchCwd: cwd })`, mapping each `ResolvedSession` `{ seed, spawn }` to `{ seed, config: spawn }`. `AgentRuntimeState` = `{ sessionId, providerKind, displayName, title, ready, acpSessionId|error }`.
+- **Status model (task_04, ADR-006).** `AgentStatus` renamed -> `SessionStatus = idle|working|awaiting_approval|finished|error`. Adapter (`agentConnection.prompt`) now emits a TERMINAL status per turn instead of an unconditional `idle`: `finished` for end_turn/max_tokens/max_turn_requests/refusal, `idle` for cancelled, `error` for a thrown prompt or an unexpected transport close (wired via `transport.onClose`, guarded by a `closing` flag so `dispose` doesn't emit a false error). Any test that drives a mock agent to end_turn must now expect `finished`, not `idle`. `needsAttention(status)` (true for awaiting_approval|error|finished) lives in `core/types.ts`, re-exported from `store/selectors.ts`. New selectors: `selectSessionList` (`SessionListItem[]`: id/title/providerKind/status/needsAttention, in order) and `selectNextNeedy(afterSessionId)` (rank awaiting_approval<error<finished, then nearest-after-pivot wrap, excludes pivot, null if none). `theme.status`/`STATUS_LABELS` cover all five states; `theme.test.tsx` requires each status color be unique (error != not_ready).
+- Config model (task_02): `ProviderRecipe = { displayName; command; args; env }` (no id; keyed by kind). `AgentConfig = ProviderRecipe & { id: ProviderKind }` is the spawn input for the agent/transport/connection/readiness layer. `SessionDescriptor = { provider; cwd; title?; task? }`. `ResolvedSession = { seed: SessionSeed; spawn: AgentConfig }`. Default fleet: zero-config synthesizes one descriptor per provider with `title=displayName`, `cwd=launchCwd`; explicit descriptors default `title=basename(cwd)`. Repeated-provider ids: first=`kind`, k-th=`${kind}-${k}`. Legacy `agents` accepted as alias for `providers`.
+
+## Shared Learnings
+- `tsconfig` has `noUncheckedIndexedAccess`: indexing `Record<SessionId, SessionState>` (string key) yields `SessionState | undefined`. Guard or `!` at invariant-safe sites (the old `Record<AgentId>` finite-union key did not add undefined).
+- `index.createCockpitSession` still creates `createAppStore()` and injects it into the controller (test/cockpitSession.test.ts asserts this). The default store already carries the default-fleet seeds, so this stays consistent for the default config. When config diverges from the two defaults, move store seeding into the controller (or pass config-derived seeds).
+
+## Open Risks
+- Pre-spawn repo gate in `main()` still keys off the launch `cwd` only: a declared multi-session config launched from a non-repo dir is blocked pre-spawn even when its sessions point at real repos. Post-spawn per-session repo readiness is correct; the pre-spawn gate is a follow-up (needs main() to resolve sessions before the renderer).
+
+## Handoffs
+- task_05 (Ctrl+S overview) / task_07 (approval labeling): `AgentRuntimeState` now carries `cwd`; `ApprovalOverlay` carries `sessionId`+`title`+`cwd` (controller fills them from the session seed). task_07's labeling UI reads those fields.
+- Store-seeding divergence RESOLVED: `createSessionController` owns store seeding (`options.store ?? createAppStore({ seeds })`); `createCockpitSession` no longer injects a store and calls `recorder.watch(controller.store)`. Non-default `sessions` configs now seed the store from the resolved plan.
+- Per-session readiness lives in `firstRun.sessionSetup(standing, { insideRepo? })`: a connected session whose own cwd is not a git repo is not-ready with a directory-specific reason; `buildFirstRunReport` blocks only when no session is usable. `index.runtimeSetup(state, checkRepo?)` folds it in; `AgentSetupState` still keyed by `agentId=providerKind`.

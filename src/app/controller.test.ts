@@ -733,7 +733,8 @@ describe("integration - two mock ACP agents", () => {
 
     const state = controller.store.getState()
     expect(state.sessions["claude-code"]!.turns.at(-1)).toEqual({ kind: "agent", messageId: "", text: "on it" })
-    expect(state.sessions["claude-code"]!.status).toBe("idle")
+    // The prompt ran to `end_turn`, so the session is `finished` (your move), not idle.
+    expect(state.sessions["claude-code"]!.status).toBe("finished")
 
     // B never saw the prompt, stayed idle, and is still addressable.
     expect(codex.agent.prompts).toHaveLength(0)
@@ -785,7 +786,8 @@ describe("integration - two mock ACP agents", () => {
 
     expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: "allow" }])
     expect(controller.store.getState().overlays.approval).toBeNull()
-    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("idle")
+    // After the approval the turn ran to `end_turn`, so the session is `finished`.
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("finished")
 
     await controller.dispose()
   })

@@ -24,6 +24,8 @@ export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
   idle: "idle",
   working: "working",
   awaiting_approval: "awaiting approval",
+  finished: "finished",
+  error: "error",
   not_ready: "not ready",
 }
 

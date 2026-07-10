@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test"
 
 import type { DomainSessionEvent, HandoffBundle } from "../core/types.ts"
-import { createAppStore } from "./appStore.ts"
+import { createAppStore, type AppStore } from "./appStore.ts"
 import {
+  needsAttention,
+  selectNextNeedy,
+  selectSessionList,
   selectSessionPendingDiffs,
   selectSessionPlan,
   selectSessionReferencedFiles,
@@ -115,6 +118,82 @@ describe("per-agent session selectors", () => {
     expect(selectSessionPlan("claude-code")(after)).toBe(selectSessionPlan("claude-code")(before))
     expect(selectSessionStatus("claude-code")(after)).toBe(selectSessionStatus("claude-code")(before))
     expect(selectSessionTurns("claude-code")(after)).not.toBe(selectSessionTurns("claude-code")(before))
+  })
+})
+
+/** A three-session fleet (two sharing a provider) focused on "a" by default. */
+function fleetStore(): AppStore {
+  return createAppStore({
+    seeds: [
+      { id: "a", providerKind: "claude-code", title: "A", cwd: "/w" },
+      { id: "b", providerKind: "codex", title: "B", cwd: "/w" },
+      { id: "c", providerKind: "claude-code", title: "C", cwd: "/w" },
+    ],
+  })
+}
+
+describe("needsAttention (ADR-006)", () => {
+  it("is true for the states the developer must act on", () => {
+    expect(needsAttention("awaiting_approval")).toBe(true)
+    expect(needsAttention("error")).toBe(true)
+    expect(needsAttention("finished")).toBe(true)
+  })
+
+  it("is false while a session is idle or working", () => {
+    expect(needsAttention("idle")).toBe(false)
+    expect(needsAttention("working")).toBe(false)
+  })
+})
+
+describe("selectSessionList", () => {
+  it("lists every session with its status and attention flag, in order", () => {
+    const store = fleetStore()
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    const list = selectSessionList(store.getState())
+
+    expect(list.map((item) => item.id)).toEqual(["a", "b", "c"])
+    expect(list.map((item) => item.status)).toEqual(["idle", "finished", "idle"])
+    expect(list.map((item) => item.needsAttention)).toEqual([false, true, false])
+    expect(list[0]).toMatchObject({ id: "a", title: "A", providerKind: "claude-code" })
+  })
+})
+
+describe("selectNextNeedy (ADR-006)", () => {
+  it("returns an awaiting_approval session ahead of a finished one", () => {
+    const store = fleetStore()
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    store.applyEvent("c", { kind: "status", status: "awaiting_approval" })
+    // From "a" both need attention; the approval outranks the finished turn.
+    expect(selectNextNeedy("a")(store.getState())).toBe("c")
+  })
+
+  it("wraps past the pivot to an earlier needy session", () => {
+    const store = fleetStore()
+    store.applyEvent("a", { kind: "status", status: "finished" })
+    // Pivot is the last session; the only needy one sits before it in order.
+    expect(selectNextNeedy("c")(store.getState())).toBe("a")
+  })
+
+  it("breaks a rank tie by nearest after the pivot, walking forward", () => {
+    const store = fleetStore()
+    store.applyEvent("a", { kind: "status", status: "finished" })
+    store.applyEvent("c", { kind: "status", status: "finished" })
+    // From pivot "b", walking forward reaches "c" before wrapping to "a".
+    expect(selectNextNeedy("b")(store.getState())).toBe("c")
+  })
+
+  it("skips the pivot session even when it needs attention", () => {
+    const store = fleetStore()
+    store.applyEvent("a", { kind: "status", status: "finished" })
+    store.applyEvent("b", { kind: "status", status: "error" })
+    // Pivot "a" is finished but excluded; the next needy session is "b".
+    expect(selectNextNeedy("a")(store.getState())).toBe("b")
+  })
+
+  it("returns null when no session needs attention", () => {
+    const store = fleetStore()
+    store.applyEvent("b", { kind: "status", status: "working" })
+    expect(selectNextNeedy("a")(store.getState())).toBeNull()
   })
 })
 

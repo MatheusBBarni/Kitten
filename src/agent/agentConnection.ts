@@ -25,7 +25,7 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
 
-import type { AgentConfig, ProviderKind, AgentStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
+import type { AgentConfig, ProviderKind, SessionStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
 import { translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
 import { spawnAgentTransport, type AgentTransport, type TransportFactory } from "./transport.ts"
 
@@ -145,6 +145,10 @@ class AgentConnectionImpl implements AgentConnection {
   private transport: AgentTransport | null = null
   private connection: ClientSideConnection | null = null
 
+  /** Set the instant `dispose` begins, so an intentional teardown's transport close
+   * does not masquerade as a crash. */
+  private closing = false
+
   private readonly subscribers = new Set<(event: DomainSessionEvent) => void>()
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
 
@@ -161,6 +165,15 @@ class AgentConnectionImpl implements AgentConnection {
   async connect(): Promise<ReadyState> {
     try {
       this.transport = this.transportFactory(this.config)
+      // A transport close we did not ask for is a lost subprocess: surface `error`
+      // (ADR-006). The `closing` guard suppresses the close that `dispose` itself
+      // triggers, so only an unexpected exit reaches the overview. The transport's
+      // `onClose` is backed by the subprocess `exited` promise (`transport.ts`), so
+      // this is a real signal - no fallback to holding the last state is needed.
+      this.transport.onClose(() => {
+        if (this.closing) return
+        this.emit({ kind: "status", status: "error" })
+      })
       this.connection = new ClientSideConnection(() => this.buildClient(), this.transport.stream)
       const result = await this.connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
@@ -187,9 +200,19 @@ class AgentConnectionImpl implements AgentConnection {
         sessionId,
         prompt: blocks.map((block) => ({ type: "text", text: block.text })),
       })
-      return { stopReason: result.stopReason satisfies StopReason }
-    } finally {
-      this.emit({ kind: "status", status: "idle" })
+      const stopReason = result.stopReason satisfies StopReason
+      // Map the terminal stop reason to a status instead of always emitting `idle`
+      // (ADR-006): a turn that ran to its end is `finished` (your move), a turn the
+      // developer cancelled is `idle`. Deriving only from this terminal signal keeps
+      // `finished` from flickering off a mid-turn streaming update.
+      this.emit({ kind: "status", status: statusForStopReason(stopReason) })
+      return { stopReason }
+    } catch (error) {
+      // A thrown prompt is a lost turn, not a completed one: surface `error` so the
+      // overview can route the developer to the broken session (ADR-006), then let
+      // the failure propagate to the controller's `onError`.
+      this.emit({ kind: "status", status: "error" })
+      throw error
     }
   }
 
@@ -210,6 +233,7 @@ class AgentConnectionImpl implements AgentConnection {
   }
 
   async dispose(): Promise<void> {
+    this.closing = true
     this.scheduler.dispose()
     this.subscribers.clear()
     this.permissionHandler = null
@@ -316,6 +340,18 @@ async function readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileRe
 async function writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
   await Bun.write(params.path, params.content)
   return {}
+}
+
+/**
+ * The status a completed prompt turn leaves the session in (ADR-006).
+ *
+ * Every reason the turn ran to its own end - `end_turn`, a token or turn-request
+ * limit, or a `refusal` - is `finished`: the turn is over and the developer's input
+ * is expected. Only `cancelled` (the developer interrupted) returns the session to
+ * `idle`. A thrown prompt never reaches here; it maps to `error` at the call site.
+ */
+function statusForStopReason(reason: PromptStopReason): SessionStatus {
+  return reason === "cancelled" ? "idle" : "finished"
 }
 
 function toAcpOutcome(outcome: PermissionOutcome): RequestPermissionResponse["outcome"] {
