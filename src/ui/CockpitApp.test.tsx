@@ -6,6 +6,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { HELP_ENTRIES } from "./keymap.ts"
@@ -36,6 +37,26 @@ async function renderCockpitApp(controller: FakeController, width = 80, height =
   return setup
 }
 
+/** The current model/effort values a session reports through a config_options event. */
+function configOptions(model: string, effort: string): ConfigOption[] {
+  return [
+    {
+      id: "model",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: model,
+      options: [{ value: model, name: model }],
+    },
+    {
+      id: "effort",
+      category: EFFORT_CATEGORY,
+      label: "Reasoning effort",
+      currentValue: effort,
+      options: [{ value: effort, name: effort }],
+    },
+  ]
+}
+
 describe("CockpitApp layout", () => {
   it("renders the focused conversation region above a persistent status strip", async () => {
     const controller = createFakeController()
@@ -62,6 +83,33 @@ describe("CockpitApp layout", () => {
     const { renderer, captureCharFrame } = await renderCockpitApp(controller)
 
     expect(captureCharFrame()).toMatchSnapshot()
+
+    await destroyMounted(renderer)
+  })
+
+  it("shows each pane's confirmed model and effort and refreshes them from config updates", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("claude-fable-5[1m]", "high") })
+    controller.store.applyEvent("codex", { kind: "config_options", options: configOptions("gpt-5.1-codex-max", "medium") })
+    const { renderer, waitForFrame } = await renderCockpitApp(controller)
+
+    const initial = await waitForFrame(
+      (f) =>
+        f.includes("Claude Code: idle · claude-fable-5[1m] / high") &&
+        f.includes("Codex: idle · gpt-5.1-codex-max / medium"),
+    )
+    expectNoOverflow(initial, 80, 24)
+    expect(initial).toContain("Claude Code: idle · claude-fable-5[1m] / high")
+    expect(initial).toContain("Codex: idle · gpt-5.1-codex-max / medium")
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("sonnet", "low") })
+    })
+
+    const updated = await waitForFrame((f) => f.includes("Claude Code: idle · sonnet / low"))
+    expectNoOverflow(updated, 80, 24)
+    expect(updated).toContain("Claude Code: idle · sonnet / low")
+    expect(updated).toContain("Codex: idle · gpt-5.1-codex-max / medium")
 
     await destroyMounted(renderer)
   })

@@ -5,17 +5,49 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { FOCUS_MARKER, StatusStrip, STATUS_LABELS } from "./StatusStrip.tsx"
 
-/** Mount the strip alone, on a single row, so assertions read one line of frame. */
-async function renderStrip(controller: ReturnType<typeof createFakeController>) {
+/** Mount the strip alone so its rendered terminal frame can be asserted directly. */
+async function renderStrip(controller: ReturnType<typeof createFakeController>, width = 80, height = 3) {
   return testRender(
     <CockpitProvider controller={controller}>
       <StatusStrip />
     </CockpitProvider>,
-    { width: 80, height: 3 },
+    { width, height },
   )
+}
+
+/** The confirmed model/effort pair an agent advertises through the store. */
+function configOptions(model = "opus", effort?: string): ConfigOption[] {
+  const options: ConfigOption[] = [
+    {
+      id: "model",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: model,
+      options: [
+        { value: "opus", name: "Opus" },
+        { value: "sonnet", name: "Sonnet" },
+      ],
+    },
+  ]
+
+  if (effort !== undefined) {
+    options.push({
+      id: "effort",
+      category: EFFORT_CATEGORY,
+      label: "Reasoning effort",
+      currentValue: effort,
+      options: [
+        { value: "high", name: "High" },
+        { value: "low", name: "Low" },
+      ],
+    })
+  }
+
+  return options
 }
 
 describe("StatusStrip", () => {
@@ -109,6 +141,76 @@ describe("StatusStrip", () => {
 
     const strip = captureCharFrame().split("\n")[0] ?? ""
     expect([...strip].length).toBe(80)
+
+    await destroyMounted(renderer)
+  })
+
+  it("shows the agent-confirmed model and effort beside its status", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("opus", "high") })
+    const { renderer, waitForFrame } = await renderStrip(controller, 120)
+
+    const frame = await waitForFrame((f) => f.includes("Claude Code: idle · opus / high"))
+    expect(frame).toContain("Claude Code: idle · opus / high")
+
+    await destroyMounted(renderer)
+  })
+
+  it("shows a model without an effort segment when no effort is advertised", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("opus") })
+    const { renderer, waitForFrame } = await renderStrip(controller, 120)
+
+    const frame = await waitForFrame((f) => f.includes("Claude Code: idle · opus"))
+    expect(frame).toContain("Claude Code: idle · opus")
+    expect(frame).not.toContain("Claude Code: idle · opus /")
+
+    await destroyMounted(renderer)
+  })
+
+  it("omits the configuration segment when the agent advertises no options", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderStrip(controller)
+
+    const frame = await waitForFrame((f) => f.includes("Claude Code: idle"))
+    expect(frame).toContain("Claude Code: idle")
+    expect(frame).not.toContain("Claude Code: idle ·")
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps the confirmed model and effort when only the status changes", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("opus", "high") })
+    const { renderer, waitForFrame } = await renderStrip(controller, 120)
+    await waitForFrame((f) => f.includes("Claude Code: idle · opus / high"))
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    })
+
+    const frame = await waitForFrame((f) => f.includes("Claude Code: working · opus / high"))
+    expect(frame).toContain("Claude Code: working · opus / high")
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps both agents' long confirmed settings visible in an 80-column terminal", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("claude-fable-5[1m]", "high") })
+    controller.store.applyEvent("codex", { kind: "config_options", options: configOptions("gpt-5.1-codex-max", "medium") })
+    controller.store.applyEvent("claude-code", { kind: "status", status: "awaiting_approval" })
+    controller.store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
+    const { renderer, waitForFrame } = await renderStrip(controller, 80, 5)
+
+    const frame = await waitForFrame(
+      (f) => f.includes("claude-fable-5[1m]") && f.includes("gpt-5.1-codex-max") && f.includes("medium"),
+    )
+    expect(frame).toContain("Claude Code: awaiting approval")
+    expect(frame).toContain("claude-fable-5[1m]")
+    expect(frame).toContain("Codex: awaiting approval")
+    expect(frame).toContain("gpt-5.1-codex-max")
+    expect(frame).toContain("medium")
 
     await destroyMounted(renderer)
   })
