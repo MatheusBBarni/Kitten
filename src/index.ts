@@ -27,6 +27,10 @@ import {
   type FirstRunReport,
 } from "./config/firstRun.ts"
 import type { AppConfig } from "./core/types.ts"
+import { createOsNotificationChannel } from "./notify/channel.ts"
+import { createRendererFocusSource } from "./notify/focus.ts"
+import { createNotifier } from "./notify/notifier.ts"
+import type { AppStore } from "./store/appStore.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderCockpit } from "./ui/main.tsx"
 
@@ -132,6 +136,22 @@ export function exitBlocked(): void {
   process.exit(1)
 }
 
+/**
+ * Wire the layered attention notifier for a run (ADR-007).
+ *
+ * Subscribes the notifier to the same store the telemetry recorder watches, reading
+ * terminal focus from the renderer's DECSET-1004 events and delivering through the
+ * per-OS native channel. Best-effort by construction: the channel swallows its own
+ * failures and the bell is the universal fallback, so this never throws into boot.
+ */
+export function wireAttentionNotifier(renderer: CliRenderer, store: AppStore): void {
+  const notifier = createNotifier({
+    channel: createOsNotificationChannel(),
+    focus: createRendererFocusSource(renderer),
+  })
+  notifier.watch(store)
+}
+
 /** Injectable dependencies for {@link main}. */
 export interface MainDeps {
   /** How to obtain the renderer; defaults to the real interactive renderer. */
@@ -153,6 +173,8 @@ export interface MainDeps {
   reportFirstRun?: (report: FirstRunReport) => void
   /** What to run when the first-run gate blocks boot; defaults to a non-zero exit. */
   onBlocked?: (report: FirstRunReport) => void
+  /** How the attention notifier is wired; defaults to {@link wireAttentionNotifier}. */
+  wireNotifier?: (renderer: CliRenderer, store: AppStore) => void
 }
 
 /** What {@link main} hands back so a caller (or a test) can inspect the booted app. */
@@ -235,6 +257,10 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
       })
     })
   })
+
+  // Wire the attention notifier alongside telemetry: it watches the same store and
+  // reads terminal focus from the renderer. Best-effort, so it never blocks the mount.
+  ;(deps.wireNotifier ?? wireAttentionNotifier)(renderer, controller.store)
 
   renderCockpit(renderer, controller, recorder)
   return { renderer, controller, closed }

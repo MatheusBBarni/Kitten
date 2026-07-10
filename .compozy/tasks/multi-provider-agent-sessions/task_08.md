@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Layered attention notifier"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ This is the part of the feature that actually cuts idle time for an away develop
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Define the `NotificationChannel` seam and the per-OS shell-out behind OS detection.
-- [ ] 8.2 Subscribe to status transitions and fire once per transition into needs-you, deduplicated per session.
-- [ ] 8.3 Add the terminal focus listener and gate the OS notification on the unfocused state with its fallback.
-- [ ] 8.4 Ring the terminal bell on every needs-you transition as the universal fallback.
-- [ ] 8.5 Wire the notifier into the boot path next to the telemetry recorder.
+- [x] 8.1 Define the `NotificationChannel` seam and the per-OS shell-out behind OS detection.
+- [x] 8.2 Subscribe to status transitions and fire once per transition into needs-you, deduplicated per session.
+- [x] 8.3 Add the terminal focus listener and gate the OS notification on the unfocused state with its fallback.
+- [x] 8.4 Ring the terminal bell on every needs-you transition as the universal fallback.
+- [x] 8.5 Wire the notifier into the boot path next to the telemetry recorder.
 
 ## Implementation Details
 Build the notifier per ADR-007 and the TechSpec "Integration Points" section: a store subscription for transitions, an injectable channel seam, OS detection, and a focus source from OpenTUI.
