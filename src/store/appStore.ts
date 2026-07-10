@@ -64,10 +64,15 @@ export interface HandoffPreviewOverlay {
 /**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
+ *
+ * `sessions` is a plain boolean rather than a payload slot: the Ctrl+S overview
+ * (task_05) carries no state of its own, it draws itself from `selectSessionList`,
+ * so the slot need only say whether it is open.
  */
 export interface OverlayState {
   approval: ApprovalOverlay | null
   handoffPreview: HandoffPreviewOverlay | null
+  sessions: boolean
 }
 
 /**
@@ -124,6 +129,10 @@ export interface AppStore {
   openHandoffPreview(overlay: HandoffPreviewOverlay): void
   /** Clear the hand-off preview slot. Closing a closed slot is a no-op. */
   closeHandoffPreview(): void
+  /** Open the Ctrl+S sessions overview. Opening an open overview is a no-op. */
+  openSessions(): void
+  /** Close the sessions overview. Closing a closed overview is a no-op. */
+  closeSessions(): void
 }
 
 /** Construction options. Defaults to one seeded session per provider kind. */
@@ -158,7 +167,7 @@ class AppStoreImpl implements AppStore {
       sessions,
       order,
       focusedSessionId: options.focusedSessionId ?? order[0]!,
-      overlays: { approval: null, handoffPreview: null },
+      overlays: { approval: null, handoffPreview: null, sessions: false },
     }
   }
 
@@ -234,6 +243,16 @@ class AppStoreImpl implements AppStore {
   closeHandoffPreview(): void {
     if (this.state.overlays.handoffPreview === null) return
     this.setOverlays({ handoffPreview: null })
+  }
+
+  openSessions(): void {
+    if (this.state.overlays.sessions) return
+    this.setOverlays({ sessions: true })
+  }
+
+  closeSessions(): void {
+    if (!this.state.overlays.sessions) return
+    this.setOverlays({ sessions: false })
   }
 
   /** Replace one or both overlay slots, leaving the rest of the state identical. */

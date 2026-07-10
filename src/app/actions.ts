@@ -16,6 +16,7 @@
 import type { AgentConnection, PermissionOutcome, PromptBlock, PromptResult } from "../agent/agentConnection.ts"
 import type { SessionId } from "../core/types.ts"
 import type { AppStore } from "../store/appStore.ts"
+import { selectNextNeedy } from "../store/selectors.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
@@ -52,6 +53,12 @@ export interface ControllerActions {
   cancel(sessionId?: SessionId): Promise<void>
   /** Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live. */
   switchFocus(sessionId?: SessionId): void
+  /**
+   * Move focus to the next session that needs the developer (ADR-006), ranked
+   * `awaiting_approval` before `error` before `finished` and walking `order` forward
+   * from the focused session. A no-op when no other session needs attention.
+   */
+  jumpToNextNeedy(): void
   /** Answer the pending permission request with the user's decision. */
   respondPermission(outcome: PermissionOutcome): void
 }
@@ -104,6 +111,11 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
     switchFocus(sessionId = nextSessionId(store.getState().order, focused())): void {
       store.setFocus(sessionId)
+    },
+
+    jumpToNextNeedy(): void {
+      const target = selectNextNeedy(focused())(store.getState())
+      if (target) store.setFocus(target)
     },
 
     respondPermission(outcome: PermissionOutcome): void {

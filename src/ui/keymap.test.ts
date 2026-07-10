@@ -14,7 +14,10 @@ import {
   matchApprovalCommand,
   matchCommand,
   matchHandoffCommand,
+  matchSessionsCommand,
   PROMPT_KEY_BINDINGS,
+  SESSIONS_HINT,
+  SESSIONS_KEYMAP,
   type CockpitKey,
 } from "./keymap.ts"
 
@@ -30,6 +33,10 @@ describe("matchCommand", () => {
 
   it("maps Ctrl+T to hand-off", () => {
     expect(matchCommand(key("t", { ctrl: true }))).toBe("hand-off")
+  })
+
+  it("maps Ctrl+S to sessions", () => {
+    expect(matchCommand(key("s", { ctrl: true }))).toBe("sessions")
   })
 
   it("maps F1 to toggle-help and Escape to close-help", () => {
@@ -61,7 +68,7 @@ describe("COCKPIT_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
     expect(new Set(commands).size).toBe(commands.length)
-    expect(commands).toEqual(["switch-focus", "hand-off", "toggle-help", "close-help"])
+    expect(commands).toEqual(["switch-focus", "hand-off", "sessions", "toggle-help", "close-help"])
   })
 
   it("keeps the hand-off chord clear of the ASCII control codes a terminal already sends", () => {
@@ -129,17 +136,21 @@ describe("HELP_ENTRIES", () => {
     const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
     // Help first: while the panel is open it consumes Escape, and only then does the
     // editor's interrupt become reachable.
-    expect(escapes.map((e) => e.index)).toEqual([3, 6])
+    expect(escapes.map((e) => e.index)).toEqual([4, 7])
   })
 
   it("documents the hand-off, since its chord is the one the product turns on", () => {
     expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+T")
   })
 
-  it("omits both overlays' keys, which are unreachable from the cockpit", () => {
-    for (const binding of [...APPROVAL_KEYMAP, ...HANDOFF_KEYMAP]) {
+  it("omits every overlay's keys, which are unreachable from the cockpit", () => {
+    for (const binding of [...APPROVAL_KEYMAP, ...HANDOFF_KEYMAP, ...SESSIONS_KEYMAP]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
+  })
+
+  it("documents the sessions overview, whose chord opens the fleet router", () => {
+    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+S")
   })
 })
 
@@ -239,6 +250,55 @@ describe("HANDOFF_KEYMAP", () => {
     for (const keys of ["↑", "↓", "Space", "Enter"]) {
       expect(HANDOFF_EDIT_HINT).not.toContain(keys)
     }
+  })
+})
+
+describe("matchSessionsCommand", () => {
+  it("maps the arrows to the session the highlight moves to", () => {
+    expect(matchSessionsCommand(key("up"))).toBe("prev-session")
+    expect(matchSessionsCommand(key("down"))).toBe("next-session")
+  })
+
+  it("maps both Enter variants to jump-into, since a terminal may report either", () => {
+    expect(matchSessionsCommand(key("return"))).toBe("jump-into")
+    expect(matchSessionsCommand(key("kpenter"))).toBe("jump-into")
+  })
+
+  it("maps a bare n to the jump-to-next-needy shortcut", () => {
+    expect(matchSessionsCommand(key("n"))).toBe("jump-next-needy")
+  })
+
+  it("maps Escape to cancel, dismissing the overview without switching", () => {
+    expect(matchSessionsCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("ignores a chord with modifiers held, so Ctrl+N cannot jump", () => {
+    expect(matchSessionsCommand(key("n", { ctrl: true }))).toBeNull()
+    expect(matchSessionsCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchSessionsCommand(key("up", { meta: true }))).toBeNull()
+  })
+
+  it("ignores keys the overview does not claim", () => {
+    expect(matchSessionsCommand(key("s", { ctrl: true }))).toBeNull()
+    expect(matchSessionsCommand(key("f1"))).toBeNull()
+    expect(matchSessionsCommand(key("space"))).toBeNull()
+  })
+})
+
+describe("SESSIONS_KEYMAP", () => {
+  it("binds each command exactly once", () => {
+    const commands = SESSIONS_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["prev-session", "next-session", "jump-into", "jump-next-needy", "cancel"])
+    expect(new Set(commands).size).toBe(commands.length)
+  })
+
+  it("names every binding in the hint the overview prints", () => {
+    for (const binding of SESSIONS_KEYMAP) {
+      // The bare `n` is a letter and the hint is written in English, so pin its word.
+      if (binding.command === "jump-next-needy") continue
+      expect(SESSIONS_HINT).toContain(binding.keys)
+    }
+    expect(SESSIONS_HINT).toContain("n next needy")
   })
 })
 

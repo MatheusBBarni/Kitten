@@ -19,6 +19,7 @@ import {
   selectHasOpenOverlay,
   selectIsApprovalOpen,
   selectIsFocused,
+  selectIsSessionsOpen,
 } from "./selectors.ts"
 
 /**
@@ -156,6 +157,16 @@ describe("selectSessionList", () => {
     expect(list.map((item) => item.needsAttention)).toEqual([false, true, false])
     expect(list[0]).toMatchObject({ id: "a", title: "A", providerKind: "claude-code" })
   })
+
+  it("carries each session's working directory, so the overview can label its card", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/frontend" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/backend" },
+      ],
+    })
+    expect(selectSessionList(store.getState()).map((item) => item.cwd)).toEqual(["/work/frontend", "/work/backend"])
+  })
 })
 
 describe("selectNextNeedy (ADR-006)", () => {
@@ -204,6 +215,19 @@ describe("overlay selectors", () => {
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
+    expect(selectIsSessionsOpen(state)).toBe(false)
+  })
+
+  it("report an open sessions overview as an open, modal overlay", () => {
+    const store = createAppStore()
+    store.openSessions()
+    const state = store.getState()
+
+    expect(selectIsSessionsOpen(state)).toBe(true)
+    expect(selectHasOpenOverlay(state)).toBe(true)
+    // The overview carries no payload, so the approval flag stays independent of it.
+    expect(selectIsApprovalOpen(state)).toBe(false)
+    expect(selectApprovalOverlay(state)).toBeNull()
   })
 
   it("report an open approval overlay", () => {

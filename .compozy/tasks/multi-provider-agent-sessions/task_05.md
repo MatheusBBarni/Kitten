@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Ctrl+S sessions overview and jump-to-next"
 type: frontend
 complexity: high
@@ -31,11 +31,11 @@ It reuses the existing overlay modality and selection pattern so it behaves cons
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add the `sessions` overlay slot, its open/close actions, and its inclusion in `selectHasOpenOverlay`.
-- [ ] 5.2 Add the `Ctrl+S` command, `SESSIONS_KEYMAP`, help rows, and the strip hint.
-- [ ] 5.3 Build the `SessionsOverlay` card list from `selectSessionList`, calling out needs-you sessions.
-- [ ] 5.4 Add the `jumpToNextNeedy` action wired to `selectNextNeedy`.
-- [ ] 5.5 Mount the overlay in the cockpit shell and gate the shell's keys while it is open.
+- [x] 5.1 Add the `sessions` overlay slot, its open/close actions, and its inclusion in `selectHasOpenOverlay`.
+- [x] 5.2 Add the `Ctrl+S` command, `SESSIONS_KEYMAP`, help rows, and the strip hint.
+- [x] 5.3 Build the `SessionsOverlay` card list from `selectSessionList`, calling out needs-you sessions.
+- [x] 5.4 Add the `jumpToNextNeedy` action wired to `selectNextNeedy`.
+- [x] 5.5 Mount the overlay in the cockpit shell and gate the shell's keys while it is open.
 
 ## Implementation Details
 Model the overlay on `ApprovalPrompt`/`HandoffPreview` per the TechSpec "Sessions overview" note: a store slot, a `selectHasOpenOverlay` gate, its own `useKeyboard` that `preventDefault`s, and the shared selection pattern.
@@ -65,12 +65,12 @@ The keymap table stays the single source of truth for dispatch and the help pane
 
 ## Tests
 - Unit tests:
-  - [ ] `Ctrl+S` maps to the `sessions` command and `SESSIONS_KEYMAP` maps up/down, Enter, the jump key, and Esc.
-  - [ ] Opening the sessions overlay makes `selectHasOpenOverlay` return true.
-  - [ ] `jumpToNextNeedy` sets focus to the session returned by `selectNextNeedy`.
-  - [ ] The card list renders one entry per session in `order` with its title, provider, directory, and state.
+  - [x] `Ctrl+S` maps to the `sessions` command and `SESSIONS_KEYMAP` maps up/down, Enter, the jump key, and Esc.
+  - [x] Opening the sessions overlay makes `selectHasOpenOverlay` return true.
+  - [x] `jumpToNextNeedy` sets focus to the session returned by `selectNextNeedy`.
+  - [x] The card list renders one entry per session in `order` with its title, provider, directory, and state.
 - Integration tests:
-  - [ ] With three sessions where one is `awaiting_approval`, open Ctrl+S in the test renderer, assert the cards render each state, Enter on a highlighted card focuses that session, the jump key lands on the `awaiting_approval` session, and Esc restores prior focus and returns the keyboard to the prompt.
+  - [x] With three sessions where one is `awaiting_approval`, open Ctrl+S in the test renderer, assert the cards render each state, Enter on a highlighted card focuses that session, the jump key lands on the `awaiting_approval` session, and Esc restores prior focus and returns the keyboard to the prompt.
 - Test coverage target: >=80%
 - All tests must pass
 

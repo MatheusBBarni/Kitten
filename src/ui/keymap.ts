@@ -33,13 +33,16 @@ export interface CockpitKey {
 }
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
-export type CockpitCommand = "switch-focus" | "hand-off" | "toggle-help" | "close-help"
+export type CockpitCommand = "switch-focus" | "hand-off" | "sessions" | "toggle-help" | "close-help"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
 /** Every intent the hand-off preview handles while it is on screen. */
 export type HandoffCommand = "prev-item" | "next-item" | "toggle-item" | "edit-summary" | "confirm" | "cancel"
+
+/** Every intent the Ctrl+S sessions overview handles while it is on screen. */
+export type SessionsCommand = "prev-session" | "next-session" | "jump-into" | "jump-next-needy" | "cancel"
 
 /** One row of the help panel: the chord and what it does. */
 export interface HelpEntry {
@@ -91,6 +94,12 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Ctrl+T",
     description: "Hand the task off to the other agent",
     matches: ctrl("t"),
+  },
+  {
+    command: "sessions",
+    keys: "Ctrl+S",
+    description: "Show every session and jump to the one that needs you",
+    matches: ctrl("s"),
   },
   {
     command: "toggle-help",
@@ -237,6 +246,48 @@ export const HANDOFF_KEYMAP: readonly KeyBinding<HandoffCommand>[] = [
 ]
 
 /**
+ * The sessions overview's keys, live only while the Ctrl+S overview is on screen.
+ *
+ * Like the approval and hand-off overlays, the overview is modal, so plain keys are
+ * safe: nothing reaches the composer while the fleet list is up. Enter jumps focus
+ * into the highlighted session; a bare `n` skips straight to the next session that
+ * needs the developer (`selectNextNeedy`), which is the whole reason the overview
+ * exists; Escape dismisses it without moving focus.
+ */
+export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
+  {
+    command: "prev-session",
+    keys: "↑",
+    description: "Highlight the previous session",
+    matches: plain("up"),
+  },
+  {
+    command: "next-session",
+    keys: "↓",
+    description: "Highlight the next session",
+    matches: plain("down"),
+  },
+  {
+    command: "jump-into",
+    keys: "Enter",
+    description: "Jump focus into the highlighted session",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "jump-next-needy",
+    keys: "n",
+    description: "Jump to the next session that needs you",
+    matches: plain("n"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Dismiss the overview without switching",
+    matches: plain("escape"),
+  },
+]
+
+/**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
  * Neither overlay's keys appear. Both are modal, so F1 cannot open this panel while
@@ -256,6 +307,9 @@ export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} 
 /** The hint printed inside the hand-off preview while the developer curates the bundle. */
 export const HANDOFF_HINT = "↑↓ move  Space keep/drop  e edit summary  Enter send  Esc cancel"
 
+/** The hint printed inside the sessions overview, where those keys are the only live ones. */
+export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
+
 /** The hint printed while the summary editor holds the keyboard, where only Escape is ours. */
 export const HANDOFF_EDIT_HINT = "Esc returns to the bundle"
 
@@ -274,6 +328,9 @@ export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)
 
 /** The preview command a keypress maps to, or `null` when the preview does not claim it. */
 export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)
+
+/** The overview command a keypress maps to, or `null` when the overview does not claim it. */
+export const matchSessionsCommand = makeMatcher(SESSIONS_KEYMAP)
 
 /**
  * The zero-based option a digit key names, or `null` for any other key.

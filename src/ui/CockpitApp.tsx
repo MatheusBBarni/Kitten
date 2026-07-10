@@ -36,6 +36,7 @@ import { CockpitProvider, useAppSelector, useController } from "./cockpitContext
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
+import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { COCKPIT_KEYMAP, HELP_ENTRIES, matchCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -90,6 +91,12 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
           // it, since the preview spends Escape on discarding the bundle.
           setHelpOpen(false)
           handoff.begin()
+          return
+        case "sessions":
+          // Same reason as the hand-off: the overview is modal and spends Escape on
+          // dismissing itself, so close the help panel before it opens.
+          setHelpOpen(false)
+          controller.store.openSessions()
           return
         case "toggle-help":
           setHelpOpen((open) => !open)
@@ -151,6 +158,8 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
       <StatusStrip />
 
       {helpOpen ? <HelpOverlay /> : null}
+
+      <SessionsOverlay />
 
       <HandoffPreview flow={handoff} />
 

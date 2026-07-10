@@ -15,12 +15,14 @@ import { nextSessionId, type PromptInput } from "../src/app/actions.ts"
 import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
+import { selectNextNeedy } from "../src/store/selectors.ts"
 
 /** Every action call the cockpit made, in order. */
 export interface RecordedCalls {
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
   switchFocus: (SessionId | undefined)[]
+  jumpToNextNeedy: number
   respondPermission: PermissionOutcome[]
   dispose: number
 }
@@ -71,7 +73,14 @@ export function readyRuntimes(): AgentRuntimeState[] {
 export function createFakeController(options: FakeControllerOptions = {}): FakeController {
   const store = options.store ?? createAppStore()
   const runtimes = options.runtimes ?? readyRuntimes()
-  const calls: RecordedCalls = { sendPrompt: [], cancel: [], switchFocus: [], respondPermission: [], dispose: 0 }
+  const calls: RecordedCalls = {
+    sendPrompt: [],
+    cancel: [],
+    switchFocus: [],
+    jumpToNextNeedy: 0,
+    respondPermission: [],
+    dispose: 0,
+  }
 
   const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
 
@@ -89,6 +98,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       switchFocus(sessionId?: SessionId): void {
         calls.switchFocus.push(sessionId)
         store.setFocus(sessionId ?? nextSessionId(store.getState().order, store.getState().focusedSessionId))
+      },
+      jumpToNextNeedy(): void {
+        calls.jumpToNextNeedy++
+        const target = selectNextNeedy(store.getState().focusedSessionId)(store.getState())
+        if (target) store.setFocus(target)
       },
       respondPermission(outcome: PermissionOutcome): void {
         calls.respondPermission.push(outcome)

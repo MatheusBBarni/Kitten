@@ -688,6 +688,33 @@ describe("createControllerActions", () => {
     expect(await actions.sendPrompt("x", "codex")).toBeNull()
     await actions.cancel("codex")
   })
+
+  it("Should jump focus to the session selectNextNeedy returns", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/w" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/w" },
+        { id: "c", providerKind: "claude-code", title: "C", cwd: "/w" },
+      ],
+    })
+    // From focused "a": a finished "b" and an awaiting_approval "c"; the approval outranks.
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    store.applyEvent("c", { kind: "status", status: "awaiting_approval" })
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+
+    actions.jumpToNextNeedy()
+
+    expect(store.getState().focusedSessionId).toBe("c")
+  })
+
+  it("Should leave focus alone when no other session needs attention", () => {
+    const store = createAppStore()
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+
+    actions.jumpToNextNeedy()
+
+    expect(store.getState().focusedSessionId).toBe("claude-code")
+  })
 })
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */

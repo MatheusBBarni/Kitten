@@ -68,7 +68,7 @@ describe("createAppStore", () => {
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
     expect(state.order).toEqual(["claude-code", "codex"])
     expect(state.focusedSessionId).toBe("claude-code")
-    expect(state.overlays).toEqual({ approval: null, handoffPreview: null })
+    expect(state.overlays).toEqual({ approval: null, handoffPreview: null, sessions: false })
   })
 
   it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {
@@ -269,6 +269,28 @@ describe("overlay slots", () => {
     expect(overlays.handoffPreview?.bundle).toBe(HANDOFF_BUNDLE)
   })
 
+  it("opens and closes the sessions overview", () => {
+    const store = createAppStore()
+    expect(store.getState().overlays.sessions).toBe(false)
+
+    store.openSessions()
+    expect(store.getState().overlays.sessions).toBe(true)
+
+    store.closeSessions()
+    expect(store.getState().overlays.sessions).toBe(false)
+  })
+
+  it("leaves the payload slots untouched when the overview opens", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "claude-code", title: "Claude Code", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+
+    store.openSessions()
+
+    const overlays = store.getState().overlays
+    expect(overlays.sessions).toBe(true)
+    expect(overlays.approval?.sessionId).toBe("claude-code")
+  })
+
   it("does not notify when closing an already-closed slot", () => {
     const store = createAppStore()
     let notifications = 0
@@ -276,6 +298,18 @@ describe("overlay slots", () => {
 
     store.closeApproval()
     store.closeHandoffPreview()
+    store.closeSessions()
+
+    expect(notifications).toBe(0)
+  })
+
+  it("does not notify when opening an already-open overview", () => {
+    const store = createAppStore()
+    store.openSessions()
+    let notifications = 0
+    store.subscribe(() => notifications++)
+
+    store.openSessions()
 
     expect(notifications).toBe(0)
   })

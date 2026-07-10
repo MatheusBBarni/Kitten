@@ -90,28 +90,46 @@ export interface SessionListItem {
   id: SessionId
   title: string
   providerKind: ProviderKind
+  /** The session's own working directory (ADR-005). The overview card shows it. */
+  cwd: string
   status: SessionStatus
   /** Whether this session's status is one the developer must act on (ADR-006). */
   needsAttention: boolean
 }
 
 /**
- * Every session with its status, in display order (ADR-006). The Ctrl+S overview
- * (task_05) reads this to draw its card list and mark which rows need you. Unlike a
- * per-session selector it builds a fresh array each call, so a subscriber wakes on
- * any session's change - which is exactly what the attention overview wants.
+ * Cache of one derived list per {@link AppState} object. The store commits a fresh
+ * `AppState` on every change and keeps unchanged ones by identity (structural
+ * sharing), so keying on the state object gives {@link selectSessionList} a stable
+ * reference between commits - which `useSyncExternalStore` requires of its snapshot -
+ * while still rebuilding on any real change. A `WeakMap` keeps it correct across
+ * concurrent stores and lets a superseded state (and its list) be collected.
  */
-export const selectSessionList: Selector<SessionListItem[]> = (state) =>
-  state.order.map((id) => {
+const sessionListCache = new WeakMap<AppState, SessionListItem[]>()
+
+/**
+ * Every session with its status, in display order (ADR-006). The Ctrl+S overview
+ * (task_05) reads this to draw its card list and mark which rows need you. It is
+ * memoized per state object (see {@link sessionListCache}): a subscriber wakes on any
+ * committed change but a repeated read of the same state returns the same array.
+ */
+export const selectSessionList: Selector<SessionListItem[]> = (state) => {
+  const cached = sessionListCache.get(state)
+  if (cached) return cached
+  const list = state.order.map((id) => {
     const session = state.sessions[id]!
     return {
       id,
       title: session.title,
       providerKind: session.providerKind,
+      cwd: session.cwd,
       status: session.status,
       needsAttention: needsAttention(session.status),
     }
   })
+  sessionListCache.set(state, list)
+  return list
+}
 
 /**
  * The rank a needs-you status carries when several sessions want attention at once
@@ -172,6 +190,13 @@ export const selectIsApprovalOpen: Selector<boolean> = (state) => state.overlays
 /** The hand-off bundle awaiting confirmation, or `null` when the preview is closed. */
 export const selectHandoffPreview: Selector<HandoffPreviewOverlay | null> = (state) => state.overlays.handoffPreview
 
+/**
+ * Whether the Ctrl+S sessions overview is open (task_05). The overview is modal like
+ * the other overlays, so it too is folded into {@link selectHasOpenOverlay} and stands
+ * the shell's chords down while it is up.
+ */
+export const selectIsSessionsOpen: Selector<boolean> = (state) => state.overlays.sessions
+
 /** Whether any overlay is open, for views that dim or disable the cockpit beneath. */
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
-  state.overlays.approval !== null || state.overlays.handoffPreview !== null
+  state.overlays.approval !== null || state.overlays.handoffPreview !== null || state.overlays.sessions
