@@ -120,7 +120,7 @@ const SESSION_DESCRIPTOR_SCHEMA = z
  * as a deprecated alias for `providers` (ADR-005 migration window); when both are
  * present, `providers` wins.
  */
-const USER_CONFIG_SCHEMA = z
+export const USER_CONFIG_SCHEMA = z
   .object({
     telemetryEnabled: z.boolean().optional(),
     theme: z.enum(THEME_PREFERENCES).optional(),
