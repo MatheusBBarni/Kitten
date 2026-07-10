@@ -33,7 +33,10 @@ export interface CockpitKey {
 }
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
-export type CockpitCommand = "switch-focus" | "hand-off" | "sessions" | "toggle-help" | "close-help"
+export type CockpitCommand = "switch-focus" | "hand-off" | "sessions" | "model-select" | "toggle-help" | "close-help"
+
+/** Every intent the model/effort selector handles while it is on screen. */
+export type ModelSelectCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
@@ -100,6 +103,16 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Ctrl+S",
     description: "Show every session and jump to the one that needs you",
     matches: ctrl("s"),
+  },
+  {
+    // Ctrl+E for "effort" - and the model that composes with it. Ctrl+M is unusable
+    // (a terminal sends it for carriage return, so it would fire on every Enter), and
+    // Ctrl+O/Ctrl+T/Ctrl+S are already spoken for; Ctrl+E is free of both the reserved
+    // ASCII control codes and the shell's other chords.
+    command: "model-select",
+    keys: "Ctrl+E",
+    description: "Choose the model and reasoning effort for the focused agent",
+    matches: ctrl("e"),
   },
   {
     command: "toggle-help",
@@ -288,6 +301,42 @@ export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
 ]
 
 /**
+ * The model/effort selector's keys, live only while the selector is on screen.
+ *
+ * Like the other overlays it is modal, so plain arrows and Enter are safe: nothing
+ * reaches the composer while the picker is up. Enter here means "choose the
+ * highlighted model or effort", and the same Enter/Escape pair drives the inline
+ * mid-conversation confirm step - Enter proceeds with the switch, Escape backs out of
+ * it - so the confirm step needs no keys of its own.
+ */
+export const MODEL_SELECT_KEYMAP: readonly KeyBinding<ModelSelectCommand>[] = [
+  {
+    command: "prev-option",
+    keys: "↑",
+    description: "Highlight the previous model or effort",
+    matches: plain("up"),
+  },
+  {
+    command: "next-option",
+    keys: "↓",
+    description: "Highlight the next model or effort",
+    matches: plain("down"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Apply the highlighted model or effort to the focused agent",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Close the selector without changing anything",
+    matches: plain("escape"),
+  },
+]
+
+/**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
  * Neither overlay's keys appear. Both are modal, so F1 cannot open this panel while
@@ -309,6 +358,12 @@ export const HANDOFF_HINT = "↑↓ move  Space keep/drop  e edit summary  Enter
 
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
 export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
+
+/** The hint printed inside the model/effort selector, where those keys are the only live ones. */
+export const MODEL_SELECT_HINT = "↑↓ move  Enter apply  Esc close"
+
+/** The hint printed inside the selector's inline mid-conversation confirm step. */
+export const MODEL_SELECT_CONFIRM_HINT = "Enter switch anyway  Esc keep current"
 
 /**
  * The hint printed inside the hand-off target picker (task_06), where the developer
@@ -339,6 +394,9 @@ export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)
 
 /** The overview command a keypress maps to, or `null` when the overview does not claim it. */
 export const matchSessionsCommand = makeMatcher(SESSIONS_KEYMAP)
+
+/** The selector command a keypress maps to, or `null` when the selector does not claim it. */
+export const matchModelSelectCommand = makeMatcher(MODEL_SELECT_KEYMAP)
 
 /**
  * The zero-based option a digit key names, or `null` for any other key.

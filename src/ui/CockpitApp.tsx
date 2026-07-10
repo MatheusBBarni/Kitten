@@ -37,6 +37,7 @@ import { CockpitProvider, useAppSelector, useController } from "./cockpitContext
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
 import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
+import { ModelSelect } from "./ModelSelect.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
@@ -99,6 +100,13 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
           // dismissing itself, so close the help panel before it opens.
           setHelpOpen(false)
           controller.store.openSessions()
+          return
+        case "model-select":
+          // The selector is modal too and spends Escape on closing itself, so the help
+          // panel must stand down first. It always opens for the focused pane; an agent
+          // that advertises no visible options simply shows an empty selector.
+          setHelpOpen(false)
+          controller.store.openModelSelect({ sessionId: controller.store.getState().focusedSessionId })
           return
         case "toggle-help":
           setHelpOpen((open) => !open)
@@ -166,6 +174,8 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
       <HandoffTargetPicker flow={handoff} />
 
       <HandoffPreview flow={handoff} />
+
+      <ModelSelect />
 
       {/* Last, so a pending permission request paints over anything else on screen. */}
       <ApprovalPrompt />

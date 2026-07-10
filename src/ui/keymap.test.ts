@@ -14,7 +14,11 @@ import {
   matchApprovalCommand,
   matchCommand,
   matchHandoffCommand,
+  matchModelSelectCommand,
   matchSessionsCommand,
+  MODEL_SELECT_CONFIRM_HINT,
+  MODEL_SELECT_HINT,
+  MODEL_SELECT_KEYMAP,
   PROMPT_KEY_BINDINGS,
   SESSIONS_HINT,
   SESSIONS_KEYMAP,
@@ -37,6 +41,16 @@ describe("matchCommand", () => {
 
   it("maps Ctrl+S to sessions", () => {
     expect(matchCommand(key("s", { ctrl: true }))).toBe("sessions")
+  })
+
+  it("maps Ctrl+E to model-select, the selector's safe chord", () => {
+    expect(matchCommand(key("e", { ctrl: true }))).toBe("model-select")
+  })
+
+  it("does not bind the selector to Ctrl+M, which a terminal sends for carriage return", () => {
+    // Ctrl+M arrives as an ordinary Enter, so binding it would open the selector on every
+    // prompt submission. The chord must be anything but that.
+    expect(matchCommand(key("m", { ctrl: true }))).not.toBe("model-select")
   })
 
   it("maps F1 to toggle-help and Escape to close-help", () => {
@@ -68,7 +82,15 @@ describe("COCKPIT_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
     expect(new Set(commands).size).toBe(commands.length)
-    expect(commands).toEqual(["switch-focus", "hand-off", "sessions", "toggle-help", "close-help"])
+    expect(commands).toEqual(["switch-focus", "hand-off", "sessions", "model-select", "toggle-help", "close-help"])
+  })
+
+  it("keeps the selector chord clear of the other shell chords it must not collide with", () => {
+    const selector = COCKPIT_KEYMAP.find((binding) => binding.command === "model-select")!
+    // Ctrl+O (switch), Ctrl+T (hand-off), and Ctrl+S (sessions) are already spoken for.
+    for (const name of ["o", "t", "s", "m"]) {
+      expect(selector.matches({ name, ctrl: true, shift: false, meta: false })).toBe(false)
+    }
   })
 
   it("keeps the hand-off chord clear of the ASCII control codes a terminal already sends", () => {
@@ -136,7 +158,11 @@ describe("HELP_ENTRIES", () => {
     const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
     // Help first: while the panel is open it consumes Escape, and only then does the
     // editor's interrupt become reachable.
-    expect(escapes.map((e) => e.index)).toEqual([4, 7])
+    expect(escapes.map((e) => e.index)).toEqual([5, 8])
+  })
+
+  it("documents the model selector, whose chord opens the model and effort picker", () => {
+    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+E")
   })
 
   it("documents the hand-off, since its chord is the one the product turns on", () => {
@@ -144,7 +170,7 @@ describe("HELP_ENTRIES", () => {
   })
 
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {
-    for (const binding of [...APPROVAL_KEYMAP, ...HANDOFF_KEYMAP, ...SESSIONS_KEYMAP]) {
+    for (const binding of [...APPROVAL_KEYMAP, ...HANDOFF_KEYMAP, ...SESSIONS_KEYMAP, ...MODEL_SELECT_KEYMAP]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
   })
@@ -299,6 +325,54 @@ describe("SESSIONS_KEYMAP", () => {
       expect(SESSIONS_HINT).toContain(binding.keys)
     }
     expect(SESSIONS_HINT).toContain("n next needy")
+  })
+})
+
+describe("matchModelSelectCommand", () => {
+  it("maps the arrows to the row the highlight moves to", () => {
+    expect(matchModelSelectCommand(key("up"))).toBe("prev-option")
+    expect(matchModelSelectCommand(key("down"))).toBe("next-option")
+  })
+
+  it("maps both Enter variants to confirm, since a terminal may report either", () => {
+    expect(matchModelSelectCommand(key("return"))).toBe("confirm")
+    expect(matchModelSelectCommand(key("kpenter"))).toBe("confirm")
+  })
+
+  it("maps Escape to cancel, closing the selector without changing anything", () => {
+    expect(matchModelSelectCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("ignores a chord with modifiers held, so Shift+Enter cannot apply a switch", () => {
+    expect(matchModelSelectCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchModelSelectCommand(key("up", { ctrl: true }))).toBeNull()
+    expect(matchModelSelectCommand(key("escape", { meta: true }))).toBeNull()
+  })
+
+  it("ignores keys the selector does not claim", () => {
+    expect(matchModelSelectCommand(key("e", { ctrl: true }))).toBeNull()
+    expect(matchModelSelectCommand(key("f1"))).toBeNull()
+    expect(matchModelSelectCommand(key("space"))).toBeNull()
+  })
+})
+
+describe("MODEL_SELECT_KEYMAP", () => {
+  it("binds each command exactly once", () => {
+    const commands = MODEL_SELECT_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["prev-option", "next-option", "confirm", "cancel"])
+    expect(new Set(commands).size).toBe(commands.length)
+  })
+
+  it("names every binding in the hint the selector prints", () => {
+    for (const binding of MODEL_SELECT_KEYMAP) {
+      expect(MODEL_SELECT_HINT).toContain(binding.keys)
+    }
+  })
+
+  it("drives the inline confirm step with the same Enter/Escape pair", () => {
+    // The confirm step reuses confirm/cancel, so its hint must name both keys.
+    expect(MODEL_SELECT_CONFIRM_HINT).toContain("Enter")
+    expect(MODEL_SELECT_CONFIRM_HINT).toContain("Esc")
   })
 })
 
