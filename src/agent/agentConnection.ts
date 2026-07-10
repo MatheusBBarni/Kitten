@@ -25,8 +25,8 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
 
-import type { AgentConfig, ProviderKind, SessionStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
-import { translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import type { AgentConfig, ConfigOption, ProviderKind, SessionStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
+import { translateConfigOptions, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
 import { spawnAgentTransport, type AgentTransport, type TransportFactory } from "./transport.ts"
 
 /** A block of prompt content sent to an agent. V1 sends plain text. */
@@ -81,6 +81,14 @@ export interface AgentConnection {
   newSession(cwd: string): Promise<string>
   prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult>
   cancel(sessionId: string): Promise<void>
+  /**
+   * Change one config option (model, reasoning effort, ...) on the live session and
+   * return the agent-confirmed full option set - the source of confirmed state
+   * (ADR-004). The session is never torn down or re-spawned. On a transport failure
+   * this propagates like {@link cancel} so the controller action routes it to
+   * `onError` rather than letting it reject into the UI; no config event is emitted.
+   */
+  setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[]>
   onUpdate(cb: (event: DomainSessionEvent) => void): Unsubscribe
   onPermission(handler: (req: PermissionRequest) => Promise<PermissionOutcome>): void
   dispose(): Promise<void>
@@ -189,6 +197,14 @@ class AgentConnectionImpl implements AgentConnection {
   async newSession(cwd: string): Promise<string> {
     const connection = this.requireConnection()
     const result = await connection.newSession({ cwd, mcpServers: [] })
+    // Seed the pane's confirmed config state from what the session already advertises
+    // instead of discarding it. Emit only when the agent actually returned the field:
+    // an absent `configOptions` means the agent has no config surface (the reducer's
+    // `[]` default already covers it), while an explicit empty list is emitted as an
+    // empty set - never fabricate options the agent did not advertise (ADR-003/ADR-004).
+    if (result.configOptions != null) {
+      this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
+    }
     return result.sessionId
   }
 
@@ -219,6 +235,17 @@ class AgentConnectionImpl implements AgentConnection {
   async cancel(sessionId: string): Promise<void> {
     const connection = this.requireConnection()
     await connection.cancel({ sessionId })
+  }
+
+  async setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[]> {
+    const connection = this.requireConnection()
+    // The agent echoes back the full refreshed option set (not a delta), so map the
+    // response verbatim - it is the confirmed state the overlay renders. A thrown call
+    // propagates to the controller action (the existing error path), which reports it
+    // through `onError`; it is deliberately not caught here, so the caller can keep
+    // showing its last confirmed value and mark the option `unverified` (ADR-004).
+    const result = await connection.setSessionConfigOption({ sessionId, configId, value })
+    return translateConfigOptions(result.configOptions)
   }
 
   onUpdate(cb: (event: DomainSessionEvent) => void): Unsubscribe {

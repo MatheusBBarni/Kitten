@@ -114,7 +114,7 @@ function translatePlanEntry(entry: AcpPlanEntry): PlanEntry {
  * (an absent category becomes `""`); the visible-category allowlist lives above the
  * adapter (ADR-004), so no filtering happens here.
  */
-function translateConfigOptions(options: SessionConfigOption[]): ConfigOption[] {
+export function translateConfigOptions(options: SessionConfigOption[]): ConfigOption[] {
   const translated: ConfigOption[] = []
   for (const option of options) {
     if (option.type !== "select") continue // skip boolean (and any future non-select) options

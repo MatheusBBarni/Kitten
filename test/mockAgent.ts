@@ -18,6 +18,8 @@ import {
   type PermissionOption,
   type PromptRequest,
   type RequestPermissionOutcome,
+  type SessionConfigOption,
+  type SetSessionConfigOptionRequest,
   type SessionUpdate,
   type Stream,
   type StopReason,
@@ -53,6 +55,15 @@ export interface MockAgentOptions {
   /** Override the whole handshake - to reject it, or to answer with odd capabilities. */
   onInitialize?: MockInitializeScript
   onPrompt?: MockPromptScript
+  /**
+   * The config options the agent advertises. When set, `newSession` returns them and
+   * `setSessionConfigOption` mutates the matching option's `currentValue` in place and
+   * echoes back the full refreshed set. When absent, the agent advertises no config
+   * surface (`newSession` omits `configOptions`) and rejects `setSessionConfigOption`.
+   */
+  configOptions?: SessionConfigOption[]
+  /** Reject a config-option change with this error, to exercise the adapter's error path. */
+  onSetConfigOption?: (request: SetSessionConfigOptionRequest) => void
 }
 
 /** A running mock agent plus the interactions it observed, for test assertions. */
@@ -64,6 +75,15 @@ export interface MockAgentHandle {
   readonly permissionOutcomes: RequestPermissionOutcome[]
   /** The working directory of every `session/new` the agent received, in order. */
   readonly newSessionCwds: string[]
+  /** Every `session/set_config_option` request the agent received, in order. */
+  readonly configOptionRequests: SetSessionConfigOptionRequest[]
+  /** The agent's current config options, as mutated by `setSessionConfigOption`. */
+  readonly configOptions: SessionConfigOption[]
+  /**
+   * Push an agent-initiated `config_option_update` notification to the client, carrying
+   * the current (or a supplied) full option set - the after-the-switch case.
+   */
+  emitConfigOptionUpdate(configOptions?: SessionConfigOption[]): Promise<void>
 }
 
 /** Start a scripted mock agent listening on the agent side of an in-memory stream. */
@@ -73,6 +93,10 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const prompts: PromptRequest[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
   const newSessionCwds: string[] = []
+  const configOptionRequests: SetSessionConfigOptionRequest[] = []
+  // The live option set the agent advertises, mutated in place by set_config_option.
+  const configOptions: SessionConfigOption[] = options.configOptions ? [...options.configOptions] : []
+  const advertisesConfig = options.configOptions !== undefined
 
   let connection!: AgentSideConnection
 
@@ -85,7 +109,18 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
       },
     newSession: (request) => {
       newSessionCwds.push(request.cwd)
-      return { sessionId }
+      return advertisesConfig ? { sessionId, configOptions } : { sessionId }
+    },
+    setSessionConfigOption: (request: SetSessionConfigOptionRequest) => {
+      configOptionRequests.push(request)
+      options.onSetConfigOption?.(request)
+      // Apply the requested value to the matching select option, then echo the full set.
+      for (const option of configOptions) {
+        if (option.id === request.configId && option.type === "select" && typeof request.value === "string") {
+          option.currentValue = request.value
+        }
+      }
+      return { configOptions }
     },
     authenticate: () => ({}),
     cancel: () => {},
@@ -122,5 +157,17 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   }
 
   connection = new AgentSideConnection(() => agent, stream)
-  return { connection, prompts, permissionOutcomes, newSessionCwds }
+  return {
+    connection,
+    prompts,
+    permissionOutcomes,
+    newSessionCwds,
+    configOptionRequests,
+    configOptions,
+    emitConfigOptionUpdate: (next) =>
+      connection.sessionUpdate({
+        sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: next ?? configOptions },
+      }),
+  }
 }

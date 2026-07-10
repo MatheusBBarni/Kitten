@@ -357,6 +357,121 @@ describe("status mapping (ADR-006)", () => {
   })
 })
 
+describe("config options (task_03)", () => {
+  /** A single ACP select config option, in the SDK wire shape the mock serves. */
+  const selectOption = (id: string, category: string, currentValue: string, values: [string, string][]) => ({
+    type: "select" as const,
+    id,
+    name: id,
+    category,
+    currentValue,
+    options: values.map(([value, name]) => ({ value, name })),
+  })
+
+  const MODEL = selectOption("model", "model", "sonnet", [
+    ["sonnet", "Sonnet"],
+    ["opus", "Opus"],
+  ])
+  const EFFORT = selectOption("thought_level", "thought_level", "medium", [
+    ["medium", "Medium"],
+    ["high", "High"],
+  ])
+
+  const configEvents = (events: DomainSessionEvent[]) => events.filter((e) => e.kind === "config_options")
+
+  it("captures newSession's config options and emits them as an initial config_options event", async () => {
+    const { conn, events } = await connected({ configOptions: [MODEL, EFFORT] })
+    await conn.newSession("/tmp/project")
+
+    expect(configEvents(events)).toEqual([
+      {
+        kind: "config_options",
+        options: [
+          { id: "model", category: "model", label: "model", currentValue: "sonnet", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] },
+          { id: "thought_level", category: "thought_level", label: "thought_level", currentValue: "medium", options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+        ],
+      },
+    ])
+    await conn.dispose()
+  })
+
+  it("emits an empty config_options event when the session advertises no options (no fabrication)", async () => {
+    const { conn, events } = await connected({ configOptions: [] })
+    await conn.newSession("/tmp/project")
+    expect(configEvents(events)).toEqual([{ kind: "config_options", options: [] }])
+    await conn.dispose()
+  })
+
+  it("emits no config_options event when the agent does not advertise the capability", async () => {
+    const { conn, events } = await connected()
+    await conn.newSession("/tmp/project")
+    expect(configEvents(events)).toEqual([])
+    await conn.dispose()
+  })
+
+  it("setSessionConfigOption returns the agent-confirmed refreshed option set", async () => {
+    const { conn } = await connected({ configOptions: [MODEL, EFFORT] })
+    const sessionId = await conn.newSession("/tmp/project")
+
+    const refreshed = await conn.setSessionConfigOption(sessionId, "model", "opus")
+
+    expect(refreshed).toEqual([
+      { id: "model", category: "model", label: "model", currentValue: "opus", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] },
+      { id: "thought_level", category: "thought_level", label: "thought_level", currentValue: "medium", options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+    ])
+    await conn.dispose()
+  })
+
+  it("propagates a transport error to the controller's error path without corrupting confirmed state", async () => {
+    const { conn, events } = await connected({
+      configOptions: [MODEL],
+      onSetConfigOption: () => {
+        throw new Error("set_config_option transport boom")
+      },
+    })
+    const sessionId = await conn.newSession("/tmp/project")
+    const before = configEvents(events).length
+
+    // The adapter rejects so the controller action (the existing error path) reports it
+    // through onError; it must never emit a status:error or a config_options event that
+    // would misreport the live model, so the overlay keeps its last confirmed value.
+    await expect(conn.setSessionConfigOption(sessionId, "model", "opus")).rejects.toThrow()
+    expect(configEvents(events).length).toBe(before)
+    expect(events.some((e) => e.kind === "status" && e.status === "error")).toBe(false)
+    await conn.dispose()
+  })
+
+  it("changes the live session's value in place and keeps the session usable (no re-spawn)", async () => {
+    const { conn, mock, events } = await connected({ configOptions: [MODEL] })
+    const sessionId = await conn.newSession("/tmp/project")
+
+    const refreshed = await conn.setSessionConfigOption(sessionId, "model", "opus")
+
+    // The mock's own state moved, and the returned set reflects the confirmed value.
+    expect(mock.configOptions[0]?.currentValue).toBe("opus")
+    expect(refreshed[0]?.currentValue).toBe("opus")
+    expect(mock.configOptionRequests).toEqual([{ sessionId, configId: "model", value: "opus" }])
+    // The same live session is still driveable afterward - no teardown happened.
+    expect(await conn.prompt(sessionId, [{ type: "text", text: "still there?" }])).toEqual({ stopReason: "end_turn" })
+    expect(events.some((e) => e.kind === "status" && e.status === "error")).toBe(false)
+    await conn.dispose()
+  })
+
+  it("translates an agent-initiated config_option_update after the switch into a config_options event", async () => {
+    const { conn, mock, events } = await connected({ configOptions: [MODEL] })
+    await conn.newSession("/tmp/project")
+
+    await mock.emitConfigOptionUpdate([{ ...MODEL, currentValue: "opus" }])
+    await waitFor(() => configEvents(events).length >= 2)
+
+    expect(configEvents(events).at(-1)).toEqual({
+      kind: "config_options",
+      options: [{ id: "model", category: "model", label: "model", currentValue: "opus", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] }],
+    })
+    await conn.dispose()
+  })
+})
+
 describe("createFrameScheduler", () => {
   it("runs a single coalesced flush per frame", async () => {
     const scheduler = createFrameScheduler(5)

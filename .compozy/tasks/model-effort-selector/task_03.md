@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Adapter live setSessionConfigOption and capture"
 type: backend
 complexity: medium
@@ -32,11 +32,11 @@ This adds `setSessionConfigOption` to `AgentConnection` and captures `newSession
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add `setSessionConfigOption` to the `AgentConnection` interface and implementation
-- [ ] 3.2 Capture `newSession.configOptions` and emit an initial `config_options` event
-- [ ] 3.3 Map SDK `SetSessionConfigOptionResponse.configOptions` to domain `ConfigOption[]`
-- [ ] 3.4 Confirm both pinned adapters advertise `model`/`thought_level` in a live handshake and record the result
-- [ ] 3.5 Cover the round-trip and capture with the in-process mock agent
+- [x] 3.1 Add `setSessionConfigOption` to the `AgentConnection` interface and implementation
+- [x] 3.2 Capture `newSession.configOptions` and emit an initial `config_options` event
+- [x] 3.3 Map SDK `SetSessionConfigOptionResponse.configOptions` to domain `ConfigOption[]`
+- [x] 3.4 Confirm both pinned adapters advertise `model`/`thought_level` in a live handshake and record the result (claude-agent-acp@0.57.0 confirmed live: advertises `model` + `thought_level`; codex-acp live check blocked by a broken `~/.codex/config.toml` in this env - recorded as an open risk in shared memory. The adapter degrades to an empty option set with no fabrication when an adapter advertises neither.)
+- [x] 3.5 Cover the round-trip and capture with the in-process mock agent
 
 ## Implementation Details
 Modify the adapter. See TechSpec "System Architecture" (Agent Adapter Layer), "Integration Points", and ADR-004. The switch calls `requireConnection().setSessionConfigOption`; `newSession` currently returns only `sessionId` (lines 176-180). Extend `test/mockAgent.ts` to serve `configOptions`, answer `setSessionConfigOption`, and optionally emit `config_option_update`.
@@ -64,13 +64,13 @@ Modify the adapter. See TechSpec "System Architecture" (Agent Adapter Layer), "I
 
 ## Tests
 - Unit tests:
-  - [ ] `newSession` returning two config options emits a `config_options` domain event with both mapped
-  - [ ] `newSession` returning no config options emits an empty `config_options` event (no fabrication)
-  - [ ] `setSessionConfigOption` returns the mapped refreshed option set from the mock's response
-  - [ ] A transport error from `setSessionConfigOption` is surfaced via the error path, not thrown to the caller
+  - [x] `newSession` returning two config options emits a `config_options` domain event with both mapped
+  - [x] `newSession` returning no config options emits an empty `config_options` event (no fabrication)
+  - [x] `setSessionConfigOption` returns the mapped refreshed option set from the mock's response
+  - [x] A transport error from `setSessionConfigOption` is surfaced via the error path, not thrown to the caller
 - Integration tests:
-  - [ ] Driving the real adapter against the mock agent: a `setSessionConfigOption` call changes the mock's `currentValue` and the returned/emitted options reflect it, with the session still live afterward
-  - [ ] A mock-emitted `config_option_update` after the switch produces a `config_options` domain event
+  - [x] Driving the real adapter against the mock agent: a `setSessionConfigOption` call changes the mock's `currentValue` and the returned/emitted options reflect it, with the session still live afterward
+  - [x] A mock-emitted `config_option_update` after the switch produces a `config_options` domain event
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -56,6 +56,9 @@ export function createOfflineConnection(config: AgentConfig): AgentConnection {
       throw new Error("offline connection cannot prompt")
     },
     async cancel() {},
+    async setSessionConfigOption() {
+      throw new Error("offline connection cannot set config options")
+    },
     onUpdate() {
       return () => {}
     },

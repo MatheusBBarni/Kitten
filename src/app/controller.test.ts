@@ -102,6 +102,9 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
       cancels.push(sessionId)
       if (options.cancelThrows !== undefined) throw options.cancelThrows
     },
+    async setSessionConfigOption() {
+      return []
+    },
     onUpdate(cb) {
       subscribers.add(cb)
       return () => {
