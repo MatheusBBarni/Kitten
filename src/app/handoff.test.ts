@@ -4,8 +4,8 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import type { PromptBlock } from "../agent/agentConnection.ts"
 import type { BundleAssembler } from "../core/bundleAssembler.ts"
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
-import { PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
-import type { HandoffBundle, ProviderKind, SessionId, SessionSeed, ToolCallUpdate } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
+import type { ConfigOption, HandoffBundle, ProviderKind, SessionId, SessionSeed, ToolCallUpdate } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import type { AgentRuntimeState } from "./controller.ts"
 import {
@@ -67,6 +67,32 @@ function seedWork(controller: FakeController, sessionId: SessionId, text = "bump
     call: { toolCallId: "call-read", kind: "read", title: "Read config", status: "completed", locations: ["cfg.json"] },
   })
   store.applyEvent(sessionId, { kind: "tool_call", call: editCall() })
+}
+
+/** The target's advertised model/effort options, including their confirmed values. */
+function targetConfigOptions(currentModel = "sonnet", currentEffort = "low"): ConfigOption[] {
+  return [
+    {
+      id: "model",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: currentModel,
+      options: [
+        { value: "sonnet", name: "Sonnet" },
+        { value: "opus", name: "Opus" },
+      ],
+    },
+    {
+      id: "effort",
+      category: EFFORT_CATEGORY,
+      label: "Reasoning effort",
+      currentValue: currentEffort,
+      options: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+      ],
+    },
+  ]
 }
 
 /** A three-session fleet (two sharing a provider), each in its own directory. */
@@ -164,6 +190,7 @@ describe("composeHandoffBlocks", () => {
       summary: bundle.summary,
       excludedFiles: new Set(["src/app.ts", "cfg.json"]),
       excludedDiffs: new Set(["call-edit"]),
+      targetConfig: [],
     }
     const texts = composeHandoffBlocks(bundle, trimmed).map((block) => block.text)
 
@@ -182,6 +209,7 @@ describe("composeHandoffBlocks", () => {
       summary: "   \n  ",
       excludedFiles: new Set(["src/app.ts", "cfg.json"]),
       excludedDiffs: new Set(["call-edit"]),
+      targetConfig: [],
     }
     // Not "just the instruction": a target told to continue a task it has been told
     // nothing about is worse off than one that was never prompted.
@@ -211,6 +239,27 @@ describe("HandoffFlow.begin", () => {
     expect(overlay.bundle.summary).toContain("bump b")
     expect(overlay.bundle.files.map((file) => file.path)).toEqual(["cfg.json", "src/app.ts"])
     expect(overlay.bundle.pendingDiffs.map((diff) => diff.toolCallId)).toEqual(["call-edit"])
+  })
+
+  it("seeds the target's visible model/effort options and confirmed values into the preview", () => {
+    const controller = controllerWithWork()
+    const options: ConfigOption[] = [
+      ...targetConfigOptions("sonnet", "low"),
+      {
+        id: "mode",
+        category: "mode",
+        label: "Permission mode",
+        currentValue: "default",
+        options: [{ value: "default", name: "Default" }],
+      },
+    ]
+    controller.store.applyEvent("codex", { kind: "config_options", options })
+
+    expect(createHandoffFlow({ controller }).begin()).toBe(true)
+
+    const preview = controller.store.getState().overlays.handoffPreview!
+    expect(preview.targetConfigOptions).toEqual(targetConfigOptions("sonnet", "low"))
+    expect(preview.targetConfigOptions.map((option) => option.currentValue)).toEqual(["sonnet", "low"])
   })
 
   it("never sends anything: the preview is the only path to an agent", () => {
@@ -341,6 +390,50 @@ describe("HandoffFlow.confirm", () => {
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
   })
 
+  it("applies requested target model and effort before sending the hand-off prompt", async () => {
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    const bundle = openBundle(controller)
+    const order: string[] = []
+    const setSessionConfigOption = controller.actions.setSessionConfigOption
+    const sendPrompt = controller.actions.sendPrompt
+    controller.actions.setSessionConfigOption = async (configId, value, sessionId) => {
+      order.push(`config:${configId}:${value}`)
+      await setSessionConfigOption(configId, value, sessionId)
+    }
+    controller.actions.sendPrompt = async (input, sessionId) => {
+      order.push("send")
+      return sendPrompt(input, sessionId)
+    }
+
+    await flow.confirm({
+      ...createHandoffEdits(bundle),
+      targetConfig: [
+        { configId: "model", value: "opus" },
+        { configId: "effort", value: "high" },
+      ],
+    })
+
+    expect(controller.calls.setSessionConfigOption).toEqual([
+      { configId: "model", value: "opus", sessionId: "codex" },
+      { configId: "effort", value: "high", sessionId: "codex" },
+    ])
+    expect(order).toEqual(["config:model:opus", "config:effort:high", "send"])
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
+  })
+
+  it("sends unchanged hand-offs without a target config call", async () => {
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+
+    await flow.confirm(createHandoffEdits(openBundle(controller)))
+
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
+  })
+
   it("sends the curated bundle, not the assembled one", async () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })
@@ -351,6 +444,7 @@ describe("HandoffFlow.confirm", () => {
       summary: "Just finish the edit.",
       excludedFiles: new Set(["cfg.json"]),
       excludedDiffs: new Set(),
+      targetConfig: [],
     })
 
     const text = sentText(controller)
@@ -369,6 +463,7 @@ describe("HandoffFlow.confirm", () => {
       summary: "",
       excludedFiles: new Set(["cfg.json", "src/app.ts"]),
       excludedDiffs: new Set(["call-edit"]),
+      targetConfig: [],
     })
 
     expect(result).toBeNull()
@@ -381,7 +476,7 @@ describe("HandoffFlow.confirm", () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })
 
-    expect(await flow.confirm({ summary: "hi", excludedFiles: new Set(), excludedDiffs: new Set() })).toBeNull()
+    expect(await flow.confirm({ summary: "hi", excludedFiles: new Set(), excludedDiffs: new Set(), targetConfig: [] })).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
   })
@@ -575,6 +670,7 @@ describe("hand-off moat - characterization (ADR-002)", () => {
       summary: "  Only the edit matters.  ",
       excludedFiles: new Set(["cfg.json"]),
       excludedDiffs: new Set(),
+      targetConfig: [],
     }
     expect(composeHandoffBlocks(FIXED_BUNDLE, edits)).toEqual([
       { type: "text", text: HANDOFF_INSTRUCTION },

@@ -276,7 +276,7 @@ describe("overlay selectors", () => {
 
   it("keep the approval flag false for a hand-off preview, which is not modal", () => {
     const store = createAppStore()
-    store.openHandoffPreview({ sourceSessionId: "claude-code", targetSessionId: "codex", bundle: HANDOFF_BUNDLE })
+    store.openHandoffPreview({ sourceSessionId: "claude-code", targetSessionId: "codex", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
 
     expect(selectHasOpenOverlay(store.getState())).toBe(true)
     expect(selectIsApprovalOpen(store.getState())).toBe(false)
@@ -284,7 +284,7 @@ describe("overlay selectors", () => {
 
   it("report an open hand-off preview", () => {
     const store = createAppStore()
-    store.openHandoffPreview({ sourceSessionId: "claude-code", targetSessionId: "codex", bundle: HANDOFF_BUNDLE })
+    store.openHandoffPreview({ sourceSessionId: "claude-code", targetSessionId: "codex", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
     const state = store.getState()
 
     expect(selectHandoffPreview(state)?.bundle).toBe(HANDOFF_BUNDLE)

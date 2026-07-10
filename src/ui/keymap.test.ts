@@ -6,6 +6,7 @@ import {
   approvalOptionIndex,
   COCKPIT_KEYMAP,
   EDITOR_KEYMAP,
+  HANDOFF_CONFIG_HINT,
   HANDOFF_EDIT_HINT,
   HANDOFF_HINT,
   HANDOFF_KEYMAP,
@@ -229,8 +230,9 @@ describe("matchHandoffCommand", () => {
     expect(matchHandoffCommand(key("down"))).toBe("next-item")
   })
 
-  it("maps Space to keep/drop and a bare e to the summary editor", () => {
+  it("maps Space to keep/drop, m to target config, and e to the summary editor", () => {
     expect(matchHandoffCommand(key("space"))).toBe("toggle-item")
+    expect(matchHandoffCommand(key("m"))).toBe("edit-target-config")
     expect(matchHandoffCommand(key("e"))).toBe("edit-summary")
   })
 
@@ -259,7 +261,7 @@ describe("matchHandoffCommand", () => {
 describe("HANDOFF_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = HANDOFF_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-item", "next-item", "toggle-item", "edit-summary", "confirm", "cancel"])
+    expect(commands).toEqual(["prev-item", "next-item", "toggle-item", "edit-target-config", "edit-summary", "confirm", "cancel"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -275,6 +277,12 @@ describe("HANDOFF_KEYMAP", () => {
     expect(HANDOFF_EDIT_HINT).toContain("Esc")
     for (const keys of ["↑", "↓", "Space", "Enter"]) {
       expect(HANDOFF_EDIT_HINT).not.toContain(keys)
+    }
+  })
+
+  it("gives the target-config picker its own selector-style navigation hint", () => {
+    for (const keys of ["↑", "↓", "Enter", "Esc"]) {
+      expect(HANDOFF_CONFIG_HINT).toContain(keys)
     }
   })
 })

@@ -61,6 +61,8 @@ export const ROW_MARKER = "▸"
 /** How the confirmed current value is set apart from the alternatives. */
 export const CURRENT_MARK = "●"
 export const OTHER_MARK = "○"
+/** A value chosen for the target of a pending hand-off, not yet applied. */
+export const TARGET_MARK = "→"
 
 /** The tag a section carries when a requested switch has not been confirmed (ADR-004). */
 export const UNVERIFIED_LABEL = "unverified"
@@ -89,10 +91,28 @@ export function ModelSelect(): ReactNode {
 }
 
 /** One choosable row: which config option it belongs to and the value it names. */
-interface ValueRow {
+export interface ModelEffortValueRow {
   option: ConfigOption
   value: string
   name: string
+}
+
+/**
+ * Flatten the visible model/effort sections into the keyboard order both controls use.
+ *
+ * The hand-off preview deliberately uses this same row order as the live selector so
+ * model and effort mean the same thing in either place. The caller supplies only
+ * allowlisted options, but this function stays defensive and ignores everything else.
+ */
+export function modelEffortValueRows(options: ConfigOption[]): ModelEffortValueRow[] {
+  const modelOption = options.find((option) => option.category === MODEL_CATEGORY)
+  const effortOption = options.find((option) => option.category === EFFORT_CATEGORY)
+  const rows: ModelEffortValueRow[] = []
+  if (modelOption) for (const value of modelOption.options) rows.push({ option: modelOption, value: value.value, name: value.name })
+  if (effortOption && effortOption.options.length > 0) {
+    for (const value of effortOption.options) rows.push({ option: effortOption, value: value.value, name: value.name })
+  }
+  return rows
 }
 
 /** The dialog proper. Mounted only while the selector slot names a session. */
@@ -108,35 +128,24 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   const rawOptions = useAppSelector(useMemo(() => selectAgentConfigOptions(sessionId), [sessionId]))
   const options = useMemo(() => visibleConfigOptions(rawOptions), [rawOptions])
 
-  const modelOption = options.find((option) => option.category === MODEL_CATEGORY)
-  const effortOption = options.find((option) => option.category === EFFORT_CATEGORY)
-  // Effort is hidden when the current model exposes none: an absent option, or one that
-  // advertises no values, means there is nothing to pick.
-  const showEffort = effortOption !== undefined && effortOption.options.length > 0
-
   // The confirmed conversation length. A session with any turn is "established", so a
   // mid-conversation switch is gated behind the warning; a fresh one applies straight.
   const turns = useAppSelector(useMemo(() => selectSessionTurns(sessionId), [sessionId]))
   const established = turns.length > 0
 
-  const rows = useMemo<ValueRow[]>(() => {
-    const built: ValueRow[] = []
-    if (modelOption) for (const v of modelOption.options) built.push({ option: modelOption, value: v.value, name: v.name })
-    if (showEffort && effortOption) for (const v of effortOption.options) built.push({ option: effortOption, value: v.value, name: v.name })
-    return built
-  }, [modelOption, effortOption, showEffort])
+  const rows = useMemo(() => modelEffortValueRows(options), [options])
 
   const [selected, setSelected] = useState(0)
   // What the developer last asked each config option to become. A section is
   // `unverified` while its requested value differs from the confirmed `currentValue`.
   const [requested, setRequested] = useState<ReadonlyMap<string, string>>(() => new Map())
   // The pending mid-conversation confirm, or null when the list is showing.
-  const [confirming, setConfirming] = useState<ValueRow | null>(null)
+  const [confirming, setConfirming] = useState<ModelEffortValueRow | null>(null)
 
   const clamped = Math.min(selected, Math.max(rows.length - 1, 0))
 
   const apply = useCallback(
-    (row: ValueRow): void => {
+    (row: ModelEffortValueRow): void => {
       setRequested((prev) => new Map(prev).set(row.option.id, row.value))
       // The action never rejects (it routes a failed switch to `onError` and leaves the
       // last confirmed state in place), so a keypress can never reject into the tree.
@@ -146,7 +155,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   )
 
   const choose = useCallback(
-    (row: ValueRow | undefined): void => {
+    (row: ModelEffortValueRow | undefined): void => {
       // Choosing the value that is already live is a no-op: nothing to switch, and no
       // reason to raise the mid-conversation warning.
       if (!row || row.value === row.option.currentValue) return
@@ -209,9 +218,6 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   useKeyboard(onKey)
 
   const displayName = controller.runtime(sessionId)?.displayName ?? sessionId
-  const modelUnverified = modelOption !== undefined && isUnverified(requested, modelOption)
-  const effortUnverified = effortOption !== undefined && isUnverified(requested, effortOption)
-
   return (
     <box
       style={{
@@ -233,38 +239,73 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
     >
       {confirming ? (
         <ConfirmStep row={confirming} />
-      ) : rows.length === 0 ? (
-        <text style={{ flexShrink: 0 }} fg={palette.muted}>
-          {NO_OPTIONS_NOTICE}
-        </text>
       ) : (
-        <box style={{ flexDirection: "column", flexShrink: 1, overflow: "hidden" }}>
-          {modelOption ? (
-            <Section
-              heading={MODEL_HEADING}
-              option={modelOption}
-              unverified={modelUnverified}
-              offset={0}
-              highlighted={clamped}
-              first
-            />
-          ) : null}
-          {showEffort && effortOption ? (
-            <Section
-              heading={EFFORT_HEADING}
-              option={effortOption}
-              unverified={effortUnverified}
-              offset={modelOption ? modelOption.options.length : 0}
-              highlighted={clamped}
-              first={!modelOption}
-            />
-          ) : null}
-        </box>
+        <ModelEffortControl options={options} highlighted={clamped} requested={requested} />
       )}
 
       <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.muted}>
         {confirming ? MODEL_SELECT_CONFIRM_HINT : MODEL_SELECT_HINT}
       </text>
+    </box>
+  )
+}
+
+/**
+ * The shared, confirmed-state model/effort control used by the live selector and the
+ * hand-off preview. The latter may mark a locally selected outgoing value, but it
+ * never changes the target session until the developer confirms the hand-off.
+ */
+export function ModelEffortControl({
+  options,
+  highlighted,
+  requested,
+  outgoing,
+  emptyNotice = NO_OPTIONS_NOTICE,
+}: {
+  options: ConfigOption[]
+  highlighted: number
+  requested?: ReadonlyMap<string, string>
+  outgoing?: ReadonlyMap<string, string>
+  emptyNotice?: string
+}): ReactNode {
+  const palette = usePalette()
+  const modelOption = options.find((option) => option.category === MODEL_CATEGORY)
+  const effortOption = options.find((option) => option.category === EFFORT_CATEGORY)
+  const showEffort = effortOption !== undefined && effortOption.options.length > 0
+  const rows = modelEffortValueRows(options)
+
+  if (rows.length === 0) {
+    return (
+      <text style={{ flexShrink: 0 }} fg={palette.muted}>
+        {emptyNotice}
+      </text>
+    )
+  }
+
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 1, overflow: "hidden" }}>
+      {modelOption ? (
+        <Section
+          heading={MODEL_HEADING}
+          option={modelOption}
+          unverified={requested !== undefined && isUnverified(requested, modelOption)}
+          outgoing={outgoing?.get(modelOption.id)}
+          offset={0}
+          highlighted={highlighted}
+          first
+        />
+      ) : null}
+      {showEffort && effortOption ? (
+        <Section
+          heading={EFFORT_HEADING}
+          option={effortOption}
+          unverified={requested !== undefined && isUnverified(requested, effortOption)}
+          outgoing={outgoing?.get(effortOption.id)}
+          offset={modelOption ? modelOption.options.length : 0}
+          highlighted={highlighted}
+          first={!modelOption}
+        />
+      ) : null}
     </box>
   )
 }
@@ -280,6 +321,7 @@ function Section({
   heading,
   option,
   unverified,
+  outgoing,
   offset,
   highlighted,
   first,
@@ -287,6 +329,7 @@ function Section({
   heading: string
   option: ConfigOption
   unverified: boolean
+  outgoing: string | undefined
   offset: number
   highlighted: number
   first: boolean
@@ -303,6 +346,7 @@ function Section({
           key={value.value}
           name={value.name}
           current={value.value === option.currentValue}
+          outgoing={value.value === outgoing}
           highlighted={highlighted === offset + index}
         />
       ))}
@@ -311,19 +355,29 @@ function Section({
 }
 
 /** One value: the highlight marker, the current/other marker, and the value's name. */
-function ValueRowView({ name, current, highlighted }: { name: string; current: boolean; highlighted: boolean }): ReactNode {
+function ValueRowView({
+  name,
+  current,
+  outgoing,
+  highlighted,
+}: {
+  name: string
+  current: boolean
+  outgoing: boolean
+  highlighted: boolean
+}): ReactNode {
   const palette = usePalette()
   return (
     <text style={{ flexShrink: 0 }}>
       <span fg={palette.accent}>{highlighted ? ROW_MARKER : " "}</span>
-      <span fg={current ? palette.tool.completed : palette.muted}>{` ${current ? CURRENT_MARK : OTHER_MARK} `}</span>
-      <span fg={current || highlighted ? palette.text : palette.muted}>{name}</span>
+      <span fg={current ? palette.tool.completed : outgoing ? palette.accent : palette.muted}>{` ${current ? CURRENT_MARK : outgoing ? TARGET_MARK : OTHER_MARK} `}</span>
+      <span fg={current || outgoing || highlighted ? palette.text : palette.muted}>{name}</span>
     </text>
   )
 }
 
 /** The inline mid-conversation confirm step: the warning, what is about to change, the hint. */
-function ConfirmStep({ row }: { row: ValueRow }): ReactNode {
+function ConfirmStep({ row }: { row: ModelEffortValueRow }): ReactNode {
   const palette = usePalette()
   const label = row.option.category === EFFORT_CATEGORY ? EFFORT_HEADING : MODEL_HEADING
   return (

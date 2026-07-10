@@ -31,7 +31,7 @@
 import type { PromptBlock, PromptResult } from "../agent/agentConnection.ts"
 import { createDeterministicAssembler, type BundleAssembler } from "../core/bundleAssembler.ts"
 import { editedCharCount } from "../core/telemetryHeuristics.ts"
-import type { HandoffBundle, PendingDiff, SessionId, SessionState } from "../core/types.ts"
+import { visibleConfigOptions, type HandoffBundle, type PendingDiff, type SessionId, type SessionState } from "../core/types.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import type { SessionController } from "./controller.ts"
@@ -71,11 +71,13 @@ export interface HandoffEdits {
   excludedFiles: ReadonlySet<string>
   /** `toolCallId`s of the pending diffs the developer dropped. */
   excludedDiffs: ReadonlySet<string>
+  /** Target model/effort changes to apply before the receiving agent gets the prompt. */
+  targetConfig: { configId: string; value: string }[]
 }
 
 /** The untouched starting point: the bundle exactly as assembled. */
 export function createHandoffEdits(bundle: HandoffBundle): HandoffEdits {
-  return { summary: bundle.summary, excludedFiles: new Set(), excludedDiffs: new Set() }
+  return { summary: bundle.summary, excludedFiles: new Set(), excludedDiffs: new Set(), targetConfig: [] }
 }
 
 /** The files that survive the developer's edits, in bundle order. */
@@ -185,11 +187,14 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
    * `assemble` redacts as it builds, so the bundle is safe to display as it arrives.
    */
   function openPreview(source: SessionState, targetSessionId: SessionId): void {
-    const targetProviderKind = store.getState().sessions[targetSessionId]!.providerKind
+    const target = store.getState().sessions[targetSessionId]!
     store.openHandoffPreview({
       sourceSessionId: source.id,
       targetSessionId,
-      bundle: assembler.assemble(source, targetProviderKind),
+      bundle: assembler.assemble(source, target.providerKind),
+      // Snapshot the target's allowed options. The preview owns its local outgoing
+      // choices until confirm, so cancelling cannot mutate a live target session.
+      targetConfigOptions: visibleConfigOptions(target.configOptions),
     })
   }
 
@@ -241,16 +246,22 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       return true
     },
 
-    confirm(edits: HandoffEdits): Promise<PromptResult | null> {
+    async confirm(edits: HandoffEdits): Promise<PromptResult | null> {
       const overlay = store.getState().overlays.handoffPreview
-      if (!overlay) return Promise.resolve(null)
+      if (!overlay) return null
 
       const blocks = composeHandoffBlocks(overlay.bundle, edits)
       // Nothing left to carry. Leave the preview up rather than sending an empty
       // hand-off the developer would have to undo by hand.
-      if (blocks.length === 0) return Promise.resolve(null)
+      if (blocks.length === 0) return null
 
       store.closeHandoffPreview()
+      // A target receives a fresh prompt, so there is no mid-conversation degrade
+      // warning here. Apply each requested setting first, in the order the preview
+      // supplied, so the target observes its chosen configuration before its hand-off.
+      for (const config of edits.targetConfig) {
+        await actions.setSessionConfigOption(config.configId, config.value, overlay.targetSessionId)
+      }
       // Address the target explicitly: focus has not moved yet, and it must not have -
       // `sendPrompt` writes the user's turn into whichever session it is given.
       const sent = actions.sendPrompt(blocks, overlay.targetSessionId)

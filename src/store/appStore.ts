@@ -27,6 +27,7 @@ import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import {
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_KINDS,
+  type ConfigOption,
   type DomainSessionEvent,
   type HandoffBundle,
   type ProviderKind,
@@ -59,6 +60,8 @@ export interface HandoffPreviewOverlay {
   sourceSessionId: SessionId
   targetSessionId: SessionId
   bundle: HandoffBundle
+  /** The target's allowlisted model/effort options when the preview opened. */
+  targetConfigOptions: ConfigOption[]
 }
 
 /**

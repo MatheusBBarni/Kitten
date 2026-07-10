@@ -42,7 +42,14 @@ export type ModelSelectCommand = "prev-option" | "next-option" | "confirm" | "ca
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
 /** Every intent the hand-off preview handles while it is on screen. */
-export type HandoffCommand = "prev-item" | "next-item" | "toggle-item" | "edit-summary" | "confirm" | "cancel"
+export type HandoffCommand =
+  | "prev-item"
+  | "next-item"
+  | "toggle-item"
+  | "edit-target-config"
+  | "edit-summary"
+  | "confirm"
+  | "cancel"
 
 /** Every intent the Ctrl+S sessions overview handles while it is on screen. */
 export type SessionsCommand = "prev-session" | "next-session" | "jump-into" | "jump-next-needy" | "cancel"
@@ -239,6 +246,12 @@ export const HANDOFF_KEYMAP: readonly KeyBinding<HandoffCommand>[] = [
     matches: plain("space"),
   },
   {
+    command: "edit-target-config",
+    keys: "m",
+    description: "Choose the target model and reasoning effort",
+    matches: plain("m"),
+  },
+  {
     command: "edit-summary",
     keys: "e",
     description: "Edit the summary the target agent will read",
@@ -354,7 +367,10 @@ export const KEYMAP_HINT = "^O switch  F1 help"
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
 
 /** The hint printed inside the hand-off preview while the developer curates the bundle. */
-export const HANDOFF_HINT = "↑↓ move  Space keep/drop  e edit summary  Enter send  Esc cancel"
+export const HANDOFF_HINT = "↑↓ move  Space keep/drop  m model/effort  e edit  Enter send  Esc cancel"
+
+/** The hint printed while choosing the target's model/effort inside a hand-off preview. */
+export const HANDOFF_CONFIG_HINT = "↑↓ move  Enter set target option  Esc back"
 
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
 export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"

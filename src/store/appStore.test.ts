@@ -254,6 +254,7 @@ describe("overlay slots", () => {
       sourceSessionId: "claude-code" as SessionId,
       targetSessionId: "codex" as SessionId,
       bundle: HANDOFF_BUNDLE,
+      targetConfigOptions: [],
     }
 
     store.openHandoffPreview(overlay)
@@ -266,7 +267,7 @@ describe("overlay slots", () => {
   it("keeps the two slots independent", () => {
     const store = createAppStore()
     store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
-    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
 
     store.closeApproval()
 
