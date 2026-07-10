@@ -14,8 +14,9 @@
  * is stable across renders.
  */
 
-import { needsAttention } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
 import type {
+  ConfigOption,
   PendingDiff,
   PlanEntry,
   ProviderKind,
@@ -24,7 +25,14 @@ import type {
   SessionStatus,
   Turn,
 } from "../core/types.ts"
-import type { AppState, ApprovalOverlay, HandoffPreviewOverlay, HandoffTargetOverlay, Selector } from "./appStore.ts"
+import type {
+  AppState,
+  ApprovalOverlay,
+  HandoffPreviewOverlay,
+  HandoffTargetOverlay,
+  ModelSelectOverlay,
+  Selector,
+} from "./appStore.ts"
 
 /**
  * The needs-you predicate, re-exported from the core (ADR-006). It is the pure
@@ -81,6 +89,37 @@ export const selectSessionReferencedFiles =
   (sessionId: SessionId): Selector<Map<string, "read" | "edited">> =>
   (state) =>
     state.sessions[sessionId]!.referencedFiles
+
+/**
+ * One session's full advertised config-option set (ADR-003), returned unfiltered so
+ * the reference stays stable across unrelated updates - the reducer replaces this
+ * array only on a `config_options` event, so a subscriber wakes only on a real change.
+ * The selector overlay applies {@link visibleConfigOptions} to the result and memoizes
+ * it; keeping the raw slice here is what preserves referential stability.
+ */
+export const selectAgentConfigOptions =
+  (sessionId: SessionId): Selector<ConfigOption[]> =>
+  (state) =>
+    state.sessions[sessionId]!.configOptions
+
+/**
+ * One session's confirmed model, or `undefined` when the agent advertises no `model`
+ * category. A primitive slice, so it compares by value and the status strip re-renders
+ * only when the live model actually changes.
+ */
+export const selectAgentModel =
+  (sessionId: SessionId): Selector<string | undefined> =>
+  (state) =>
+    state.sessions[sessionId]!.configOptions.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+
+/**
+ * One session's confirmed reasoning effort, or `undefined` when the agent advertises no
+ * `thought_level` category. A primitive slice like {@link selectAgentModel}.
+ */
+export const selectAgentEffort =
+  (sessionId: SessionId): Selector<string | undefined> =>
+  (state) =>
+    state.sessions[sessionId]!.configOptions.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
 
 /** Every session id in display order. */
 export const selectSessionOrder: Selector<SessionId[]> = (state) => state.order
@@ -204,9 +243,17 @@ export const selectHandoffTarget: Selector<HandoffTargetOverlay | null> = (state
  */
 export const selectIsSessionsOpen: Selector<boolean> = (state) => state.overlays.sessions
 
+/**
+ * The session whose model/effort selector is open (ADR-004), or `null` when the
+ * selector is closed. The overlay reads this to know which session to drive and
+ * {@link selectAgentConfigOptions} to draw its list.
+ */
+export const selectModelSelectOverlay: Selector<ModelSelectOverlay | null> = (state) => state.overlays.modelSelect
+
 /** Whether any overlay is open, for views that dim or disable the cockpit beneath. */
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.approval !== null ||
   state.overlays.handoffPreview !== null ||
   state.overlays.handoffTarget !== null ||
+  state.overlays.modelSelect !== null ||
   state.overlays.sessions

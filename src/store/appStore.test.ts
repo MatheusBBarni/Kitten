@@ -68,7 +68,13 @@ describe("createAppStore", () => {
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
     expect(state.order).toEqual(["claude-code", "codex"])
     expect(state.focusedSessionId).toBe("claude-code")
-    expect(state.overlays).toEqual({ approval: null, handoffPreview: null, handoffTarget: null, sessions: false })
+    expect(state.overlays).toEqual({
+      approval: null,
+      handoffPreview: null,
+      handoffTarget: null,
+      modelSelect: null,
+      sessions: false,
+    })
   })
 
   it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {
@@ -269,6 +275,29 @@ describe("overlay slots", () => {
     expect(overlays.handoffPreview?.bundle).toBe(HANDOFF_BUNDLE)
   })
 
+  it("exposes an opened model selector and clears it on close", () => {
+    const store = createAppStore()
+    const overlay = { sessionId: "codex" as SessionId }
+
+    store.openModelSelect(overlay)
+    expect(store.getState().overlays.modelSelect).toEqual(overlay)
+
+    store.closeModelSelect()
+    expect(store.getState().overlays.modelSelect).toBeNull()
+  })
+
+  it("keeps the model selector independent of the approval slot", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openModelSelect({ sessionId: "claude-code" })
+
+    store.closeModelSelect()
+
+    const overlays = store.getState().overlays
+    expect(overlays.modelSelect).toBeNull()
+    expect(overlays.approval?.sessionId).toBe("codex")
+  })
+
   it("opens and closes the sessions overview", () => {
     const store = createAppStore()
     expect(store.getState().overlays.sessions).toBe(false)
@@ -298,6 +327,7 @@ describe("overlay slots", () => {
 
     store.closeApproval()
     store.closeHandoffPreview()
+    store.closeModelSelect()
     store.closeSessions()
 
     expect(notifications).toBe(0)

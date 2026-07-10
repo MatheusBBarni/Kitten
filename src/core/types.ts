@@ -133,6 +133,29 @@ export interface ConfigOption {
   options: ConfigSelectOption[]
 }
 
+/** The config-option category id for the model picker. */
+export const MODEL_CATEGORY = "model"
+/** The config-option category id for the reasoning-effort picker (ACP `thought_level`). */
+export const EFFORT_CATEGORY = "thought_level"
+
+/**
+ * The only config-option categories the UI ever surfaces (ADR-004): the model and
+ * reasoning-effort pickers. This is a fail-closed allowlist, not a denylist - every
+ * other category (`mode`, whose Claude values include `bypassPermissions`,
+ * `model_config`, and any future or unknown category) is filtered out before any
+ * rendering, so the selector can never expose a permission-mode toggle.
+ */
+export const VISIBLE_CATEGORIES: readonly string[] = [MODEL_CATEGORY, EFFORT_CATEGORY]
+
+/**
+ * Keep only the {@link VISIBLE_CATEGORIES} allowlisted options, dropping every other
+ * category (ADR-004). Pure and order-preserving; the caller memoizes the result so a
+ * fresh array does not thrash a subscriber (the per-agent selectors stay referentially
+ * stable by returning the unfiltered slice).
+ */
+export const visibleConfigOptions = (options: ConfigOption[]): ConfigOption[] =>
+  options.filter((option) => VISIBLE_CATEGORIES.includes(option.category))
+
 /** A single entry in an agent's plan (translated from the ACP `plan` notification). */
 export interface PlanEntry {
   content: string

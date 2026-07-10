@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test"
 
-import type { DomainSessionEvent, HandoffBundle } from "../core/types.ts"
+import type { ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
+  selectAgentConfigOptions,
+  selectAgentEffort,
+  selectAgentModel,
   selectNextNeedy,
   selectSessionList,
   selectSessionPendingDiffs,
@@ -20,7 +23,32 @@ import {
   selectIsApprovalOpen,
   selectIsFocused,
   selectIsSessionsOpen,
+  selectModelSelectOverlay,
 } from "./selectors.ts"
+
+/** A model + effort config-option pair, as an agent advertises them. */
+const MODEL_OPTION: ConfigOption = {
+  id: "model",
+  category: "model",
+  label: "Model",
+  currentValue: "opus",
+  options: [
+    { value: "opus", name: "Opus" },
+    { value: "sonnet", name: "Sonnet" },
+  ],
+}
+
+const EFFORT_OPTION: ConfigOption = {
+  id: "effort",
+  category: "thought_level",
+  label: "Reasoning effort",
+  currentValue: "medium",
+  options: [
+    { value: "low", name: "Low" },
+    { value: "medium", name: "Medium" },
+    { value: "high", name: "High" },
+  ],
+}
 
 /**
  * Selectors are asserted on two axes: the value they project, and the identity of
@@ -262,5 +290,84 @@ describe("overlay selectors", () => {
     expect(selectHandoffPreview(state)?.bundle).toBe(HANDOFF_BUNDLE)
     expect(selectApprovalOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(true)
+  })
+
+  it("report an open model selector as an open, modal overlay", () => {
+    const store = createAppStore()
+    store.openModelSelect({ sessionId: "codex" })
+    const state = store.getState()
+
+    expect(selectModelSelectOverlay(state)?.sessionId).toBe("codex")
+    expect(selectHasOpenOverlay(state)).toBe(true)
+    expect(selectIsApprovalOpen(state)).toBe(false)
+  })
+
+  it("report the model selector closed as null and no open overlay", () => {
+    const state = createAppStore().getState()
+    expect(selectModelSelectOverlay(state)).toBeNull()
+    expect(selectHasOpenOverlay(state)).toBe(false)
+  })
+})
+
+describe("config-option selectors", () => {
+  it("return the current model, or undefined when no model category is advertised", () => {
+    const store = createAppStore()
+    expect(selectAgentModel("claude-code")(store.getState())).toBeUndefined()
+
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+    expect(selectAgentModel("claude-code")(store.getState())).toBe("opus")
+  })
+
+  it("return the current effort, or undefined when no thought_level category is advertised", () => {
+    const store = createAppStore()
+    expect(selectAgentEffort("claude-code")(store.getState())).toBeUndefined()
+
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION] })
+    // Model advertised but no effort category yet.
+    expect(selectAgentEffort("claude-code")(store.getState())).toBeUndefined()
+
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+    expect(selectAgentEffort("claude-code")(store.getState())).toBe("medium")
+  })
+
+  it("return the raw option slice with a stable reference across unrelated updates", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+
+    const first = selectAgentConfigOptions("claude-code")(store.getState())
+    expect(first).toEqual([MODEL_OPTION, EFFORT_OPTION])
+
+    // An update to a different session must not change this session's slice identity.
+    store.applyEvent("codex", { kind: "status", status: "working" })
+    expect(selectAgentConfigOptions("claude-code")(store.getState())).toBe(first)
+  })
+
+  it("observes a dispatched config_options event through subscribeSelector", () => {
+    const store = createAppStore()
+    const observed: (string | undefined)[] = []
+    store.subscribeSelector(selectAgentModel("claude-code"), (value) => observed.push(value))
+
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+    store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: [{ ...MODEL_OPTION, currentValue: "sonnet" }, EFFORT_OPTION],
+    })
+
+    expect(observed).toEqual(["opus", "sonnet"])
+  })
+
+  it("does not notify a model subscriber when only the effort changes", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+
+    let notifications = 0
+    store.subscribeSelector(selectAgentModel("claude-code"), () => notifications++)
+
+    store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: [MODEL_OPTION, { ...EFFORT_OPTION, currentValue: "high" }],
+    })
+
+    expect(notifications).toBe(0)
   })
 })

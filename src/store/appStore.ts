@@ -74,6 +74,17 @@ export interface HandoffTargetOverlay {
 }
 
 /**
+ * The model/effort selector slot: the session whose model and reasoning effort the
+ * developer is choosing (ADR-004). It carries no options of its own - the overlay
+ * draws its list from that session's {@link SessionState.configOptions} through
+ * {@link visibleConfigOptions}, always rendering the agent-confirmed state - so the
+ * slot need only name which session the picker is open for.
+ */
+export interface ModelSelectOverlay {
+  sessionId: SessionId
+}
+
+/**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
  *
@@ -86,6 +97,8 @@ export interface OverlayState {
   handoffPreview: HandoffPreviewOverlay | null
   /** The hand-off target picker, open only while the developer is choosing a recipient. */
   handoffTarget: HandoffTargetOverlay | null
+  /** The model/effort selector, open only while the developer is choosing a model or effort. */
+  modelSelect: ModelSelectOverlay | null
   sessions: boolean
 }
 
@@ -147,6 +160,10 @@ export interface AppStore {
   openHandoffTarget(overlay: HandoffTargetOverlay): void
   /** Clear the hand-off target-picker slot. Closing a closed slot is a no-op. */
   closeHandoffTarget(): void
+  /** Open the model/effort selector for the given session. */
+  openModelSelect(overlay: ModelSelectOverlay): void
+  /** Clear the model/effort selector slot. Closing a closed slot is a no-op. */
+  closeModelSelect(): void
   /** Open the Ctrl+S sessions overview. Opening an open overview is a no-op. */
   openSessions(): void
   /** Close the sessions overview. Closing a closed overview is a no-op. */
@@ -185,7 +202,7 @@ class AppStoreImpl implements AppStore {
       sessions,
       order,
       focusedSessionId: options.focusedSessionId ?? order[0]!,
-      overlays: { approval: null, handoffPreview: null, handoffTarget: null, sessions: false },
+      overlays: { approval: null, handoffPreview: null, handoffTarget: null, modelSelect: null, sessions: false },
     }
   }
 
@@ -270,6 +287,15 @@ class AppStoreImpl implements AppStore {
   closeHandoffTarget(): void {
     if (this.state.overlays.handoffTarget === null) return
     this.setOverlays({ handoffTarget: null })
+  }
+
+  openModelSelect(overlay: ModelSelectOverlay): void {
+    this.setOverlays({ modelSelect: overlay })
+  }
+
+  closeModelSelect(): void {
+    if (this.state.overlays.modelSelect === null) return
+    this.setOverlays({ modelSelect: null })
   }
 
   openSessions(): void {
