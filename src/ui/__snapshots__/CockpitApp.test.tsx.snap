@@ -24,6 +24,6 @@ exports[`CockpitApp layout matches the expected frame at a fixed size 1`] = `
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- ▸ Claude Code: idle    Codex: idle                          ^O switch  F1 help 
+ ▸ Claude Code: idle    Codex: idle                          ^O swap ^, F1 help 
 "
 `;

@@ -1,4 +1,10 @@
+// Suite: cockpit and modal keymaps
+// Invariant: each documented key maps to exactly its intended command without stealing unmodified composer input
+// Boundary IN: keymap tables, pure matchers, hint/help derivation, and a real OpenTUI KeyEvent
+// Boundary OUT: shell dispatch and rendered overlay behavior, owned by their component suites
+
 import { describe, expect, it } from "bun:test"
+import { KeyEvent } from "@opentui/core"
 
 import {
   APPROVAL_HINT,
@@ -17,12 +23,15 @@ import {
   matchHandoffCommand,
   matchModelSelectCommand,
   matchSessionsCommand,
+  matchSettingsCommand,
   MODEL_SELECT_CONFIRM_HINT,
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
   PROMPT_KEY_BINDINGS,
   SESSIONS_HINT,
   SESSIONS_KEYMAP,
+  SETTINGS_HINT,
+  SETTINGS_KEYMAP,
   type CockpitKey,
 } from "./keymap.ts"
 
@@ -48,6 +57,14 @@ describe("matchCommand", () => {
     expect(matchCommand(key("e", { ctrl: true }))).toBe("model-select")
   })
 
+  it("maps Ctrl+, to open-settings", () => {
+    expect(matchCommand(key(",", { ctrl: true }))).toBe("open-settings")
+  })
+
+  it("leaves a plain comma to the prompt editor", () => {
+    expect(matchCommand(key(","))).toBeNull()
+  })
+
   it("does not bind the selector to Ctrl+M, which a terminal sends for carriage return", () => {
     // Ctrl+M arrives as an ordinary Enter, so binding it would open the selector on every
     // prompt submission. The chord must be anything but that.
@@ -69,6 +86,8 @@ describe("matchCommand", () => {
     expect(matchCommand(key("o", { ctrl: true, shift: true }))).toBeNull()
     expect(matchCommand(key("o", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("t", { ctrl: true, shift: true }))).toBeNull()
+    expect(matchCommand(key(",", { ctrl: true, shift: true }))).toBeNull()
+    expect(matchCommand(key(",", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("f1", { ctrl: true }))).toBeNull()
     expect(matchCommand(key("escape", { meta: true }))).toBeNull()
   })
@@ -83,7 +102,15 @@ describe("COCKPIT_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
     expect(new Set(commands).size).toBe(commands.length)
-    expect(commands).toEqual(["switch-focus", "hand-off", "sessions", "model-select", "toggle-help", "close-help"])
+    expect(commands).toEqual([
+      "switch-focus",
+      "hand-off",
+      "sessions",
+      "model-select",
+      "open-settings",
+      "toggle-help",
+      "close-help",
+    ])
   })
 
   it("keeps the selector chord clear of the other shell chords it must not collide with", () => {
@@ -113,7 +140,30 @@ describe("COCKPIT_KEYMAP", () => {
 
   it("keeps the always-visible hint short enough for a narrow terminal", () => {
     expect(KEYMAP_HINT).toContain("F1")
+    expect(KEYMAP_HINT).toContain("^,")
     expect(KEYMAP_HINT.length).toBeLessThanOrEqual(20)
+  })
+})
+
+describe("integration - OpenTUI KeyEvent dispatch", () => {
+  it("dispatches a synthesized Kitty Ctrl+, only to open-settings", () => {
+    const event = new KeyEvent({
+      name: ",",
+      ctrl: true,
+      shift: false,
+      meta: false,
+      option: false,
+      sequence: "",
+      number: false,
+      raw: "",
+      eventType: "press",
+      source: "kitty",
+    })
+
+    expect(matchCommand(event)).toBe("open-settings")
+    expect(COCKPIT_KEYMAP.filter((binding) => binding.matches(event)).map((binding) => binding.command)).toEqual([
+      "open-settings",
+    ])
   })
 })
 
@@ -159,7 +209,7 @@ describe("HELP_ENTRIES", () => {
     const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
     // Help first: while the panel is open it consumes Escape, and only then does the
     // editor's interrupt become reachable.
-    expect(escapes.map((e) => e.index)).toEqual([5, 8])
+    expect(escapes.map((e) => e.index)).toEqual([6, 9])
   })
 
   it("documents the model selector, whose chord opens the model and effort picker", () => {
@@ -170,8 +220,18 @@ describe("HELP_ENTRIES", () => {
     expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+T")
   })
 
+  it("documents settings through the cockpit keymap", () => {
+    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+,")
+  })
+
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {
-    for (const binding of [...APPROVAL_KEYMAP, ...HANDOFF_KEYMAP, ...SESSIONS_KEYMAP, ...MODEL_SELECT_KEYMAP]) {
+    for (const binding of [
+      ...APPROVAL_KEYMAP,
+      ...HANDOFF_KEYMAP,
+      ...SESSIONS_KEYMAP,
+      ...MODEL_SELECT_KEYMAP,
+      ...SETTINGS_KEYMAP,
+    ]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
   })
@@ -381,6 +441,44 @@ describe("MODEL_SELECT_KEYMAP", () => {
     // The confirm step reuses confirm/cancel, so its hint must name both keys.
     expect(MODEL_SELECT_CONFIRM_HINT).toContain("Enter")
     expect(MODEL_SELECT_CONFIRM_HINT).toContain("Esc")
+  })
+})
+
+describe("matchSettingsCommand", () => {
+  it("maps arrows to the previous and next setting options", () => {
+    expect(matchSettingsCommand(key("up"))).toBe("prev-option")
+    expect(matchSettingsCommand(key("down"))).toBe("next-option")
+  })
+
+  it("maps Tab to switch-tab and r to reset-to-default", () => {
+    expect(matchSettingsCommand(key("tab"))).toBe("switch-tab")
+    expect(matchSettingsCommand(key("r"))).toBe("reset-to-default")
+  })
+
+  it("maps Escape to close", () => {
+    expect(matchSettingsCommand(key("escape"))).toBe("close")
+  })
+
+  it("rejects modified and unclaimed keys", () => {
+    expect(matchSettingsCommand(key("tab", { shift: true }))).toBeNull()
+    expect(matchSettingsCommand(key("r", { ctrl: true }))).toBeNull()
+    expect(matchSettingsCommand(key("escape", { meta: true }))).toBeNull()
+    expect(matchSettingsCommand(key("return"))).toBeNull()
+  })
+})
+
+describe("SETTINGS_KEYMAP", () => {
+  it("binds every settings command exactly once", () => {
+    const commands = SETTINGS_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["prev-option", "next-option", "switch-tab", "reset-to-default", "close"])
+    expect(new Set(commands).size).toBe(commands.length)
+  })
+
+  it("names every binding in the modal hint", () => {
+    for (const binding of SETTINGS_KEYMAP.filter((entry) => entry.command !== "reset-to-default")) {
+      expect(SETTINGS_HINT).toContain(binding.keys)
+    }
+    expect(SETTINGS_HINT).toContain("r reset")
   })
 })
 

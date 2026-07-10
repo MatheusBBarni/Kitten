@@ -121,7 +121,8 @@ describe("StatusStrip", () => {
     const { renderer, waitForFrame } = await renderStrip(controller)
 
     const frame = await waitForFrame((f) => f.includes("F1 help"))
-    expect(frame).toContain("^O switch")
+    expect(frame).toContain("^O swap")
+    expect(frame).toContain("^,")
 
     await destroyMounted(renderer)
   })

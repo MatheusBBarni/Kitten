@@ -11,10 +11,14 @@
  * listener, so its bindings are declared (`PROMPT_KEY_BINDINGS`) and documented
  * (`EDITOR_KEYMAP`) side by side instead of being buried in the component.
  *
- * The overlays' keys (`APPROVAL_KEYMAP`, `HANDOFF_KEYMAP`) are the exception to the
- * chord rule: while an overlay is up it swallows every keypress, so plain arrows,
- * Enter, Space, digits, and even a bare letter are its to spend without ever reaching
- * the composer.
+ * The overlays' keys (`APPROVAL_KEYMAP`, `HANDOFF_KEYMAP`, `SETTINGS_KEYMAP`, and
+ * the other modal keymaps below) are the exception to the chord rule: while an
+ * overlay is up it swallows every keypress, so plain arrows, Enter, Space, digits,
+ * and even a bare letter are its to spend without ever reaching the composer.
+ *
+ * `Ctrl+,` follows the familiar settings convention, but a legacy terminal cannot
+ * deliver that chord distinctly. It reaches Kitten only when the terminal speaks
+ * the Kitty keyboard protocol; the help and status hint still document the binding.
  */
 
 import type { KeyBinding as TextareaKeyBinding } from "@opentui/core"
@@ -33,13 +37,23 @@ export interface CockpitKey {
 }
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
-export type CockpitCommand = "switch-focus" | "hand-off" | "sessions" | "model-select" | "toggle-help" | "close-help"
+export type CockpitCommand =
+  | "switch-focus"
+  | "hand-off"
+  | "sessions"
+  | "model-select"
+  | "open-settings"
+  | "toggle-help"
+  | "close-help"
 
 /** Every intent the model/effort selector handles while it is on screen. */
 export type ModelSelectCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
+
+/** Every intent the settings overlay handles while it is on screen. */
+export type SettingsCommand = "prev-option" | "next-option" | "switch-tab" | "reset-to-default" | "close"
 
 /** Every intent the hand-off preview handles while it is on screen. */
 export type HandoffCommand =
@@ -120,6 +134,14 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Ctrl+E",
     description: "Choose the model and reasoning effort for the focused agent",
     matches: ctrl("e"),
+  },
+  {
+    // Unlike alphabetic Ctrl chords, Ctrl+, has no legacy control-byte encoding.
+    // OpenTUI can deliver it only through the Kitty keyboard protocol.
+    command: "open-settings",
+    keys: "Ctrl+,",
+    description: "Open settings",
+    matches: ctrl(","),
   },
   {
     command: "toggle-help",
@@ -350,6 +372,46 @@ export const MODEL_SELECT_KEYMAP: readonly KeyBinding<ModelSelectCommand>[] = [
 ]
 
 /**
+ * The settings overlay's keys, live only while the modal is on screen.
+ *
+ * The modal consumes every keypress, so arrows, Tab, and a bare `r` cannot reach
+ * the composer. Navigation applies the highlighted setting immediately; reset and
+ * close therefore need no confirmation binding.
+ */
+export const SETTINGS_KEYMAP: readonly KeyBinding<SettingsCommand>[] = [
+  {
+    command: "prev-option",
+    keys: "↑",
+    description: "Highlight the previous setting option",
+    matches: plain("up"),
+  },
+  {
+    command: "next-option",
+    keys: "↓",
+    description: "Highlight the next setting option",
+    matches: plain("down"),
+  },
+  {
+    command: "switch-tab",
+    keys: "Tab",
+    description: "Switch to the next settings tab",
+    matches: plain("tab"),
+  },
+  {
+    command: "reset-to-default",
+    keys: "r",
+    description: "Reset the highlighted setting to its default",
+    matches: plain("r"),
+  },
+  {
+    command: "close",
+    keys: "Esc",
+    description: "Close settings",
+    matches: plain("escape"),
+  },
+]
+
+/**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
  * Neither overlay's keys appear. Both are modal, so F1 cannot open this panel while
@@ -360,8 +422,22 @@ export const MODEL_SELECT_KEYMAP: readonly KeyBinding<ModelSelectCommand>[] = [
  */
 export const HELP_ENTRIES: readonly HelpEntry[] = [...COCKPIT_KEYMAP, ...EDITOR_KEYMAP]
 
+/** Read a display label from the same binding row dispatch uses. */
+function bindingKeys<Command extends string>(keymap: readonly KeyBinding<Command>[], command: Command): string {
+  const binding = keymap.find((entry) => entry.command === command)
+  if (!binding) throw new Error(`Missing keymap binding for ${command}`)
+  return binding.keys
+}
+
+/** Use the status strip's compact caret notation for a Ctrl chord. */
+function compactChord(keys: string): string {
+  return keys.replace(/^Ctrl\+/, "^")
+}
+
 /** The always-visible hint in the status strip: the keys that matter right now. */
-export const KEYMAP_HINT = "^O switch  F1 help"
+export const KEYMAP_HINT = `${compactChord(bindingKeys(COCKPIT_KEYMAP, "switch-focus"))} swap ${compactChord(
+  bindingKeys(COCKPIT_KEYMAP, "open-settings"),
+)} ${bindingKeys(COCKPIT_KEYMAP, "toggle-help")} help`
 
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
@@ -377,6 +453,15 @@ export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
 
 /** The hint printed inside the model/effort selector, where those keys are the only live ones. */
 export const MODEL_SELECT_HINT = "↑↓ move  Enter apply  Esc close"
+
+/** The hint printed inside settings, derived from the modal's binding table. */
+export const SETTINGS_HINT = `${bindingKeys(SETTINGS_KEYMAP, "prev-option")}${bindingKeys(
+  SETTINGS_KEYMAP,
+  "next-option",
+)} move  ${bindingKeys(SETTINGS_KEYMAP, "switch-tab")} switch tab  ${bindingKeys(
+  SETTINGS_KEYMAP,
+  "reset-to-default",
+)} reset  ${bindingKeys(SETTINGS_KEYMAP, "close")} close`
 
 /** The hint printed inside the selector's inline mid-conversation confirm step. */
 export const MODEL_SELECT_CONFIRM_HINT = "Enter switch anyway  Esc keep current"
@@ -413,6 +498,9 @@ export const matchSessionsCommand = makeMatcher(SESSIONS_KEYMAP)
 
 /** The selector command a keypress maps to, or `null` when the selector does not claim it. */
 export const matchModelSelectCommand = makeMatcher(MODEL_SELECT_KEYMAP)
+
+/** The settings command a keypress maps to, or `null` when the modal does not claim it. */
+export const matchSettingsCommand = makeMatcher(SETTINGS_KEYMAP)
 
 /**
  * The zero-based option a digit key names, or `null` for any other key.
