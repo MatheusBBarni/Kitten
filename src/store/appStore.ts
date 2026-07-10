@@ -62,6 +62,18 @@ export interface HandoffPreviewOverlay {
 }
 
 /**
+ * The hand-off target-picker slot: the source session while the developer chooses
+ * which session receives the hand-off (task_06). It carries no target of its own -
+ * the picker draws its candidate list from {@link SessionState} and readiness - and
+ * exists only while there is a genuine choice to make (three or more ready sessions).
+ * With a single possible recipient the flow skips this step and opens the preview
+ * directly, keeping the two-agent hand-off one keystroke.
+ */
+export interface HandoffTargetOverlay {
+  sourceSessionId: SessionId
+}
+
+/**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
  *
@@ -72,6 +84,8 @@ export interface HandoffPreviewOverlay {
 export interface OverlayState {
   approval: ApprovalOverlay | null
   handoffPreview: HandoffPreviewOverlay | null
+  /** The hand-off target picker, open only while the developer is choosing a recipient. */
+  handoffTarget: HandoffTargetOverlay | null
   sessions: boolean
 }
 
@@ -129,6 +143,10 @@ export interface AppStore {
   openHandoffPreview(overlay: HandoffPreviewOverlay): void
   /** Clear the hand-off preview slot. Closing a closed slot is a no-op. */
   closeHandoffPreview(): void
+  /** Open the hand-off target picker for the source session. */
+  openHandoffTarget(overlay: HandoffTargetOverlay): void
+  /** Clear the hand-off target-picker slot. Closing a closed slot is a no-op. */
+  closeHandoffTarget(): void
   /** Open the Ctrl+S sessions overview. Opening an open overview is a no-op. */
   openSessions(): void
   /** Close the sessions overview. Closing a closed overview is a no-op. */
@@ -167,7 +185,7 @@ class AppStoreImpl implements AppStore {
       sessions,
       order,
       focusedSessionId: options.focusedSessionId ?? order[0]!,
-      overlays: { approval: null, handoffPreview: null, sessions: false },
+      overlays: { approval: null, handoffPreview: null, handoffTarget: null, sessions: false },
     }
   }
 
@@ -243,6 +261,15 @@ class AppStoreImpl implements AppStore {
   closeHandoffPreview(): void {
     if (this.state.overlays.handoffPreview === null) return
     this.setOverlays({ handoffPreview: null })
+  }
+
+  openHandoffTarget(overlay: HandoffTargetOverlay): void {
+    this.setOverlays({ handoffTarget: overlay })
+  }
+
+  closeHandoffTarget(): void {
+    if (this.state.overlays.handoffTarget === null) return
+    this.setOverlays({ handoffTarget: null })
   }
 
   openSessions(): void {

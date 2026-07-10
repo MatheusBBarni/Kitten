@@ -310,6 +310,14 @@ export const HANDOFF_HINT = "↑↓ move  Space keep/drop  e edit summary  Enter
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
 export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
 
+/**
+ * The hint printed inside the hand-off target picker (task_06), where the developer
+ * chooses which session receives the bundle before the redacted preview opens. It
+ * reuses the sessions overview's navigation (`SESSIONS_KEYMAP`), so Enter here means
+ * "choose this target" rather than "jump into"; the `n` shortcut is not offered.
+ */
+export const HANDOFF_TARGET_HINT = "↑↓ move  Enter choose target  Esc cancel"
+
 /** The hint printed while the summary editor holds the keyboard, where only Escape is ours. */
 export const HANDOFF_EDIT_HINT = "Esc returns to the bundle"
 

@@ -159,8 +159,11 @@ function SessionsDialog(): ReactNode {
  * One session's card: the highlight marker, its title and provider, then its working
  * directory and state on the line below. A needs-you session is called out in the
  * state's own color and carries a `needs you` badge so it reads without color too.
+ *
+ * Exported so the hand-off target picker (task_06) draws its candidate rows the same
+ * way, and the two lists can never disagree about how a session reads.
  */
-function SessionCard({ session, highlighted }: { session: SessionListItem; highlighted: boolean }): ReactNode {
+export function SessionCard({ session, highlighted }: { session: SessionListItem; highlighted: boolean }): ReactNode {
   const palette = usePalette()
   const statusColor = palette.status[session.status]
 

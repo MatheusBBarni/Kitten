@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Session-addressed hand-off"
 type: backend
 complexity: high
@@ -31,11 +31,11 @@ Curation, redaction, and the composed bundle stay exactly as they are today; onl
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Change the preview overlay to carry source and target `SessionId`.
-- [ ] 6.2 Add the target-selection step reusing the overview selection.
-- [ ] 6.3 Replace `nextAgentId` targeting in `begin` with the chosen target session.
-- [ ] 6.4 Send to the chosen target and move focus on confirm.
-- [ ] 6.5 Add a characterization test locking curation, redaction, and the composed blocks.
+- [x] 6.1 Change the preview overlay to carry source and target `SessionId`.
+- [x] 6.2 Add the target-selection step reusing the overview selection.
+- [x] 6.3 Replace `nextAgentId` targeting in `begin` with the chosen target session.
+- [x] 6.4 Send to the chosen target and move focus on confirm.
+- [x] 6.5 Add a characterization test locking curation, redaction, and the composed blocks.
 
 ## Implementation Details
 Follow the TechSpec "Actions and Events" section: the hand-off keeps `begin`/`confirm`/`cancel`, but `begin` now resolves a target session through the picker instead of `nextAgentId`.

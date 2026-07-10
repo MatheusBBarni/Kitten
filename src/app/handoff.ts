@@ -10,15 +10,19 @@
  *
  * Three properties are load-bearing:
  *
- * - **Nothing is ever auto-sent.** `begin` only opens the preview; only `confirm`
- *   reaches an agent. The redactor is biased to false negatives on purpose, and the
- *   preview is the second line of defence against forwarding a credential (ADR-002,
- *   TechSpec "Known Risks"). A code path from keystroke to `sendPrompt` that skips
- *   the preview would defeat that, so there is none.
- * - **The bundle arrives redacted.** `assemble` redacts as it builds (task_06), so
- *   this module never redacts again and never has plaintext secrets to leak.
- * - **Direction is derived, not configured.** The target is simply the agent that is
- *   not focused, which is what makes hand-off and hand-back one flow rather than two.
+ * - **Nothing is ever auto-sent.** `begin` only opens the target picker or the
+ *   preview; only `confirm` reaches an agent. The redactor is biased to false
+ *   negatives on purpose, and the preview is the second line of defence against
+ *   forwarding a credential (ADR-002, TechSpec "Known Risks"). A code path from
+ *   keystroke to `sendPrompt` that skips the preview would defeat that, so there is none.
+ * - **The bundle arrives redacted.** `assemble` redacts as it builds, so this module
+ *   never redacts again and never has plaintext secrets to leak.
+ * - **The target is the developer's chosen session (task_06).** Across a fleet the
+ *   recipient is picked explicitly: `begin` opens a target picker when more than one
+ *   session could receive the bundle, and the developer chooses. When exactly one
+ *   session can receive it the picker is skipped and the preview opens straight away,
+ *   so the two-agent hand-off stays one keystroke and hand-back is the same flow
+ *   pointed the other way.
  *
  * Layering (ADR-003): assembly is pure core, and the send goes through
  * `ControllerActions`, so nothing here touches an `AgentConnection` or the ACP SDK.
@@ -27,10 +31,9 @@
 import type { PromptBlock, PromptResult } from "../agent/agentConnection.ts"
 import { createDeterministicAssembler, type BundleAssembler } from "../core/bundleAssembler.ts"
 import { editedCharCount } from "../core/telemetryHeuristics.ts"
-import type { HandoffBundle, PendingDiff } from "../core/types.ts"
+import type { HandoffBundle, PendingDiff, SessionId, SessionState } from "../core/types.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
-import { nextSessionId } from "./actions.ts"
 import type { SessionController } from "./controller.ts"
 
 /**
@@ -121,13 +124,24 @@ function text(value: string): PromptBlock {
 /** The hand-off orchestration the shell binds its keystroke to. */
 export interface HandoffFlow {
   /**
-   * Assemble a bundle from the focused agent's session and open the preview over it.
+   * Start a hand-off from the focused session (task_06).
    *
-   * Returns whether the preview opened. It does not when an overlay already owns the
-   * screen, when the source has said nothing worth carrying, or when the agent that
-   * would receive the bundle never came up.
+   * With more than one session able to receive the bundle, this opens the target
+   * picker and returns `true`; the developer then chooses a recipient with
+   * {@link chooseTarget}. With exactly one possible recipient it skips the picker and
+   * opens the redacted preview directly - the two-agent hand-off stays one keystroke.
+   *
+   * Returns `false`, opening nothing, when an overlay already owns the screen, when the
+   * source has said nothing worth carrying, or when no other session is ready to
+   * receive the bundle (fewer than two ready sessions, so there is no recipient).
    */
   begin(): boolean
+  /**
+   * Choose the target session from the picker and open the redacted preview over the
+   * bundle assembled for it. A no-op returning `false` when the picker is not open, or
+   * when the chosen session is the source, is not ready, or has nothing to carry.
+   */
+  chooseTarget(targetSessionId: SessionId): boolean
   /**
    * Send the curated bundle to the target and move focus to it.
    *
@@ -137,7 +151,7 @@ export interface HandoffFlow {
    * turn synchronously and only then awaits the agent.
    */
   confirm(edits: HandoffEdits): Promise<PromptResult | null>
-  /** Close the preview. Nothing is sent, and focus stays where it was. */
+  /** Close the target picker or the preview. Nothing is sent, and focus stays put. */
   cancel(): void
 }
 
@@ -160,6 +174,25 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
   const assembler = options.assembler ?? createDeterministicAssembler()
   const { store, actions } = controller
 
+  /** The ready sessions, in display order, that could receive a hand-off from `source`. */
+  function readyRecipients(order: readonly SessionId[], source: SessionId): SessionId[] {
+    return order.filter((id) => id !== source && controller.isReady(id))
+  }
+
+  /**
+   * Assemble the bundle for `source` -> `target` and open the redacted preview. The
+   * bundle header names the target provider kind (unchanged by the identity split), and
+   * `assemble` redacts as it builds, so the bundle is safe to display as it arrives.
+   */
+  function openPreview(source: SessionState, targetSessionId: SessionId): void {
+    const targetProviderKind = store.getState().sessions[targetSessionId]!.providerKind
+    store.openHandoffPreview({
+      sourceSessionId: source.id,
+      targetSessionId,
+      bundle: assembler.assemble(source, targetProviderKind),
+    })
+  }
+
   return {
     begin(): boolean {
       const state = store.getState()
@@ -170,22 +203,41 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       if (selectHasOpenOverlay(state)) return false
 
       const sourceSessionId = state.focusedSessionId
-      const targetSessionId = nextSessionId(state.order, sourceSessionId)
-      // No session on the far side means no one to hand to.
+      const session = state.sessions[sourceSessionId]
+      if (!session || session.turns.length === 0) return false
+
+      // No ready session on the far side means no one to hand to.
+      const recipients = readyRecipients(state.order, sourceSessionId)
+      if (recipients.length === 0) return false
+
+      // The hand-off is under way whichever branch we take, so the metric fires once here.
+      recorder?.handoffInvoked()
+      if (recipients.length === 1) {
+        // A single possible recipient: skip the picker and open the preview straight
+        // away, so the two-agent hand-off (and hand-back) stays one keystroke.
+        openPreview(session, recipients[0]!)
+      } else {
+        // "The other agent" is ambiguous across a fleet: let the developer choose which
+        // session receives the bundle (task_06) before the redacted preview opens.
+        store.openHandoffTarget({ sourceSessionId })
+      }
+      return true
+    },
+
+    chooseTarget(targetSessionId: SessionId): boolean {
+      const state = store.getState()
+      const picker = state.overlays.handoffTarget
+      // Only reachable from an open picker; the source is the session it was opened for.
+      if (!picker) return false
+      const sourceSessionId = picker.sourceSessionId
       if (targetSessionId === sourceSessionId || !controller.isReady(targetSessionId)) return false
 
       const session = state.sessions[sourceSessionId]
       if (!session || session.turns.length === 0) return false
 
-      // The bundle header names the target provider kind, unchanged by the identity split.
-      const targetProviderKind = state.sessions[targetSessionId]!.providerKind
-      // `assemble` redacts as it builds; the bundle is safe to display as it arrives.
-      store.openHandoffPreview({
-        sourceSessionId,
-        targetSessionId,
-        bundle: assembler.assemble(session, targetProviderKind),
-      })
-      recorder?.handoffInvoked()
+      // Trade the picker for the preview in one step: nothing is sent, only displayed.
+      store.closeHandoffTarget()
+      openPreview(session, targetSessionId)
       return true
     },
 
@@ -214,6 +266,9 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
     },
 
     cancel(): void {
+      // Either overlay may be up (the picker before a target is chosen, the preview
+      // after); closing both is idempotent and always leaves focus where it was.
+      store.closeHandoffTarget()
       store.closeHandoffPreview()
     },
   }

@@ -24,7 +24,7 @@ import type {
   SessionStatus,
   Turn,
 } from "../core/types.ts"
-import type { AppState, ApprovalOverlay, HandoffPreviewOverlay, Selector } from "./appStore.ts"
+import type { AppState, ApprovalOverlay, HandoffPreviewOverlay, HandoffTargetOverlay, Selector } from "./appStore.ts"
 
 /**
  * The needs-you predicate, re-exported from the core (ADR-006). It is the pure
@@ -191,6 +191,13 @@ export const selectIsApprovalOpen: Selector<boolean> = (state) => state.overlays
 export const selectHandoffPreview: Selector<HandoffPreviewOverlay | null> = (state) => state.overlays.handoffPreview
 
 /**
+ * The source session while the hand-off target picker is open (task_06), or `null`
+ * when it is closed. The picker draws its candidate list from {@link selectSessionList}
+ * filtered to the ready sessions other than this source.
+ */
+export const selectHandoffTarget: Selector<HandoffTargetOverlay | null> = (state) => state.overlays.handoffTarget
+
+/**
  * Whether the Ctrl+S sessions overview is open (task_05). The overview is modal like
  * the other overlays, so it too is folded into {@link selectHasOpenOverlay} and stands
  * the shell's chords down while it is up.
@@ -199,4 +206,7 @@ export const selectIsSessionsOpen: Selector<boolean> = (state) => state.overlays
 
 /** Whether any overlay is open, for views that dim or disable the cockpit beneath. */
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
-  state.overlays.approval !== null || state.overlays.handoffPreview !== null || state.overlays.sessions
+  state.overlays.approval !== null ||
+  state.overlays.handoffPreview !== null ||
+  state.overlays.handoffTarget !== null ||
+  state.overlays.sessions

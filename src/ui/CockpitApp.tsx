@@ -15,8 +15,9 @@
  * `preventDefault`, which only reaches focused renderables.
  *
  * The hand-off is the product (PRD F3). Its keystroke lives in the same table as every
- * other chord and does nothing but assemble a bundle and open the preview over it -
- * `HandoffFlow` owns everything past that, and nothing sends without a confirm.
+ * other chord and does nothing but open the flow - a target picker when the fleet gives
+ * a choice of recipient, the redacted preview otherwise. `HandoffFlow` owns everything
+ * past that, and nothing sends without a confirm.
  *
  * The frame is sized from the live terminal dimensions rather than percentages, so
  * a resize re-lays the whole tree out in one pass and nothing is left painted
@@ -35,6 +36,7 @@ import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
+import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
@@ -160,6 +162,8 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
       {helpOpen ? <HelpOverlay /> : null}
 
       <SessionsOverlay />
+
+      <HandoffTargetPicker flow={handoff} />
 
       <HandoffPreview flow={handoff} />
 

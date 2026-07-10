@@ -4,7 +4,9 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import type { PromptBlock } from "../agent/agentConnection.ts"
 import type { BundleAssembler } from "../core/bundleAssembler.ts"
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
-import type { HandoffBundle, ProviderKind, SessionId, ToolCallUpdate } from "../core/types.ts"
+import { PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
+import type { HandoffBundle, ProviderKind, SessionId, SessionSeed, ToolCallUpdate } from "../core/types.ts"
+import { createAppStore } from "../store/appStore.ts"
 import type { AgentRuntimeState } from "./controller.ts"
 import {
   composeHandoffBlocks,
@@ -52,6 +54,55 @@ function controllerWithWork(options: { runtimes?: AgentRuntimeState[]; sessionId
     call: { toolCallId: "call-read", kind: "read", title: "Read config", status: "completed", locations: ["cfg.json"] },
   })
   store.applyEvent(sessionId, { kind: "tool_call", call: editCall() })
+  return controller
+}
+
+/** Give `sessionId` a transcript worth handing over: a turn, a file it read, a diff. */
+function seedWork(controller: FakeController, sessionId: SessionId, text = "bump b"): void {
+  const { store } = controller
+  store.applyEvent(sessionId, { kind: "user_message", messageId: "m1", text })
+  store.applyEvent(sessionId, { kind: "agent_message", messageId: "m2", textDelta: "On it." })
+  store.applyEvent(sessionId, {
+    kind: "tool_call",
+    call: { toolCallId: "call-read", kind: "read", title: "Read config", status: "completed", locations: ["cfg.json"] },
+  })
+  store.applyEvent(sessionId, { kind: "tool_call", call: editCall() })
+}
+
+/** A three-session fleet (two sharing a provider), each in its own directory. */
+const FLEET_SEEDS: SessionSeed[] = [
+  { id: "a", providerKind: "claude-code", title: "Alpha", cwd: "/work/alpha" },
+  { id: "b", providerKind: "codex", title: "Beta", cwd: "/work/beta" },
+  { id: "c", providerKind: "claude-code", title: "Gamma", cwd: "/work/gamma" },
+]
+
+/** A ready runtime per seed, save for any id mapped to `false` in `notReady`. */
+function fleetRuntimes(notReady: Partial<Record<SessionId, boolean>> = {}): AgentRuntimeState[] {
+  return FLEET_SEEDS.map((seed) => {
+    const base = {
+      sessionId: seed.id,
+      providerKind: seed.providerKind,
+      displayName: PROVIDER_DISPLAY_NAMES[seed.providerKind],
+      title: seed.title,
+      cwd: seed.cwd,
+    }
+    return notReady[seed.id]
+      ? { ...base, ready: false as const, error: "not up" }
+      : { ...base, ready: true as const, acpSessionId: `session-${seed.id}` }
+  })
+}
+
+/** A fake controller over the three-session fleet, focused on `source` with work to hand over. */
+function fleetControllerWithWork(
+  options: { source?: SessionId; notReady?: Partial<Record<SessionId, boolean>> } = {},
+): FakeController {
+  const controller = createFakeController({
+    store: createAppStore({ seeds: FLEET_SEEDS }),
+    runtimes: fleetRuntimes(options.notReady),
+  })
+  const source = options.source ?? "a"
+  controller.store.setFocus(source)
+  seedWork(controller, source)
   return controller
 }
 
@@ -354,6 +405,198 @@ describe("HandoffFlow.cancel", () => {
     const controller = controllerWithWork()
     createHandoffFlow({ controller }).cancel()
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+  })
+})
+
+describe("HandoffFlow.begin - fleet targeting", () => {
+  it("opens the target picker, not the preview, when more than one session can receive", () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+
+    expect(flow.begin()).toBe(true)
+
+    const { overlays } = controller.store.getState()
+    expect(overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
+    // Nothing is assembled or aimed yet: the developer has not chosen a recipient.
+    expect(overlays.handoffPreview).toBeNull()
+  })
+
+  it("skips the picker and opens the preview when exactly one recipient is ready", () => {
+    // Only Beta is ready besides the source, so there is no choice to offer.
+    const controller = fleetControllerWithWork({ notReady: { c: true } })
+    const flow = createHandoffFlow({ controller })
+
+    expect(flow.begin()).toBe(true)
+
+    const { overlays } = controller.store.getState()
+    expect(overlays.handoffTarget).toBeNull()
+    expect(overlays.handoffPreview!.sourceSessionId).toBe("a")
+    expect(overlays.handoffPreview!.targetSessionId).toBe("b")
+  })
+
+  it("returns false when only the source is ready, so there is no recipient", () => {
+    const controller = fleetControllerWithWork({ notReady: { b: true, c: true } })
+
+    expect(createHandoffFlow({ controller }).begin()).toBe(false)
+    expect(controller.store.getState().overlays.handoffTarget).toBeNull()
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+  })
+
+  it("does not open a second picker over one already open", () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    expect(flow.begin()).toBe(true)
+
+    // A picker is an open overlay, so a second chord finds the screen already owned.
+    expect(flow.begin()).toBe(false)
+    expect(controller.store.getState().overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
+  })
+
+  it("sends nothing when it opens the picker: only confirm reaches an agent", () => {
+    const controller = fleetControllerWithWork()
+    createHandoffFlow({ controller }).begin()
+
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.calls.switchFocus).toHaveLength(0)
+    expect(controller.store.getState().focusedSessionId).toBe("a")
+  })
+})
+
+describe("HandoffFlow.chooseTarget", () => {
+  it("opens the preview toward the chosen target and closes the picker", () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+
+    expect(flow.chooseTarget("c")).toBe(true)
+
+    const { overlays } = controller.store.getState()
+    expect(overlays.handoffTarget).toBeNull()
+    const preview = overlays.handoffPreview!
+    expect(preview.sourceSessionId).toBe("a")
+    expect(preview.targetSessionId).toBe("c")
+    // The bundle is assembled from the source and headed for the chosen provider kind.
+    expect(preview.bundle.summary).toContain("bump b")
+  })
+
+  it("routes confirm to the chosen target's sendPrompt and moves focus to it", async () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    flow.chooseTarget("c")
+
+    await flow.confirm(createHandoffEdits(openBundle(controller)))
+
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("c")
+    expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
+    expect(controller.calls.switchFocus).toEqual(["c"])
+    expect(controller.store.getState().focusedSessionId).toBe("c")
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+  })
+
+  it("is a no-op when no picker is open", () => {
+    const controller = fleetControllerWithWork()
+
+    expect(createHandoffFlow({ controller }).chooseTarget("c")).toBe(false)
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+  })
+
+  it("rejects the source itself as a target", () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+
+    expect(flow.chooseTarget("a")).toBe(false)
+    // The picker stays up so the developer can still pick a real recipient.
+    expect(controller.store.getState().overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+  })
+
+  it("rejects a target that is not ready, leaving the picker open", () => {
+    const seeds: SessionSeed[] = [...FLEET_SEEDS, { id: "d", providerKind: "codex", title: "Delta", cwd: "/work/delta" }]
+    const controller = createFakeController({
+      store: createAppStore({ seeds }),
+      runtimes: [
+        ...fleetRuntimes(),
+        { sessionId: "d", providerKind: "codex", displayName: "Codex", title: "Delta", cwd: "/work/delta", ready: false, error: "down" },
+      ],
+    })
+    controller.store.setFocus("a")
+    seedWork(controller, "a")
+    const flow = createHandoffFlow({ controller })
+    expect(flow.begin()).toBe(true)
+
+    expect(flow.chooseTarget("d")).toBe(false)
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+    expect(controller.store.getState().overlays.handoffTarget).not.toBeNull()
+  })
+
+  it("closes the picker on cancel, sending nothing and leaving focus put", () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+
+    flow.cancel()
+
+    expect(controller.store.getState().overlays.handoffTarget).toBeNull()
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.calls.switchFocus).toHaveLength(0)
+    expect(controller.store.getState().focusedSessionId).toBe("a")
+  })
+})
+
+describe("hand-off moat - characterization (ADR-002)", () => {
+  // A frozen bundle and the exact blocks it must compose to. This locks the composed
+  // wire format byte-for-byte: re-addressing the hand-off to a chosen session must not
+  // move a character of what the target actually receives.
+  const FIXED_BUNDLE: HandoffBundle = {
+    intent: "continue",
+    summary: "claude-code: I bumped b in src/app.ts",
+    files: [
+      { path: "cfg.json", reason: "read" },
+      { path: "src/app.ts", reason: "edited" },
+    ],
+    pendingDiffs: [{ toolCallId: "call-edit", path: "src/app.ts", unified: UNIFIED }],
+    redactionCount: 2,
+  }
+
+  it("composes a fixed bundle to exactly the expected blocks", () => {
+    expect(composeHandoffBlocks(FIXED_BUNDLE, createHandoffEdits(FIXED_BUNDLE))).toEqual([
+      { type: "text", text: HANDOFF_INSTRUCTION },
+      { type: "text", text: "claude-code: I bumped b in src/app.ts" },
+      { type: "text", text: "Files referenced so far:\n- cfg.json (read)\n- src/app.ts (edited)" },
+      { type: "text", text: `Pending diff (proposed, not yet applied) - src/app.ts\n${UNIFIED}` },
+    ])
+  })
+
+  it("composes the curated bundle to exactly the expected blocks under edits", () => {
+    const edits: HandoffEdits = {
+      summary: "  Only the edit matters.  ",
+      excludedFiles: new Set(["cfg.json"]),
+      excludedDiffs: new Set(),
+    }
+    expect(composeHandoffBlocks(FIXED_BUNDLE, edits)).toEqual([
+      { type: "text", text: HANDOFF_INSTRUCTION },
+      { type: "text", text: "Only the edit matters." },
+      { type: "text", text: "Files referenced so far:\n- src/app.ts (edited)" },
+      { type: "text", text: `Pending diff (proposed, not yet applied) - src/app.ts\n${UNIFIED}` },
+    ])
+  })
+
+  it("preserves the redaction count through the re-addressed picker flow", () => {
+    const controller = fleetControllerWithWork()
+    // Plant a credential on the source, exactly as the source-only begin test does.
+    controller.store.applyEvent("a", { kind: "user_message", messageId: "m3", text: `key is ${SECRET}` })
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    expect(flow.chooseTarget("c")).toBe(true)
+
+    const bundle = openBundle(controller)
+    // The assembler still redacts as it builds; the count survives the target choice.
+    expect(bundle.redactionCount).toBe(1)
+    expect(bundle.summary).toContain(REDACTION_PLACEHOLDER)
+    expect(bundle.summary).not.toContain(SECRET)
   })
 })
 

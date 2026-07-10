@@ -68,7 +68,7 @@ describe("createAppStore", () => {
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
     expect(state.order).toEqual(["claude-code", "codex"])
     expect(state.focusedSessionId).toBe("claude-code")
-    expect(state.overlays).toEqual({ approval: null, handoffPreview: null, sessions: false })
+    expect(state.overlays).toEqual({ approval: null, handoffPreview: null, handoffTarget: null, sessions: false })
   })
 
   it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {
