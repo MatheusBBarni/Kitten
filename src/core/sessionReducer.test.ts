@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import type { ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
 
 /**
  * Fixture-driven tests for the pure `SessionState` reducer. The core has no I/O,
@@ -34,7 +34,12 @@ describe("createSessionState", () => {
       referencedFiles: new Map(),
       pendingDiffs: [],
       plan: [],
+      configOptions: [],
     })
+  })
+
+  it("defaults configOptions to an empty array", () => {
+    expect(initial().configOptions).toEqual([])
   })
 })
 
@@ -223,6 +228,72 @@ describe("plan and status events", () => {
   })
 })
 
+describe("config_options events", () => {
+  const modelOption: ConfigOption = {
+    id: "cfg-model",
+    category: "model",
+    label: "Model",
+    currentValue: "opus",
+    options: [
+      { value: "opus", name: "Opus" },
+      { value: "sonnet", name: "Sonnet" },
+    ],
+  }
+  const effortOption: ConfigOption = {
+    id: "cfg-effort",
+    category: "thought_level",
+    label: "Reasoning effort",
+    currentValue: "high",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "high", name: "High" },
+    ],
+  }
+
+  it("replaces an empty configOptions with exactly the advertised options", () => {
+    const state = fold([{ kind: "config_options", options: [modelOption, effortOption] }])
+    expect(state.configOptions).toEqual([modelOption, effortOption])
+  })
+
+  it("fully replaces the prior set on a second event (no merge, no duplicates)", () => {
+    const nextModel: ConfigOption = { ...modelOption, currentValue: "sonnet" }
+    const state = fold([
+      { kind: "config_options", options: [modelOption, effortOption] },
+      { kind: "config_options", options: [nextModel] },
+    ])
+    expect(state.configOptions).toEqual([nextModel])
+  })
+
+  it("leaves turns, status, and pendingDiffs unchanged when applied", () => {
+    const withWork = fold([
+      { kind: "status", status: "awaiting_approval" },
+      { kind: "user_message", messageId: "u1", text: "go" },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "e",
+          status: "pending",
+          locations: ["src/x.ts"],
+          diff: { path: "src/x.ts", unified: "d" },
+        },
+      },
+    ])
+    const state = sessionReducer(withWork, { kind: "config_options", options: [modelOption] })
+    expect(state.turns).toEqual(withWork.turns)
+    expect(state.status).toBe(withWork.status)
+    expect(state.pendingDiffs).toEqual(withWork.pendingDiffs)
+    expect(state.configOptions).toEqual([modelOption])
+  })
+
+  it("returns a new object and does not mutate the input state", () => {
+    const before = initial()
+    sessionReducer(before, { kind: "config_options", options: [modelOption] })
+    expect(before.configOptions).toEqual([])
+  })
+})
+
 describe("purity", () => {
   it("does not mutate the input state", () => {
     const before = initial()
@@ -297,5 +368,31 @@ describe("integration: folding a scripted multi-event sequence", () => {
     expect(state.pendingDiffs).toEqual([
       { toolCallId: "edit-1", path: "src/config/loader.ts", unified: "@@ -1 +1 @@\n-old\n+new" },
     ])
+  })
+
+  it("folds user_message -> config_options -> status into the expected final state", () => {
+    const options: ConfigOption[] = [
+      {
+        id: "cfg-model",
+        category: "model",
+        label: "Model",
+        currentValue: "sonnet",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "sonnet", name: "Sonnet" },
+        ],
+      },
+    ]
+    const events: DomainSessionEvent[] = [
+      { kind: "user_message", messageId: "u1", text: "switch model" },
+      { kind: "config_options", options },
+      { kind: "status", status: "working" },
+    ]
+
+    const state = fold(events)
+
+    expect(state.status).toBe("working")
+    expect(state.configOptions).toEqual(options)
+    expect(state.turns).toEqual([{ kind: "user", messageId: "u1", text: "switch model" }])
   })
 })

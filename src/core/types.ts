@@ -109,6 +109,30 @@ export interface ToolCallUpdate {
   diff?: ToolCallDiff | null
 }
 
+/** One selectable value within a {@link ConfigOption}: the opaque `value` sent back to the agent and its human-facing `name`. */
+export interface ConfigSelectOption {
+  value: string
+  name: string
+}
+
+/**
+ * A Kitten-owned, protocol-free config option advertised by an agent for a session
+ * (ADR-003). Translated from the ACP config-option wire shape by the adapter, so no
+ * SDK type leaks into the core. `category` is kept an opaque string (`"model"`,
+ * `"thought_level"`, ...); the store and selectors never hardcode it as a named
+ * field, and the UI filters to a visible allowlist (ADR-004). V1 models select
+ * options only - boolean options are not represented.
+ */
+export interface ConfigOption {
+  /** Opaque ACP config id, echoed back verbatim when changing the value. */
+  id: string
+  /** Opaque category id (`"model" | "thought_level" | ...`); never treated as a closed union here. */
+  category: string
+  label: string
+  currentValue: string
+  options: ConfigSelectOption[]
+}
+
 /** A single entry in an agent's plan (translated from the ACP `plan` notification). */
 export interface PlanEntry {
   content: string
@@ -187,6 +211,12 @@ export interface SessionState {
   pendingDiffs: PendingDiff[]
   /** The agent's most recently reported plan, if any. */
   plan: PlanEntry[]
+  /**
+   * The full set of config options the agent has advertised for this session
+   * (ADR-003), replaced wholesale on every `config_options` event because the
+   * agent always returns the complete set. Empty when nothing is advertised.
+   */
+  configOptions: ConfigOption[]
 }
 
 /**
@@ -199,6 +229,7 @@ export type DomainSessionEvent =
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
+  | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic

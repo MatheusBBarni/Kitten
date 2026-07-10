@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Domain config-option channel and reducer"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ This is the foundation every other task reads: a generic list of agent-advertise
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define `ConfigOption`/`ConfigSelectOption` in the domain types module
-- [ ] 1.2 Extend `SessionState` with `configOptions` and default it in `createSessionState`
-- [ ] 1.3 Add the `config_options` member to the `DomainSessionEvent` union
-- [ ] 1.4 Implement the reducer case as an immutable wholesale replace
-- [ ] 1.5 Cover creation default, replace semantics, and exhaustiveness with fixtures
+- [x] 1.1 Define `ConfigOption`/`ConfigSelectOption` in the domain types module
+- [x] 1.2 Extend `SessionState` with `configOptions` and default it in `createSessionState`
+- [x] 1.3 Add the `config_options` member to the `DomainSessionEvent` union
+- [x] 1.4 Implement the reducer case as an immutable wholesale replace
+- [x] 1.5 Cover creation default, replace semantics, and exhaustiveness with fixtures
 
 ## Implementation Details
 Extend the pure core. See TechSpec "Core Interfaces" and "Data Models" for the exact type shapes; reference them rather than reproducing here. The reducer remains the single writer of `SessionState`, deterministic and side-effect free.
@@ -60,13 +60,13 @@ Extend the pure core. See TechSpec "Core Interfaces" and "Data Models" for the e
 
 ## Tests
 - Unit tests:
-  - [ ] `createSessionState` returns `configOptions: []`
-  - [ ] A `config_options` event with two options replaces an empty `configOptions` with exactly those two
-  - [ ] A second `config_options` event fully replaces the prior set (no merge, no duplicates)
-  - [ ] Applying `config_options` leaves `turns`, `status`, and `pendingDiffs` unchanged
-  - [ ] The reducer returns a new object (input state not mutated)
+  - [x] `createSessionState` returns `configOptions: []`
+  - [x] A `config_options` event with two options replaces an empty `configOptions` with exactly those two
+  - [x] A second `config_options` event fully replaces the prior set (no merge, no duplicates)
+  - [x] Applying `config_options` leaves `turns`, `status`, and `pendingDiffs` unchanged
+  - [x] The reducer returns a new object (input state not mutated)
 - Integration tests:
-  - [ ] Folding `user_message` → `config_options` → `status` yields the expected final `SessionState` with the replaced options and updated status
+  - [x] Folding `user_message` → `config_options` → `status` yields the expected final `SessionState` with the replaced options and updated status
 - Test coverage target: >=80%
 - All tests must pass
 

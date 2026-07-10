@@ -42,6 +42,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     referencedFiles: new Map(),
     pendingDiffs: [],
     plan: [],
+    configOptions: [],
   }
 }
 
@@ -67,6 +68,11 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
     case "status":
       // Status changes never touch turns or derived fields.
       return { ...state, status: event.status }
+
+    case "config_options":
+      // The agent always returns the complete option set, so replace wholesale
+      // (ADR-003); config options never touch turns, status, or derived fields.
+      return { ...state, configOptions: event.options }
 
     default:
       return assertNever(event)
