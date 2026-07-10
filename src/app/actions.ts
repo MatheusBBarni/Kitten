@@ -28,6 +28,25 @@ export interface AgentSession {
   readonly connection: AgentConnection
 }
 
+/**
+ * The narrow slice of the telemetry recorder the actions drive: a focus switch, tagged
+ * with whether it came through the Ctrl+S overview (task_09). Declared here rather than
+ * imported so the action surface depends only on what it calls; the full recorder
+ * satisfies it structurally.
+ */
+export interface FocusTelemetry {
+  focusSwitch(sessionId: SessionId, viaOverview: boolean): void
+}
+
+/** The default when no recorder is injected: record nothing. */
+const NOOP_FOCUS_TELEMETRY: FocusTelemetry = { focusSwitch() {} }
+
+/** How a focus switch was initiated, so the overview-reliance metric can tell them apart. */
+export interface SwitchFocusOptions {
+  /** True when the switch came through the Ctrl+S overview rather than a blind Ctrl+O. */
+  viaOverview?: boolean
+}
+
 /** The seams the actions need. The controller supplies all of them. */
 export interface ActionDeps {
   store: AppStore
@@ -39,6 +58,8 @@ export interface ActionDeps {
   newMessageId?: () => string
   /** Where a failing connection is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
+  /** The telemetry recorder to report focus switches to. Defaults to a no-op. */
+  recorder?: FocusTelemetry
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
@@ -51,8 +72,12 @@ export interface ControllerActions {
   sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
   /** Interrupt the running turn on `sessionId` (default: the focused session). */
   cancel(sessionId?: SessionId): Promise<void>
-  /** Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live. */
-  switchFocus(sessionId?: SessionId): void
+  /**
+   * Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live.
+   * `options.viaOverview` records the switch as one made through the Ctrl+S overview
+   * (task_09); the default is a blind cycle.
+   */
+  switchFocus(sessionId?: SessionId, options?: SwitchFocusOptions): void
   /**
    * Move focus to the next session that needs the developer (ADR-006), ranked
    * `awaiting_approval` before `error` before `finished` and walking `order` forward
@@ -78,6 +103,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const { store, getSession } = deps
   const newMessageId = deps.newMessageId ?? (() => crypto.randomUUID())
   const onError = deps.onError ?? (() => {})
+  const recorder = deps.recorder ?? NOOP_FOCUS_TELEMETRY
 
   const focused = (): SessionId => store.getState().focusedSessionId
 
@@ -109,13 +135,20 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    switchFocus(sessionId = nextSessionId(store.getState().order, focused())): void {
+    switchFocus(sessionId = nextSessionId(store.getState().order, focused()), options?: SwitchFocusOptions): void {
+      const before = store.getState().focusedSessionId
       store.setFocus(sessionId)
+      const after = store.getState().focusedSessionId
+      // Only a switch that actually moved focus is a real navigation to count.
+      if (after !== before) recorder.focusSwitch(after, options?.viaOverview === true)
     },
 
     jumpToNextNeedy(): void {
       const target = selectNextNeedy(focused())(store.getState())
-      if (target) store.setFocus(target)
+      if (!target) return
+      store.setFocus(target)
+      // Jump-to-next is reachable only from the overview, so it is always overview-driven.
+      recorder.focusSwitch(target, true)
     },
 
     respondPermission(outcome: PermissionOutcome): void {

@@ -77,7 +77,8 @@ function SessionsDialog(): ReactNode {
   const jumpInto = useCallback((): void => {
     const target = sessions[clamped]
     controller.store.closeSessions()
-    if (target) controller.actions.switchFocus(target.id)
+    // A jump made through the overview, not a blind Ctrl+O cycle (task_09).
+    if (target) controller.actions.switchFocus(target.id, { viaOverview: true })
   }, [clamped, controller, sessions])
 
   const jumpNextNeedy = useCallback((): void => {

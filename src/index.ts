@@ -95,7 +95,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   // Let the controller seed its own store from the resolved sessions, so a non-default
   // `sessions` config (custom directories, repeated providers) can never desync the
   // store's slices from the runtimes it drives. The recorder watches that same store.
-  const controller = await (deps.buildController ?? createSessionController)({ config })
+  const controller = await (deps.buildController ?? createSessionController)({ config, recorder })
   recordReadiness(recorder, controller.runtimes())
   recorder.watch(controller.store)
   return { controller, recorder }

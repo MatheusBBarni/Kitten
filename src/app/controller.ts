@@ -23,7 +23,7 @@ import { createAgentConnection } from "../agent/agentConnection.ts"
 import { resolveSessions } from "../config/configLoader.ts"
 import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
 import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
-import { createControllerActions, type AgentSession, type ControllerActions } from "./actions.ts"
+import { createControllerActions, type AgentSession, type ControllerActions, type FocusTelemetry } from "./actions.ts"
 
 /**
  * One session's run-time standing, as the status strip and prompt gate read it.
@@ -47,6 +47,8 @@ export interface SessionControllerOptions {
   newMessageId?: () => string
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
+  /** The telemetry recorder focus switches are reported to (task_09). Defaults to a no-op. */
+  recorder?: FocusTelemetry
 }
 
 /** The orchestrator the UI is handed at boot. */
@@ -220,6 +222,7 @@ export async function createSessionController(options: SessionControllerOptions)
     resolvePermission,
     newMessageId: options.newMessageId,
     onError,
+    recorder: options.recorder,
   })
 
   // Send each ready session its optional first task as the opening prompt (ADR-005).

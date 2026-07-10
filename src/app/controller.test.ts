@@ -753,6 +753,64 @@ describe("createControllerActions", () => {
 
     expect(store.getState().focusedSessionId).toBe("claude-code")
   })
+
+  it("Should count an overview switch through the numerator but a blind Ctrl+O only through the denominator", () => {
+    const store = createAppStore()
+    const switches: { sessionId: string; viaOverview: boolean }[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
+    })
+
+    // A blind Ctrl+O cycle from "claude-code" to "codex": denominator only.
+    actions.switchFocus()
+    // An overview jump-into back to "claude-code": denominator and numerator.
+    actions.switchFocus("claude-code", { viaOverview: true })
+
+    expect(switches).toEqual([
+      { sessionId: "codex", viaOverview: false },
+      { sessionId: "claude-code", viaOverview: true },
+    ])
+  })
+
+  it("Should record a jump-to-next as an overview switch", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/w" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/w" },
+      ],
+    })
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    const switches: { sessionId: string; viaOverview: boolean }[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
+    })
+
+    actions.jumpToNextNeedy()
+
+    expect(switches).toEqual([{ sessionId: "b", viaOverview: true }])
+  })
+
+  it("Should not record a focus switch that does not move focus", () => {
+    const store = createAppStore()
+    const switches: { sessionId: string; viaOverview: boolean }[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
+    })
+
+    // "claude-code" already holds focus, so this is a no-op that must count nothing.
+    actions.switchFocus("claude-code", { viaOverview: true })
+
+    expect(switches).toHaveLength(0)
+  })
 })
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */

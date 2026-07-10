@@ -58,8 +58,10 @@ describe("createCockpitSession", () => {
     expect(builtWithStore).toBe(false)
     expect(recorder.enabled).toBe(true)
 
-    // Readiness was recorded from the controller's runtimes at boot.
-    expect(records.map((record) => record.type)).toEqual(["agent_ready", "agent_ready"])
+    // Readiness was recorded from the controller's runtimes at boot, followed by the
+    // run's peak concurrency (both agents came up, so two).
+    expect(records.map((record) => record.type)).toEqual(["agent_ready", "agent_ready", "max_concurrent_sessions"])
+    expect(records.find((record) => record.type === "max_concurrent_sessions")).toMatchObject({ count: 2 })
 
     // The store is watched: a prompt/response pair now produces a first-response event.
     controller.store.applyEvent("claude-code", { kind: "user_message", messageId: "m1", text: "hi" })

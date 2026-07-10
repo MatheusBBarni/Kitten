@@ -91,12 +91,16 @@ describe("telemetry over a scripted hand-off session", () => {
       expect(records.map((record) => record.type)).toEqual([
         "agent_ready",
         "agent_ready",
+        "max_concurrent_sessions",
         "handoff_invoked",
         "handoff_sent",
         "bundle_edit_chars",
         "first_response_ms",
         "reexplanation_detected",
       ])
+
+      // Both agents came up, so the run's peak concurrency is two.
+      expect(records.find((record) => record.type === "max_concurrent_sessions")).toMatchObject({ count: 2 })
 
       // The first response was timed against the bundle prompt.
       expect(records.find((record) => record.type === "first_response_ms")).toMatchObject({ agent: "codex", durationMs: 320 })
@@ -107,7 +111,63 @@ describe("telemetry over a scripted hand-off session", () => {
       expect(raw).not.toContain("Finish the app.ts edit.")
       expect(raw).not.toContain("yyyy")
       for (const record of records) {
-        expect(Object.keys(record).every((key) => ["type", "at", "sessionRef", "agent", "charBucket", "durationMs"].includes(key))).toBe(true)
+        expect(
+          Object.keys(record).every((key) =>
+            ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count"].includes(key),
+          ),
+        ).toBe(true)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("writes a content-free attention-latency event across a needs-you to action sequence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-telemetry-attn-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      const store = createAppStore()
+      const runtimes = readyRuntimes()
+      const controller = realController(store, runtimes)
+
+      let clock = 1000
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => clock,
+        sessionRef: "run-fixed",
+      })
+      recorder.watch(store)
+
+      // The focused session finishes its turn (needs the developer), then - after the
+      // developer sends their next prompt, secret and all - it leaves the needy state.
+      store.applyEvent("claude-code", { kind: "status", status: "finished" })
+      clock += 900
+      void controller.actions.sendPrompt(`carry on, key is ${SECRET}`, "claude-code")
+      store.applyEvent("claude-code", { kind: "status", status: "working" })
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as TelemetryRecord)
+
+      const attention = records.filter((record) => record.type === "attention_latency_ms")
+      expect(attention).toHaveLength(1)
+      expect(attention[0]).toMatchObject({ type: "attention_latency_ms", agent: "claude-code", durationMs: 900 })
+      // The event carries its run reference and timestamp, and nothing that is content.
+      expect(attention[0]!.sessionRef).toBe("run-fixed")
+      expect(attention[0]!.at).toBeNumber()
+
+      // No prompt content reaches the log, and no record carries a text-bearing field.
+      expect(raw).not.toContain(SECRET)
+      expect(raw).not.toContain("carry on")
+      for (const record of records) {
+        expect(
+          Object.keys(record).every((key) =>
+            ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count"].includes(key),
+          ),
+        ).toBe(true)
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })

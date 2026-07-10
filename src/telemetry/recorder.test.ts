@@ -90,10 +90,39 @@ describe("readiness events", () => {
       { sessionId: "codex", ready: false },
     ])
 
-    expect(sink.records).toEqual([
+    expect(sink.records.slice(0, 2)).toEqual([
       expect.objectContaining({ type: "agent_ready", agent: "claude-code" }),
       expect.objectContaining({ type: "agent_unready", agent: "codex" }),
     ])
+  })
+})
+
+describe("max concurrent sessions (task_09)", () => {
+  it("records the count of live sessions in the run", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+
+    recordReadiness(recorder, [
+      { sessionId: "claude-code", ready: true },
+      { sessionId: "codex", ready: true },
+    ])
+
+    const maxConcurrent = sink.records.filter((record) => record.type === "max_concurrent_sessions")
+    expect(maxConcurrent).toHaveLength(1)
+    expect(maxConcurrent[0]!.count).toBe(2)
+  })
+
+  it("counts only the sessions that actually came up", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+
+    recordReadiness(recorder, [
+      { sessionId: "claude-code", ready: true },
+      { sessionId: "codex", ready: false },
+    ])
+
+    const maxConcurrent = sink.records.find((record) => record.type === "max_concurrent_sessions")!
+    expect(maxConcurrent.count).toBe(1)
   })
 })
 
@@ -118,7 +147,9 @@ describe("content-free guarantee", () => {
       const keys = Object.keys(record)
       expect(keys).not.toContain("text")
       expect(keys).not.toContain("summary")
-      expect(keys.every((key) => ["type", "at", "sessionRef", "agent", "charBucket", "durationMs"].includes(key))).toBe(true)
+      expect(
+        keys.every((key) => ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count"].includes(key)),
+      ).toBe(true)
     }
   })
 })
@@ -210,6 +241,97 @@ describe("reexplanation (store-derived over the heuristic)", () => {
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "hello" })
 
     expect(types(sink.records)).not.toContain("first_response_ms")
+  })
+})
+
+describe("attention latency (task_09, store-derived)", () => {
+  it("records the gap from a session entering a needs-you state to its resolution", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const clock = fakeClock(1000)
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: clock.now })
+    recorder.watch(store)
+
+    store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
+    clock.advance(500)
+    // The developer answers the approval; the agent resumes and leaves the needy state.
+    store.applyEvent("codex", { kind: "status", status: "working" })
+
+    const latency = sink.records.find((record) => record.type === "attention_latency_ms")
+    expect(latency).toMatchObject({ agent: "codex", durationMs: 500 })
+  })
+
+  it("does not record until the needs-you state is resolved", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 7 })
+    recorder.watch(store)
+
+    store.applyEvent("codex", { kind: "status", status: "finished" })
+
+    expect(types(sink.records)).not.toContain("attention_latency_ms")
+  })
+
+  it("does not fire on a session restart", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    recorder.watch(store)
+
+    store.applyEvent("codex", { kind: "status", status: "finished" })
+    // A restart resets the slice to idle; that is not the developer answering.
+    store.startSession("codex", "fresh")
+
+    expect(types(sink.records)).not.toContain("attention_latency_ms")
+  })
+})
+
+describe("idle-fleet time (task_09, store-derived)", () => {
+  it("accumulates the waiting time a needy session spends unfocused", () => {
+    const sink = memorySink()
+    // The default store focuses "claude-code", so "codex" starts unfocused.
+    const store = createAppStore()
+    const clock = fakeClock(1000)
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: clock.now })
+    recorder.watch(store)
+
+    store.applyEvent("codex", { kind: "status", status: "finished" })
+    clock.advance(300)
+    // The developer arrives at the waiting session; the idle-fleet window closes.
+    store.setFocus("codex")
+
+    const idle = sink.records.find((record) => record.type === "idle_fleet_ms")
+    expect(idle).toMatchObject({ agent: "codex", durationMs: 300 })
+  })
+
+  it("does not accrue idle-fleet time for a needy session that is focused", () => {
+    const sink = memorySink()
+    const store = createAppStore() // "claude-code" is focused
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    recorder.watch(store)
+
+    store.applyEvent("claude-code", { kind: "status", status: "finished" })
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+
+    expect(types(sink.records)).not.toContain("idle_fleet_ms")
+  })
+})
+
+describe("attention counters are opt-in (task_09)", () => {
+  it("emits no attention, idle-fleet, focus, or max-concurrent event when disabled", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: false, sink })
+
+    recorder.watch(store)
+    recordReadiness(recorder, [{ sessionId: "codex", ready: true }])
+    store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
+    store.setFocus("codex")
+    store.applyEvent("codex", { kind: "status", status: "working" })
+    recorder.focusSwitch("codex", true)
+    recorder.maxConcurrentSessions(2)
+
+    expect(sink.records).toHaveLength(0)
   })
 })
 
