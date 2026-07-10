@@ -23,6 +23,7 @@ import type {
   SessionId,
   SessionState,
   SessionStatus,
+  ThemePreference,
   Turn,
 } from "../core/types.ts"
 import type {
@@ -31,6 +32,7 @@ import type {
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
   ModelSelectOverlay,
+  SettingsOverlay,
   Selector,
 } from "./appStore.ts"
 
@@ -44,6 +46,9 @@ export { needsAttention }
 
 /** The session that currently owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId> = (state) => state.focusedSessionId
+
+/** The user-selected theme preference that drives the live cockpit palette. */
+export const selectThemePreference: Selector<ThemePreference> = (state) => state.preferences.theme
 
 /** Whether the given session owns keyboard focus. For the status strip's focus marker. */
 export const selectIsFocused =
@@ -250,10 +255,14 @@ export const selectIsSessionsOpen: Selector<boolean> = (state) => state.overlays
  */
 export const selectModelSelectOverlay: Selector<ModelSelectOverlay | null> = (state) => state.overlays.modelSelect
 
+/** The active settings tab, or `null` while the settings modal is closed. */
+export const selectSettingsOverlay: Selector<SettingsOverlay | null> = (state) => state.overlays.settings
+
 /** Whether any overlay is open, for views that dim or disable the cockpit beneath. */
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.approval !== null ||
   state.overlays.handoffPreview !== null ||
   state.overlays.handoffTarget !== null ||
   state.overlays.modelSelect !== null ||
+  state.overlays.settings !== null ||
   state.overlays.sessions

@@ -10,6 +10,8 @@ import {
   selectIsFocused,
   selectSessionStatus,
   selectSessionTurns,
+  selectSettingsOverlay,
+  selectThemePreference,
 } from "./selectors.ts"
 
 /** A default-fleet seed for `id`, optionally bound to an ACP session id. */
@@ -73,8 +75,10 @@ describe("createAppStore", () => {
       handoffPreview: null,
       handoffTarget: null,
       modelSelect: null,
+      settings: null,
       sessions: false,
     })
+    expect(state.preferences).toEqual({ theme: "auto" })
   })
 
   it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {
@@ -104,6 +108,12 @@ describe("createAppStore", () => {
     expect(state.sessions.codex!.acpSessionId).toBe("session-codex")
     expect(state.sessions["claude-code"]!.acpSessionId).toBe("")
     expect(state.focusedSessionId).toBe("codex")
+  })
+
+  it("seeds the theme preference from options", () => {
+    const store = createAppStore({ preferences: { theme: "dark" } })
+
+    expect(selectThemePreference(store.getState())).toBe("dark")
   })
 })
 
@@ -299,6 +309,22 @@ describe("overlay slots", () => {
     expect(overlays.approval?.sessionId).toBe("codex")
   })
 
+  it("opens settings without changing the other overlay-slot identities", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
+    const before = store.getState()
+
+    store.openSettings()
+
+    const after = store.getState()
+    expect(selectSettingsOverlay(after)).toEqual({ tab: "theme" })
+    expect(after.overlays.approval).toBe(before.overlays.approval)
+    expect(after.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.preferences).toBe(before.preferences)
+  })
+
   it("opens and closes the sessions overview", () => {
     const store = createAppStore()
     expect(store.getState().overlays.sessions).toBe(false)
@@ -323,14 +349,17 @@ describe("overlay slots", () => {
 
   it("does not notify when closing an already-closed slot", () => {
     const store = createAppStore()
+    const before = store.getState()
     let notifications = 0
     store.subscribe(() => notifications++)
 
     store.closeApproval()
     store.closeHandoffPreview()
     store.closeModelSelect()
+    store.closeSettings()
     store.closeSessions()
 
+    expect(store.getState()).toBe(before)
     expect(notifications).toBe(0)
   })
 
@@ -343,6 +372,65 @@ describe("overlay slots", () => {
     store.openSessions()
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("preferences", () => {
+  it("changes only preferences and preserves state identity for an unchanged theme", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setThemePreference("dark")
+
+    const afterChange = store.getState()
+    expect(afterChange.preferences).toEqual({ theme: "dark" })
+    expect(afterChange.preferences).not.toBe(before.preferences)
+    expect(afterChange.sessions).toBe(before.sessions)
+    expect(afterChange.overlays).toBe(before.overlays)
+    expect(afterChange.focusedSessionId).toBe(before.focusedSessionId)
+
+    store.setThemePreference("dark")
+
+    expect(store.getState()).toBe(afterChange)
+  })
+
+  it("does not notify an unrelated session-turns subscriber when settings or theme changes", () => {
+    const store = createAppStore()
+    const turns = trackSelector(store, selectSessionTurns("claude-code"))
+
+    store.openSettings()
+    store.setThemePreference("dark")
+    store.closeSettings()
+
+    expect(turns).toEqual([])
+  })
+})
+
+describe("integration: settings preference flow", () => {
+  it("opens settings, changes the theme, and closes settings without cross-slice changes", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+
+    store.openSettings()
+    const opened = store.getState()
+    expect(opened.overlays.settings).toEqual({ tab: "theme" })
+    expect(opened.preferences).toBe(initial.preferences)
+    expect(opened.sessions).toBe(initial.sessions)
+    expect(opened.focusedSessionId).toBe(initial.focusedSessionId)
+
+    store.setThemePreference("dark")
+    const themed = store.getState()
+    expect(themed.preferences).toEqual({ theme: "dark" })
+    expect(themed.overlays).toBe(opened.overlays)
+    expect(themed.sessions).toBe(opened.sessions)
+    expect(themed.focusedSessionId).toBe(opened.focusedSessionId)
+
+    store.closeSettings()
+    const closed = store.getState()
+    expect(closed.overlays.settings).toBeNull()
+    expect(closed.preferences).toBe(themed.preferences)
+    expect(closed.sessions).toBe(themed.sessions)
+    expect(closed.focusedSessionId).toBe(themed.focusedSessionId)
   })
 })
 

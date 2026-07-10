@@ -34,6 +34,7 @@ import {
   type SessionId,
   type SessionSeed,
   type SessionState,
+  type ThemePreference,
 } from "../core/types.ts"
 
 /** Every provider kind Kitten seeds a default session for, in cockpit order (ADR-001). */
@@ -87,6 +88,16 @@ export interface ModelSelectOverlay {
   sessionId: SessionId
 }
 
+/** The V1 settings modal state. Future categories add tabs here. */
+export interface SettingsOverlay {
+  tab: "theme"
+}
+
+/** Reactive user preferences that views can subscribe to independently of sessions. */
+export interface Preferences {
+  theme: ThemePreference
+}
+
 /**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
@@ -102,6 +113,8 @@ export interface OverlayState {
   handoffTarget: HandoffTargetOverlay | null
   /** The model/effort selector, open only while the developer is choosing a model or effort. */
   modelSelect: ModelSelectOverlay | null
+  /** The settings modal, open on its active settings tab. */
+  settings: SettingsOverlay | null
   sessions: boolean
 }
 
@@ -121,6 +134,7 @@ export interface AppState {
   /** The session ids in stable display order. */
   order: SessionId[]
   focusedSessionId: SessionId
+  preferences: Preferences
   overlays: OverlayState
 }
 
@@ -167,10 +181,16 @@ export interface AppStore {
   openModelSelect(overlay: ModelSelectOverlay): void
   /** Clear the model/effort selector slot. Closing a closed slot is a no-op. */
   closeModelSelect(): void
+  /** Open the settings modal on its requested tab (Theme in V1). */
+  openSettings(overlay?: SettingsOverlay): void
+  /** Clear the settings slot. Closing a closed slot is a no-op. */
+  closeSettings(): void
   /** Open the Ctrl+S sessions overview. Opening an open overview is a no-op. */
   openSessions(): void
   /** Close the sessions overview. Closing a closed overview is a no-op. */
   closeSessions(): void
+  /** Change the reactive theme preference. Reapplying the current value is a no-op. */
+  setThemePreference(theme: ThemePreference): void
 }
 
 /** Construction options. Defaults to one seeded session per provider kind. */
@@ -182,6 +202,8 @@ export interface AppStoreOptions {
   seeds?: SessionSeed[]
   /** Which session holds focus at startup. Defaults to the first seeded session. */
   focusedSessionId?: SessionId
+  /** Reactive user-preference seed. Defaults to following the terminal theme. */
+  preferences?: Preferences
 }
 
 /** Create an {@link AppStore} holding one empty session slice per seed. */
@@ -205,7 +227,8 @@ class AppStoreImpl implements AppStore {
       sessions,
       order,
       focusedSessionId: options.focusedSessionId ?? order[0]!,
-      overlays: { approval: null, handoffPreview: null, handoffTarget: null, modelSelect: null, sessions: false },
+      preferences: { theme: options.preferences?.theme ?? "auto" },
+      overlays: { approval: null, handoffPreview: null, handoffTarget: null, modelSelect: null, settings: null, sessions: false },
     }
   }
 
@@ -301,6 +324,15 @@ class AppStoreImpl implements AppStore {
     this.setOverlays({ modelSelect: null })
   }
 
+  openSettings(overlay: SettingsOverlay = { tab: "theme" }): void {
+    this.setOverlays({ settings: overlay })
+  }
+
+  closeSettings(): void {
+    if (this.state.overlays.settings === null) return
+    this.setOverlays({ settings: null })
+  }
+
   openSessions(): void {
     if (this.state.overlays.sessions) return
     this.setOverlays({ sessions: true })
@@ -309,6 +341,11 @@ class AppStoreImpl implements AppStore {
   closeSessions(): void {
     if (!this.state.overlays.sessions) return
     this.setOverlays({ sessions: false })
+  }
+
+  setThemePreference(theme: ThemePreference): void {
+    if (this.state.preferences.theme === theme) return
+    this.commit({ ...this.state, preferences: { ...this.state.preferences, theme } })
   }
 
   /** Replace one or both overlay slots, leaving the rest of the state identical. */

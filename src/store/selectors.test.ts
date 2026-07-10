@@ -24,6 +24,8 @@ import {
   selectIsFocused,
   selectIsSessionsOpen,
   selectModelSelectOverlay,
+  selectSettingsOverlay,
+  selectThemePreference,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -100,6 +102,16 @@ describe("focus selectors", () => {
 
     store.setFocus("codex")
     expect(selectFocusedSession(store.getState()).acpSessionId).toBe("session-codex")
+  })
+})
+
+describe("preference selectors", () => {
+  it("projects the default and configured theme preference", () => {
+    const defaultStore = createAppStore()
+    const configuredStore = createAppStore({ preferences: { theme: "dark" } })
+
+    expect(selectThemePreference(defaultStore.getState())).toBe("auto")
+    expect(selectThemePreference(configuredStore.getState())).toBe("dark")
   })
 })
 
@@ -241,6 +253,7 @@ describe("overlay selectors", () => {
     const state = createAppStore().getState()
     expect(selectApprovalOverlay(state)).toBeNull()
     expect(selectHandoffPreview(state)).toBeNull()
+    expect(selectSettingsOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
     expect(selectIsSessionsOpen(state)).toBe(false)
@@ -298,6 +311,16 @@ describe("overlay selectors", () => {
     const state = store.getState()
 
     expect(selectModelSelectOverlay(state)?.sessionId).toBe("codex")
+    expect(selectHasOpenOverlay(state)).toBe(true)
+    expect(selectIsApprovalOpen(state)).toBe(false)
+  })
+
+  it("reports settings as an open overlay when it is the only open slot", () => {
+    const store = createAppStore()
+    store.openSettings()
+    const state = store.getState()
+
+    expect(selectSettingsOverlay(state)).toEqual({ tab: "theme" })
     expect(selectHasOpenOverlay(state)).toBe(true)
     expect(selectIsApprovalOpen(state)).toBe(false)
   })
