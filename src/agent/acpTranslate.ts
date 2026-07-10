@@ -15,6 +15,9 @@ import type {
   ContentBlock,
   Diff,
   PlanEntry as AcpPlanEntry,
+  SessionConfigOption,
+  SessionConfigSelectGroup,
+  SessionConfigSelectOption,
   SessionUpdate,
   ToolCall,
   ToolCallContent,
@@ -22,12 +25,21 @@ import type {
   ToolKind,
 } from "@agentclientprotocol/sdk"
 
-import type { DomainSessionEvent, PlanEntry, ToolCallDiff, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
+import type {
+  ConfigOption,
+  ConfigSelectOption,
+  DomainSessionEvent,
+  PlanEntry,
+  ToolCallDiff,
+  ToolCallKind,
+  ToolCallUpdate,
+} from "../core/types.ts"
 
 /**
  * Translate one ACP `SessionUpdate` into a domain event, or `null` for variants
- * Kitten does not surface in V1 (thoughts, plan deltas, mode/command/config/usage
- * notifications). Returning `null` keeps the caller's dispatch loop trivial.
+ * Kitten does not surface in V1 (thoughts, plan deltas, mode/command/usage/session
+ * notifications). `config_option_update` is surfaced as a `config_options` event.
+ * Returning `null` keeps the caller's dispatch loop trivial.
  */
 export function translateSessionUpdate(update: SessionUpdate): DomainSessionEvent | null {
   switch (update.sessionUpdate) {
@@ -46,13 +58,16 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
       return { kind: "tool_call", call: translateToolCall(update) }
     case "plan":
       return { kind: "plan", entries: update.entries.map(translatePlanEntry) }
+    case "config_option_update":
+      // The agent advertises the full option set; translate the select options
+      // and drop booleans (V1 renders select categories only, ADR-003/ADR-004).
+      return { kind: "config_options", options: translateConfigOptions(update.configOptions) }
     // Deliberately not surfaced in V1 (documented in the module header).
     case "agent_thought_chunk":
     case "plan_update":
     case "plan_removed":
     case "available_commands_update":
     case "current_mode_update":
-    case "config_option_update":
     case "session_info_update":
     case "usage_update":
       return null
@@ -89,6 +104,46 @@ function mapKind(kind: ToolKind): ToolCallKind {
 
 function translatePlanEntry(entry: AcpPlanEntry): PlanEntry {
   return { content: entry.content, priority: entry.priority, status: entry.status }
+}
+
+/**
+ * Translate an ACP `SessionConfigOption[]` into the domain {@link ConfigOption[]}.
+ *
+ * V1 models select options only (ADR-003): a boolean option (e.g. Fast mode) is
+ * skipped, never crashed on. `category` is passed through verbatim and kept opaque
+ * (an absent category becomes `""`); the visible-category allowlist lives above the
+ * adapter (ADR-004), so no filtering happens here.
+ */
+function translateConfigOptions(options: SessionConfigOption[]): ConfigOption[] {
+  const translated: ConfigOption[] = []
+  for (const option of options) {
+    if (option.type !== "select") continue // skip boolean (and any future non-select) options
+    translated.push({
+      id: option.id,
+      category: option.category ?? "",
+      label: option.name,
+      currentValue: option.currentValue,
+      options: flattenSelectOptions(option.options),
+    })
+  }
+  return translated
+}
+
+/**
+ * Flatten an ACP select's `options` into `{ value, name }` pairs. ACP allows either
+ * a flat list of options or a list of named groups; V1 has no group UI, so grouped
+ * options are flattened into a single list, preserving order.
+ */
+function flattenSelectOptions(options: SessionConfigSelectOption[] | SessionConfigSelectGroup[]): ConfigSelectOption[] {
+  const flat: ConfigSelectOption[] = []
+  for (const entry of options) {
+    if ("value" in entry) {
+      flat.push({ value: entry.value, name: entry.name })
+    } else {
+      for (const opt of entry.options) flat.push({ value: opt.value, name: opt.name })
+    }
+  }
+  return flat
 }
 
 /**

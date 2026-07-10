@@ -5,7 +5,7 @@
 | # | Title | Status | Complexity | Dependencies |
 |---|-------|--------|------------|--------------|
 | 01 | Domain config-option channel and reducer | completed | medium | — |
-| 02 | ACP translation of config-option updates | pending | low | task_01 |
+| 02 | ACP translation of config-option updates | completed | low | task_01 |
 | 03 | Adapter live setSessionConfigOption and capture | pending | medium | task_01, task_02 |
 | 04 | Store slot, selectors, and category allowlist | pending | medium | task_01 |
 | 05 | Controller action and session-start seeding | pending | medium | task_03, task_04 |

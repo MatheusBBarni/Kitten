@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "ACP translation of config-option updates"
 type: backend
 complexity: low
@@ -31,10 +31,10 @@ This keeps ACP wire types inside the adapter layer and preserves the anti-corrup
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add a `config_option_update` case to `translateSessionUpdate`
-- [ ] 2.2 Map ACP `SessionConfigOption` select entries to the domain `ConfigOption` shape
-- [ ] 2.3 Skip boolean options and preserve the existing dropped-variant behavior
-- [ ] 2.4 Cover the new case and the still-dropped variants with fixtures
+- [x] 2.1 Add a `config_option_update` case to `translateSessionUpdate`
+- [x] 2.2 Map ACP `SessionConfigOption` select entries to the domain `ConfigOption` shape
+- [x] 2.3 Skip boolean options and preserve the existing dropped-variant behavior
+- [x] 2.4 Cover the new case and the still-dropped variants with fixtures
 
 ## Implementation Details
 Modify the pure translator. See TechSpec "System Architecture" (Agent Adapter Layer) and "Integration Points". The change is at the `config_option_update` branch currently returning `null`.
@@ -58,13 +58,13 @@ Modify the pure translator. See TechSpec "System Architecture" (Agent Adapter La
 
 ## Tests
 - Unit tests:
-  - [ ] A `config_option_update` carrying a `model` select option translates to a `config_options` event with the mapped `ConfigOption`
-  - [ ] A `config_option_update` carrying both `model` and `thought_level` options maps both, preserving `currentValue` and the option list
-  - [ ] A boolean config option in the update is skipped and does not appear in the domain event
-  - [ ] `current_mode_update` still returns `null`
-  - [ ] `usage_update` and `plan_update` still return `null`
+  - [x] A `config_option_update` carrying a `model` select option translates to a `config_options` event with the mapped `ConfigOption`
+  - [x] A `config_option_update` carrying both `model` and `thought_level` options maps both, preserving `currentValue` and the option list
+  - [x] A boolean config option in the update is skipped and does not appear in the domain event
+  - [x] `current_mode_update` still returns `null`
+  - [x] `usage_update` and `plan_update` still return `null`
 - Integration tests:
-  - [ ] A scripted `config_option_update` fed through the translator and reducer (task_01) results in `SessionState.configOptions` matching the update
+  - [x] A scripted `config_option_update` fed through the translator and reducer (task_01) results in `SessionState.configOptions` matching the update
 - Test coverage target: >=80%
 - All tests must pass
 
