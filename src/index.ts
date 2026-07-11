@@ -17,7 +17,9 @@ import { createCliRenderer, type CliRenderer } from "@opentui/core"
 
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
 import { runSelfCheck } from "./app/selfCheck.ts"
-import { loadAppConfig } from "./config/configLoader.ts"
+import { loadAppConfig, resolveSessions } from "./config/configLoader.ts"
+import { watchUserConfig, type ConfigWatcher } from "./config/configWatcher.ts"
+import { persistUserConfig } from "./config/configWriter.ts"
 import {
   buildFirstRunReport,
   formatFirstRunReport,
@@ -26,15 +28,18 @@ import {
   type AgentSetupState,
   type FirstRunReport,
 } from "./config/firstRun.ts"
-import type { AppConfig } from "./core/types.ts"
+import type { AppConfig, ThemePreference } from "./core/types.ts"
 import { createOsNotificationChannel } from "./notify/channel.ts"
 import { createRendererFocusSource } from "./notify/focus.ts"
 import { createNotifier } from "./notify/notifier.ts"
-import type { AppStore } from "./store/appStore.ts"
+import { createAppStore, type AppStore } from "./store/appStore.ts"
+import { selectThemePreference } from "./store/selectors.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderCockpit } from "./ui/main.tsx"
 
 export { renderCockpit }
+
+const DEFAULT_PERSIST_DEBOUNCE_MS = 100
 
 /** Factory that produces a ready-to-render OpenTUI renderer. */
 export type RendererFactory = () => Promise<CliRenderer>
@@ -74,30 +79,118 @@ export interface CockpitSessionDeps {
   buildController?: (options: SessionControllerOptions) => Promise<SessionController>
   /** How to build the recorder from the opt-in flag; defaults to the JSONL recorder. */
   createRecorder?: (enabled: boolean) => TelemetryRecorder
+  /** How to persist a settled preference change; defaults to the atomic config writer. */
+  persistConfig?: (patch: { theme: ThemePreference }) => Promise<void>
+  /** How to observe reloaded user config; defaults to the filesystem config watcher. */
+  watchConfig?: (onConfig: (config: AppConfig) => void) => ConfigWatcher
+  /** Quiet period before the latest preference is persisted. */
+  persistDebounceMs?: number
+  /** Timer seams for deterministic debounce and teardown tests. */
+  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
 }
 
 /**
- * Load the config, bring both agents up, and wire telemetry.
+ * Load the config, bring both agents up, and wire telemetry plus reactive config.
  *
  * `createSessionController` never rejects: an agent that fails to spawn or hand
  * shake becomes a not-ready runtime the status strip explains, and the other agent
  * stays fully usable. A malformed config file, in contrast, throws - Kitten never
  * silently falls back to defaults the user did not ask for.
  *
- * The recorder is created from the config's opt-in flag (a no-op when off), handed
- * the boot readiness snapshot, and subscribed to the store for the first-response and
- * re-explanation metrics. It is returned alongside the controller so the hand-off
- * flow can record through it.
+ * The loaded theme seeds the same store the controller drives. Theme changes are
+ * applied synchronously in memory, then coalesced into an atomic config-layer write;
+ * watcher reloads flow back through the idempotent store action, so the write's own
+ * reload is a no-op. All subscriptions, the watcher, and a queued write are owned by
+ * the returned controller's disposal seam.
  */
 export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promise<CockpitSession> {
   const config = await (deps.loadConfig ?? loadAppConfig)()
   const recorder = (deps.createRecorder ?? ((enabled) => createTelemetryRecorder({ enabled })))(config.telemetryEnabled)
-  // Let the controller seed its own store from the resolved sessions, so a non-default
-  // `sessions` config (custom directories, repeated providers) can never desync the
-  // store's slices from the runtimes it drives. The recorder watches that same store.
-  const controller = await (deps.buildController ?? createSessionController)({ config, recorder })
-  recordReadiness(recorder, controller.runtimes())
-  recorder.watch(controller.store)
+  const store = createAppStore({
+    seeds: resolveSessions(config).map((entry) => entry.seed),
+    preferences: { theme: config.theme },
+  })
+  const baseController = await (deps.buildController ?? createSessionController)({ config, recorder, store })
+  recordReadiness(recorder, baseController.runtimes())
+  const stopRecorder = recorder.watch(baseController.store)
+
+  const persistConfig = deps.persistConfig ?? ((patch) => persistUserConfig(patch))
+  const setTimer = deps.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs))
+  const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer))
+  const persistDebounceMs = deps.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS
+  let disposed = false
+  let pendingTheme: ThemePreference | undefined
+  let persistTimer: ReturnType<typeof setTimeout> | undefined
+  let writeChain = Promise.resolve()
+
+  const stopPreference = baseController.store.subscribeSelector(selectThemePreference, (theme) => {
+    recorder.themeSet(theme)
+    pendingTheme = theme
+    if (persistTimer !== undefined) clearTimer(persistTimer)
+    persistTimer = setTimer(() => {
+      persistTimer = undefined
+      const themeToPersist = pendingTheme
+      pendingTheme = undefined
+      if (disposed || themeToPersist === undefined) return
+
+      // Serialize settled writes so a slow filesystem operation cannot race a later
+      // theme change and commit stale bytes after the newer preference.
+      writeChain = writeChain.then(async () => {
+        try {
+          await persistConfig({ theme: themeToPersist })
+          recorder.configWrite("modal")
+        } catch {
+          recorder.configWriteError("modal")
+        }
+      })
+    }, persistDebounceMs)
+  })
+
+  let watcher: ConfigWatcher
+  try {
+    watcher = (deps.watchConfig ?? ((onConfig) => watchUserConfig(onConfig)))((nextConfig) => {
+      if (!disposed) baseController.store.setThemePreference(nextConfig.theme)
+    })
+  } catch (error) {
+    stopPreference()
+    stopRecorder()
+    if (persistTimer !== undefined) clearTimer(persistTimer)
+    await baseController.dispose()
+    throw error
+  }
+
+  let disposal: Promise<void> | undefined
+  const controller: SessionController = {
+    store: baseController.store,
+    actions: baseController.actions,
+    runtimes: () => baseController.runtimes(),
+    runtime: (sessionId) => baseController.runtime(sessionId),
+    isReady: (sessionId) => baseController.isReady(sessionId),
+    dispose(): Promise<void> {
+      if (disposal) return disposal
+      disposal = (async () => {
+        disposed = true
+        try {
+          watcher.close()
+        } catch {
+          // Teardown remains best-effort, matching the controller's never-throwing
+          // disposal contract even if an injected watcher is already invalid.
+        }
+        stopPreference()
+        stopRecorder()
+        if (persistTimer !== undefined) {
+          clearTimer(persistTimer)
+          persistTimer = undefined
+          pendingTheme = undefined
+        }
+        await writeChain
+        await baseController.dispose()
+      })()
+      return disposal
+    },
+  }
+
   return { controller, recorder }
 }
 
