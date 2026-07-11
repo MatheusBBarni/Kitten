@@ -242,6 +242,39 @@ export interface SessionState {
   configOptions: ConfigOption[]
 }
 
+/** One semantically bounded shell command and its captured raw output. */
+export interface ShellCommandRecord {
+  id: string
+  command: string
+  /** Raw PTY output; redaction happens only during hand-off assembly. */
+  output: string
+  /** `null` while the command is running. */
+  exitCode: number | null
+}
+
+/** Protocol-free semantic state for the persistent shell. */
+export interface ShellState {
+  status: "idle" | "running"
+  cwd: string
+  /** Bounded most-recent-first-by-retention command ring in execution order. */
+  commands: ShellCommandRecord[]
+  /** Revision of the imperative terminal screen exposed to store subscribers. */
+  renderRev: number
+}
+
+/** Stable shell context captured for the curated hand-off flow. */
+export interface ShellSnapshot {
+  cwd: string
+  commands: ShellCommandRecord[]
+}
+
+/** Semantic events emitted by the shell runtime and folded by `shellReducer`. */
+export type ShellEvent =
+  | { kind: "screen"; rev: number }
+  | { kind: "command_started"; id: string; command: string }
+  | { kind: "command_finished"; id: string; exitCode: number }
+  | { kind: "cwd_changed"; cwd: string }
+
 /**
  * The normalized domain events the reducer consumes, translated from the ACP
  * `SessionNotification` union by the adapter. No ACP wire type appears here.
