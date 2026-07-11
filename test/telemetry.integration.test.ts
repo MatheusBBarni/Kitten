@@ -251,3 +251,32 @@ describe("telemetry over a scripted hand-off session", () => {
     }
   })
 })
+
+describe("settings telemetry over an injected sink", () => {
+  it("emits the four settings events as content-free records", () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 1000,
+      sessionRef: "run-fixed",
+    })
+
+    recorder.settingsOpened()
+    recorder.themeSet("catppuccin-mocha")
+    recorder.configWrite("modal")
+    recorder.configWriteError("modal")
+
+    expect(records).toEqual([
+      { type: "settings_opened", at: 1000, sessionRef: "run-fixed" },
+      { type: "theme_set", themeId: "catppuccin-mocha", at: 1000, sessionRef: "run-fixed" },
+      { type: "config_write", source: "modal", at: 1000, sessionRef: "run-fixed" },
+      { type: "config_write_error", source: "modal", at: 1000, sessionRef: "run-fixed" },
+    ])
+    expect(
+      records.every((record) =>
+        Object.keys(record).every((key) => ["type", "at", "sessionRef", "themeId", "source"].includes(key)),
+      ),
+    ).toBe(true)
+  })
+})

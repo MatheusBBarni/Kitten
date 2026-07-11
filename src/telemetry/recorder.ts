@@ -9,9 +9,9 @@
  *   constructs a sink, so a run records nothing and touches no file. The gate is
  *   {@link createTelemetryRecorder}'s `enabled` flag, sourced from `AppConfig`.
  * - **Content-free.** A {@link TelemetryRecord} carries only an event type, a
- *   timestamp, an anonymous session reference, an agent id, and coarse numbers
- *   (buckets, durations). There is no text field, so no prompt or code can be stored
- *   even by accident - the guarantee is structural, not a matter of discipline.
+ *   timestamp, an anonymous session reference, fixed identifiers/enums, and coarse
+ *   numbers (buckets, durations). There is no text field, so no prompt or code can be
+ *   stored even by accident - the guarantee is structural, not a matter of discipline.
  * - **Local only.** The default sink appends JSONL to a file on disk with the Node
  *   fs API. There is no network path anywhere in this module.
  *
@@ -28,7 +28,14 @@ import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 
-import { EFFORT_CATEGORY, needsAttention, type ConfigOption, type SessionId, type SessionStatus } from "../core/types.ts"
+import {
+  EFFORT_CATEGORY,
+  needsAttention,
+  type ConfigOption,
+  type SessionId,
+  type SessionStatus,
+  type ThemePreference,
+} from "../core/types.ts"
 import {
   bucketChars,
   detectReexplanation,
@@ -61,11 +68,15 @@ export type TelemetryEventType =
   | "focus_switch"
   | "overview_switch"
   | "max_concurrent_sessions"
+  | "settings_opened"
+  | "theme_set"
+  | "config_write"
+  | "config_write_error"
 
 /**
  * One recorded event. Deliberately holds no text: an anonymous `sessionRef`, an
- * optional agent id (a fixed enum, not user content), and coarse numbers only. This
- * is what makes the recorder content-free by construction rather than by review.
+ * optional fixed identifiers/enums (session, theme, source), and coarse numbers only.
+ * This is what makes the recorder content-free by construction rather than by review.
  */
 export interface TelemetryRecord {
   type: TelemetryEventType
@@ -81,6 +92,10 @@ export interface TelemetryRecord {
   durationMs?: number
   /** A count of sessions, for `max_concurrent_sessions`. A small integer, never content. */
   count?: number
+  /** A validated, fixed theme preference for `theme_set`, never user-provided text. */
+  themeId?: ThemePreference
+  /** The fixed origin of a settings config write, never a user-provided label. */
+  source?: "modal"
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -106,6 +121,14 @@ export interface TelemetryRecorder {
   handoffSent(input: HandoffSentInput): void
   /** A hand-off carried one or more target model/effort changes. */
   effortLinkedHandoff(sessionId: SessionId): void
+  /** The settings modal was opened. */
+  settingsOpened(): void
+  /** A validated theme preference was applied. */
+  themeSet(themeId: ThemePreference): void
+  /** A modal-originated config write succeeded. */
+  configWrite(source: "modal"): void
+  /** A modal-originated config write failed. */
+  configWriteError(source: "modal"): void
   /**
    * Record a model or effort switch from the adapter-reported outcome. `effortChanged`
    * arms the content-free kept-change watch only for a confirmed value change.
@@ -154,6 +177,10 @@ const NOOP_RECORDER: TelemetryRecorder = {
   handoffInvoked() {},
   handoffSent() {},
   effortLinkedHandoff() {},
+  settingsOpened() {},
+  themeSet() {},
+  configWrite() {},
+  configWriteError() {},
   recordSwitch() {},
   agentReady() {},
   agentUnready() {},
@@ -239,6 +266,22 @@ class ActiveRecorder implements TelemetryRecorder {
 
   effortLinkedHandoff(sessionId: SessionId): void {
     this.record({ type: "effort_linked_handoff", agent: sessionId })
+  }
+
+  settingsOpened(): void {
+    this.record({ type: "settings_opened" })
+  }
+
+  themeSet(themeId: ThemePreference): void {
+    this.record({ type: "theme_set", themeId })
+  }
+
+  configWrite(source: "modal"): void {
+    this.record({ type: "config_write", source })
+  }
+
+  configWriteError(source: "modal"): void {
+    this.record({ type: "config_write_error", source })
   }
 
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void {

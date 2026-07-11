@@ -44,6 +44,10 @@ describe("opt-in gating", () => {
     recorder.handoffInvoked()
     recorder.handoffSent({ targetSessionId: "codex", editChars: 400 })
     recorder.effortLinkedHandoff("codex")
+    recorder.settingsOpened()
+    recorder.themeSet("catppuccin-mocha")
+    recorder.configWrite("modal")
+    recorder.configWriteError("modal")
     recorder.recordSwitch("codex", "model", true, false)
     recorder.recordSwitch("codex", "effort", false, false)
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
@@ -52,6 +56,43 @@ describe("opt-in gating", () => {
 
     expect(sink.records).toHaveLength(0)
   })
+})
+
+describe("settings events", () => {
+  it("records settings_opened with only the common event fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.settingsOpened()
+
+    expect(sink.records).toEqual([{ type: "settings_opened", at: 42, sessionRef: "run-1" }])
+  })
+
+  it("records theme_set with a fixed ThemePreference and no text field", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.themeSet("catppuccin-mocha")
+
+    expect(sink.records).toEqual([
+      { type: "theme_set", themeId: "catppuccin-mocha", at: 42, sessionRef: "run-1" },
+    ])
+    expect(Object.keys(sink.records[0]!)).not.toContain("text")
+  })
+
+  it("records config write outcomes with the fixed modal source", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.configWrite("modal")
+    recorder.configWriteError("modal")
+
+    expect(sink.records).toEqual([
+      { type: "config_write", source: "modal", at: 42, sessionRef: "run-1" },
+      { type: "config_write_error", source: "modal", at: 42, sessionRef: "run-1" },
+    ])
+  })
+
 })
 
 describe("hand-off events", () => {
@@ -219,7 +260,11 @@ describe("content-free guarantee", () => {
       expect(keys).not.toContain("text")
       expect(keys).not.toContain("summary")
       expect(
-        keys.every((key) => ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count"].includes(key)),
+        keys.every((key) =>
+          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source"].includes(
+            key,
+          ),
+        ),
       ).toBe(true)
     }
   })
