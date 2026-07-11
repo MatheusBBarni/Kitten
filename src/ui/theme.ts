@@ -38,6 +38,17 @@ export interface CockpitPalette {
   readonly muted: string
   /** Emphasis: the focused agent's marker, help keys, overlay borders. */
   readonly accent: string
+  /** Branded welcome-banner illustration and supporting-detail tones. */
+  readonly banner: Readonly<{
+    mascot: string
+    detail: string
+  }>
+  /** Context-window thresholds: normal, early warning, and near-full. */
+  readonly context: Readonly<{
+    ok: string
+    warn: string
+    critical: string
+  }>
   /** Box borders. */
   readonly border: string
   /** The cockpit background. */
@@ -73,7 +84,16 @@ export const DARK_PALETTE: CockpitPalette = {
   mode: "dark",
   text: "#E6E6E6",
   muted: "#8A8A8A",
-  accent: "#F5C542",
+  accent: "#E58A52",
+  banner: {
+    mascot: "#F2B880",
+    detail: "#D6A06C",
+  },
+  context: {
+    ok: "#69C779",
+    warn: "#E9A23B",
+    critical: "#F26D6D",
+  },
   border: "#3A3A3A",
   surface: "#1C1C1C",
   status: {
@@ -111,7 +131,16 @@ export const LIGHT_PALETTE: CockpitPalette = {
   mode: "light",
   text: "#1C1C1C",
   muted: "#5A5A5A",
-  accent: "#8A5D00",
+  accent: "#9A3F0F",
+  banner: {
+    mascot: "#7C3212",
+    detail: "#6F4A2A",
+  },
+  context: {
+    ok: "#2E6B33",
+    warn: "#8A5D00",
+    critical: "#A32020",
+  },
   border: "#C9C9C9",
   surface: "#F4F4F4",
   status: {
@@ -150,6 +179,15 @@ export const CATPPUCCIN_MOCHA_PALETTE: CockpitPalette = {
   text: "#CDD6F4",
   muted: "#A6ADC8",
   accent: "#CBA6F7",
+  banner: {
+    mascot: "#F9E2AF",
+    detail: "#FAB387",
+  },
+  context: {
+    ok: "#A6E3A1",
+    warn: "#F9E2AF",
+    critical: "#F38BA8",
+  },
   border: "#585B70",
   surface: "#1E1E2E",
   status: {
@@ -184,6 +222,15 @@ export const CATPPUCCIN_LATTE_PALETTE: CockpitPalette = {
   text: "#4C4F69",
   muted: "#5C5F77",
   accent: "#8839EF",
+  banner: {
+    mascot: "#B44900",
+    detail: "#946000",
+  },
+  context: {
+    ok: "#2B7A34",
+    warn: "#946000",
+    critical: "#D20F39",
+  },
   border: "#BCC0CC",
   surface: "#EFF1F5",
   status: {
