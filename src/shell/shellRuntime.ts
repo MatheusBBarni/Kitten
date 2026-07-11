@@ -11,6 +11,7 @@ import { Terminal } from "@xterm/headless"
 import { createFrameScheduler, type FrameScheduler } from "../agent/agentConnection.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
 import type { ShellEvent, ShellSnapshot, ShellState } from "../core/types.ts"
+import { prepareShellSpawn, registerShellIntegration } from "./shellIntegration.ts"
 
 type Unsubscribe = () => void
 
@@ -53,6 +54,8 @@ export interface ShellSpawnOptions {
   readonly cols?: number
   readonly rows?: number
   readonly scrollback?: number
+  /** Disable semantic shell hooks while retaining the raw PTY and emulator. */
+  readonly shellIntegration?: boolean
   /** Injectable frame boundary used by deterministic tests. */
   readonly scheduler?: FrameScheduler
 }
@@ -97,6 +100,7 @@ export const createShellRuntime: ShellRuntimeFactory = (options) => {
 
 class ShellRuntimeImpl implements ShellRuntime {
   private readonly emulator: Terminal
+  private readonly integration: { dispose(): void }
   private readonly pty: ShellPty
   private readonly scheduler: FrameScheduler
   private readonly subscribers = new Set<(event: ShellEvent) => void>()
@@ -115,6 +119,7 @@ class ShellRuntimeImpl implements ShellRuntime {
       rows,
       scrollback: Math.max(0, Math.trunc(options.scrollback ?? DEFAULT_SCROLLBACK)),
     })
+    this.integration = registerShellIntegration(this.emulator, (event) => this.dispatch(event))
 
     try {
       this.pty = createPty((data) => {
@@ -122,6 +127,7 @@ class ShellRuntimeImpl implements ShellRuntime {
       })
     } catch (error) {
       this.scheduler.dispose()
+      this.integration.dispose()
       this.emulator.dispose()
       throw error
     }
@@ -183,6 +189,11 @@ class ShellRuntimeImpl implements ShellRuntime {
       // Teardown must never mask the controller's own shutdown path.
     }
     try {
+      this.integration.dispose()
+    } catch {
+      // Parser handler disposal is best-effort.
+    }
+    try {
       this.emulator.dispose()
     } catch {
       // xterm disposal is best-effort for the same reason.
@@ -234,16 +245,29 @@ function createBunPty(
     },
   })
 
+  let spawn: ReturnType<typeof prepareShellSpawn>
+  try {
+    spawn = prepareShellSpawn(
+      options.command,
+      { ...process.env, ...options.env, TERM: "xterm-256color" },
+      options.shellIntegration !== false,
+    )
+  } catch (error) {
+    terminal.close()
+    throw error
+  }
+
   let proc: ReturnType<typeof Bun.spawn>
   try {
     proc = Bun.spawn({
-      cmd: [options.command, "-i"],
+      cmd: spawn.cmd,
       cwd: options.cwd,
-      env: { ...process.env, ...options.env, TERM: "xterm-256color" },
+      env: spawn.env,
       terminal,
     })
   } catch (error) {
     terminal.close()
+    spawn.dispose()
     throw error
   }
 
@@ -273,6 +297,7 @@ function createBunPty(
       } catch {
         // Disposal is deliberately no-throw.
       }
+      spawn.dispose()
     },
   }
 }

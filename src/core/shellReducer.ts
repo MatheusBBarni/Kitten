@@ -40,7 +40,9 @@ export function shellReducer(state: ShellState, event: ShellEvent): ShellState {
         ...state,
         status: "idle",
         commands: state.commands.map((command) =>
-          command.id === event.id ? { ...command, exitCode: event.exitCode } : command,
+          command.id === event.id
+            ? { ...command, output: event.output, exitCode: event.exitCode }
+            : command,
         ),
       }
 

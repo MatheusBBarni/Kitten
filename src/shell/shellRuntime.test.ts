@@ -6,6 +6,13 @@ import {
   type ShellRuntime,
   type StyledLine,
 } from "./shellRuntime.ts"
+import { prepareShellSpawn } from "./shellIntegration.ts"
+import type { ShellEvent } from "../core/types.ts"
+
+// Suite: xterm-backed shell semantic integration
+// Invariant: OSC-integrated output emits trustworthy command, output, exit-code, and cwd events.
+// Boundary IN: ShellRuntime, real @xterm/headless parser, and shell spawn selection.
+// Boundary OUT: Native PTY process behavior, owned by test/shellRuntime.integration.test.ts.
 
 class ManualFrameScheduler implements FrameScheduler {
   scheduled = 0
@@ -118,7 +125,7 @@ describe("ShellRuntime in-memory factory", () => {
 
     harness.emit({ kind: "cwd_changed", cwd: "/workspace/next" })
     harness.emit({ kind: "command_started", id: "cmd-1", command: "pwd" })
-    harness.emit({ kind: "command_finished", id: "cmd-1", exitCode: 0 })
+    harness.emit({ kind: "command_finished", id: "cmd-1", exitCode: 0, output: "" })
     unsubscribe()
 
     expect(kinds).toEqual(["cwd_changed", "command_started", "command_finished"])
@@ -127,6 +134,99 @@ describe("ShellRuntime in-memory factory", () => {
       commands: [{ id: "cmd-1", command: "pwd", output: "", exitCode: 0 }],
     })
     await runtime.dispose()
+  })
+
+  test("OSC 133 command boundaries emit a successful command with captured output", async () => {
+    const { runtime, harness } = setup()
+    const events: ShellEvent[] = []
+    runtime.onEvent((event) => {
+      if (event.kind !== "screen") events.push(event)
+    })
+
+    await harness.scriptOutput("\u001b]133;A\u0007\u001b]133;B\u0007\u001b]133;C;printf%20hello\u0007hel")
+    await harness.scriptOutput("lo\r\n\u001b]133;D;")
+    await harness.scriptOutput("0\u0007")
+
+    expect(events).toEqual([
+      { kind: "command_started", id: "shell-command-1", command: "printf hello" },
+      {
+        kind: "command_finished",
+        id: "shell-command-1",
+        exitCode: 0,
+        output: "hello\n",
+      },
+    ])
+    expect(runtime.snapshot().commands[0]).toEqual({
+      id: "shell-command-1",
+      command: "printf hello",
+      output: "hello\n",
+      exitCode: 0,
+    })
+    await runtime.dispose()
+  })
+
+  test("OSC 133 preserves a failing exit code", async () => {
+    const { runtime, harness } = setup()
+    const finished: Extract<ShellEvent, { kind: "command_finished" }>[] = []
+    runtime.onEvent((event) => {
+      if (event.kind === "command_finished") finished.push(event)
+    })
+
+    await harness.scriptOutput("\u001b]133;C;false\u0007\u001b]133;D;1\u0007")
+
+    expect(finished).toEqual([
+      { kind: "command_finished", id: "shell-command-1", exitCode: 1, output: "" },
+    ])
+    await runtime.dispose()
+  })
+
+  test("OSC 7 decodes a file URL cwd", async () => {
+    const { runtime, harness } = setup()
+    const cwdEvents: string[] = []
+    runtime.onEvent((event) => {
+      if (event.kind === "cwd_changed") cwdEvents.push(event.cwd)
+    })
+
+    await harness.scriptOutput("\u001b]7;file://host/tmp\u0007")
+
+    expect(cwdEvents).toEqual(["/tmp"])
+    expect(runtime.snapshot().cwd).toBe("/tmp")
+    await runtime.dispose()
+  })
+
+  test("OSC 133 derives standard command text from the prompt buffer when C has no payload", async () => {
+    const { runtime, harness } = setup()
+
+    await harness.scriptOutput("\u001b]133;B\u0007echo ok\r\n\u001b]133;C\u0007ok\r\n\u001b]133;D;0\u0007")
+
+    expect(runtime.snapshot().commands[0]?.command).toBe("echo ok")
+    expect(runtime.snapshot().commands[0]?.output).toBe("ok\n")
+    await runtime.dispose()
+  })
+
+  test("raw output and malformed integration sequences emit no semantic guesses", async () => {
+    const { runtime, harness } = setup()
+    const semanticEvents: ShellEvent[] = []
+    runtime.onEvent((event) => {
+      if (event.kind !== "screen") semanticEvents.push(event)
+    })
+
+    await harness.scriptOutput("plain output\r\n\u001b]7;https://example.com/tmp\u0007\u001b]133;D;oops\u0007")
+
+    expect(semanticEvents).toEqual([])
+    expect(runtime.snapshot()).toEqual({ cwd: "/workspace", commands: [] })
+    expect(runtime.view().some((line) => lineText(line).includes("plain output"))).toBe(true)
+    await runtime.dispose()
+  })
+
+  test("unsupported shells and an explicit disable skip injection", () => {
+    const unsupported = prepareShellSpawn("/bin/fish", { HOME: "/tmp" }, true)
+    const disabled = prepareShellSpawn("/bin/bash", { HOME: "/tmp" }, false)
+
+    expect(unsupported.integrated).toBe(false)
+    expect(unsupported.cmd).toEqual(["/bin/fish", "-i"])
+    expect(disabled.integrated).toBe(false)
+    expect(disabled.cmd).toEqual(["/bin/bash", "-i"])
   })
 
   test("dispose never throws and makes writes no-ops", async () => {

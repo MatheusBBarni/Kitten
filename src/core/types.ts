@@ -246,7 +246,7 @@ export interface SessionState {
 export interface ShellCommandRecord {
   id: string
   command: string
-  /** Raw PTY output; redaction happens only during hand-off assembly. */
+  /** Unredacted terminal output; redaction happens only during hand-off assembly. */
   output: string
   /** `null` while the command is running. */
   exitCode: number | null
@@ -272,7 +272,7 @@ export interface ShellSnapshot {
 export type ShellEvent =
   | { kind: "screen"; rev: number }
   | { kind: "command_started"; id: string; command: string }
-  | { kind: "command_finished"; id: string; exitCode: number }
+  | { kind: "command_finished"; id: string; exitCode: number; output: string }
   | { kind: "cwd_changed"; cwd: string }
 
 /**

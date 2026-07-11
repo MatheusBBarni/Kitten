@@ -46,12 +46,13 @@ describe("command events", () => {
       kind: "command_finished",
       id: "cmd-2",
       exitCode: 7,
+      output: "failed\n",
     })
 
     expect(state.status).toBe("idle")
     expect(state.commands).toEqual([
       { id: "cmd-1", command: "first", output: "", exitCode: null },
-      { id: "cmd-2", command: "second", output: "", exitCode: 7 },
+      { id: "cmd-2", command: "second", output: "failed\n", exitCode: 7 },
     ])
   })
 
@@ -119,6 +120,7 @@ describe("purity", () => {
       kind: "command_finished",
       id: "cmd-1",
       exitCode: 1,
+      output: "boom\n",
     })
 
     expect(state).not.toBe(before)
@@ -140,17 +142,17 @@ describe("integration: folding a realistic shell sequence", () => {
   it("retains cwd and two closed commands with their exit codes", () => {
     const state = fold([
       { kind: "command_started", id: "cmd-1", command: "bun test" },
-      { kind: "command_finished", id: "cmd-1", exitCode: 0 },
+      { kind: "command_finished", id: "cmd-1", exitCode: 0, output: "ok\n" },
       { kind: "cwd_changed", cwd: "/workspace/kitten/src" },
       { kind: "command_started", id: "cmd-2", command: "git status --short" },
-      { kind: "command_finished", id: "cmd-2", exitCode: 2 },
+      { kind: "command_finished", id: "cmd-2", exitCode: 2, output: "bad\n" },
     ])
 
     expect(state.cwd).toBe("/workspace/kitten/src")
     expect(state.status).toBe("idle")
     expect(state.commands).toEqual([
-      { id: "cmd-1", command: "bun test", output: "", exitCode: 0 },
-      { id: "cmd-2", command: "git status --short", output: "", exitCode: 2 },
+      { id: "cmd-1", command: "bun test", output: "ok\n", exitCode: 0 },
+      { id: "cmd-2", command: "git status --short", output: "bad\n", exitCode: 2 },
     ])
   })
 })
