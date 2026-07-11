@@ -1,0 +1,17 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`SettingsView theme tab matches the open Theme tab snapshot: open-theme-tab 1`] = `
+"Live cockpit
+
+      ┌─Settings─────────────────────────────────────────────────┐
+      │ [Theme]  Applies immediately                             │
+      │                                                          │
+      │   Auto                                                   │
+      │   Light                                                  │
+      │ ▸ Dark                                                   │
+      │   Catppuccin Mocha                                       │
+      │   Catppuccin Latte                                       │
+      │                                                          │
+      │ ↑↓ move  Tab switch tab  r reset  Esc close              │
+      └──────────────────────────────────────────────────────────┘"
+`;

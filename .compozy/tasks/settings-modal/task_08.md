@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Settings modal component"
 type: frontend
 complexity: high
@@ -32,12 +32,12 @@ It supports reset-to-default, a live-vs-restart label, and yields to a pending a
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Scaffold `SettingsView` as a self-gating, keyboard-capturing overlay
-- [ ] 8.2 Make it render nothing while an approval is open
-- [ ] 8.3 Build the Theme tab listing the registry options with the current one marked
-- [ ] 8.4 Apply the selection live via `setThemePreference` and support reset-to-default
-- [ ] 8.5 Add the live-vs-restart label and the `SETTINGS_HINT` footer, close on Escape
-- [ ] 8.6 Cover render gating, live apply, reset, and close in component tests
+- [x] 8.1 Scaffold `SettingsView` as a self-gating, keyboard-capturing overlay
+- [x] 8.2 Make it render nothing while an approval is open
+- [x] 8.3 Build the Theme tab listing the registry options with the current one marked
+- [x] 8.4 Apply the selection live via `setThemePreference` and support reset-to-default
+- [x] 8.5 Add the live-vs-restart label and the `SETTINGS_HINT` footer, close on Escape
+- [x] 8.6 Cover render gating, live apply, reset, and close in component tests
 
 ## Implementation Details
 Create `src/ui/SettingsView.tsx`.
@@ -68,16 +68,16 @@ See the TechSpec "System Architecture" (SettingsView) section and ADR-002.
 
 ## Tests
 - Unit tests:
-  - [ ] renders nothing when the settings slot is `null`
-  - [ ] renders nothing when an approval is open even though settings is open
-  - [ ] the Theme tab lists all five options with the current preference marked
-  - [ ] moving down then selecting calls `setThemePreference` with the next option
-  - [ ] reset returns the preference to `"auto"`
-  - [ ] Escape calls `closeSettings`
-  - [ ] the Theme tab shows the "applies immediately" label
+  - [x] renders nothing when the settings slot is `null`
+  - [x] renders nothing when an approval is open even though settings is open
+  - [x] the Theme tab lists all five options with the current preference marked
+  - [x] moving down then selecting calls `setThemePreference` with the next option
+  - [x] reset returns the preference to `"auto"`
+  - [x] Escape calls `closeSettings`
+  - [x] the Theme tab shows the "applies immediately" label
 - Integration tests:
-  - [ ] opening settings and arrowing through themes changes the resolved palette live via the store
-  - [ ] a snapshot of the open Theme tab matches
+  - [x] opening settings and arrowing through themes changes the resolved palette live via the store
+  - [x] a snapshot of the open Theme tab matches
 - Test coverage target: >=80%
 - All tests must pass
 
