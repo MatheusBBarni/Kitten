@@ -1,3 +1,8 @@
+// Suite: Cockpit shell integration
+// Invariant: shell chords route to the owning surface while modal overlays retain precedence and focus.
+// Boundary IN: real AppStore, OpenTUI renderer/input/focus, telemetry recorder, and the cockpit frame tree.
+// Boundary OUT: config persistence/watching and agent subprocess transport, owned by their integration suites.
+
 import { describe, expect, it } from "bun:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
@@ -7,10 +12,18 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
+import { selectHasOpenOverlay } from "../store/selectors.ts"
+import {
+  createTelemetryRecorder,
+  type TelemetryRecord,
+  type TelemetryRecorder,
+} from "../telemetry/recorder.ts"
+import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { HELP_ENTRIES } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
+import { SETTINGS_TITLE } from "./SettingsView.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
@@ -31,10 +44,33 @@ function expectNoOverflow(frame: string, width: number, height: number): void {
   expect(frame).not.toContain("਀")
 }
 
-async function renderCockpitApp(controller: FakeController, width = 80, height = 24) {
-  const setup = await testRender(<CockpitApp controller={controller} />, { width, height })
+async function renderCockpitApp(
+  controller: FakeController,
+  width = 80,
+  height = 24,
+  recorder?: TelemetryRecorder,
+) {
+  const setup = await testRender(<CockpitApp controller={controller} recorder={recorder} />, {
+    width,
+    height,
+    kittyKeyboard: true,
+  })
   await setup.waitForFrame((f) => f.includes("Claude Code"))
   return setup
+}
+
+/** Open the one approval needed to prove it still outranks settings. */
+function openApproval(controller: FakeController): void {
+  controller.store.openApproval({
+    sessionId: "claude-code",
+    title: "Claude Code",
+    cwd: "/workspace/kitten",
+    request: {
+      sessionId: "claude-code",
+      toolCall: { toolCallId: "approval-1", kind: "other", title: "Approve action" },
+      options: [{ optionId: "reject", name: "Reject", kind: "reject_once" }],
+    },
+  })
 }
 
 /** The current model/effort values a session reports through a config_options event. */
@@ -73,6 +109,7 @@ describe("CockpitApp layout", () => {
     const strip = rows.at(-1) ?? ""
     expect(strip).toContain(`Claude Code: ${STATUS_LABELS.idle}`)
     expect(strip).toContain(`Codex: ${STATUS_LABELS.idle}`)
+    expect(strip).toContain("^,")
     expect(strip).toContain("F1 help")
 
     await destroyMounted(renderer)
@@ -260,6 +297,128 @@ describe("CockpitApp keymap", () => {
     expect(controller.calls.cancel).toEqual([undefined])
 
     await destroyMounted(renderer)
+  })
+
+  it("opens settings through Ctrl+, and records the content-free reach event", async () => {
+    const controller = createFakeController()
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 42,
+      sessionRef: "shell-test",
+    })
+    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller, 80, 24, recorder)
+
+    await actAsync(() => {
+      mockInput.pressKey(",", { ctrl: true })
+    })
+
+    expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(await waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain("^,")
+    expect(records).toEqual([{ type: "settings_opened", at: 42, sessionRef: "shell-test" }])
+
+    await destroyMounted(renderer)
+  })
+
+  it("closes the help panel before settings takes keyboard ownership", async () => {
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+
+    await actAsync(() => {
+      mockInput.pressKey("F1")
+    })
+    await waitForFrame((frame) => frame.includes(HELP_TITLE))
+
+    await actAsync(() => {
+      mockInput.pressKey(",", { ctrl: true })
+    })
+
+    const settings = await waitForFrame((frame) => frame.includes(SETTINGS_TITLE) && !frame.includes(HELP_TITLE))
+    expect(settings).not.toContain(HELP_TITLE)
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps approval above the immediately preceding settings overlay", async () => {
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+
+    await actAsync(() => {
+      mockInput.pressKey(",", { ctrl: true })
+    })
+    await waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+
+    await actAsync(() => {
+      openApproval(controller)
+    })
+
+    const approval = await waitForFrame((frame) => frame.includes(APPROVAL_TITLE) && !frame.includes(SETTINGS_TITLE))
+    expect(approval).toContain("Approve action")
+    expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
+
+    await destroyMounted(renderer)
+  })
+
+  it("stands shell chords down while settings owns the keyboard", async () => {
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+
+    await actAsync(() => {
+      mockInput.pressKey(",", { ctrl: true })
+    })
+    await waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+
+    await actAsync(() => {
+      mockInput.pressKey("o", { ctrl: true })
+      mockInput.pressKey("t", { ctrl: true })
+    })
+
+    expect(controller.calls.switchFocus).toEqual([])
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+    expect(controller.store.getState().overlays.handoffTarget).toBeNull()
+
+    await destroyMounted(renderer)
+  })
+
+  it("releases composer focus for settings and restores it after Escape", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+    expect(setup.renderer.currentFocusedEditor).not.toBeNull()
+
+    await actAsync(() => {
+      setup.mockInput.pressKey(",", { ctrl: true })
+    })
+    await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+    await setup.waitFor(() => setup.renderer.currentFocusedEditor === null)
+
+    expect(selectHasOpenOverlay(controller.store.getState())).toBe(true)
+    expect(setup.renderer.currentFocusedEditor).toBeNull()
+
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+    await setup.waitForFrame((frame) => !frame.includes(SETTINGS_TITLE))
+    await setup.waitFor(() => setup.renderer.currentFocusedEditor !== null)
+
+    expect(selectHasOpenOverlay(controller.store.getState())).toBe(false)
+    expect(setup.renderer.currentFocusedEditor).not.toBeNull()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("matches the cockpit frame with settings open", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await actAsync(() => {
+      setup.mockInput.pressKey(",", { ctrl: true })
+    })
+    await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+
+    expect(setup.captureCharFrame()).toMatchSnapshot("settings-open")
+
+    await destroyMounted(setup.renderer)
   })
 })
 

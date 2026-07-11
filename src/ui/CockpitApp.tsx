@@ -40,6 +40,7 @@ import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
 import { ModelSelect } from "./ModelSelect.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
+import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { COCKPIT_KEYMAP, HELP_ENTRIES, matchCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -108,6 +109,13 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
           setHelpOpen(false)
           controller.store.openModelSelect({ sessionId: controller.store.getState().focusedSessionId })
           return
+        case "open-settings":
+          // Settings is modal and spends Escape on closing itself, so help cannot
+          // remain open behind it. Record reach only after the store slot opens.
+          setHelpOpen(false)
+          controller.store.openSettings()
+          recorder?.settingsOpened()
+          return
         case "toggle-help":
           setHelpOpen((open) => !open)
           return
@@ -123,7 +131,7 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
           return
       }
     },
-    [controller, handoff, helpOpen, overlayOpen],
+    [controller, handoff, helpOpen, overlayOpen, recorder],
   )
   useKeyboard(onKey)
 
@@ -176,6 +184,8 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
       <HandoffPreview flow={handoff} />
 
       <ModelSelect />
+
+      <SettingsView />
 
       {/* Last, so a pending permission request paints over anything else on screen. */}
       <ApprovalPrompt />
