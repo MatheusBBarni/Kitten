@@ -256,6 +256,25 @@ describe("theme preference", () => {
   })
 })
 
+describe("welcome banner preference", () => {
+  it("Should default the welcome banner to auto when no config exists", async () => {
+    const path = join(await makeTempDir(), "missing-config.json")
+
+    expect((await loadAppConfig({ path })).welcomeBanner).toBe("auto")
+  })
+
+  it("Should load an off preference from a real config file", async () => {
+    const path = await writeConfig(JSON.stringify({ welcomeBanner: "off" }))
+
+    expect((await loadAppConfig({ path })).welcomeBanner).toBe("off")
+  })
+
+  it("Should reject an unknown welcome banner preference", () => {
+    expect(() => parseAppConfig('{"welcomeBanner":"sometimes"}')).toThrow(ConfigError)
+    expect(() => parseAppConfig('{"welcomeBanner":"sometimes"}')).toThrow(/welcomeBanner/)
+  })
+})
+
 describe("invalid config", () => {
   it("Should reject malformed JSON with the offending path", async () => {
     const path = await writeConfig("{ not json")

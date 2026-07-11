@@ -33,6 +33,7 @@ import type {
   ResolvedSession,
   SessionDescriptor,
   ThemePreference,
+  WelcomeBannerPreference,
 } from "../core/types.ts"
 import { PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
 
@@ -68,7 +69,11 @@ const DEFAULT_TELEMETRY_ENABLED = false
 /** The default follows the terminal-reported theme unless the user selects an override. */
 const DEFAULT_THEME: ThemePreference = "auto"
 
+/** The welcome is full once, then quiet unless the user overrides it. */
+const DEFAULT_WELCOME_BANNER: WelcomeBannerPreference = "auto"
+
 const THEME_PREFERENCES = ["auto", "light", "dark", "catppuccin-mocha", "catppuccin-latte"] as const satisfies readonly ThemePreference[]
+const WELCOME_BANNER_PREFERENCES = ["auto", "always", "off"] as const satisfies readonly WelcomeBannerPreference[]
 
 /** A configuration file that is missing, malformed, or fails validation. */
 export class ConfigError extends Error {
@@ -124,6 +129,7 @@ export const USER_CONFIG_SCHEMA = z
   .object({
     telemetryEnabled: z.boolean().optional(),
     theme: z.enum(THEME_PREFERENCES).optional(),
+    welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
     /** @deprecated Use `providers`. Kept as an alias for one migration window. */
     agents: PROVIDERS_SCHEMA.optional(),
@@ -152,6 +158,7 @@ export function defaultAppConfig(): AppConfig {
     sessions: [],
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
     theme: DEFAULT_THEME,
+    welcomeBanner: DEFAULT_WELCOME_BANNER,
   }
 }
 
@@ -185,6 +192,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     sessions: user.sessions?.map((session) => ({ ...session })) ?? [],
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     theme: user.theme ?? config.theme,
+    welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
   }
 }
 

@@ -38,7 +38,13 @@ const PROVIDERS: AppConfig["providers"] = {
   "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
   codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
 }
-const APP_CONFIG: AppConfig = { providers: PROVIDERS, sessions: [], telemetryEnabled: false, theme: "auto" }
+const APP_CONFIG: AppConfig = {
+  providers: PROVIDERS,
+  sessions: [],
+  telemetryEnabled: false,
+  theme: "auto",
+  welcomeBanner: "auto",
+}
 const CWD = "/workspace/kitten"
 
 const PERMISSION_REQUEST: PermissionRequest = {
@@ -201,6 +207,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   ],
   telemetryEnabled: false,
   theme: "auto",
+  welcomeBanner: "auto",
 }
 
 /**
@@ -462,6 +469,7 @@ describe("createSessionController - multi-session fleet", () => {
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       telemetryEnabled: false,
       theme: "auto",
+      welcomeBanner: "auto",
     }
     const { controller, created } = await controllerOverFleet(config)
 
@@ -540,6 +548,7 @@ describe("actions - sendPrompt", () => {
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         telemetryEnabled: false,
         theme: "auto",
+        welcomeBanner: "auto",
       },
       cwd: CWD,
       createConnection: () => connection,
@@ -859,6 +868,7 @@ describe("createSessionController - dispose", () => {
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         telemetryEnabled: false,
         theme: "auto",
+        welcomeBanner: "auto",
       },
       cwd: CWD,
       createConnection: () => connection,

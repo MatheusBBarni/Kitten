@@ -414,6 +414,7 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   telemetryEnabled: false,
   theme: "auto",
+  welcomeBanner: "auto",
 }
 
 /** A single ACP select config option in the SDK wire shape the mock serves. */

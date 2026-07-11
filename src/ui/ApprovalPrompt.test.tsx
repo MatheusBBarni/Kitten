@@ -449,6 +449,7 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   telemetryEnabled: false,
   theme: "auto",
+  welcomeBanner: "auto",
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
@@ -537,6 +538,7 @@ describe("integration - two sessions of the same provider requesting permission 
       ],
       telemetryEnabled: false,
       theme: "auto",
+      welcomeBanner: "auto",
     }
     const controller = await createSessionController({ config, cwd: root, createConnection: () => queue.shift()! })
 

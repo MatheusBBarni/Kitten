@@ -687,6 +687,7 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   telemetryEnabled: false,
   theme: "auto",
+  welcomeBanner: "auto",
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */

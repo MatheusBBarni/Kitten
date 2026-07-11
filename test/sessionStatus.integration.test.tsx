@@ -23,7 +23,13 @@ const PROVIDERS: AppConfig["providers"] = {
   "claude-code": { displayName: "Claude Code", command: "claude-acp", args: [], env: {} },
   codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
 }
-const APP_CONFIG: AppConfig = { providers: PROVIDERS, sessions: [], telemetryEnabled: false, theme: "auto" }
+const APP_CONFIG: AppConfig = {
+  providers: PROVIDERS,
+  sessions: [],
+  telemetryEnabled: false,
+  theme: "auto",
+  welcomeBanner: "auto",
+}
 
 /** A real adapter over a mock agent whose prompt turns always stop with `end_turn`. */
 function endTurnConnection(config: AgentConfig): AgentConnection {

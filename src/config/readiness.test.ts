@@ -40,6 +40,7 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   telemetryEnabled: false,
   theme: "auto",
+  welcomeBanner: "auto",
 }
 
 /** A stub connection: only `connect` and `dispose` are exercised by readiness. */
