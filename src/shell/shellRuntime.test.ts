@@ -1,0 +1,144 @@
+import { describe, expect, test } from "bun:test"
+
+import type { FrameScheduler } from "../agent/agentConnection.ts"
+import {
+  createInMemoryShellRuntimeFactory,
+  type ShellRuntime,
+  type StyledLine,
+} from "./shellRuntime.ts"
+
+class ManualFrameScheduler implements FrameScheduler {
+  scheduled = 0
+  private pending: (() => void) | null = null
+
+  schedule(flush: () => void): void {
+    if (this.pending) return
+    this.scheduled += 1
+    this.pending = flush
+  }
+
+  flush(): void {
+    const pending = this.pending
+    this.pending = null
+    pending?.()
+  }
+
+  dispose(): void {
+    this.pending = null
+  }
+}
+
+const lineText = (line: StyledLine): string => line.runs.map((run) => run.text).join("")
+
+function setup(overrides: { scheduler?: FrameScheduler; cols?: number; rows?: number } = {}): {
+  runtime: ShellRuntime
+  harness: ReturnType<typeof createInMemoryShellRuntimeFactory>
+} {
+  const harness = createInMemoryShellRuntimeFactory()
+  const runtime = harness.factory({
+    cwd: "/workspace",
+    cols: overrides.cols ?? 20,
+    rows: overrides.rows ?? 4,
+    scheduler: overrides.scheduler,
+  })
+  return { runtime, harness }
+}
+
+describe("ShellRuntime in-memory factory", () => {
+  test("scripted bytes render visible rows as styled runs", async () => {
+    const { runtime, harness } = setup()
+
+    await harness.scriptOutput("plain\r\n\u001b[31;1mred\u001b[0m")
+
+    const view = runtime.view()
+    expect(view).toHaveLength(4)
+    expect(lineText(view[0]!)).toBe("plain")
+    expect(lineText(view[1]!)).toBe("red")
+    expect(view[1]!.runs).toEqual([
+      {
+        text: "red",
+        foreground: { mode: "palette", value: 1 },
+        bold: true,
+        italic: false,
+        dim: false,
+        underline: false,
+        blink: false,
+        inverse: false,
+        invisible: false,
+        strikethrough: false,
+        overline: false,
+      },
+    ])
+
+    await runtime.dispose()
+  })
+
+  test("interrupt writes only the Ctrl+C byte", async () => {
+    const { runtime, harness } = setup()
+
+    runtime.interrupt()
+
+    expect(harness.writes).toHaveLength(1)
+    expect([...harness.writes[0]!]).toEqual([0x03])
+    await runtime.dispose()
+  })
+
+  test("resize forwards dimensions to the PTY and emulator", async () => {
+    const { runtime, harness } = setup()
+
+    runtime.resize(42, 7)
+
+    expect(harness.resizes).toEqual([{ cols: 42, rows: 7 }])
+    expect(runtime.view()).toHaveLength(7)
+    await runtime.dispose()
+  })
+
+  test("multiple output chunks within one frame emit one screen event", async () => {
+    const scheduler = new ManualFrameScheduler()
+    const { runtime, harness } = setup({ scheduler })
+    const screens: number[] = []
+    runtime.onEvent((event) => {
+      if (event.kind === "screen") screens.push(event.rev)
+    })
+
+    await harness.scriptOutput("one")
+    await harness.scriptOutput("two")
+
+    expect(scheduler.scheduled).toBe(1)
+    expect(screens).toEqual([])
+    scheduler.flush()
+    expect(screens).toEqual([1])
+    await runtime.dispose()
+  })
+
+  test("scripted semantic events update subscribers and the stable snapshot", async () => {
+    const { runtime, harness } = setup()
+    const kinds: string[] = []
+    const unsubscribe = runtime.onEvent((event) => kinds.push(event.kind))
+
+    harness.emit({ kind: "cwd_changed", cwd: "/workspace/next" })
+    harness.emit({ kind: "command_started", id: "cmd-1", command: "pwd" })
+    harness.emit({ kind: "command_finished", id: "cmd-1", exitCode: 0 })
+    unsubscribe()
+
+    expect(kinds).toEqual(["cwd_changed", "command_started", "command_finished"])
+    expect(runtime.snapshot()).toEqual({
+      cwd: "/workspace/next",
+      commands: [{ id: "cmd-1", command: "pwd", output: "", exitCode: 0 }],
+    })
+    await runtime.dispose()
+  })
+
+  test("dispose never throws and makes writes no-ops", async () => {
+    const { runtime, harness } = setup()
+    runtime.write(Uint8Array.of(1, 2))
+
+    await expect(runtime.dispose()).resolves.toBeUndefined()
+    await expect(runtime.dispose()).resolves.toBeUndefined()
+    runtime.write(Uint8Array.of(3, 4))
+
+    expect(harness.disposed).toBe(true)
+    expect(harness.writes.map((bytes) => [...bytes])).toEqual([[1, 2]])
+    expect(runtime.view()).toEqual([])
+  })
+})
