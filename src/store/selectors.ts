@@ -23,12 +23,14 @@ import type {
   SessionId,
   SessionState,
   SessionStatus,
+  ShellState,
   ThemePreference,
   Turn,
 } from "../core/types.ts"
 import type {
   AppState,
   ApprovalOverlay,
+  FocusedPane,
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
   ModelSelectOverlay,
@@ -44,8 +46,17 @@ import type {
  */
 export { needsAttention }
 
-/** The session that currently owns keyboard focus. */
+/** The active conversation, retained while the shell owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId> = (state) => state.focusedSessionId
+
+/** The pane that currently owns keyboard input. */
+export const selectFocusedPane: Selector<FocusedPane> = (state) => state.focusedPane
+
+/** The semantic shell slice. */
+export const selectShell: Selector<ShellState> = (state) => state.shell
+
+/** Whether the persistent shell currently owns keyboard input. */
+export const selectIsShellFocused: Selector<boolean> = (state) => state.focusedPane.kind === "shell"
 
 /** The user-selected theme preference that drives the live cockpit palette. */
 export const selectThemePreference: Selector<ThemePreference> = (state) => state.preferences.theme
@@ -54,7 +65,7 @@ export const selectThemePreference: Selector<ThemePreference> = (state) => state
 export const selectIsFocused =
   (sessionId: SessionId): Selector<boolean> =>
   (state) =>
-    state.focusedSessionId === sessionId
+    state.focusedPane.kind === "agent" && state.focusedPane.agentId === sessionId
 
 /** One session's full state. Changes on every event for that session. */
 export const selectSessionState =

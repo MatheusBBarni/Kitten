@@ -16,15 +16,18 @@ import {
   selectSessionStatus,
   selectSessionTurns,
   selectApprovalOverlay,
+  selectFocusedPane,
   selectFocusedSessionId,
   selectFocusedSession,
   selectHandoffPreview,
   selectHasOpenOverlay,
   selectIsApprovalOpen,
   selectIsFocused,
+  selectIsShellFocused,
   selectIsSessionsOpen,
   selectModelSelectOverlay,
   selectSettingsOverlay,
+  selectShell,
   selectThemePreference,
 } from "./selectors.ts"
 
@@ -102,6 +105,31 @@ describe("focus selectors", () => {
 
     store.setFocus("codex")
     expect(selectFocusedSession(store.getState()).acpSessionId).toBe("session-codex")
+  })
+
+  it("projects pane focus and reports shell focus only for the shell pane", () => {
+    const store = createAppStore()
+    expect(selectFocusedPane(store.getState())).toBe(store.getState().focusedPane)
+    expect(selectIsShellFocused(store.getState())).toBe(false)
+
+    store.setFocusedPane({ kind: "shell" })
+    expect(selectFocusedPane(store.getState())).toEqual({ kind: "shell" })
+    expect(selectIsShellFocused(store.getState())).toBe(true)
+    expect(selectIsFocused("claude-code")(store.getState())).toBe(false)
+
+    store.setFocusedPane({ kind: "agent", agentId: "codex" })
+    expect(selectIsShellFocused(store.getState())).toBe(false)
+  })
+})
+
+describe("shell selector", () => {
+  it("returns the shell slice by reference across unrelated agent updates", () => {
+    const store = createAppStore()
+    const shell = selectShell(store.getState())
+
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+
+    expect(selectShell(store.getState())).toBe(shell)
   })
 })
 

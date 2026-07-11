@@ -2,12 +2,15 @@ import { describe, expect, it } from "bun:test"
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
+import { createShellState } from "../core/shellReducer.ts"
 import type { DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import { createAppStore, defaultSessionSeeds, type AppStore, type AppState } from "./appStore.ts"
 import {
   selectApprovalOverlay,
   selectHandoffPreview,
+  selectFocusedPane,
   selectIsFocused,
+  selectShell,
   selectSessionStatus,
   selectSessionTurns,
   selectSettingsOverlay,
@@ -70,6 +73,8 @@ describe("createAppStore", () => {
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
     expect(state.order).toEqual(["claude-code", "codex"])
     expect(state.focusedSessionId).toBe("claude-code")
+    expect(state.focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+    expect(state.shell).toEqual(createShellState())
     expect(state.overlays).toEqual({
       approval: null,
       handoffPreview: null,
@@ -177,6 +182,31 @@ describe("applyEvent", () => {
   })
 })
 
+describe("applyShellEvent", () => {
+  it("updates only the shell slice for a cwd change", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/kitten" })
+
+    const after = store.getState()
+    expect(after.shell).toEqual({ ...before.shell, cwd: "/workspace/kitten" })
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.focusedPane).toBe(before.focusedPane)
+  })
+
+  it("leaves the shell reference and subscribers untouched for agent events", () => {
+    const store = createAppStore()
+    const beforeShell = selectShell(store.getState())
+    const shells = trackSelector(store, selectShell)
+
+    store.applyEvent("claude-code", message("m1", "hello"))
+
+    expect(selectShell(store.getState())).toBe(beforeShell)
+    expect(shells).toEqual([])
+  })
+})
+
 describe("startSession", () => {
   it("binds a new session id and clears that agent's transcript and status", () => {
     const store = createAppStore()
@@ -201,6 +231,7 @@ describe("setFocus", () => {
 
     const after = store.getState()
     expect(after.focusedSessionId).toBe("codex")
+    expect(after.focusedPane).toEqual({ kind: "agent", agentId: "codex" })
     expect(after.sessions).toBe(before.sessions)
     expect(after.overlays).toBe(before.overlays)
   })
@@ -243,6 +274,40 @@ describe("setFocus", () => {
 
     expect(store.getState()).toBe(before)
     expect(store.getState().focusedSessionId).toBe("claude-code")
+  })
+})
+
+describe("setFocusedPane", () => {
+  it("is a no-op when the semantic pane is unchanged", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    let notifications = 0
+    store.subscribe(() => notifications++)
+
+    store.setFocusedPane({ kind: "agent", agentId: "claude-code" })
+
+    expect(store.getState()).toBe(before)
+    expect(notifications).toBe(0)
+  })
+
+  it("notifies a focused-pane subscriber exactly once when switching to the shell", () => {
+    const store = createAppStore()
+    const panes = trackSelector(store, selectFocusedPane)
+
+    store.setFocusedPane({ kind: "shell" })
+    store.setFocusedPane({ kind: "shell" })
+
+    expect(panes).toEqual([{ kind: "shell" }])
+    expect(store.getState().focusedSessionId).toBe("claude-code")
+  })
+
+  it("ignores an agent pane whose session does not exist", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setFocusedPane({ kind: "agent", agentId: "ghost" })
+
+    expect(store.getState()).toBe(before)
   })
 })
 
@@ -626,5 +691,23 @@ describe("integration: a scripted interleaved event stream", () => {
     const state = store.getState()
     expect(state.focusedSessionId).toBe("codex")
     expect(state.overlays.approval?.request).toBe(APPROVAL_REQUEST)
+  })
+})
+
+describe("integration: shell and agent selector isolation", () => {
+  it("notifies only the selector matching each interleaved event", () => {
+    const store = createAppStore()
+    const shellCwds: string[] = []
+    const agentStatuses: string[] = []
+    store.subscribeSelector(selectShell, (shell) => shellCwds.push(shell.cwd))
+    store.subscribeSelector(selectSessionStatus("claude-code"), (status) => agentStatuses.push(status))
+
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/one" })
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/two" })
+    store.applyEvent("claude-code", message("m1", "streamed output"))
+
+    expect(shellCwds).toEqual(["/one", "/two"])
+    expect(agentStatuses).toEqual(["working"])
   })
 })

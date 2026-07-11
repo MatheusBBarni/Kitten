@@ -24,6 +24,7 @@
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
+import { createShellState, shellReducer } from "../core/shellReducer.ts"
 import {
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_KINDS,
@@ -34,6 +35,8 @@ import {
   type SessionId,
   type SessionSeed,
   type SessionState,
+  type ShellEvent,
+  type ShellState,
   type ThemePreference,
 } from "../core/types.ts"
 
@@ -98,6 +101,9 @@ export interface Preferences {
   theme: ThemePreference
 }
 
+/** The pane that currently owns keyboard input (ADR-005). */
+export type FocusedPane = { kind: "agent"; agentId: SessionId } | { kind: "shell" }
+
 /**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
@@ -133,7 +139,10 @@ export interface AppState {
   sessions: Record<SessionId, SessionState>
   /** The session ids in stable display order. */
   order: SessionId[]
+  /** The active conversation, retained while the shell owns keyboard focus. */
   focusedSessionId: SessionId
+  focusedPane: FocusedPane
+  shell: ShellState
   preferences: Preferences
   overlays: OverlayState
 }
@@ -160,10 +169,14 @@ export interface AppStore {
 
   /** Apply one already-coalesced domain event to that session's slice. */
   applyEvent(sessionId: SessionId, event: DomainSessionEvent): void
+  /** Apply one semantic shell event through the pure shell reducer. */
+  applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
   startSession(sessionId: SessionId, acpSessionId: string): void
   /** Move keyboard focus to a session. Focusing the focused session is a no-op. */
   setFocus(sessionId: SessionId): void
+  /** Move keyboard focus to an agent or the shell. Reapplying the same pane is a no-op. */
+  setFocusedPane(pane: FocusedPane): void
 
   /** Open the approval overlay for a pending permission request. */
   openApproval(overlay: ApprovalOverlay): void
@@ -227,6 +240,8 @@ class AppStoreImpl implements AppStore {
       sessions,
       order,
       focusedSessionId: options.focusedSessionId ?? order[0]!,
+      focusedPane: { kind: "agent", agentId: options.focusedSessionId ?? order[0]! },
+      shell: createShellState(),
       preferences: { theme: options.preferences?.theme ?? "auto" },
       overlays: { approval: null, handoffPreview: null, handoffTarget: null, modelSelect: null, settings: null, sessions: false },
     }
@@ -266,6 +281,12 @@ class AppStoreImpl implements AppStore {
     this.commit({ ...this.state, sessions: { ...this.state.sessions, [sessionId]: next } })
   }
 
+  applyShellEvent(event: ShellEvent): void {
+    const next = shellReducer(this.state.shell, event)
+    if (next === this.state.shell) return
+    this.commit({ ...this.state, shell: next })
+  }
+
   startSession(sessionId: SessionId, acpSessionId: string): void {
     const existing = this.state.sessions[sessionId]
     if (!existing) return
@@ -283,9 +304,19 @@ class AppStoreImpl implements AppStore {
   }
 
   setFocus(sessionId: SessionId): void {
-    if (this.state.focusedSessionId === sessionId) return
-    if (!this.state.sessions[sessionId]) return
-    this.commit({ ...this.state, focusedSessionId: sessionId })
+    this.setFocusedPane({ kind: "agent", agentId: sessionId })
+  }
+
+  setFocusedPane(pane: FocusedPane): void {
+    if (pane.kind === "agent" && !this.state.sessions[pane.agentId]) return
+    const current = this.state.focusedPane
+    if (current.kind === "shell" && pane.kind === "shell") return
+    if (current.kind === "agent" && pane.kind === "agent" && current.agentId === pane.agentId) return
+    this.commit({
+      ...this.state,
+      focusedSessionId: pane.kind === "agent" ? pane.agentId : this.state.focusedSessionId,
+      focusedPane: pane,
+    })
   }
 
   openApproval(overlay: ApprovalOverlay): void {
