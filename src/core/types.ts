@@ -10,11 +10,58 @@
  * Type shapes follow the TechSpec "Data Models" and "Core Interfaces" sections.
  */
 
-/** The two agents Kitten drives in V1 (ADR-001). */
-export type AgentId = "claude-code" | "codex"
+/**
+ * The kind of agent a session runs - the spawn-recipe identity, not the session's
+ * own identity (ADR-004). Two sessions can share a `ProviderKind`; each still gets
+ * its own {@link SessionId}. Renamed from the former `AgentId`.
+ */
+export type ProviderKind = "claude-code" | "codex"
 
-/** Coarse per-agent lifecycle state surfaced to the UI status strip. */
-export type AgentStatus = "idle" | "working" | "awaiting_approval"
+/**
+ * A Kitten-assigned session instance identity, opaque and stable from config load,
+ * assigned before any ACP handshake (ADR-004). This is what the store keys by, so a
+ * not-ready session - one with no ACP id yet - still exists in the collection.
+ */
+export type SessionId = string
+
+/** Every provider kind Kitten understands, kept stable for config validation. */
+export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex"]
+
+/**
+ * The launch order for Kitten's built-in two-provider cockpit. Codex is the
+ * default focused agent, while explicitly configured session arrays retain the
+ * order the user declared.
+ */
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude-code"]
+
+/** The human-facing name for each provider kind; the default session title. */
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+}
+
+/**
+ * Coarse per-session lifecycle state surfaced to the UI status strip and the
+ * attention derivation (ADR-006).
+ *
+ * `finished` and `error` are the terminal states the overview routes attention to:
+ * `finished` means the turn ended and the developer's input is expected; `error`
+ * means the prompt threw or the transport/subprocess was lost. `idle` is the
+ * quiescent "nothing to do" state (including after the developer cancels a turn).
+ * The adapter derives `finished`/`error` only from terminal signals, never from a
+ * streaming update, so `finished` cannot flicker mid-turn.
+ */
+export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished" | "error"
+
+/**
+ * Whether a session's status is one the developer must act on: an approval to
+ * answer, a crash to look at, or a finished turn awaiting their next move (ADR-006).
+ * A pure predicate every attention surface reads - the status strip, the `/sessions`
+ * overview, the jump-to-next action, and the notifier - so they can never disagree
+ * about which sessions need you.
+ */
+export const needsAttention = (status: SessionStatus): boolean =>
+  status === "awaiting_approval" || status === "error" || status === "finished"
 
 /** Normalized classification of a tool call, translated from the agent's own kinds. */
 export type ToolCallKind =
@@ -69,6 +116,76 @@ export interface ToolCallUpdate {
   diff?: ToolCallDiff | null
 }
 
+/** One selectable value within a {@link ConfigOption}: the opaque `value` sent back to the agent and its human-facing `name`. */
+export interface ConfigSelectOption {
+  value: string
+  name: string
+}
+
+/**
+ * A Kitten-owned, protocol-free config option advertised by an agent for a session
+ * (ADR-003). Translated from the ACP config-option wire shape by the adapter, so no
+ * SDK type leaks into the core. `category` is kept an opaque string (`"model"`,
+ * `"thought_level"`, ...); the store and selectors never hardcode it as a named
+ * field, and the UI filters to a visible allowlist (ADR-004). V1 models select
+ * options only - boolean options are not represented.
+ */
+export interface ConfigOption {
+  /** Opaque ACP config id, echoed back verbatim when changing the value. */
+  id: string
+  /** Opaque category id (`"model" | "thought_level" | ...`); never treated as a closed union here. */
+  category: string
+  label: string
+  currentValue: string
+  options: ConfigSelectOption[]
+}
+
+/**
+ * A protocol-free slash command advertised by an agent for one live session.
+ *
+ * ACP owns the wire representation (including its extensibility metadata and
+ * input wrapper); the adapter flattens that shape before it reaches this core
+ * model.
+ */
+export interface AvailableCommand {
+  /** The command token without a leading slash (for example, `review`). */
+  name: string
+  /** Human-readable explanation shown in Kitten's command menu. */
+  description: string
+  /** Optional free-form argument hint supplied by the agent. */
+  hint?: string
+}
+
+/** Context-window usage reported by an agent; `percent` is normalized to [0, 1]. */
+export interface ContextUsage {
+  used: number
+  size: number
+  percent: number
+}
+
+/** The config-option category id for the model picker. */
+export const MODEL_CATEGORY = "model"
+/** The config-option category id for the reasoning-effort picker (ACP `thought_level`). */
+export const EFFORT_CATEGORY = "thought_level"
+
+/**
+ * The only config-option categories the UI ever surfaces (ADR-004): the model and
+ * reasoning-effort pickers. This is a fail-closed allowlist, not a denylist - every
+ * other category (`mode`, whose Claude values include `bypassPermissions`,
+ * `model_config`, and any future or unknown category) is filtered out before any
+ * rendering, so the selector can never expose a permission-mode toggle.
+ */
+export const VISIBLE_CATEGORIES: readonly string[] = [MODEL_CATEGORY, EFFORT_CATEGORY]
+
+/**
+ * Keep only the {@link VISIBLE_CATEGORIES} allowlisted options, dropping every other
+ * category (ADR-004). Pure and order-preserving; the caller memoizes the result so a
+ * fresh array does not thrash a subscriber (the per-agent selectors stay referentially
+ * stable by returning the unfiltered slice).
+ */
+export const visibleConfigOptions = (options: ConfigOption[]): ConfigOption[] =>
+  options.filter((option) => VISIBLE_CATEGORIES.includes(option.category))
+
 /** A single entry in an agent's plan (translated from the ACP `plan` notification). */
 export interface PlanEntry {
   content: string
@@ -110,23 +227,87 @@ export interface PendingDiff {
 }
 
 /**
- * The full state of one agent's session, and the sole thing the reducer writes.
+ * The seed that fixes a session's identity at construction (ADR-004): everything
+ * the reducer needs to build an empty session slice before any handshake. `cwd` and
+ * `title` come from config; `acpSessionId` is empty until the ACP session opens.
+ */
+export interface SessionSeed {
+  id: SessionId
+  providerKind: ProviderKind
+  title: string
+  cwd: string
+  task?: string
+  /** The ACP session id, when already known; defaults to `""` (not yet handshaken). */
+  acpSessionId?: string
+}
+
+/**
+ * The full state of one session, and the sole thing the reducer writes.
  *
- * `referencedFiles` and `pendingDiffs` are pure derivations of the tool-call turns
- * and are recomputed on every reduction, so they never drift from the transcript.
+ * `id` is the Kitten instance identity the store keys by; `providerKind` is the kind
+ * of agent it runs; `acpSessionId` is the ACP session id (empty until the handshake
+ * completes). `referencedFiles` and `pendingDiffs` are pure derivations of the
+ * tool-call turns and are recomputed on every reduction, so they never drift.
  */
 export interface SessionState {
-  agentId: AgentId
-  sessionId: string
+  id: SessionId
+  providerKind: ProviderKind
+  title: string
+  cwd: string
+  /** The session working tree's current branch, when it can be resolved. */
+  branch?: string
+  task?: string
+  acpSessionId: string
   turns: Turn[]
-  status: AgentStatus
+  status: SessionStatus
   /** File path -> strongest access seen. `edited` takes precedence over `read`. */
   referencedFiles: Map<string, "read" | "edited">
   /** Edit diffs proposed but not yet applied/approved. */
   pendingDiffs: PendingDiff[]
   /** The agent's most recently reported plan, if any. */
   plan: PlanEntry[]
+  /**
+   * The full set of config options the agent has advertised for this session
+   * (ADR-003), replaced wholesale on every `config_options` event because the
+   * agent always returns the complete set. Empty when nothing is advertised.
+   */
+  configOptions: ConfigOption[]
+  /** The latest complete slash-command list advertised for this session. */
+  commands: AvailableCommand[]
 }
+
+/** One semantically bounded shell command and its captured raw output. */
+export interface ShellCommandRecord {
+  id: string
+  command: string
+  /** Unredacted terminal output; redaction happens only during hand-off assembly. */
+  output: string
+  /** `null` while the command is running. */
+  exitCode: number | null
+}
+
+/** Protocol-free semantic state for the persistent shell. */
+export interface ShellState {
+  status: "idle" | "running"
+  cwd: string
+  /** Bounded most-recent-first-by-retention command ring in execution order. */
+  commands: ShellCommandRecord[]
+  /** Revision of the imperative terminal screen exposed to store subscribers. */
+  renderRev: number
+}
+
+/** Stable shell context captured for the curated hand-off flow. */
+export interface ShellSnapshot {
+  cwd: string
+  commands: ShellCommandRecord[]
+}
+
+/** Semantic events emitted by the shell runtime and folded by `shellReducer`. */
+export type ShellEvent =
+  | { kind: "screen"; rev: number }
+  | { kind: "command_started"; id: string; command: string }
+  | { kind: "command_finished"; id: string; exitCode: number; output: string }
+  | { kind: "cwd_changed"; cwd: string }
 
 /**
  * The normalized domain events the reducer consumes, translated from the ACP
@@ -137,7 +318,10 @@ export type DomainSessionEvent =
   | { kind: "user_message"; messageId: string; text: string }
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
-  | { kind: "status"; status: AgentStatus } // idle | working | awaiting_approval
+  | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
+  | { kind: "branch"; branch: string }
+  | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
+  | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic
@@ -149,22 +333,87 @@ export interface HandoffBundle {
   summary: string // deterministic transcript excerpt in V1
   files: { path: string; reason: "read" | "edited" }[]
   pendingDiffs: PendingDiff[]
+  /** Redacted shell state offered to the developer for explicit preview curation. */
+  shell?: ShellSnapshot
   redactionCount: number // secrets stripped before preview
 }
 
-/** How to spawn one agent (BYO, config-driven; ADR-005). */
-export interface AgentConfig {
-  id: AgentId
+/**
+ * A provider's spawn recipe: how to launch its ACP adapter (BYO, config-driven;
+ * ADR-005). Keyed by {@link ProviderKind} in {@link AppConfig.providers}, so the
+ * kind is the map key rather than a field. Overridable per field; the defaults pin
+ * the adapter package versions.
+ */
+export interface ProviderRecipe {
   displayName: string
   command: string
   args: string[]
   env: Record<string, string>
 }
 
-/** The loaded application configuration. */
+/**
+ * A provider's spawn recipe paired with its own {@link ProviderKind}. This is the
+ * shape the agent adapter layer spawns from: a {@link ProviderRecipe} plus the `id`
+ * the map key carries in config. Renamed conceptually from the former per-agent
+ * config; still the connection/transport input.
+ */
+export interface AgentConfig extends ProviderRecipe {
+  id: ProviderKind
+}
+
+/**
+ * One declared session in the config file (ADR-005). Each session names the provider
+ * to spawn and the working directory to open it against; `title` defaults to the
+ * `cwd` basename, and `task`, when present, is sent as the session's first prompt.
+ * Two descriptors may share a `provider` - each resolves to its own {@link SessionId}.
+ */
+export interface SessionDescriptor {
+  provider: ProviderKind
+  cwd: string
+  title?: string
+  task?: string
+}
+
+/** A curated, named theme palette that can be persisted as a user preference. */
+export type ThemePresetId = "catppuccin-mocha" | "catppuccin-latte"
+
+/** The user's persisted theme choice; `auto` follows the terminal-reported mode. */
+export type ThemePreference = "auto" | "light" | "dark" | ThemePresetId
+
+/** Whether the welcome banner follows first-run state, always expands, or stays hidden. */
+export type WelcomeBannerPreference = "auto" | "always" | "off"
+
+/** Fully resolved policy for the controller-owned integrated shell. */
+export interface ShellConfig {
+  enabled: boolean
+  command: string
+  scrollback: number
+}
+
+/**
+ * The loaded application configuration (ADR-005). `providers` is the map of spawn
+ * recipes keyed by kind; `sessions` is the ordered fleet to open. An empty `sessions`
+ * list means zero-config: one session per configured provider in the launch directory.
+ */
 export interface AppConfig {
-  agents: AgentConfig[]
+  providers: Record<ProviderKind, ProviderRecipe>
+  sessions: SessionDescriptor[]
+  shell: ShellConfig
+  persistenceEnabled: boolean
   telemetryEnabled: boolean
+  theme: ThemePreference
+  welcomeBanner: WelcomeBannerPreference
+}
+
+/**
+ * A {@link SessionDescriptor} resolved into the per-session input the controller
+ * consumes without further transformation: the {@link SessionSeed} that fixes the
+ * session's identity and placement, plus the {@link AgentConfig} its connection is
+ * spawned from.
+ */
+export interface ResolvedSession {
+  seed: SessionSeed
+  spawn: AgentConfig
 }
 
 /** A content-free telemetry record (opt-in, local JSONL only). */

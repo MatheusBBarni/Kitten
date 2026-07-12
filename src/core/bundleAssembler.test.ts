@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test"
 import { DEFAULT_BUNDLE_LIMITS, createDeterministicAssembler } from "./bundleAssembler.ts"
 import { REDACTION_PLACEHOLDER, createSecretRedactor } from "./secretRedactor.ts"
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { DomainSessionEvent, SessionState } from "./types.ts"
+import type { DomainSessionEvent, SessionState, ShellSnapshot } from "./types.ts"
 
 /**
  * Fixtures are built by folding real domain events through the real reducer, so
@@ -17,7 +17,7 @@ const ANTHROPIC_KEY = "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
 const AWS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
 
 const fold = (events: DomainSessionEvent[]): SessionState =>
-  events.reduce(sessionReducer, createSessionState("claude-code", "session-1"))
+  events.reduce(sessionReducer, createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" }))
 
 const assembler = createDeterministicAssembler()
 
@@ -124,6 +124,65 @@ describe("referenced files and pending diffs", () => {
 
     expect(session.pendingDiffs).toEqual(before)
     expect(session.pendingDiffs[0]?.unified).toContain(ANTHROPIC_KEY)
+  })
+})
+
+describe("shell snapshot assembly", () => {
+  // Suite: deterministic shell snapshot assembly
+  // Invariant: emitted shell context contains only redacted cwd and command records.
+  // Boundary IN: BundleAssembler and the existing SecretRedactor.
+  // Boundary OUT: prompt composition, owned by src/app/handoff.test.ts.
+  const shell: ShellSnapshot = {
+    cwd: "/workspace/kitten",
+    commands: [
+      { id: "command-1", command: "bun test", output: "12 pass\n0 fail", exitCode: 0 },
+      { id: "command-2", command: "git status --short", output: " M src/app.ts", exitCode: 0 },
+    ],
+  }
+
+  it("populates the bundle from cwd and recent command records", () => {
+    expect(assembler.assemble(fold([]), "codex", shell).shell).toEqual(shell)
+  })
+
+  it("redacts shell cwd, command text, and output before the bundle leaves the core", () => {
+    const withSecret: ShellSnapshot = {
+      cwd: `/workspace/${ANTHROPIC_KEY}`,
+      commands: [
+        {
+          id: "command-secret",
+          command: `export API_KEY=${ANTHROPIC_KEY}`,
+          output: `token=${ANTHROPIC_KEY}`,
+          exitCode: 0,
+        },
+      ],
+    }
+
+    const bundle = assembler.assemble(fold([]), "codex", withSecret)
+
+    expect(bundle.shell?.cwd).toBe(`/workspace/${R}`)
+    expect(bundle.shell?.commands[0]?.command).toBe(`export API_KEY=${R}`)
+    expect(bundle.shell?.commands[0]?.output).toBe(`token=${R}`)
+    expect(bundle.redactionCount).toBe(3)
+  })
+
+  it("never copies environment-variable data into the snapshot", () => {
+    const shellSlice = {
+      ...shell,
+      env: { KITTEN_TEST_SECRET: "environment-only-value" },
+    }
+
+    const bundle = assembler.assemble(fold([]), "codex", shellSlice)
+    const serialized = JSON.stringify(bundle.shell)
+
+    expect(serialized).not.toContain("KITTEN_TEST_SECRET")
+    expect(serialized).not.toContain("environment-only-value")
+    expect(bundle.shell).toEqual(shell)
+  })
+
+  it("omits the optional snapshot when there are no command records", () => {
+    const bundle = assembler.assemble(fold([]), "codex", { cwd: shell.cwd, commands: [] })
+
+    expect(bundle.shell).toBeUndefined()
   })
 })
 
@@ -234,7 +293,7 @@ describe("transcript excerpt", () => {
 
 describe("empty session", () => {
   it("produces a well-formed empty bundle rather than throwing", () => {
-    const session = createSessionState("codex", "session-empty")
+    const session = createSessionState({ id: "codex", providerKind: "codex", title: "codex", cwd: "/w", acpSessionId: "session-empty" })
 
     const bundle = assembler.assemble(session, "claude-code")
 

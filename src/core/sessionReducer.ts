@@ -12,9 +12,9 @@
  */
 
 import type {
-  AgentId,
   DomainSessionEvent,
   PendingDiff,
+  SessionSeed,
   SessionState,
   ToolCallRecord,
   ToolCallTurn,
@@ -22,16 +22,29 @@ import type {
   Turn,
 } from "./types.ts"
 
-/** Create the empty starting state for one agent's session. */
-export function createSessionState(agentId: AgentId, sessionId: string): SessionState {
+/**
+ * Create the empty starting state for one session from its {@link SessionSeed}.
+ *
+ * Identity fields (`id`, `providerKind`, `title`, `cwd`, `task`) come from the seed
+ * and survive a later `startSession`; the transcript, status, and derived fields
+ * start empty. `acpSessionId` defaults to `""` until the ACP handshake binds one.
+ */
+export function createSessionState(seed: SessionSeed): SessionState {
   return {
-    agentId,
-    sessionId,
+    id: seed.id,
+    providerKind: seed.providerKind,
+    title: seed.title,
+    cwd: seed.cwd,
+    branch: undefined,
+    task: seed.task,
+    acpSessionId: seed.acpSessionId ?? "",
     turns: [],
     status: "idle",
     referencedFiles: new Map(),
     pendingDiffs: [],
     plan: [],
+    configOptions: [],
+    commands: [],
   }
 }
 
@@ -57,6 +70,21 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
     case "status":
       // Status changes never touch turns or derived fields.
       return { ...state, status: event.status }
+
+    case "branch":
+      // Branch refreshes replace only the off-render-path git value. A blank
+      // event clears the optional field so hide-when-absent selectors return null.
+      return { ...state, branch: event.branch || undefined }
+
+    case "config_options":
+      // The agent always returns the complete option set, so replace wholesale
+      // (ADR-003); config options never touch turns, status, or derived fields.
+      return { ...state, configOptions: event.options }
+
+    case "commands":
+      // Agents advertise a complete command set. The newest update wins without
+      // changing transcript, status, or any derived fields.
+      return { ...state, commands: event.commands }
 
     default:
       return assertNever(event)

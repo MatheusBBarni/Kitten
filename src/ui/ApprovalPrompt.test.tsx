@@ -1,3 +1,5 @@
+import { join } from "node:path"
+
 import { describe, expect, it } from "bun:test"
 
 import type { TestRendererSetup } from "@opentui/core/testing"
@@ -6,7 +8,8 @@ import { testRender } from "@opentui/react/test-utils"
 import { createAgentConnection, type AgentConnection, type PermissionRequest } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import { createSessionController } from "../app/controller.ts"
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
+import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionStatus } from "../core/types.ts"
+import type { AppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -19,7 +22,7 @@ import { TOOL_KIND_LABELS } from "./ToolCallRow.tsx"
 /**
  * The overlay is exercised inside the real shell rather than in isolation, because
  * two of its guarantees are about the shell: it must paint over the cockpit, and it
- * must take every key away from the prompt editor and the focus chord underneath it.
+ * must take every key away from the prompt editor and the shell chord underneath it.
  *
  * The terminal speaks the Kitty keyboard protocol so a bare Escape arrives as a
  * complete sequence rather than a lone byte the parser holds for 20ms.
@@ -60,14 +63,41 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     height: HEIGHT,
     kittyKeyboard: true,
   })
-  await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
   return setup
 }
 
 /** Park `request` in the approval slot, exactly as the controller does on `requestPermission`. */
-async function openApproval(controller: FakeController, agentId: AgentId, request: PermissionRequest): Promise<void> {
+async function openApproval(controller: FakeController, sessionId: SessionId, request: PermissionRequest): Promise<void> {
   await actAsync(() => {
-    controller.store.openApproval({ agentId, request })
+    controller.store.openApproval({ sessionId, title: sessionId, cwd: "/workspace/kitten", request })
+  })
+}
+
+/** Wait for the real controller to surface a particular permission request in the store. */
+function waitForApprovalForSession(store: AppStore, sessionId: SessionId): Promise<void> {
+  if (store.getState().overlays.approval?.sessionId === sessionId) return Promise.resolve()
+  return new Promise((resolve) => {
+    const unsubscribe = store.subscribe((state) => {
+      if (state.overlays.approval?.sessionId !== sessionId) return
+      unsubscribe()
+      resolve()
+    })
+  })
+}
+
+/** Wait for the other real agent turn to reach its explicit blocked state. */
+function waitForSessionStatus(store: AppStore, sessionId: SessionId, expected: SessionStatus): Promise<void> {
+  if (store.getState().sessions[sessionId]?.status === expected) return Promise.resolve()
+  return new Promise((resolve) => {
+    const unsubscribe = store.subscribeSelector(
+      (state) => state.sessions[sessionId]?.status,
+      (status) => {
+        if (status !== expected) return
+        unsubscribe()
+        resolve()
+      },
+    )
   })
 }
 
@@ -122,7 +152,7 @@ describe("ApprovalPrompt visibility", () => {
     const frame = await waitForFrame((f) => f.includes(approvalTitleFor("Codex")))
 
     expect(frame).not.toContain(approvalTitleFor("Claude Code"))
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await destroyMounted(renderer)
   })
@@ -203,6 +233,52 @@ describe("ApprovalPrompt contents", () => {
     expect(frame).toContain(TOOL_KIND_LABELS.other)
     // Nothing to show, so nothing is drawn where a diff would be.
     expect(frame).not.toContain("const b = 3")
+
+    await destroyMounted(renderer)
+  })
+
+  it("labels the overlay with the requesting session's title and working directory (task_07)", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderCockpit(controller)
+
+    await actAsync(() => {
+      controller.store.openApproval({
+        sessionId: "claude-code",
+        title: "backend-api",
+        cwd: "/srv/backend-api",
+        request: editRequest(),
+      })
+    })
+
+    // The prompt names which session, in which directory, is asking - not merely the
+    // provider - so an answer can never land in the wrong repository.
+    const frame = await waitForFrame((f) => f.includes(APPROVAL_HINT))
+    expect(frame).toContain("backend-api")
+    expect(frame).toContain("/srv/backend-api")
+
+    await destroyMounted(renderer)
+  })
+
+  it("gives two sessions of the same provider visibly distinct headers (task_07)", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderCockpit(controller)
+
+    // Same provider (claude-code) share the frame's display name; the session title and
+    // full working directory are what tell the two apart.
+    await actAsync(() => {
+      controller.store.openApproval({ sessionId: "claude-code", title: "web", cwd: "/repos/web", request: editRequest() })
+    })
+    const first = await waitForFrame((f) => f.includes("/repos/web"))
+    expect(first).toContain("web")
+    expect(first).not.toContain("/repos/api")
+
+    // The next queued request replaces the slot in place; the header re-homes onto it.
+    await actAsync(() => {
+      controller.store.openApproval({ sessionId: "claude-code", title: "api", cwd: "/repos/api", request: editRequest() })
+    })
+    const second = await waitForFrame((f) => f.includes("/repos/api"))
+    expect(second).toContain("api")
+    expect(second).not.toContain("/repos/web")
 
     await destroyMounted(renderer)
   })
@@ -349,15 +425,14 @@ describe("ApprovalPrompt modality", () => {
     const { renderer, mockInput, waitForFrame } = await renderWithApproval(controller)
 
     await actAsync(async () => {
-      mockInput.pressKey("o", { ctrl: true })
-      mockInput.pressKey("F1")
+      mockInput.pressKey("`", { ctrl: true })
+      await mockInput.typeText("/help")
       await mockInput.typeText(DRAFT_MARKER)
     })
 
-    // `toEqual([])` would also accept `[undefined]`, which is exactly the call the
-    // focus chord makes. Assert on the length so a leaked chord cannot hide here.
-    expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    // Neither the global shell chord nor prompt command can reach past the approval gate.
+    expect(controller.store.getState().focusedPane.kind).toBe("agent")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(await waitForFrame((f) => f.includes(APPROVAL_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it
@@ -383,9 +458,9 @@ describe("ApprovalPrompt modality", () => {
     await waitForFrame((f) => !f.includes(APPROVAL_HINT))
 
     await actAsync(() => {
-      mockInput.pressKey("o", { ctrl: true })
+      mockInput.pressKey("`", { ctrl: true })
     })
-    expect(controller.calls.switchFocus).toEqual([undefined])
+    expect(controller.store.getState().focusedPane.kind).toBe("shell")
 
     await destroyMounted(renderer)
   })
@@ -393,7 +468,18 @@ describe("ApprovalPrompt modality", () => {
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
-const APP_CONFIG: AppConfig = { agents: [CLAUDE, CODEX], telemetryEnabled: false }
+const APP_CONFIG: AppConfig = {
+  providers: {
+    "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
+    codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
+  },
+  sessions: [],
+  shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  persistenceEnabled: true,
+  telemetryEnabled: false,
+  theme: "auto",
+  welcomeBanner: "auto",
+}
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
 function connectionToMockAgent(config: AgentConfig, onPrompt?: MockPromptScript) {
@@ -413,7 +499,7 @@ describe("integration - a mock agent's permission request", () => {
       await ctx.requestPermission({ toolCallId: "call-1", kind: "edit", title: "Bump b" }, [ALLOW, REJECT])
     })
     const codex = connectionToMockAgent(CODEX)
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -429,17 +515,17 @@ describe("integration - a mock agent's permission request", () => {
       height: HEIGHT,
       kittyKeyboard: true,
     })
-    await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
 
     // The agent blocks inside its prompt turn until the user answers.
     let prompt: Promise<unknown> = Promise.resolve()
     await actAsync(() => {
-      prompt = controller.actions.sendPrompt("bump b")
+      prompt = controller.actions.sendPrompt("bump b", "claude-code")
     })
     const opened = await setup.waitForFrame((frame) => frame.includes(approvalTitleFor("Claude Code")))
     expect(opened).toContain("Bump b")
     expect(opened).toContain(ALLOW.name)
-    expect(controller.store.getState().sessions["claude-code"].status).toBe("awaiting_approval")
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("awaiting_approval")
 
     // The user rejects, by number.
     await actAsync(async () => {
@@ -450,6 +536,92 @@ describe("integration - a mock agent's permission request", () => {
     expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: REJECT.optionId }])
     expect(controller.store.getState().overlays.approval).toBeNull()
     expect(await setup.waitForFrame((f) => !f.includes(APPROVAL_HINT))).toContain(PROMPT_PLACEHOLDER)
+
+    await destroyMounted(setup.renderer)
+    await controller.dispose()
+  })
+})
+
+describe("integration - two sessions of the same provider requesting permission (task_07)", () => {
+  it("names each prompt by its own session and directory and routes each decision to the right agent", async () => {
+    // Two claude-code sessions in two real, distinct directories - the same-provider
+    // fleet where a provider display name alone cannot tell the prompts apart.
+    const root = process.cwd()
+    const dirA = join(root, "src")
+    const dirB = join(root, "test")
+
+    const permission: MockPromptScript = async (_request, ctx) => {
+      await ctx.requestPermission({ toolCallId: "call-1", kind: "edit", title: "Bump b" }, [ALLOW, REJECT])
+    }
+    const agentA = connectionToMockAgent(CLAUDE, permission)
+    const agentB = connectionToMockAgent(CLAUDE, permission)
+    // Both sessions share the claude-code provider, so the controller asks for a
+    // connection twice with the same config; hand out a fresh one per call, in plan order.
+    const queue = [agentA.connection, agentB.connection]
+
+    const config: AppConfig = {
+      providers: APP_CONFIG.providers,
+      sessions: [
+        { provider: "claude-code", cwd: dirA, title: "repo-a" },
+        { provider: "claude-code", cwd: dirB, title: "repo-b" },
+      ],
+      shell: APP_CONFIG.shell,
+      persistenceEnabled: true,
+      telemetryEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+    }
+    const controller = await createSessionController({ config, cwd: root, createConnection: () => queue.shift()! })
+
+    const setup = await testRender(<CockpitApp controller={controller} />, {
+      width: WIDTH,
+      height: HEIGHT,
+      kittyKeyboard: true,
+    })
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
+
+    // Session A (repo-a) asks first; the prompt is labeled with A's directory alone.
+    let promptA: Promise<unknown> = Promise.resolve()
+    const approvalA = waitForApprovalForSession(controller.store, "claude-code")
+    await actAsync(async () => {
+      promptA = controller.actions.sendPrompt("edit a", "claude-code")
+      await approvalA
+    })
+    const openedA = await setup.waitForFrame((frame) => frame.includes(APPROVAL_HINT) && frame.includes("repo-a"))
+    expect(openedA).toContain("repo-a")
+    expect(openedA).not.toContain(dirB)
+
+    // Session B (repo-b) asks while A is still on screen; its request queues behind A's
+    // rather than replacing it, and B's own status flips to awaiting-approval.
+    let promptB: Promise<unknown> = Promise.resolve()
+    const awaitingB = waitForSessionStatus(controller.store, "claude-code-2", "awaiting_approval")
+    await actAsync(async () => {
+      promptB = controller.actions.sendPrompt("edit b", "claude-code-2")
+      await awaitingB
+    })
+
+    // Answer A. Only A's agent hears the decision; B, still queued, hears nothing -
+    // there is no path by which one session's answer settles another's request.
+    const approvalB = waitForApprovalForSession(controller.store, "claude-code-2")
+    await actAsync(async () => {
+      controller.actions.respondPermission({ outcome: "selected", optionId: REJECT.optionId })
+      await approvalB
+      await promptA
+    })
+    expect(agentA.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: REJECT.optionId }])
+    expect(agentB.agent.permissionOutcomes).toEqual([])
+
+    // The slot now belongs to B, labeled with B's directory alone.
+    const openedB = await setup.waitForFrame((frame) => frame.includes(APPROVAL_HINT) && frame.includes("repo-b"))
+    expect(openedB).toContain("repo-b")
+    expect(openedB).not.toContain(dirA)
+
+    // Answer B. Its own agent, and only now, hears its own decision.
+    await actAsync(async () => {
+      controller.actions.respondPermission({ outcome: "selected", optionId: ALLOW.optionId })
+      await promptB
+    })
+    expect(agentB.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: ALLOW.optionId }])
 
     await destroyMounted(setup.renderer)
     await controller.dispose()

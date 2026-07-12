@@ -2,28 +2,56 @@
 
 exports[`CockpitApp layout matches the expected frame at a fixed size 1`] = `
 "┌─Claude Code──────────────────────────────────────────────────────────────────┐
-│ No messages yet. Type a prompt to start the conversation.                    │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │                                                                          │ │
+│ │  /\\_/\\   Welcome to Kitten.                                              │ │
+│ │ ( o.o )  Claude Code: ready                                              │ │
+│ │  > ^ <   Codex: ready                                                    │ │
+│ │          Working directory: /Users/matheusbbarni/projects/kitten         │ │
+│ │          Type to start. Press ^T to hand off.                            │ │
+│ │                                                                          │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
 │                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌─Prompt───────────────────────────────────────────────────────────────────────┐
-│ Enter sends, Shift+Enter adds a line, Esc interrupts                         │
+╭─Prompt───────────────────────────────────────────────────────────────────────╮
 │                                                                              │
+│  ❯ Enter sends, Shift+Enter adds a line, Esc interrupts                      │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ kitten         ^\` shell  ^R resume  ^T hand off -> Codex — nothing to hand off 
+ [▸ ○ Claude Code: idle] [○ Codex: idle]                                        
+"
+`;
+
+exports[`CockpitApp keymap matches the cockpit frame with settings open: settings-open 1`] = `
+"┌─Claude Code──────────────────────────────────────────────────────────────────┐
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │   ┌─Settings─────────────────────────────────────────────────────────┐   │ │
+│ │  /│ [Theme]  Applies immediately                                     │   │ │
+│ │ ( │                                                                  │   │ │
+│ │  >│ ▸ Auto                                                           │   │ │
+│ │   │   Light                                                          │   │ │
+│ │   │   Dark                                                           │   │ │
+│ │   │   Catppuccin Mocha                                               │   │ │
+│ ╰───│   Catppuccin Latte                                               │───╯ │
+│     │                                                                  │     │
+│     │ ↑↓ move  Tab switch tab  r reset  Esc close                      │     │
+│     └──────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- ▸ Claude Code: idle    Codex: idle                          ^O switch  F1 help 
+╭─Prompt───────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  ❯ Enter sends, Shift+Enter adds a line, Esc interrupts                      │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ kitten                ^\` shell  ^R resume  ^T hand off -> Codex — overlay open 
+ [▸ ○ Claude Code: idle] [○ Codex: idle]                                        
 "
 `;

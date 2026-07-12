@@ -1,7 +1,7 @@
 /**
  * One message in the transcript, rendered as Markdown.
  *
- * Both parties go through `<markdown>` rather than only the agent. The agent's text
+ * Both parties go through the shared `<Markdown>` leaf rather than only the agent. The agent's text
  * genuinely is Markdown, and routing the user's text through the same renderable keeps
  * one copy path: the PRD asks that a selection carry the words and nothing else, and
  * `MarkdownRenderable` reports exactly its text to `getSelectedText()`.
@@ -17,27 +17,13 @@
  *   bright `text` foreground on the band gives the user's turn the prominence the label
  *   used to carry.
  *
- * The `streaming` flag is pinned on, deliberately - see {@link MARKDOWN_STREAMING}.
+ * The shared leaf owns the streaming pin, syntax style, and concealment.
  */
 
 import { type ReactNode } from "react"
 
-import { usePalette, useSyntaxStyle } from "./theme.ts"
-
-/**
- * `<markdown>` is mounted with `streaming` permanently enabled.
- *
- * On @opentui/core 0.4.3 a `MarkdownRenderable` paints nothing at all unless it is
- * streaming: constructing one with `streaming: false` yields an empty block, and
- * flipping the flag from true to false blanks any content with more than a single
- * top-level block. Since a settled message must keep painting, Kitten never
- * finalizes. The cost is that the trailing block is re-parsed on each update, which
- * is exactly what a streaming transcript wants anyway.
- *
- * Revisit on every @opentui bump: drop this once a test proves that finalized
- * multi-block content still renders.
- */
-export const MARKDOWN_STREAMING = true
+import { Markdown } from "./Markdown.tsx"
+import { usePalette } from "./theme.ts"
 
 /** Who said it. */
 export type MessageRole = "user" | "agent"
@@ -50,7 +36,7 @@ export type MessageRole = "user" | "agent"
  * without reshaping callers.
  */
 export const ROLE_LABELS: Readonly<Record<"agent", string>> = {
-  agent: "agent",
+  agent: "Agent",
 }
 
 /** Props for {@link MessageView}. */
@@ -75,7 +61,6 @@ export function MessageView({ role, text }: MessageViewProps): ReactNode {
  */
 function UserMessage({ text }: { text: string }): ReactNode {
   const palette = usePalette()
-  const syntaxStyle = useSyntaxStyle()
   return (
     <box
       style={{
@@ -87,7 +72,7 @@ function UserMessage({ text }: { text: string }): ReactNode {
         backgroundColor: palette.userMessageSurface,
       }}
     >
-      <markdown content={text} syntaxStyle={syntaxStyle} streaming={MARKDOWN_STREAMING} fg={palette.text} />
+      <Markdown content={text} fg={palette.text} />
     </box>
   )
 }
@@ -95,11 +80,10 @@ function UserMessage({ text }: { text: string }): ReactNode {
 /** The agent's turn: its role label above its Markdown, no band. */
 function AgentMessage({ text }: { text: string }): ReactNode {
   const palette = usePalette()
-  const syntaxStyle = useSyntaxStyle()
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
       <text fg={palette.muted}>{ROLE_LABELS.agent}</text>
-      <markdown content={text} syntaxStyle={syntaxStyle} streaming={MARKDOWN_STREAMING} fg={palette.text} />
+      <Markdown content={text} fg={palette.text} />
     </box>
   )
 }

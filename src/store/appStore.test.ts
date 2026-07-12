@@ -2,9 +2,30 @@ import { describe, expect, it } from "bun:test"
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
-import type { AgentId, DomainSessionEvent, HandoffBundle, SessionState } from "../core/types.ts"
-import { createAppStore, type AppStore, type AppState } from "./appStore.ts"
-import { selectAgentStatus, selectAgentTurns, selectApprovalOverlay, selectHandoffPreview } from "./selectors.ts"
+import { createShellState } from "../core/shellReducer.ts"
+import type { DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
+import { createAppStore, defaultSessionSeeds, type AppStore, type AppState } from "./appStore.ts"
+import {
+  selectApprovalOverlay,
+  selectHandoffPreview,
+  selectFocusedPane,
+  selectHasOpenOverlay,
+  selectIsFocused,
+  selectRestoration,
+  selectRestorationBundle,
+  selectSessionPicker,
+  selectShell,
+  selectSessionStatus,
+  selectSessionTurns,
+  selectSettingsOverlay,
+  selectThemePreference,
+} from "./selectors.ts"
+
+/** A default-fleet seed for `id`, optionally bound to an ACP session id. */
+const seed = (id: SessionId, acpSessionId = ""): SessionSeed => ({
+  ...defaultSessionSeeds().find((s) => s.id === id)!,
+  acpSessionId,
+})
 
 /**
  * The store is verified two ways.
@@ -52,18 +73,59 @@ function trackSelector<T>(store: AppStore, selector: (state: AppState) => T): T[
 describe("createAppStore", () => {
   it("starts both agents empty and idle, unfocused overlays, focus on the first agent", () => {
     const state = createAppStore().getState()
-    expect(state.sessions["claude-code"]).toEqual(createSessionState("claude-code", ""))
-    expect(state.sessions.codex).toEqual(createSessionState("codex", ""))
-    expect(state.focusedAgentId).toBe("claude-code")
-    expect(state.overlays).toEqual({ approval: null, handoffPreview: null })
+    expect(state.sessions["claude-code"]).toEqual(createSessionState(seed("claude-code")))
+    expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
+    expect(state.order).toEqual(["claude-code", "codex"])
+    expect(state.focusedSessionId).toBe("claude-code")
+    expect(state.focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+    expect(state.shell).toEqual(createShellState())
+    expect(state.overlays).toEqual({
+      approval: null,
+      handoffPreview: null,
+      handoffTarget: null,
+      modelSelect: null,
+      settings: null,
+      sessions: false,
+      sessionPicker: false,
+    })
+    expect(state.restoration).toEqual({ "claude-code": null, codex: null })
+    expect(state.restorationBundle).toBeNull()
+    expect(state.preferences).toEqual({ theme: "auto" })
   })
 
-  it("honors pre-bound session ids and an initial focused agent", () => {
-    const store = createAppStore({ sessionIds: { codex: "session-codex" }, focusedAgentId: "codex" })
+  it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {
+    const state = createAppStore().getState()
+
+    const claude = state.sessions["claude-code"]!
+    const codex = state.sessions.codex!
+    expect(claude.id).toBe("claude-code")
+    expect(codex.id).toBe("codex")
+    expect(claude.id).not.toBe(codex.id)
+    expect(claude.providerKind).toBe("claude-code")
+    expect(codex.providerKind).toBe("codex")
+    expect(claude.title).toBe("Claude Code")
+    expect(codex.title).toBe("Codex")
+    // The launch directory is the working directory of every default session.
+    expect(claude.cwd).toBe(process.cwd())
+    expect(codex.cwd).toBe(process.cwd())
+    expect(claude.acpSessionId).toBe("")
+  })
+
+  it("honors pre-bound session ids and an initial focused session", () => {
+    const store = createAppStore({
+      seeds: [seed("claude-code"), seed("codex", "session-codex")],
+      focusedSessionId: "codex",
+    })
     const state = store.getState()
-    expect(state.sessions.codex.sessionId).toBe("session-codex")
-    expect(state.sessions["claude-code"].sessionId).toBe("")
-    expect(state.focusedAgentId).toBe("codex")
+    expect(state.sessions.codex!.acpSessionId).toBe("session-codex")
+    expect(state.sessions["claude-code"]!.acpSessionId).toBe("")
+    expect(state.focusedSessionId).toBe("codex")
+  })
+
+  it("seeds the theme preference from options", () => {
+    const store = createAppStore({ preferences: { theme: "dark" } })
+
+    expect(selectThemePreference(store.getState())).toBe("dark")
   })
 })
 
@@ -75,15 +137,15 @@ describe("applyEvent", () => {
     store.applyEvent("claude-code", message("m1", "hello"))
 
     const after = store.getState()
-    expect(after.sessions["claude-code"].turns).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
+    expect(after.sessions["claude-code"]!.turns).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
     expect(after.sessions.codex).toBe(before.sessions.codex)
-    expect(after.sessions.codex.turns).toEqual([])
+    expect(after.sessions.codex!.turns).toEqual([])
   })
 
   it("never mutates the prior state", () => {
     const store = createAppStore()
     const before = store.getState()
-    const beforeSession = before.sessions["claude-code"]
+    const beforeSession = before.sessions["claude-code"]!
 
     store.applyEvent("claude-code", message("m1", "hello"))
     store.applyEvent("claude-code", { kind: "status", status: "working" })
@@ -109,14 +171,14 @@ describe("applyEvent", () => {
       },
     })
 
-    const session = store.getState().sessions.codex
+    const session = store.getState().sessions.codex!
     expect(session.pendingDiffs).toEqual([{ toolCallId: "call-1", path: "src/parser.ts", unified: "@@ -1 +1 @@" }])
     expect(session.referencedFiles.get("src/parser.ts")).toBe("edited")
   })
 
   it("applies each already-coalesced event immediately, without re-batching content", () => {
     const store = createAppStore()
-    const turns = trackSelector(store, selectAgentTurns("claude-code"))
+    const turns = trackSelector(store, selectSessionTurns("claude-code"))
 
     store.applyEvent("claude-code", message("m1", "hel"))
     store.applyEvent("claude-code", message("m1", "lo"))
@@ -124,6 +186,31 @@ describe("applyEvent", () => {
     expect(turns).toHaveLength(2)
     expect(turns[0]).toEqual([{ kind: "agent", messageId: "m1", text: "hel" }])
     expect(turns[1]).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
+  })
+})
+
+describe("applyShellEvent", () => {
+  it("updates only the shell slice for a cwd change", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/kitten" })
+
+    const after = store.getState()
+    expect(after.shell).toEqual({ ...before.shell, cwd: "/workspace/kitten" })
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.focusedPane).toBe(before.focusedPane)
+  })
+
+  it("leaves the shell reference and subscribers untouched for agent events", () => {
+    const store = createAppStore()
+    const beforeShell = selectShell(store.getState())
+    const shells = trackSelector(store, selectShell)
+
+    store.applyEvent("claude-code", message("m1", "hello"))
+
+    expect(selectShell(store.getState())).toBe(beforeShell)
+    expect(shells).toEqual([])
   })
 })
 
@@ -137,7 +224,7 @@ describe("startSession", () => {
     store.startSession("codex", "session-2")
 
     const state = store.getState()
-    expect(state.sessions.codex).toEqual(createSessionState("codex", "session-2"))
+    expect(state.sessions.codex).toEqual(createSessionState(seed("codex", "session-2")))
     expect(state.sessions["claude-code"]).toBe(claudeBefore)
   })
 })
@@ -150,13 +237,14 @@ describe("setFocus", () => {
     store.setFocus("codex")
 
     const after = store.getState()
-    expect(after.focusedAgentId).toBe("codex")
+    expect(after.focusedSessionId).toBe("codex")
+    expect(after.focusedPane).toEqual({ kind: "agent", agentId: "codex" })
     expect(after.sessions).toBe(before.sessions)
     expect(after.overlays).toBe(before.overlays)
   })
 
   it("is a no-op when the agent is already focused", () => {
-    const store = createAppStore({ focusedAgentId: "codex" })
+    const store = createAppStore({ focusedSessionId: "codex" })
     const before = store.getState()
     let notifications = 0
     store.subscribe(() => notifications++)
@@ -166,12 +254,74 @@ describe("setFocus", () => {
     expect(store.getState()).toBe(before)
     expect(notifications).toBe(0)
   })
+
+  it("notifies only the focus subscribers whose flag changed, leaving session slices identical", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const claudeFocus = trackSelector(store, selectIsFocused("claude-code"))
+    const codexFocus = trackSelector(store, selectIsFocused("codex"))
+    const claudeTurns = trackSelector(store, selectSessionTurns("claude-code"))
+
+    store.setFocus("codex")
+
+    // Both focus flags flipped, so both are notified once - but nothing else moved.
+    expect(claudeFocus).toEqual([false])
+    expect(codexFocus).toEqual([true])
+    expect(claudeTurns).toEqual([])
+    const after = store.getState()
+    expect(after.sessions["claude-code"]).toBe(before.sessions["claude-code"])
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+  })
+
+  it("ignores a focus request for a session that does not exist", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setFocus("ghost")
+
+    expect(store.getState()).toBe(before)
+    expect(store.getState().focusedSessionId).toBe("claude-code")
+  })
+})
+
+describe("setFocusedPane", () => {
+  it("is a no-op when the semantic pane is unchanged", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    let notifications = 0
+    store.subscribe(() => notifications++)
+
+    store.setFocusedPane({ kind: "agent", agentId: "claude-code" })
+
+    expect(store.getState()).toBe(before)
+    expect(notifications).toBe(0)
+  })
+
+  it("notifies a focused-pane subscriber exactly once when switching to the shell", () => {
+    const store = createAppStore()
+    const panes = trackSelector(store, selectFocusedPane)
+
+    store.setFocusedPane({ kind: "shell" })
+    store.setFocusedPane({ kind: "shell" })
+
+    expect(panes).toEqual([{ kind: "shell" }])
+    expect(store.getState().focusedSessionId).toBe("claude-code")
+  })
+
+  it("ignores an agent pane whose session does not exist", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setFocusedPane({ kind: "agent", agentId: "ghost" })
+
+    expect(store.getState()).toBe(before)
+  })
 })
 
 describe("overlay slots", () => {
   it("exposes an opened approval request and clears it on close", () => {
     const store = createAppStore()
-    const overlay = { agentId: "claude-code" as AgentId, request: APPROVAL_REQUEST }
+    const overlay = { sessionId: "claude-code" as SessionId, title: "Claude Code", cwd: "/workspace/kitten", request: APPROVAL_REQUEST }
 
     store.openApproval(overlay)
     expect(selectApprovalOverlay(store.getState())).toEqual(overlay)
@@ -182,7 +332,12 @@ describe("overlay slots", () => {
 
   it("exposes an opened hand-off preview and clears it on close", () => {
     const store = createAppStore()
-    const overlay = { sourceAgentId: "claude-code" as AgentId, targetAgentId: "codex" as AgentId, bundle: HANDOFF_BUNDLE }
+    const overlay = {
+      sourceSessionId: "claude-code" as SessionId,
+      targetSessionId: "codex" as SessionId,
+      bundle: HANDOFF_BUNDLE,
+      targetConfigOptions: [],
+    }
 
     store.openHandoffPreview(overlay)
     expect(selectHandoffPreview(store.getState())).toEqual(overlay)
@@ -193,8 +348,8 @@ describe("overlay slots", () => {
 
   it("keeps the two slots independent", () => {
     const store = createAppStore()
-    store.openApproval({ agentId: "codex", request: APPROVAL_REQUEST })
-    store.openHandoffPreview({ sourceAgentId: "codex", targetAgentId: "claude-code", bundle: HANDOFF_BUNDLE })
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
 
     store.closeApproval()
 
@@ -203,24 +358,244 @@ describe("overlay slots", () => {
     expect(overlays.handoffPreview?.bundle).toBe(HANDOFF_BUNDLE)
   })
 
+  it("exposes an opened model selector and clears it on close", () => {
+    const store = createAppStore()
+    const overlay = { sessionId: "codex" as SessionId }
+
+    store.openModelSelect(overlay)
+    expect(store.getState().overlays.modelSelect).toEqual(overlay)
+
+    store.closeModelSelect()
+    expect(store.getState().overlays.modelSelect).toBeNull()
+  })
+
+  it("keeps the model selector independent of the approval slot", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openModelSelect({ sessionId: "claude-code" })
+
+    store.closeModelSelect()
+
+    const overlays = store.getState().overlays
+    expect(overlays.modelSelect).toBeNull()
+    expect(overlays.approval?.sessionId).toBe("codex")
+  })
+
+  it("opens settings without changing the other overlay-slot identities", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
+    const before = store.getState()
+
+    store.openSettings()
+
+    const after = store.getState()
+    expect(selectSettingsOverlay(after)).toEqual({ tab: "theme" })
+    expect(after.overlays.approval).toBe(before.overlays.approval)
+    expect(after.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.preferences).toBe(before.preferences)
+  })
+
+  it("opens and closes the sessions overview", () => {
+    const store = createAppStore()
+    expect(store.getState().overlays.sessions).toBe(false)
+
+    store.openSessions()
+    expect(store.getState().overlays.sessions).toBe(true)
+
+    store.closeSessions()
+    expect(store.getState().overlays.sessions).toBe(false)
+  })
+
+  it("leaves the payload slots untouched when the overview opens", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "claude-code", title: "Claude Code", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+
+    store.openSessions()
+
+    const overlays = store.getState().overlays
+    expect(overlays.sessions).toBe(true)
+    expect(overlays.approval?.sessionId).toBe("claude-code")
+  })
+
+  it("opens and closes the session picker without clobbering payload slots", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
+    const before = store.getState()
+
+    store.openSessionPicker()
+
+    const opened = store.getState()
+    expect(selectSessionPicker(opened)).toBe(true)
+    expect(selectHasOpenOverlay(opened)).toBe(true)
+    expect(opened.overlays.approval).toBe(before.overlays.approval)
+    expect(opened.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(opened.sessions).toBe(before.sessions)
+    expect(opened.restoration).toBe(before.restoration)
+
+    store.closeSessionPicker()
+    const closed = store.getState()
+    expect(selectSessionPicker(closed)).toBe(false)
+    expect(closed.overlays.approval).toBe(before.overlays.approval)
+    expect(closed.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+  })
+
+  it("clears the overlay gate when the session picker was the only open slot", () => {
+    const store = createAppStore()
+    store.openSessionPicker()
+
+    store.closeSessionPicker()
+
+    expect(selectSessionPicker(store.getState())).toBe(false)
+    expect(selectHasOpenOverlay(store.getState())).toBe(false)
+  })
+
   it("does not notify when closing an already-closed slot", () => {
     const store = createAppStore()
+    const before = store.getState()
     let notifications = 0
     store.subscribe(() => notifications++)
 
     store.closeApproval()
     store.closeHandoffPreview()
+    store.closeModelSelect()
+    store.closeSettings()
+    store.closeSessions()
+    store.closeSessionPicker()
+
+    expect(store.getState()).toBe(before)
+    expect(notifications).toBe(0)
+  })
+
+  it("does not notify when opening an already-open overview", () => {
+    const store = createAppStore()
+    store.openSessions()
+    let notifications = 0
+    store.subscribe(() => notifications++)
+
+    store.openSessions()
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("restoration state", () => {
+  it("defaults every seeded session to no restoration status", () => {
+    const store = createAppStore()
+
+    expect(selectRestoration("claude-code")(store.getState())).toBeNull()
+    expect(selectRestoration("codex")(store.getState())).toBeNull()
+  })
+
+  it("sets one session's restoration status without changing sibling state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setRestoration("codex", "unavailable")
+
+    const after = store.getState()
+    expect(selectRestoration("codex")(after)).toBe("unavailable")
+    expect(selectRestoration("claude-code")(after)).toBeNull()
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.overlays).toBe(before.overlays)
+  })
+
+  it("stores the persisted hand-off bundle without changing session state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setRestorationBundle(HANDOFF_BUNDLE)
+
+    const after = store.getState()
+    expect(selectRestorationBundle(after)).toBe(HANDOFF_BUNDLE)
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.restoration).toBe(before.restoration)
+
+    store.setRestorationBundle(HANDOFF_BUNDLE)
+    expect(store.getState()).toBe(after)
+  })
+
+  it("ignores unknown sessions and unchanged restoration values", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+
+    store.setRestoration("ghost", "live")
+    expect(store.getState()).toBe(initial)
+
+    store.setRestoration("codex", "live")
+    const live = store.getState()
+    store.setRestoration("codex", "live")
+    expect(store.getState()).toBe(live)
+  })
+})
+
+describe("preferences", () => {
+  it("changes only preferences and preserves state identity for an unchanged theme", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setThemePreference("dark")
+
+    const afterChange = store.getState()
+    expect(afterChange.preferences).toEqual({ theme: "dark" })
+    expect(afterChange.preferences).not.toBe(before.preferences)
+    expect(afterChange.sessions).toBe(before.sessions)
+    expect(afterChange.overlays).toBe(before.overlays)
+    expect(afterChange.focusedSessionId).toBe(before.focusedSessionId)
+
+    store.setThemePreference("dark")
+
+    expect(store.getState()).toBe(afterChange)
+  })
+
+  it("does not notify an unrelated session-turns subscriber when settings or theme changes", () => {
+    const store = createAppStore()
+    const turns = trackSelector(store, selectSessionTurns("claude-code"))
+
+    store.openSettings()
+    store.setThemePreference("dark")
+    store.closeSettings()
+
+    expect(turns).toEqual([])
+  })
+})
+
+describe("integration: settings preference flow", () => {
+  it("opens settings, changes the theme, and closes settings without cross-slice changes", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+
+    store.openSettings()
+    const opened = store.getState()
+    expect(opened.overlays.settings).toEqual({ tab: "theme" })
+    expect(opened.preferences).toBe(initial.preferences)
+    expect(opened.sessions).toBe(initial.sessions)
+    expect(opened.focusedSessionId).toBe(initial.focusedSessionId)
+
+    store.setThemePreference("dark")
+    const themed = store.getState()
+    expect(themed.preferences).toEqual({ theme: "dark" })
+    expect(themed.overlays).toBe(opened.overlays)
+    expect(themed.sessions).toBe(opened.sessions)
+    expect(themed.focusedSessionId).toBe(opened.focusedSessionId)
+
+    store.closeSettings()
+    const closed = store.getState()
+    expect(closed.overlays.settings).toBeNull()
+    expect(closed.preferences).toBe(themed.preferences)
+    expect(closed.sessions).toBe(themed.sessions)
+    expect(closed.focusedSessionId).toBe(themed.focusedSessionId)
   })
 })
 
 describe("subscriptions", () => {
   it("notifies whole-state subscribers with the new and previous state, until unsubscribed", () => {
     const store = createAppStore()
-    const seen: { focused: AgentId; previous: AgentId }[] = []
+    const seen: { focused: SessionId; previous: SessionId }[] = []
     const unsubscribe = store.subscribe((state, previous) =>
-      seen.push({ focused: state.focusedAgentId, previous: previous.focusedAgentId }),
+      seen.push({ focused: state.focusedSessionId, previous: previous.focusedSessionId }),
     )
 
     store.setFocus("codex")
@@ -247,8 +622,8 @@ describe("subscriptions", () => {
 
   it("does not notify agent A's status subscriber when agent B's status changes", () => {
     const store = createAppStore()
-    const claudeStatuses = trackSelector(store, selectAgentStatus("claude-code"))
-    const codexStatuses = trackSelector(store, selectAgentStatus("codex"))
+    const claudeStatuses = trackSelector(store, selectSessionStatus("claude-code"))
+    const codexStatuses = trackSelector(store, selectSessionStatus("codex"))
 
     store.applyEvent("codex", { kind: "status", status: "working" })
 
@@ -258,17 +633,17 @@ describe("subscriptions", () => {
 
   it("does not notify a transcript subscriber when focus or an overlay changes", () => {
     const store = createAppStore()
-    const turns = trackSelector(store, selectAgentTurns("claude-code"))
+    const turns = trackSelector(store, selectSessionTurns("claude-code"))
 
     store.setFocus("codex")
-    store.openApproval({ agentId: "codex", request: APPROVAL_REQUEST })
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
 
     expect(turns).toEqual([])
   })
 
   it("does not notify a status subscriber when the same agent only streams tokens", () => {
     const store = createAppStore()
-    const statuses = trackSelector(store, selectAgentStatus("claude-code"))
+    const statuses = trackSelector(store, selectSessionStatus("claude-code"))
 
     store.applyEvent("claude-code", message("m1", "tok"))
     store.applyEvent("claude-code", message("m1", "en"))
@@ -280,7 +655,7 @@ describe("subscriptions", () => {
     const store = createAppStore()
     const lengths: number[] = []
     store.subscribeSelector(
-      selectAgentTurns("claude-code"),
+      selectSessionTurns("claude-code"),
       (turns) => lengths.push(turns.length),
       (a, b) => a.length === b.length,
     )
@@ -295,7 +670,7 @@ describe("subscriptions", () => {
   it("stops notifying a narrow subscriber after unsubscribe", () => {
     const store = createAppStore()
     const seen: string[] = []
-    const unsubscribe = store.subscribeSelector(selectAgentStatus("codex"), (status) => seen.push(status))
+    const unsubscribe = store.subscribeSelector(selectSessionStatus("codex"), (status) => seen.push(status))
 
     store.applyEvent("codex", { kind: "status", status: "working" })
     unsubscribe()
@@ -306,15 +681,15 @@ describe("subscriptions", () => {
 })
 
 describe("integration: a scripted interleaved event stream", () => {
-  const script: { agentId: AgentId; event: DomainSessionEvent }[] = [
-    { agentId: "claude-code", event: { kind: "user_message", messageId: "u1", text: "Fix the parser" } },
-    { agentId: "claude-code", event: { kind: "status", status: "working" } },
-    { agentId: "claude-code", event: message("a1", "Looking at ") },
-    { agentId: "codex", event: { kind: "user_message", messageId: "u2", text: "Write the tests" } },
-    { agentId: "claude-code", event: message("a1", "the parser.") },
-    { agentId: "codex", event: { kind: "status", status: "working" } },
+  const script: { sessionId: SessionId; event: DomainSessionEvent }[] = [
+    { sessionId: "claude-code", event: { kind: "user_message", messageId: "u1", text: "Fix the parser" } },
+    { sessionId: "claude-code", event: { kind: "status", status: "working" } },
+    { sessionId: "claude-code", event: message("a1", "Looking at ") },
+    { sessionId: "codex", event: { kind: "user_message", messageId: "u2", text: "Write the tests" } },
+    { sessionId: "claude-code", event: message("a1", "the parser.") },
+    { sessionId: "codex", event: { kind: "status", status: "working" } },
     {
-      agentId: "claude-code",
+      sessionId: "claude-code",
       event: {
         kind: "tool_call",
         call: {
@@ -327,27 +702,27 @@ describe("integration: a scripted interleaved event stream", () => {
         },
       },
     },
-    { agentId: "codex", event: { kind: "plan", entries: [{ content: "Add a failing test", status: "in_progress" }] } },
-    { agentId: "claude-code", event: { kind: "tool_call", call: { toolCallId: "c1", status: "completed" } } },
-    { agentId: "claude-code", event: { kind: "status", status: "idle" } },
-    { agentId: "codex", event: message("a2", "Tests written.") },
-    { agentId: "codex", event: { kind: "status", status: "awaiting_approval" } },
+    { sessionId: "codex", event: { kind: "plan", entries: [{ content: "Add a failing test", status: "in_progress" }] } },
+    { sessionId: "claude-code", event: { kind: "tool_call", call: { toolCallId: "c1", status: "completed" } } },
+    { sessionId: "claude-code", event: { kind: "status", status: "idle" } },
+    { sessionId: "codex", event: message("a2", "Tests written.") },
+    { sessionId: "codex", event: { kind: "status", status: "awaiting_approval" } },
   ]
 
-  /** Fold one agent's events over a fresh session, independently of the store. */
-  const expected = (agentId: AgentId): SessionState =>
+  /** Fold one session's events over a fresh session, independently of the store. */
+  const expected = (sessionId: SessionId): SessionState =>
     script
-      .filter((step) => step.agentId === agentId)
+      .filter((step) => step.sessionId === sessionId)
       .map((step) => step.event)
-      .reduce(sessionReducer, createSessionState(agentId, `session-${agentId}`))
+      .reduce(sessionReducer, createSessionState(seed(sessionId, `session-${sessionId}`)))
 
-  it("routes every event to its agent and reduces both sessions correctly", () => {
+  it("routes every event to its session and reduces both sessions correctly", () => {
     const store = createAppStore({
-      sessionIds: { "claude-code": "session-claude-code", codex: "session-codex" },
+      seeds: [seed("claude-code", "session-claude-code"), seed("codex", "session-codex")],
     })
 
-    for (const { agentId, event } of script) {
-      store.applyEvent(agentId, event)
+    for (const { sessionId, event } of script) {
+      store.applyEvent(sessionId, event)
     }
 
     const state = store.getState()
@@ -355,16 +730,16 @@ describe("integration: a scripted interleaved event stream", () => {
     expect(state.sessions.codex).toEqual(expected("codex"))
   })
 
-  it("produces the expected transcript, status, plan, and derived fields per agent", () => {
+  it("produces the expected transcript, status, plan, and derived fields per session", () => {
     const store = createAppStore({
-      sessionIds: { "claude-code": "session-claude-code", codex: "session-codex" },
+      seeds: [seed("claude-code", "session-claude-code"), seed("codex", "session-codex")],
     })
-    for (const { agentId, event } of script) {
-      store.applyEvent(agentId, event)
+    for (const { sessionId, event } of script) {
+      store.applyEvent(sessionId, event)
     }
     const { sessions } = store.getState()
 
-    const claude = sessions["claude-code"]
+    const claude = sessions["claude-code"]!
     expect(claude.status).toBe("idle")
     expect(claude.turns).toEqual([
       { kind: "user", messageId: "u1", text: "Fix the parser" },
@@ -385,7 +760,7 @@ describe("integration: a scripted interleaved event stream", () => {
     expect(claude.referencedFiles.get("src/parser.ts")).toBe("edited")
     expect(claude.plan).toEqual([])
 
-    const codex = sessions.codex
+    const codex = sessions.codex!
     expect(codex.status).toBe("awaiting_approval")
     expect(codex.turns).toEqual([
       { kind: "user", messageId: "u2", text: "Write the tests" },
@@ -398,14 +773,32 @@ describe("integration: a scripted interleaved event stream", () => {
   it("keeps focus and overlays independent of the event stream", () => {
     const store = createAppStore()
     store.setFocus("codex")
-    store.openApproval({ agentId: "codex", request: APPROVAL_REQUEST })
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
 
-    for (const { agentId, event } of script) {
-      store.applyEvent(agentId, event)
+    for (const { sessionId, event } of script) {
+      store.applyEvent(sessionId, event)
     }
 
     const state = store.getState()
-    expect(state.focusedAgentId).toBe("codex")
+    expect(state.focusedSessionId).toBe("codex")
     expect(state.overlays.approval?.request).toBe(APPROVAL_REQUEST)
+  })
+})
+
+describe("integration: shell and agent selector isolation", () => {
+  it("notifies only the selector matching each interleaved event", () => {
+    const store = createAppStore()
+    const shellCwds: string[] = []
+    const agentStatuses: string[] = []
+    store.subscribeSelector(selectShell, (shell) => shellCwds.push(shell.cwd))
+    store.subscribeSelector(selectSessionStatus("claude-code"), (status) => agentStatuses.push(status))
+
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/one" })
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/two" })
+    store.applyEvent("claude-code", message("m1", "streamed output"))
+
+    expect(shellCwds).toEqual(["/one", "/two"])
+    expect(agentStatuses).toEqual(["working"])
   })
 })

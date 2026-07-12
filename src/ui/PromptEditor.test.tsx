@@ -1,19 +1,29 @@
+// Suite: PromptEditor presentation and controller interaction
+// Invariant: visual restyling never changes prompt composition, submission, interruption, or readiness behavior.
+// Boundary IN: real React rendering, OpenTUI textarea/layout, palette resolution, and controller actions.
+// Boundary OUT: agent transport behavior, owned by controller and adapter integration suites.
+
 import { describe, expect, it } from "bun:test"
 
+import { RGBA } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import type { HandoffBundle } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
   PROMPT_DISABLED_TITLE,
+  PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
   PROMPT_TITLE,
   PromptEditor,
 } from "./PromptEditor.tsx"
+import type { CockpitCommand } from "./keymap.ts"
+import { DARK_PALETTE } from "./theme.ts"
 
 /**
  * Mount the editor on a Kitty-keyboard terminal.
@@ -23,10 +33,23 @@ import {
  * lone byte the parser must wait out. Both are what this component's key handling is
  * about, so the tests speak the protocol that can express them.
  */
-async function renderEditor(controller: FakeController, height = 10): Promise<TestRendererSetup> {
+async function renderEditor(
+  controller: FakeController,
+  height = 10,
+  onRunCommand?: (command: CockpitCommand) => void,
+  dockPromptAtBottom = false,
+): Promise<TestRendererSetup> {
+  const editor = <PromptEditor onRunCommand={onRunCommand} />
   const setup = await testRender(
     <CockpitProvider controller={controller}>
-      <PromptEditor />
+      {dockPromptAtBottom ? (
+        <box style={{ height, flexDirection: "column" }}>
+          <box style={{ flexGrow: 1 }} />
+          {editor}
+        </box>
+      ) : (
+        editor
+      )}
     </CockpitProvider>,
     { width: 64, height, kittyKeyboard: true },
   )
@@ -68,12 +91,45 @@ function frameWith(setup: TestRendererSetup, ...needles: string[]): Promise<stri
 /** The single text argument the editor passed to `sendPrompt`. */
 function sentText(controller: FakeController): string {
   expect(controller.calls.sendPrompt).toHaveLength(1)
-  const { input, agentId } = controller.calls.sendPrompt[0]!
+  const { input, sessionId } = controller.calls.sendPrompt[0]!
   // The editor always addresses the focused agent, never one by name.
-  expect(agentId).toBeUndefined()
+  expect(sessionId).toBeUndefined()
   expect(typeof input).toBe("string")
   return input as string
 }
+
+/** The painted foreground of the first span containing `needle`. */
+function foregroundOf(setup: TestRendererSetup, needle: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text.includes(needle))
+    ?.fg.toString()
+}
+
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
+}
+
+describe("PromptEditor presentation", () => {
+  it("renders a spaced warm-accent chevron before the unchanged ready placeholder", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+    const frame = setup.captureCharFrame()
+    const contentLine = frame.split("\n").find((line) => line.includes(PROMPT_PLACEHOLDER))
+
+    expect(frame).toContain("╭")
+    expect(contentLine).toBeDefined()
+    expect(contentLine).toContain(PROMPT_CHEVRON)
+    expect(contentLine!.indexOf(PROMPT_CHEVRON)).toBeGreaterThan(contentLine!.indexOf("│") + 1)
+    expect(contentLine!.indexOf(PROMPT_PLACEHOLDER)).toBeGreaterThan(
+      contentLine!.indexOf(PROMPT_CHEVRON) + PROMPT_CHEVRON.length,
+    )
+    expect(foregroundOf(setup, PROMPT_CHEVRON)).toBe(paletteColor(DARK_PALETTE.accent))
+
+    await destroyMounted(setup.renderer)
+  })
+})
 
 describe("PromptEditor submit", () => {
   it("sends the composed text to the focused agent on Enter and clears the editor", async () => {
@@ -171,6 +227,85 @@ describe("PromptEditor interrupt", () => {
   })
 })
 
+describe("PromptEditor slash commands", () => {
+  it("filters agent commands and inserts the selected command without sending it", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", {
+      kind: "commands",
+      commands: [
+        { name: "review", description: "Review the current diff", hint: "[scope]" },
+        { name: "test", description: "Run the focused tests" },
+      ],
+    })
+    // The menu is positioned above the prompt, as it is in the real cockpit. Dock
+    // the standalone editor to the bottom so the test observes that real layout.
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/review")
+    const menu = await frameWith(setup, "Commands", "Agent commands", "/review", "[scope]")
+    expect(menu).not.toContain("/settings")
+
+    await pressEnter(setup)
+    expect(controller.calls.sendPrompt).toEqual([])
+    await frameWith(setup, "/review")
+
+    // Selecting an agent command owns the separating space; subsequent prompt text
+    // must append directly instead of creating an accidental double space.
+    await type(setup, "src/ui")
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("/review src/ui")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("dispatches a selected Kitten command instead of sending it to the agent", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
+
+    await type(setup, "/model")
+    const menu = await frameWith(setup, "Commands", "/model")
+    expect(menu).not.toContain("Choose an agent model")
+    await pressEnter(setup)
+
+    expect(dispatched).toEqual(["model-select"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/model")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor shell shortcut", () => {
+  it("opens the shell when bang is the first prompt character", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 10, (command) => dispatched.push(command))
+
+    await type(setup, "!")
+
+    expect(dispatched).toEqual(["toggle-shell"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("!")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps bang as prompt text after the prompt already has content", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 10, (command) => dispatched.push(command))
+
+    await type(setup, "inspect !")
+    await pressEnter(setup)
+
+    expect(dispatched).toEqual([])
+    expect(sentText(controller)).toBe("inspect !")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
 describe("PromptEditor paste", () => {
   it("inserts a large bracketed paste intact, without submitting on its newlines", async () => {
     const controller = createFakeController()
@@ -213,7 +348,7 @@ describe("PromptEditor paste", () => {
 
 describe("PromptEditor readiness gate", () => {
   const notReady: AgentRuntimeState[] = [
-    { agentId: "claude-code", displayName: "Claude Code", ready: false, error: "claude-agent-acp: not found" },
+    { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", cwd: "/workspace/kitten", ready: false, error: "claude-agent-acp: not found" },
     readyRuntimes()[1]!,
   ]
 
@@ -224,6 +359,7 @@ describe("PromptEditor readiness gate", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(PROMPT_DISABLED_TITLE)
     expect(frame).toContain(PROMPT_DISABLED_PLACEHOLDER)
+    expect(foregroundOf(setup, "╭")).toBe(paletteColor(DARK_PALETTE.status.not_ready))
 
     await type(setup, "are you there")
     await pressEnter(setup)
@@ -247,6 +383,28 @@ describe("PromptEditor readiness gate", () => {
 
     await pressEnter(setup)
     expect(sentText(controller)).toBe("ping")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not send an ordinary prompt while a restored context must be started fresh", async () => {
+    const controller = createFakeController()
+    const bundle: HandoffBundle = {
+      intent: "continue",
+      summary: "Continue from the persisted hand-off.",
+      files: [],
+      pendingDiffs: [],
+      redactionCount: 0,
+    }
+    controller.store.setRestorationBundle(bundle)
+    controller.store.setRestoration("claude-code", "unavailable")
+    const setup = await renderEditor(controller)
+
+    await type(setup, "do not hide this turn")
+    await pressEnter(setup)
+
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(await frameWith(setup, "do not hide this turn")).toContain("do not hide this turn")
 
     await destroyMounted(setup.renderer)
   })

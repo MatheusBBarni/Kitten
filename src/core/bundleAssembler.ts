@@ -19,7 +19,7 @@
  */
 
 import { createSecretRedactor, type SecretRedactor } from "./secretRedactor.ts"
-import type { AgentId, HandoffBundle, PendingDiff, SessionState, Turn } from "./types.ts"
+import type { HandoffBundle, PendingDiff, ProviderKind, SessionState, ShellSnapshot, Turn } from "./types.ts"
 
 /**
  * The hand-off assembly strategy (TechSpec "Core Interfaces").
@@ -27,7 +27,7 @@ import type { AgentId, HandoffBundle, PendingDiff, SessionState, Turn } from "./
  * Deterministic in V1, LLM-backed in Phase 2, without touching callers.
  */
 export interface BundleAssembler {
-  assemble(session: SessionState, target: AgentId): HandoffBundle
+  assemble(session: SessionState, target: ProviderKind, shell?: ShellSnapshot): HandoffBundle
 }
 
 /** The bounds that keep the transcript excerpt from becoming a full dump. */
@@ -77,16 +77,18 @@ export function createDeterministicAssembler(options: DeterministicAssemblerOpti
   const redactor = options.redactor ?? createSecretRedactor()
 
   return {
-    assemble(session: SessionState, target: AgentId): HandoffBundle {
+    assemble(session: SessionState, target: ProviderKind, shell?: ShellSnapshot): HandoffBundle {
       const excerpt = buildExcerpt(session, target, redactor, limits)
       const diffs = redactDiffs(session.pendingDiffs, redactor)
+      const shellSnapshot = redactShell(shell, redactor)
 
       return {
         intent: "continue",
         summary: excerpt.summary,
         files: collectFiles(session),
         pendingDiffs: diffs.pendingDiffs,
-        redactionCount: excerpt.redactionCount + diffs.redactionCount,
+        ...(shellSnapshot.shell ? { shell: shellSnapshot.shell } : {}),
+        redactionCount: excerpt.redactionCount + diffs.redactionCount + shellSnapshot.redactionCount,
       }
     },
   }
@@ -119,6 +121,31 @@ function redactDiffs(
   return { pendingDiffs: redacted, redactionCount }
 }
 
+/** Copy only hand-off-safe shell fields and redact every captured shell string. */
+function redactShell(
+  shell: ShellSnapshot | undefined,
+  redactor: SecretRedactor,
+): { shell?: ShellSnapshot; redactionCount: number } {
+  if (!shell || shell.commands.length === 0) return { redactionCount: 0 }
+
+  let redactionCount = 0
+  const cwd = redactor.redact(shell.cwd)
+  redactionCount += cwd.count
+  const commands = shell.commands.map((command) => {
+    const commandText = redactor.redact(command.command)
+    const output = redactor.redact(command.output)
+    redactionCount += commandText.count + output.count
+    return {
+      id: command.id,
+      command: commandText.text,
+      output: output.text,
+      exitCode: command.exitCode,
+    }
+  })
+
+  return { shell: { cwd: cwd.text, commands }, redactionCount }
+}
+
 /**
  * Render a bounded excerpt of the tail of the transcript.
  *
@@ -135,11 +162,11 @@ function redactDiffs(
  */
 function buildExcerpt(
   session: SessionState,
-  target: AgentId,
+  target: ProviderKind,
   redactor: SecretRedactor,
   limits: BundleLimits,
 ): { summary: string; redactionCount: number } {
-  const header = `Transcript excerpt from ${session.agentId} (intent: continue, target: ${target}).`
+  const header = `Transcript excerpt from ${session.providerKind} (intent: continue, target: ${target}).`
 
   const eligible = limits.maxTurns > 0 ? session.turns.slice(-limits.maxTurns) : []
   let omitted = session.turns.length - eligible.length
@@ -150,7 +177,7 @@ function buildExcerpt(
   let redactionCount = 0
 
   for (let i = eligible.length - 1; i >= 0; i -= 1) {
-    const rendered = renderTurn(eligible[i] as Turn, session.agentId, redactor, limits.maxTurnChars)
+    const rendered = renderTurn(eligible[i] as Turn, session.providerKind, redactor, limits.maxTurnChars)
     // +1 for the newline that will join this entry to the next.
     if (used + rendered.text.length + 1 > budget) {
       omitted += i + 1
@@ -174,21 +201,21 @@ function buildExcerpt(
 /** Redact a single turn, then bound it. Tool calls render as a one-line row. */
 function renderTurn(
   turn: Turn,
-  agentId: AgentId,
+  providerKind: ProviderKind,
   redactor: SecretRedactor,
   maxTurnChars: number,
 ): { text: string; redactionCount: number } {
-  const raw = formatTurn(turn, agentId)
+  const raw = formatTurn(turn, providerKind)
   const { text, count } = redactor.redact(raw)
   return { text: truncate(text, maxTurnChars), redactionCount: count }
 }
 
-function formatTurn(turn: Turn, agentId: AgentId): string {
+function formatTurn(turn: Turn, providerKind: ProviderKind): string {
   switch (turn.kind) {
     case "user":
       return `user: ${turn.text}`
     case "agent":
-      return `${agentId}: ${turn.text}`
+      return `${providerKind}: ${turn.text}`
     case "tool_call": {
       const { kind, status, title, locations } = turn.record
       const where = locations.length > 0 ? ` (${locations.join(", ")})` : ""

@@ -6,6 +6,9 @@ node_modules/
 /dist/
 *.tgz
 
+# Local Compozy release archives
+/archive-*/
+
 # Bun
 .bun/
 

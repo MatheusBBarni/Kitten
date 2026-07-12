@@ -11,9 +11,13 @@ import { createRoot } from "@opentui/react"
 import type { ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
+import type { BannerVariant } from "../config/appState.ts"
+import type { ToolCallDiff } from "../core/types.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
-import { ConversationView } from "./ConversationView.tsx"
+import { Markdown } from "./Markdown.tsx"
+import type { SessionPickerSource } from "./SessionPicker.tsx"
+import { ToolCallDiffView } from "./ToolCallRow.tsx"
 
 /**
  * The cockpit element tree for a booted controller.
@@ -21,10 +25,26 @@ import { ConversationView } from "./ConversationView.tsx"
  * The one place the concrete view tree is assembled, so both the live renderer and the
  * headless boot self-check mount exactly the same thing.
  */
-export function cockpitElement(controller: SessionController, recorder?: TelemetryRecorder): ReactNode {
+export function cockpitElement(
+  controller: SessionController,
+  recorder?: TelemetryRecorder,
+  welcomeBannerVariant: BannerVariant = "full",
+  sessionPicker?: SessionPickerSource,
+): ReactNode {
+  return <CockpitApp controller={controller} recorder={recorder} sessionPicker={sessionPicker} welcomeBannerVariant={welcomeBannerVariant} />
+}
+
+/** Syntax-bearing main-region fixture used only by the compiled artifact self-check. */
+export function selfCheckElement(
+  controller: SessionController,
+  fixture: { markdown: string; diff: ToolCallDiff },
+): ReactNode {
   return (
-    <CockpitApp controller={controller} recorder={recorder}>
-      <ConversationView />
+    <CockpitApp controller={controller} welcomeBannerVariant="none">
+      <box style={{ flexDirection: "column", flexGrow: 1 }}>
+        <Markdown content={fixture.markdown} />
+        <ToolCallDiffView diff={fixture.diff} />
+      </box>
     </CockpitApp>
   )
 }
@@ -40,8 +60,10 @@ export function renderCockpit(
   renderer: CliRenderer,
   controller: SessionController,
   recorder?: TelemetryRecorder,
+  welcomeBannerVariant: BannerVariant = "full",
+  sessionPicker?: SessionPickerSource,
 ): ReturnType<typeof createRoot> {
   const root = createRoot(renderer)
-  root.render(cockpitElement(controller, recorder))
+  root.render(cockpitElement(controller, recorder, welcomeBannerVariant, sessionPicker))
   return root
 }

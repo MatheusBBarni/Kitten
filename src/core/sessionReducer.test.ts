@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import type { ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
 
 /**
  * Fixture-driven tests for the pure `SessionState` reducer. The core has no I/O,
@@ -9,7 +9,7 @@ import type { DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
  * immutable state. No ACP SDK is imported anywhere in `src/core`.
  */
 
-const initial = (): SessionState => createSessionState("claude-code", "session-1")
+const initial = (): SessionState => createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" })
 
 /** Fold a sequence of events over a fresh session state. */
 const fold = (events: DomainSessionEvent[], start: SessionState = initial()): SessionState =>
@@ -20,17 +20,32 @@ const toolTurns = (state: SessionState): ToolCallTurn[] =>
   state.turns.filter((t): t is ToolCallTurn => t.kind === "tool_call")
 
 describe("createSessionState", () => {
-  it("starts empty and idle for the given agent and session", () => {
-    const state = createSessionState("codex", "s-42")
+  it("starts empty and idle for the given session seed", () => {
+    const state = createSessionState({ id: "codex", providerKind: "codex", title: "codex", cwd: "/w", acpSessionId: "s-42" })
     expect(state).toEqual({
-      agentId: "codex",
-      sessionId: "s-42",
+      id: "codex",
+      providerKind: "codex",
+      title: "codex",
+      cwd: "/w",
+      branch: undefined,
+      task: undefined,
+      acpSessionId: "s-42",
       turns: [],
       status: "idle",
       referencedFiles: new Map(),
       pendingDiffs: [],
       plan: [],
+      configOptions: [],
+      commands: [],
     })
+  })
+
+  it("defaults configOptions to an empty array", () => {
+    expect(initial().configOptions).toEqual([])
+  })
+
+  it("defaults commands to an empty array", () => {
+    expect(initial().commands).toEqual([])
   })
 })
 
@@ -219,6 +234,134 @@ describe("plan and status events", () => {
   })
 })
 
+describe("branch events", () => {
+  it("replaces only the branch field", () => {
+    const withWork = fold([
+      { kind: "status", status: "awaiting_approval" },
+      { kind: "user_message", messageId: "u1", text: "inspect the branch" },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "Edit branch-aware code",
+          status: "pending",
+          locations: ["src/app/controller.ts"],
+          diff: { path: "src/app/controller.ts", unified: "diff" },
+        },
+      },
+    ])
+
+    const state = sessionReducer(withWork, { kind: "branch", branch: "feature/status-bar" })
+
+    expect(state.branch).toBe("feature/status-bar")
+    expect(state.turns).toBe(withWork.turns)
+    expect(state.status).toBe(withWork.status)
+    expect(state.referencedFiles).toBe(withWork.referencedFiles)
+    expect(state.pendingDiffs).toBe(withWork.pendingDiffs)
+    expect(state.plan).toBe(withWork.plan)
+    expect(state.configOptions).toBe(withWork.configOptions)
+  })
+
+  it("clears a previously stored branch when the event is blank", () => {
+    const withBranch = sessionReducer(initial(), { kind: "branch", branch: "main" })
+
+    const state = sessionReducer(withBranch, { kind: "branch", branch: "" })
+
+    expect(state.branch).toBeUndefined()
+    expect(state.turns).toBe(withBranch.turns)
+    expect(state.status).toBe(withBranch.status)
+  })
+})
+
+describe("config_options events", () => {
+  const modelOption: ConfigOption = {
+    id: "cfg-model",
+    category: "model",
+    label: "Model",
+    currentValue: "opus",
+    options: [
+      { value: "opus", name: "Opus" },
+      { value: "sonnet", name: "Sonnet" },
+    ],
+  }
+  const effortOption: ConfigOption = {
+    id: "cfg-effort",
+    category: "thought_level",
+    label: "Reasoning effort",
+    currentValue: "high",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "high", name: "High" },
+    ],
+  }
+
+  it("replaces an empty configOptions with exactly the advertised options", () => {
+    const state = fold([{ kind: "config_options", options: [modelOption, effortOption] }])
+    expect(state.configOptions).toEqual([modelOption, effortOption])
+  })
+
+  it("fully replaces the prior set on a second event (no merge, no duplicates)", () => {
+    const nextModel: ConfigOption = { ...modelOption, currentValue: "sonnet" }
+    const state = fold([
+      { kind: "config_options", options: [modelOption, effortOption] },
+      { kind: "config_options", options: [nextModel] },
+    ])
+    expect(state.configOptions).toEqual([nextModel])
+  })
+
+  it("leaves turns, status, and pendingDiffs unchanged when applied", () => {
+    const withWork = fold([
+      { kind: "status", status: "awaiting_approval" },
+      { kind: "user_message", messageId: "u1", text: "go" },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "e",
+          status: "pending",
+          locations: ["src/x.ts"],
+          diff: { path: "src/x.ts", unified: "d" },
+        },
+      },
+    ])
+    const state = sessionReducer(withWork, { kind: "config_options", options: [modelOption] })
+    expect(state.turns).toEqual(withWork.turns)
+    expect(state.status).toBe(withWork.status)
+    expect(state.pendingDiffs).toEqual(withWork.pendingDiffs)
+    expect(state.configOptions).toEqual([modelOption])
+  })
+
+  it("returns a new object and does not mutate the input state", () => {
+    const before = initial()
+    sessionReducer(before, { kind: "config_options", options: [modelOption] })
+    expect(before.configOptions).toEqual([])
+  })
+})
+
+describe("commands events", () => {
+  const review = { name: "review", description: "Review the current diff", hint: "[scope]" }
+  const test = { name: "test", description: "Run the test suite" }
+
+  it("replaces the advertised list wholesale", () => {
+    const state = fold([
+      { kind: "commands", commands: [review, test] },
+      { kind: "commands", commands: [test] },
+    ])
+
+    expect(state.commands).toEqual([test])
+  })
+
+  it("leaves the command-list reference intact for unrelated events", () => {
+    const withCommands = fold([{ kind: "commands", commands: [review] }])
+    const next = sessionReducer(withCommands, { kind: "status", status: "working" })
+
+    expect(next.commands).toBe(withCommands.commands)
+    expect(next.turns).toBe(withCommands.turns)
+  })
+})
+
 describe("purity", () => {
   it("does not mutate the input state", () => {
     const before = initial()
@@ -293,5 +436,31 @@ describe("integration: folding a scripted multi-event sequence", () => {
     expect(state.pendingDiffs).toEqual([
       { toolCallId: "edit-1", path: "src/config/loader.ts", unified: "@@ -1 +1 @@\n-old\n+new" },
     ])
+  })
+
+  it("folds user_message -> config_options -> status into the expected final state", () => {
+    const options: ConfigOption[] = [
+      {
+        id: "cfg-model",
+        category: "model",
+        label: "Model",
+        currentValue: "sonnet",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "sonnet", name: "Sonnet" },
+        ],
+      },
+    ]
+    const events: DomainSessionEvent[] = [
+      { kind: "user_message", messageId: "u1", text: "switch model" },
+      { kind: "config_options", options },
+      { kind: "status", status: "working" },
+    ]
+
+    const state = fold(events)
+
+    expect(state.status).toBe("working")
+    expect(state.configOptions).toEqual(options)
+    expect(state.turns).toEqual([{ kind: "user", messageId: "u1", text: "switch model" }])
   })
 })

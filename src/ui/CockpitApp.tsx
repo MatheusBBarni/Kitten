@@ -1,11 +1,11 @@
 /**
  * The cockpit shell: the frame every other view mounts into.
  *
- * The layout is a focused pane, not a split. One agent owns the full-width
- * conversation region at a time and a single chord moves focus between them, which
- * keeps the transcript readable at 80 columns and keeps the mental model small.
- * Beneath it sit the prompt editor and the status strip, both always visible, the
- * one naming what the user is about to say and the other what both agents are doing.
+ * The layout is a focused pane, not a split. One agent conversation or the integrated
+ * shell owns the full-width main region at a time; slash commands move between
+ * agents and toggle the shell without sacrificing the readable 80-column layout.
+ * Beneath it sit the prompt editor and the status strip. An alternate-screen app
+ * temporarily yields those rows to the shell pane, then restores them on exit.
  * Overlays (the help panel, the hand-off preview, and the approval prompt) are
  * absolutely-positioned boxes, since the React binding ships no Portal (ADR-004).
  * The hand-off preview and the approval prompt are modal and swallow every key they
@@ -14,9 +14,10 @@
  * first, so it must stand down here rather than leaving it to an overlay's
  * `preventDefault`, which only reaches focused renderables.
  *
- * The hand-off is the product (PRD F3). Its keystroke lives in the same table as every
- * other chord and does nothing but assemble a bundle and open the preview over it -
- * `HandoffFlow` owns everything past that, and nothing sends without a confirm.
+ * The hand-off is the product (PRD F3). Its slash command lives in the same registry as every
+ * other cockpit action and does nothing but open the flow - a target picker when the fleet gives
+ * a choice of recipient, the redacted preview otherwise. `HandoffFlow` owns everything
+ * past that, and nothing sends without a confirm.
  *
  * The frame is sized from the live terminal dimensions rather than percentages, so
  * a resize re-lays the whole tree out in one pass and nothing is left painted
@@ -24,24 +25,51 @@
  */
 
 import type { KeyEvent } from "@opentui/core"
-import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useMemo, useState, type ReactNode } from "react"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
-import { createHandoffFlow } from "../app/handoff.ts"
+import { composeHandoffBlocks, createHandoffEdits, createHandoffFlow } from "../app/handoff.ts"
+import type { BannerVariant } from "../config/appState.ts"
+import { encodeKey } from "../shell/keyEncoder.ts"
+import type { Selector } from "../store/appStore.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
-import { selectFocusedAgentId, selectHasOpenOverlay } from "../store/selectors.ts"
+import {
+  selectFocusedSessionId,
+  selectHasOpenOverlay,
+  selectIsShellFocused,
+  selectRestoration,
+} from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
-import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
-import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
+import { CockpitProvider, useAppSelector, useController, useShellBufferType } from "./cockpitContext.tsx"
+import { ConversationView } from "./ConversationView.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
+import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
+import { ModelSelect } from "./ModelSelect.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
+import { SessionPicker, type SessionPickerSource } from "./SessionPicker.tsx"
+import { ShellPane } from "./ShellPane.tsx"
+import { SessionsOverlay } from "./SessionsOverlay.tsx"
+import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
-import { COCKPIT_KEYMAP, HELP_ENTRIES, matchCommand } from "./keymap.ts"
+import { HELP_ENTRIES, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
-export const HELP_TITLE = "Keyboard shortcuts"
+export const HELP_TITLE = "Commands"
+
+/** Copy-result labels are exported so the rendered action stays an explicit UI contract. */
+export const EXTERNAL_RUN_COPIED_PREFIX = "Copied for external terminal:"
+export const EXTERNAL_RUN_FALLBACK_PREFIX = "Run externally:"
+export const EXTERNAL_RUN_EMPTY = "No shell command is available to run externally."
+
+interface ExternalRunNotice {
+  readonly command: string | null
+  readonly copied: boolean
+}
+
+/** Command count is the content-free signal that the shell was actually used. */
+const selectShellCommandCount: Selector<number> = (state) => state.shell.commands.length
 
 /** Props for {@link CockpitApp}. */
 export interface CockpitAppProps {
@@ -49,69 +77,183 @@ export interface CockpitAppProps {
   controller: SessionController
   /** The conversation region's contents - `<ConversationView>` in the real app. */
   children?: ReactNode
+  /** Welcome shape resolved once at boot from config and first-run state. */
+  welcomeBannerVariant?: BannerVariant
   /** Optional telemetry recorder; the hand-off flow records its metrics through it. */
   recorder?: TelemetryRecorder
+  /** Saved-run persistence boundary and project identity for the `/resume` picker. */
+  sessionPicker?: SessionPickerSource
 }
 
 /** The cockpit root: provides the controller, then renders the frame. */
-export function CockpitApp({ controller, children, recorder }: CockpitAppProps): ReactNode {
+export function CockpitApp({ controller, children, welcomeBannerVariant = "full", recorder, sessionPicker }: CockpitAppProps): ReactNode {
   return (
     <CockpitProvider controller={controller}>
-      <CockpitFrame recorder={recorder}>{children}</CockpitFrame>
+      <CockpitFrame recorder={recorder} sessionPicker={sessionPicker} welcomeBannerVariant={welcomeBannerVariant}>
+        {children}
+      </CockpitFrame>
     </CockpitProvider>
   )
 }
 
 /** The frame itself: conversation region, status strip, and the help overlay. */
-function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?: TelemetryRecorder }): ReactNode {
+function CockpitFrame({
+  children,
+  recorder,
+  sessionPicker,
+  welcomeBannerVariant,
+}: {
+  children?: ReactNode
+  recorder?: TelemetryRecorder
+  sessionPicker?: SessionPickerSource
+  welcomeBannerVariant: BannerVariant
+}): ReactNode {
   const controller = useController()
   const palette = usePalette()
+  const renderer = useRenderer()
   const { width, height } = useTerminalDimensions()
   const [helpOpen, setHelpOpen] = useState(false)
+  const [externalRunNotice, setExternalRunNotice] = useState<ExternalRunNotice | null>(null)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
+  const isShellFocused = useAppSelector(selectIsShellFocused)
+  const shellBufferType = useShellBufferType()
+  const shellCommandCount = useAppSelector(selectShellCommandCount)
+  const shellActivationRecorded = useRef(false)
+
+  useEffect(() => {
+    if (shellCommandCount === 0 || shellActivationRecorded.current) return
+    shellActivationRecorded.current = true
+    recorder?.shellActivated()
+  }, [recorder, shellCommandCount])
 
   // One flow for the life of the controller: a hand-off and a later hand-back are the
   // same mechanism pointed the other way, and it derives its direction from focus.
   const handoff = useMemo(() => createHandoffFlow({ controller, recorder }), [controller, recorder])
 
-  const onKey = useCallback(
-    (key: KeyEvent) => {
-      // A modal overlay owns the keyboard outright. Precedence is declared here rather
-      // than left to the framework: global listeners fire in the order they mounted, and
-      // this one mounts before the overlays that would otherwise outrank it.
-      if (overlayOpen) return
+  /** One cockpit dispatch path shared by `/commands` and the remaining global chord. */
+  const runCockpitCommand = useCallback(
+    (command: CockpitCommand): void => {
+      const state = controller.store.getState()
 
-      switch (matchCommand(key)) {
+      switch (command) {
+        case "toggle-shell":
+          setHelpOpen(false)
+          setExternalRunNotice(null)
+          controller.store.setFocusedPane(
+            state.focusedPane.kind === "shell"
+              ? { kind: "agent", agentId: state.focusedSessionId }
+              : { kind: "shell" },
+          )
+          return
+        case "run-externally": {
+          const commandText = state.shell.commands.at(-1)?.command.trim() ?? ""
+          if (commandText.length === 0) {
+            setExternalRunNotice({ command: null, copied: false })
+            return
+          }
+          let copied = false
+          try {
+            copied = renderer.copyToClipboardOSC52(commandText)
+          } catch {
+            // A terminal without OSC 52 support still gets the command in the pane.
+          }
+          setExternalRunNotice({ command: commandText, copied })
+          recorder?.externalRun()
+          return
+        }
         case "switch-focus":
           controller.actions.switchFocus()
           return
         case "hand-off":
-          // The panel would otherwise sit behind the preview with no key left to close
-          // it, since the preview spends Escape on discarding the bundle.
+          if (handoff.begin().ok) setHelpOpen(false)
+          return
+        case "sessions":
           setHelpOpen(false)
-          handoff.begin()
+          controller.store.openSessions()
+          return
+        case "resume-session":
+          setHelpOpen(false)
+          recorder?.resumePickerOpened()
+          controller.store.openSessionPicker()
+          return
+        case "start-new-run": {
+          setHelpOpen(false)
+          const bundle = state.restorationBundle
+          if (state.restoration[state.focusedSessionId] === "unavailable" && bundle) {
+            void controller.actions.startFreshFromContext(
+              composeHandoffBlocks(bundle, createHandoffEdits(bundle)),
+              state.focusedSessionId,
+            )
+          } else {
+            void controller.actions.startNewRun()
+          }
+          return
+        }
+        case "clear-run":
+          setHelpOpen(false)
+          void controller.actions.startNewRun()
+          return
+        case "model-select":
+          setHelpOpen(false)
+          controller.store.openModelSelect({ sessionId: state.focusedSessionId })
+          return
+        case "open-settings":
+          setHelpOpen(false)
+          controller.store.openSettings()
+          recorder?.settingsOpened()
           return
         case "toggle-help":
           setHelpOpen((open) => !open)
           return
         case "close-help":
-          // Escape belongs to the editor and the overlays unless help is showing.
-          // Consuming it here stops the focused textarea from ever seeing the key,
-          // so dismissing help cannot also interrupt a working agent.
-          if (!helpOpen) return
-          key.preventDefault()
-          setHelpOpen(false)
-          return
-        default:
+          if (helpOpen) setHelpOpen(false)
           return
       }
     },
-    [controller, handoff, helpOpen, overlayOpen],
+    [controller, handoff, helpOpen, recorder, renderer],
+  )
+
+  const onKey = useCallback(
+    (key: KeyEvent) => {
+      if (overlayOpen) return
+
+      const command = matchCommand(key)
+      const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
+
+      if (command === "toggle-shell") {
+        key.preventDefault()
+        runCockpitCommand(command)
+        return
+      }
+      if (command === "close-help" && helpOpen) {
+        key.preventDefault()
+        runCockpitCommand(command)
+        return
+      }
+
+      // Once the explicit shell-toggle chord has been consumed, every encodable key
+      // belongs to the PTY. This preserves real foreground Ctrl+C semantics.
+      if (shellFocusedNow) {
+        key.preventDefault()
+        setExternalRunNotice(null)
+        const bytes = encodeKey(key)
+        if (!bytes || !controller.shell.ready) return
+        controller.shell.runtime.write(bytes)
+      }
+    },
+    [controller, helpOpen, overlayOpen, runCockpitCommand],
   )
   useKeyboard(onKey)
 
-  const focusedAgentId = useAppSelector(selectFocusedAgentId)
-  const focused = controller.runtime(focusedAgentId)
+  const focusedSessionId = useAppSelector(selectFocusedSessionId)
+  const focusedRestorationSelector = useMemo(
+    () => selectRestoration(focusedSessionId),
+    [focusedSessionId],
+  )
+  const focusedRestoration = useAppSelector(focusedRestorationSelector)
+  const focused = controller.runtime(focusedSessionId)
+  const paneTitle = isShellFocused ? "Shell · focused" : "Kitten"
+  const shellFullHeight = isShellFocused && shellBufferType === "alternate"
 
   return (
     <box
@@ -126,6 +268,7 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
     >
       <box
         style={{
+          position: "relative",
           flexGrow: 1,
           flexShrink: 1,
           flexDirection: "column",
@@ -136,26 +279,63 @@ function CockpitFrame({ children, recorder }: { children?: ReactNode; recorder?:
           paddingRight: 1,
           overflow: "hidden",
         }}
-        title={focused?.displayName ?? focusedAgentId}
+        title={paneTitle}
         titleColor={palette.accent}
       >
-        {focused && !focused.ready ? (
+        {isShellFocused ? (
+          <ShellPane />
+        ) : focused && !focused.ready && focusedRestoration !== "unavailable" ? (
           <NotReadyNotice error={focused.error} />
         ) : (
-          (children ?? <text fg={palette.muted}>{EMPTY_TRANSCRIPT_HINT}</text>)
+          (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
         )}
+        {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
       </box>
 
-      <PromptEditor />
+      {shellFullHeight ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
 
-      <StatusStrip />
+      {shellFullHeight ? null : <StatusStrip />}
 
       {helpOpen ? <HelpOverlay /> : null}
 
+      <SessionsOverlay />
+
+      <SessionPicker source={sessionPicker} recorder={recorder} />
+
+      <HandoffTargetPicker flow={handoff} />
+
       <HandoffPreview flow={handoff} />
+
+      <ModelSelect />
+
+      <SettingsView />
 
       {/* Last, so a pending permission request paints over anything else on screen. */}
       <ApprovalPrompt />
+    </box>
+  )
+}
+
+/** A one-line, selectable fallback that overlays the shell without consuming a row. */
+function ExternalRunNoticeView({ notice }: { notice: ExternalRunNotice }): ReactNode {
+  const palette = usePalette()
+  const prefix = notice.copied ? EXTERNAL_RUN_COPIED_PREFIX : EXTERNAL_RUN_FALLBACK_PREFIX
+  return (
+    <box
+      style={{
+        position: "absolute",
+        left: 1,
+        right: 1,
+        bottom: 0,
+        paddingLeft: 1,
+        paddingRight: 1,
+        backgroundColor: palette.surface,
+        overflow: "hidden",
+      }}
+    >
+      <text fg={notice.command === null ? palette.muted : palette.text}>
+        {notice.command === null ? EXTERNAL_RUN_EMPTY : `${prefix} ${notice.command}`}
+      </text>
     </box>
   )
 }
@@ -167,7 +347,7 @@ function NotReadyNotice({ error }: { error: string }): ReactNode {
     <box style={{ flexDirection: "column", gap: 1 }}>
       <text fg={palette.status.not_ready}>This agent is not ready.</text>
       <text fg={palette.text}>{error}</text>
-      <text fg={palette.muted}>{`Press ${COCKPIT_KEYMAP[0]!.keys} to switch to the other agent.`}</text>
+      <text fg={palette.muted}>Use /switch to focus another ready agent.</text>
     </box>
   )
 }

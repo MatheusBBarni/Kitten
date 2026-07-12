@@ -9,43 +9,96 @@
  *   constructs a sink, so a run records nothing and touches no file. The gate is
  *   {@link createTelemetryRecorder}'s `enabled` flag, sourced from `AppConfig`.
  * - **Content-free.** A {@link TelemetryRecord} carries only an event type, a
- *   timestamp, an anonymous session reference, an agent id, and coarse numbers
- *   (buckets, durations). There is no text field, so no prompt or code can be stored
- *   even by accident - the guarantee is structural, not a matter of discipline.
+ *   timestamp, an anonymous session reference, fixed identifiers/enums, and coarse
+ *   numbers (buckets, durations). There is no text field, so no prompt or code can be
+ *   stored even by accident - the guarantee is structural, not a matter of discipline.
  * - **Local only.** The default sink appends JSONL to a file on disk with the Node
  *   fs API. There is no network path anywhere in this module.
  *
- * First-response timing and the re-explanation heuristic are derived by
- * {@link TelemetryRecorder.watch}, which subscribes to store transitions (task_05)
- * and diffs the per-agent turn stream; the hand-off events come from the hand-off
- * flow (task_12) calling this recorder directly. The heuristic itself is the pure
- * core predicate (`../core/telemetryHeuristics.ts`); this module only feeds it and
- * records its verdict.
+ * First-response timing, the re-explanation heuristic, and the attention metrics
+ * (attention latency and idle-fleet, task_09) are derived by
+ * {@link TelemetryRecorder.watch}, which subscribes to store transitions and diffs the
+ * per-agent turn stream and status/focus edges; the hand-off events, the focus-switch
+ * counters, and the max-concurrent snapshot come from callers driving this recorder
+ * directly. The re-explanation heuristic itself is the pure core predicate
+ * (`../core/telemetryHeuristics.ts`); this module only feeds it and records its verdict.
+ * `reexplanation_detected` also serves as the shell moat signal: analysis compares
+ * hand-offs with and without a preceding `shell_snapshot_attached` event.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 
-import type { AgentId } from "../core/types.ts"
-import { bucketChars, detectReexplanation, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
-import { AGENT_IDS, type AppStore, type Unsubscribe } from "../store/appStore.ts"
+import {
+  EFFORT_CATEGORY,
+  needsAttention,
+  type ConfigOption,
+  type SessionId,
+  type SessionStatus,
+  type ThemePreference,
+} from "../core/types.ts"
+import {
+  bucketChars,
+  detectReexplanation,
+  effortChangeKept,
+  REEXPLANATION_CHAR_THRESHOLD,
+  type EffortRetentionEvent,
+} from "../core/telemetryHeuristics.ts"
+import type { AppStore, Unsubscribe } from "../store/appStore.ts"
 
 /** Every telemetry event Kitten records. Names match the TechSpec metric set. */
 export type TelemetryEventType =
   | "handoff_invoked"
   | "handoff_sent"
   | "handoff_repeat"
+  | "effort_linked_handoff"
   | "reexplanation_detected"
   | "bundle_edit_chars"
+  | "model_switched"
+  | "effort_switched"
+  | "switch_confirmed"
+  | "switch_unverified"
+  | "effort_change_kept"
   | "agent_ready"
   | "agent_unready"
   | "first_response_ms"
+  // The multi-session attention metrics (task_09). Each measures whether the fleet
+  // stays productive; all are content-free (durations, counts, and session ids only).
+  | "attention_latency_ms"
+  | "idle_fleet_ms"
+  | "focus_switch"
+  | "overview_switch"
+  | "max_concurrent_sessions"
+  | "settings_opened"
+  | "theme_set"
+  | "config_write"
+  | "config_write_error"
+  | "shell_activated"
+  | "shell_snapshot_attached"
+  | "external_run"
+  | "session_resumed"
+  | "resume_pane_unavailable"
+  | "resume_first_action"
+  | "resume_picker_interactive_ms"
+  | "resume_load_usable_ms"
+
+/** The two entry points whose adoption the resume metrics compare. */
+export type ResumeMode = "picker" | "last-run"
+
+/** Whole-cockpit live fidelity is deliberately capped to the V1 two-pane contract. */
+export type ResumeLiveCount = 0 | 1 | 2
+
+/** The content-free outcome emitted when one whole-cockpit restore settles. */
+export interface SessionResumedInput {
+  mode: ResumeMode
+  liveCount: ResumeLiveCount
+}
 
 /**
  * One recorded event. Deliberately holds no text: an anonymous `sessionRef`, an
- * optional agent id (a fixed enum, not user content), and coarse numbers only. This
- * is what makes the recorder content-free by construction rather than by review.
+ * optional fixed identifiers/enums (session, theme, source), and coarse numbers only.
+ * This is what makes the recorder content-free by construction rather than by review.
  */
 export interface TelemetryRecord {
   type: TelemetryEventType
@@ -53,12 +106,24 @@ export interface TelemetryRecord {
   at: number
   /** An anonymous reference to this app run - never an ACP session id or path. */
   sessionRef: string
-  /** Which agent the event concerns, when relevant. A fixed enum, not user content. */
-  agent?: AgentId
+  /** Which session the event concerns, when relevant. A Kitten session id, not user content. */
+  agent?: SessionId
   /** A coarse character bucket (see `bucketChars`), never an exact count. */
   charBucket?: number
-  /** A measured duration in milliseconds, for `first_response_ms`. */
+  /** A measured duration in milliseconds, for timing events. */
   durationMs?: number
+  /** A count of sessions, for `max_concurrent_sessions`. A small integer, never content. */
+  count?: number
+  /** A validated, fixed theme preference for `theme_set`, never user-provided text. */
+  themeId?: ThemePreference
+  /** The fixed origin of a settings config write, never a user-provided label. */
+  source?: "modal"
+  /** Which fixed resume entry point was used. */
+  mode?: ResumeMode
+  /** How many of the two resume panes restored live. */
+  liveCount?: ResumeLiveCount
+  /** Whether the first post-resume prompt continued instead of re-explaining. */
+  continued?: boolean
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -68,8 +133,8 @@ export interface TelemetrySink {
 
 /** What the hand-off flow reports when it sends a curated bundle to the target. */
 export interface HandoffSentInput {
-  /** The agent that received the bundle - the one to watch for re-explanation. */
-  targetAgentId: AgentId
+  /** The session that received the bundle - the one to watch for re-explanation. */
+  targetSessionId: SessionId
   /** How many characters the developer changed in the summary (see `editedCharCount`). */
   editChars: number
 }
@@ -82,13 +147,56 @@ export interface TelemetryRecorder {
   handoffInvoked(): void
   /** A curated bundle was sent to the target; also records edit volume and repeats. */
   handoffSent(input: HandoffSentInput): void
-  /** An agent completed its handshake and holds a live session. */
-  agentReady(agentId: AgentId): void
-  /** An agent failed to come up. */
-  agentUnready(agentId: AgentId): void
+  /** A hand-off carried one or more target model/effort changes. */
+  effortLinkedHandoff(sessionId: SessionId): void
+  /** The settings modal was opened. */
+  settingsOpened(): void
+  /** The integrated shell started its first command in this run. */
+  shellActivated(): void
+  /** A hand-off carried a developer-curated shell snapshot. */
+  shellSnapshotAttached(): void
+  /** The developer chose the in-cockpit affordance to run outside Kitten. */
+  externalRun(): void
+  /** A validated theme preference was applied. */
+  themeSet(themeId: ThemePreference): void
+  /** A modal-originated config write succeeded. */
+  configWrite(source: "modal"): void
+  /** A modal-originated config write failed. */
+  configWriteError(source: "modal"): void
   /**
-   * Subscribe to store transitions to derive `first_response_ms` and
-   * `reexplanation_detected`. Returns an unsubscribe; a no-op when disabled.
+   * Record a model or effort switch from the adapter-reported outcome. `effortChanged`
+   * arms the content-free kept-change watch only for a confirmed value change.
+   */
+  recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+  /** A session completed its handshake and holds a live ACP session. */
+  agentReady(sessionId: SessionId): void
+  /** A session failed to come up. */
+  agentUnready(sessionId: SessionId): void
+  /**
+   * A developer moved keyboard focus to `sessionId`. `viaOverview` marks a switch made
+   * through `/sessions` (jump-into or jump-to-next) rather than a direct `/switch`
+   * cycle - the numerator and denominator behind the overview-reliance metric (task_09).
+   */
+  focusSwitch(sessionId: SessionId, viaOverview: boolean): void
+  /**
+   * The peak number of concurrently-live sessions in this run - the multi-session
+   * adoption signal (task_09). Recorded once from the boot readiness snapshot.
+   */
+  maxConcurrentSessions(count: number): void
+  /** Start the load-to-usable clock immediately before restore orchestration. */
+  resumeLoadStarted(): void
+  /** Record a settled whole-cockpit resume and arm its first-action classification. */
+  sessionResumed(input: SessionResumedInput): void
+  /** Record one pane that could not restore live. */
+  resumePaneUnavailable(sessionId: SessionId): void
+  /** Start the picker-open-to-interactive clock before opening its store slot. */
+  resumePickerOpened(): void
+  /** Close the picker clock after its interactive tree commits. */
+  resumePickerInteractive(): void
+  /**
+   * Subscribe to store transitions to derive `first_response_ms`,
+   * `reexplanation_detected`, `attention_latency_ms`, and `idle_fleet_ms`. Returns an
+   * unsubscribe; a no-op when disabled.
    */
   watch(store: AppStore): Unsubscribe
 }
@@ -112,8 +220,24 @@ const NOOP_RECORDER: TelemetryRecorder = {
   enabled: false,
   handoffInvoked() {},
   handoffSent() {},
+  effortLinkedHandoff() {},
+  settingsOpened() {},
+  shellActivated() {},
+  shellSnapshotAttached() {},
+  externalRun() {},
+  themeSet() {},
+  configWrite() {},
+  configWriteError() {},
+  recordSwitch() {},
   agentReady() {},
   agentUnready() {},
+  focusSwitch() {},
+  maxConcurrentSessions() {},
+  resumeLoadStarted() {},
+  sessionResumed() {},
+  resumePaneUnavailable() {},
+  resumePickerOpened() {},
+  resumePickerInteractive() {},
   watch() {
     return () => {}
   },
@@ -130,14 +254,34 @@ export function createTelemetryRecorder(options: TelemetryRecorderOptions): Tele
   return new ActiveRecorder(options)
 }
 
-/** Per-agent bookkeeping for the store-derived metrics. */
+/** Per-session bookkeeping for the store-derived metrics. */
 interface AgentWatch {
-  /** How many turns of this agent's transcript `watch` has already processed. */
+  /**
+   * The ACP session id last seen for this session. A change means the slice was reset
+   * (a restart/reconnect), which resets every derived timer - a restart is not the
+   * developer acting, so it must not emit a latency or count as a first response.
+   */
+  seenAcpSessionId: string
+  /** How many turns of this session's transcript `watch` has already processed. */
   seenTurns: number
+  /** Last observed confirmed effort value; transient only, never written to telemetry. */
+  seenEffortValue: string | undefined
+  /** A pending confirmed effort change, reduced to content-free event kinds. */
+  effortRetention: EffortRetentionEvent[] | null
   /** When the pending prompt was sent, or `null` when no first response is awaited. */
   awaitingResponseAt: number | null
   /** True while the next developer message could count as re-explanation. */
   reexplanationArmed: boolean
+  /**
+   * When this session entered its current needs-you state, or `null` when it does not
+   * need the developer. Attention latency is the gap from here to the state resolving.
+   */
+  neededSince: number | null
+  /**
+   * When this session started needing the developer while unfocused, or `null` when it
+   * is not both needy and unfocused. Idle-fleet time accrues over this window.
+   */
+  idleFleetSince: number | null
 }
 
 class ActiveRecorder implements TelemetryRecorder {
@@ -147,7 +291,10 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly sessionRef: string
   private readonly threshold: number
   private handoffCount = 0
-  private readonly watches = new Map<AgentId, AgentWatch>()
+  private resumeLoadStartedAt: number | null = null
+  private resumePickerOpenedAt: number | null = null
+  private resumeFirstActionArmed = false
+  private readonly watches = new Map<SessionId, AgentWatch>()
 
   constructor(options: TelemetryRecorderOptions) {
     this.sink = options.sink ?? createJsonlFileSink(resolveTelemetryPath())
@@ -162,75 +309,234 @@ class ActiveRecorder implements TelemetryRecorder {
 
   handoffSent(input: HandoffSentInput): void {
     this.handoffCount += 1
-    this.record({ type: "handoff_sent", agent: input.targetAgentId })
+    this.record({ type: "handoff_sent", agent: input.targetSessionId })
     // A repeat hand-off in one run is a distinct signal for the 7-day-repeat metric.
-    if (this.handoffCount > 1) this.record({ type: "handoff_repeat", agent: input.targetAgentId })
-    this.record({ type: "bundle_edit_chars", agent: input.targetAgentId, charBucket: bucketChars(input.editChars) })
+    if (this.handoffCount > 1) this.record({ type: "handoff_repeat", agent: input.targetSessionId })
+    this.record({ type: "bundle_edit_chars", agent: input.targetSessionId, charBucket: bucketChars(input.editChars) })
     // Arm re-explanation detection on the target. This runs after the flow's own
     // `sendPrompt`, so the bundle's user turn is already consumed and only a
     // subsequent developer message can trip the heuristic.
-    this.watchFor(input.targetAgentId).reexplanationArmed = true
+    this.watchFor(input.targetSessionId).reexplanationArmed = true
   }
 
-  agentReady(agentId: AgentId): void {
-    this.record({ type: "agent_ready", agent: agentId })
+  effortLinkedHandoff(sessionId: SessionId): void {
+    this.record({ type: "effort_linked_handoff", agent: sessionId })
   }
 
-  agentUnready(agentId: AgentId): void {
-    this.record({ type: "agent_unready", agent: agentId })
+  settingsOpened(): void {
+    this.record({ type: "settings_opened" })
+  }
+
+  shellActivated(): void {
+    this.record({ type: "shell_activated" })
+  }
+
+  shellSnapshotAttached(): void {
+    this.record({ type: "shell_snapshot_attached" })
+  }
+
+  externalRun(): void {
+    this.record({ type: "external_run" })
+  }
+
+  themeSet(themeId: ThemePreference): void {
+    this.record({ type: "theme_set", themeId })
+  }
+
+  configWrite(source: "modal"): void {
+    this.record({ type: "config_write", source })
+  }
+
+  configWriteError(source: "modal"): void {
+    this.record({ type: "config_write_error", source })
+  }
+
+  recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void {
+    this.record({ type: kind === "model" ? "model_switched" : "effort_switched", agent: sessionId })
+    this.record({ type: confirmed ? "switch_confirmed" : "switch_unverified", agent: sessionId })
+    // Only a confirmed, actual effort change can contribute to the kept-change metric.
+    // The transient stream carries event kinds only, never the option's value.
+    if (kind === "effort" && confirmed && effortChanged) {
+      this.watchFor(sessionId).effortRetention = [{ kind: "effort_change" }]
+    }
+  }
+
+  agentReady(sessionId: SessionId): void {
+    this.record({ type: "agent_ready", agent: sessionId })
+  }
+
+  agentUnready(sessionId: SessionId): void {
+    this.record({ type: "agent_unready", agent: sessionId })
+  }
+
+  focusSwitch(sessionId: SessionId, viaOverview: boolean): void {
+    // Every switch is the overview-reliance denominator; the ones made through the
+    // overview are also the numerator, so their share measures how much the developer
+    // leans on the overview instead of switching directly with `/switch`.
+    this.record({ type: "focus_switch", agent: sessionId })
+    if (viaOverview) this.record({ type: "overview_switch", agent: sessionId })
+  }
+
+  maxConcurrentSessions(count: number): void {
+    this.record({ type: "max_concurrent_sessions", count })
+  }
+
+  resumeLoadStarted(): void {
+    this.resumeLoadStartedAt = this.now()
+  }
+
+  sessionResumed(input: SessionResumedInput): void {
+    this.record({ type: "session_resumed", mode: input.mode, liveCount: input.liveCount })
+    if (this.resumeLoadStartedAt !== null) {
+      this.record({ type: "resume_load_usable_ms", durationMs: this.now() - this.resumeLoadStartedAt })
+      this.resumeLoadStartedAt = null
+    }
+    this.resumeFirstActionArmed = true
+  }
+
+  resumePaneUnavailable(sessionId: SessionId): void {
+    this.record({ type: "resume_pane_unavailable", agent: sessionId })
+  }
+
+  resumePickerOpened(): void {
+    this.resumePickerOpenedAt = this.now()
+  }
+
+  resumePickerInteractive(): void {
+    if (this.resumePickerOpenedAt === null) return
+    this.record({ type: "resume_picker_interactive_ms", durationMs: this.now() - this.resumePickerOpenedAt })
+    this.resumePickerOpenedAt = null
   }
 
   watch(store: AppStore): Unsubscribe {
-    // Prime the seen-turn counts so pre-existing transcript is not replayed as new.
+    // Prime the per-session state so pre-existing transcript is not replayed as new and
+    // a session already needing the developer at subscribe time is still measured.
     const initial = store.getState()
-    for (const agentId of AGENT_IDS) {
-      this.watchFor(agentId).seenTurns = initial.sessions[agentId].turns.length
+    for (const sessionId of initial.order) {
+      const session = initial.sessions[sessionId]!
+      const watch = this.watchFor(sessionId)
+      watch.seenAcpSessionId = session.acpSessionId
+      watch.seenTurns = session.turns.length
+      watch.seenEffortValue = effortValue(session.configOptions)
+      const needy = needsAttention(session.status)
+      watch.neededSince = needy ? this.now() : null
+      watch.idleFleetSince = needy && initial.focusedSessionId !== sessionId ? this.now() : null
     }
     return store.subscribe((state) => {
-      for (const agentId of AGENT_IDS) this.processAgent(agentId, state.sessions[agentId].turns)
+      for (const sessionId of state.order) {
+        const session = state.sessions[sessionId]!
+        const watch = this.watchFor(sessionId)
+        // A rebound ACP session id means the slice was reset. Drop every stale timer and
+        // arming silently and skip this commit: a restart is not the developer acting.
+        if (session.acpSessionId !== watch.seenAcpSessionId) {
+          watch.seenAcpSessionId = session.acpSessionId
+          watch.seenTurns = session.turns.length
+          watch.seenEffortValue = effortValue(session.configOptions)
+          watch.awaitingResponseAt = null
+          watch.reexplanationArmed = false
+          watch.effortRetention = null
+          watch.neededSince = null
+          watch.idleFleetSince = null
+          continue
+        }
+        this.processEffortChange(sessionId, session.configOptions)
+        this.processSession(sessionId, session.turns)
+        this.processAttention(sessionId, session.status, state.focusedSessionId === sessionId)
+      }
     })
   }
 
-  /** Apply the turns newly appended to one agent's transcript since the last pass. */
-  private processAgent(agentId: AgentId, turns: readonly { kind: string; text?: string }[]): void {
-    const watch = this.watchFor(agentId)
-    // A new session resets the transcript; drop stale timers/arming and resync.
+  /** Apply the turns newly appended to one session's transcript since the last pass. */
+  private processSession(sessionId: SessionId, turns: readonly { kind: string; text?: string }[]): void {
+    const watch = this.watchFor(sessionId)
+    // A new session resets the transcript; drop stale timers/arming and resync. The
+    // attention timers reset silently too: a restart is not the developer answering.
     if (turns.length < watch.seenTurns) {
       watch.seenTurns = turns.length
       watch.awaitingResponseAt = null
       watch.reexplanationArmed = false
+      watch.effortRetention = null
+      watch.neededSince = null
+      watch.idleFleetSince = null
       return
     }
-    for (let i = watch.seenTurns; i < turns.length; i++) this.handleTurn(agentId, watch, turns[i]!)
+    for (let i = watch.seenTurns; i < turns.length; i++) this.handleTurn(sessionId, watch, turns[i]!)
     watch.seenTurns = turns.length
   }
 
-  private handleTurn(agentId: AgentId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
+  /**
+   * Fold one session's current attention state into two durations (ADR-006):
+   *
+   * - **Attention latency** runs from the rising edge into a needs-you state to the
+   *   falling edge out of it - the state resolves only when the developer acts, so the
+   *   gap is how long they took to respond after the session started needing them.
+   * - **Idle-fleet** runs only while the session is both needy and unfocused - the
+   *   waiting time a session spends wanting the developer who is busy elsewhere.
+   *
+   * Both are emitted on the falling edge, carrying a duration and the session id only.
+   */
+  private processAttention(sessionId: SessionId, status: SessionStatus, isFocused: boolean): void {
+    const watch = this.watchFor(sessionId)
+    const needy = needsAttention(status)
+
+    if (needy && watch.neededSince === null) watch.neededSince = this.now()
+    else if (!needy && watch.neededSince !== null) {
+      this.record({ type: "attention_latency_ms", agent: sessionId, durationMs: this.now() - watch.neededSince })
+      watch.neededSince = null
+    }
+
+    const waiting = needy && !isFocused
+    if (waiting && watch.idleFleetSince === null) watch.idleFleetSince = this.now()
+    else if (!waiting && watch.idleFleetSince !== null) {
+      this.record({ type: "idle_fleet_ms", agent: sessionId, durationMs: this.now() - watch.idleFleetSince })
+      watch.idleFleetSince = null
+    }
+  }
+
+  private handleTurn(sessionId: SessionId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
     if (turn.kind === "user") {
-      // A prompt was sent: start the first-response clock for this agent.
+      this.resolveEffortRetention(sessionId, watch)
+      if (this.resumeFirstActionArmed) {
+        this.resumeFirstActionArmed = false
+        const result = detectReexplanation(
+          [{ kind: "developer_message", charCount: turn.text?.length ?? 0 }],
+          this.threshold,
+        )
+        this.record({ type: "resume_first_action", continued: !result.detected })
+      }
+      // A prompt was sent: start the first-response clock for this session.
       watch.awaitingResponseAt = this.now()
       if (watch.reexplanationArmed) {
         // The developer's first message after the hand-off decides re-explanation.
         watch.reexplanationArmed = false
         const result = detectReexplanation([{ kind: "developer_message", charCount: turn.text?.length ?? 0 }], this.threshold)
-        if (result.detected) this.record({ type: "reexplanation_detected", agent: agentId, charBucket: result.charBucket })
+        if (result.detected) this.record({ type: "reexplanation_detected", agent: sessionId, charBucket: result.charBucket })
       }
       return
     }
     // An agent message or tool call is the first response; a tool call also ends the
     // re-explanation window (the target started acting on the bundle).
     if (watch.awaitingResponseAt !== null) {
-      this.record({ type: "first_response_ms", agent: agentId, durationMs: this.now() - watch.awaitingResponseAt })
+      this.record({ type: "first_response_ms", agent: sessionId, durationMs: this.now() - watch.awaitingResponseAt })
       watch.awaitingResponseAt = null
     }
     if (turn.kind === "tool_call") watch.reexplanationArmed = false
   }
 
-  private watchFor(agentId: AgentId): AgentWatch {
-    let watch = this.watches.get(agentId)
+  private watchFor(sessionId: SessionId): AgentWatch {
+    let watch = this.watches.get(sessionId)
     if (!watch) {
-      watch = { seenTurns: 0, awaitingResponseAt: null, reexplanationArmed: false }
-      this.watches.set(agentId, watch)
+      watch = {
+        seenAcpSessionId: "",
+        seenTurns: 0,
+        seenEffortValue: undefined,
+        effortRetention: null,
+        awaitingResponseAt: null,
+        reexplanationArmed: false,
+        neededSince: null,
+        idleFleetSince: null,
+      }
+      this.watches.set(sessionId, watch)
     }
     return watch
   }
@@ -239,6 +545,32 @@ class ActiveRecorder implements TelemetryRecorder {
   private record(event: Omit<TelemetryRecord, "at" | "sessionRef">): void {
     this.sink.write({ ...event, at: this.now(), sessionRef: this.sessionRef })
   }
+
+  /** Compare one store snapshot's confirmed effort to the prior snapshot. */
+  private processEffortChange(sessionId: SessionId, options: readonly ConfigOption[]): void {
+    const watch = this.watchFor(sessionId)
+    const current = effortValue(options)
+    if (current === watch.seenEffortValue) return
+
+    // A pending metric sees any subsequent effort change as the original choice not
+    // surviving. Whether that new value is an exact revert is immaterial to retention.
+    watch.effortRetention?.push({ kind: "effort_change" })
+    watch.seenEffortValue = current
+  }
+
+  /** Close a pending effort-change window at the pane's next developer turn. */
+  private resolveEffortRetention(sessionId: SessionId, watch: AgentWatch): void {
+    const events = watch.effortRetention
+    if (!events) return
+    events.push({ kind: "next_turn" })
+    if (effortChangeKept(events)) this.record({ type: "effort_change_kept", agent: sessionId })
+    watch.effortRetention = null
+  }
+}
+
+/** Read an effort's current value from the generic, adapter-owned option surface. */
+function effortValue(options: readonly ConfigOption[]): string | undefined {
+  return options.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
 }
 
 /**
@@ -248,12 +580,18 @@ class ActiveRecorder implements TelemetryRecorder {
  */
 export function recordReadiness(
   recorder: TelemetryRecorder,
-  runtimes: readonly { agentId: AgentId; ready: boolean }[],
+  runtimes: readonly { sessionId: SessionId; ready: boolean }[],
 ): void {
+  let live = 0
   for (const runtime of runtimes) {
-    if (runtime.ready) recorder.agentReady(runtime.agentId)
-    else recorder.agentUnready(runtime.agentId)
+    if (runtime.ready) {
+      recorder.agentReady(runtime.sessionId)
+      live += 1
+    } else recorder.agentUnready(runtime.sessionId)
   }
+  // The peak concurrently-live count for the run: how many sessions actually came up,
+  // the multi-session adoption signal (task_09). One event per run from the boot snapshot.
+  recorder.maxConcurrentSessions(live)
 }
 
 /** The environment variable that overrides the telemetry file location outright. */

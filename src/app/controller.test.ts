@@ -1,4 +1,11 @@
+// Suite: session controller orchestration
+// Invariant: each agent degrades independently while store binding, restore, actions, and telemetry stay ordered.
+// Boundary IN: real controller/store/actions over stub connections and in-process ACP transports.
+// Boundary OUT: rendered picker/cockpit behavior and real external agent binaries.
+
 import { describe, expect, it } from "bun:test"
+
+import { join } from "node:path"
 
 import {
   createAgentConnection,
@@ -9,10 +16,26 @@ import {
   type ReadyState,
 } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import type { AgentConfig, AgentId, AppConfig, DomainSessionEvent } from "../core/types.ts"
-import { createAppStore } from "../store/appStore.ts"
+import type {
+  AgentConfig,
+  AppConfig,
+  ConfigOption,
+  DomainSessionEvent,
+  ProviderKind,
+  SessionId,
+  ShellEvent,
+} from "../core/types.ts"
+import type { PersistedRunRecord } from "../persistence/runRecord.ts"
+import {
+  createInMemoryShellRuntimeFactory,
+  type ShellRuntime,
+  type ShellRuntimeFactory,
+} from "../shell/shellRuntime.ts"
+import { selectAgentModel } from "../store/selectors.ts"
+import { createAppStore, type AppStore } from "../store/appStore.ts"
+import { createTelemetryRecorder, type TelemetryRecord, type TelemetryRecorder } from "../telemetry/recorder.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
-import { composePromptBlocks, createControllerActions, nextAgentId } from "./actions.ts"
+import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
 import { createSessionController, type SessionController } from "./controller.ts"
 
 /**
@@ -31,7 +54,19 @@ import { createSessionController, type SessionController } from "./controller.ts
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
-const APP_CONFIG: AppConfig = { agents: [CLAUDE, CODEX], telemetryEnabled: false }
+const PROVIDERS: AppConfig["providers"] = {
+  "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
+  codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
+}
+const APP_CONFIG: AppConfig = {
+  providers: PROVIDERS,
+  sessions: [],
+  shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
+  persistenceEnabled: true,
+  telemetryEnabled: false,
+  theme: "auto",
+  welcomeBanner: "auto",
+}
 const CWD = "/workspace/kitten"
 
 const PERMISSION_REQUEST: PermissionRequest = {
@@ -43,6 +78,20 @@ const PERMISSION_REQUEST: PermissionRequest = {
   ],
 }
 
+/** A `model`-category config option with the given confirmed value, for seeding/switch tests. */
+function modelOption(currentValue: string): ConfigOption {
+  return {
+    id: "model",
+    category: "model",
+    label: "Model",
+    currentValue,
+    options: [
+      { value: "opus", name: "Opus" },
+      { value: "sonnet", name: "Sonnet" },
+    ],
+  }
+}
+
 /** A stub `AgentConnection` recording what the controller asked of it. */
 interface StubConnection extends AgentConnection {
   /** Push a domain event as if the agent had streamed it. */
@@ -52,6 +101,9 @@ interface StubConnection extends AgentConnection {
   readonly prompts: Array<{ sessionId: string; blocks: PromptBlock[] }>
   readonly cancels: string[]
   readonly newSessionCwds: string[]
+  readonly loadSessionCalls: Array<{ sessionId: string; cwd: string }>
+  /** Every `setSessionConfigOption` call the controller made, in order. */
+  readonly configCalls: Array<{ sessionId: string; configId: string; value: string }>
   readonly isDisposed: () => boolean
 }
 
@@ -60,32 +112,99 @@ interface StubOptions {
   sessionId?: string
   connectThrows?: unknown
   newSessionThrows?: unknown
+  loadSessionThrows?: unknown
+  loadSessionEvents?: DomainSessionEvent[]
+  loadSessionWait?: Promise<void>
   promptThrows?: unknown
   cancelThrows?: unknown
+  /** The full option set `setSessionConfigOption` echoes back (the confirmed state). */
+  configResponse?: ConfigOption[]
+  /** Make `setSessionConfigOption` reject, to exercise the action's error path. */
+  setConfigThrows?: unknown
+  /** Options the agent advertises during `newSession`, emitted so the controller can seed them. */
+  newSessionConfig?: ConfigOption[]
 }
 
-function createStubConnection(id: AgentId, options: StubOptions = {}): StubConnection {
+interface StubShellRuntime extends ShellRuntime {
+  emit(event: ShellEvent): void
+  subscriberCount(): number
+  isDisposed(): boolean
+}
+
+function createStubShellRuntime(): StubShellRuntime {
+  const subscribers = new Set<(event: ShellEvent) => void>()
+  let disposed = false
+  return {
+    onEvent(cb) {
+      subscribers.add(cb)
+      return () => {
+        subscribers.delete(cb)
+      }
+    },
+    onBufferChange() {
+      return () => {}
+    },
+    bufferType: () => "normal",
+    write() {},
+    interrupt() {},
+    resize() {},
+    view: () => [],
+    snapshot: () => ({ cwd: CWD, commands: [] }),
+    async dispose() {
+      disposed = true
+    },
+    emit(event) {
+      for (const subscriber of subscribers) subscriber(event)
+    },
+    subscriberCount: () => subscribers.size,
+    isDisposed: () => disposed,
+  }
+}
+
+function createTestShellFactory(): ShellRuntimeFactory {
+  return createInMemoryShellRuntimeFactory().factory
+}
+
+function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
   const cancels: string[] = []
   const newSessionCwds: string[] = []
+  const loadSessionCalls: Array<{ sessionId: string; cwd: string }> = []
+  const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   let disposed = false
+
+  const emit = (event: DomainSessionEvent): void => {
+    for (const subscriber of subscribers) subscriber(event)
+  }
 
   return {
     id,
     prompts,
     cancels,
     newSessionCwds,
+    loadSessionCalls,
+    configCalls,
     isDisposed: () => disposed,
     async connect() {
       if (options.connectThrows !== undefined) throw options.connectThrows
-      return options.ready ?? { ready: true, protocolVersion: 1 }
+      return options.ready ?? { ready: true, protocolVersion: 1, canLoadSession: false }
     },
     async newSession(cwd) {
       newSessionCwds.push(cwd)
       if (options.newSessionThrows !== undefined) throw options.newSessionThrows
+      // Mirror the adapter: an agent that advertises config at session start emits it
+      // as a `config_options` event during `newSession`, before the controller binds
+      // its permanent subscription - the seed the controller must capture and replay.
+      if (options.newSessionConfig !== undefined) emit({ kind: "config_options", options: options.newSessionConfig })
       return options.sessionId ?? `${id}-session`
+    },
+    async loadSession(sessionId, cwd) {
+      loadSessionCalls.push({ sessionId, cwd })
+      for (const event of options.loadSessionEvents ?? []) emit(event)
+      await options.loadSessionWait
+      if (options.loadSessionThrows !== undefined) throw options.loadSessionThrows
     },
     async prompt(sessionId, blocks) {
       prompts.push({ sessionId, blocks })
@@ -95,6 +214,11 @@ function createStubConnection(id: AgentId, options: StubOptions = {}): StubConne
     async cancel(sessionId) {
       cancels.push(sessionId)
       if (options.cancelThrows !== undefined) throw options.cancelThrows
+    },
+    async setSessionConfigOption(sessionId, configId, value) {
+      configCalls.push({ sessionId, configId, value })
+      if (options.setConfigThrows !== undefined) throw options.setConfigThrows
+      return options.configResponse ?? []
     },
     onUpdate(cb) {
       subscribers.add(cb)
@@ -108,9 +232,7 @@ function createStubConnection(id: AgentId, options: StubOptions = {}): StubConne
     async dispose() {
       disposed = true
     },
-    emit(event) {
-      for (const subscriber of subscribers) subscriber(event)
-    },
+    emit,
     ask(request) {
       if (!permissionHandler) throw new Error("no permission handler registered")
       return permissionHandler(request)
@@ -120,22 +242,148 @@ function createStubConnection(id: AgentId, options: StubOptions = {}): StubConne
 
 /** Build a controller over one stub connection per configured agent. */
 async function controllerWithStubs(
-  stubs: Partial<Record<AgentId, StubOptions>> = {},
-  overrides: { onError?: (agentId: AgentId, error: unknown) => void } = {},
-): Promise<{ controller: SessionController; connections: Record<AgentId, StubConnection> }> {
+  stubs: Partial<Record<ProviderKind, StubOptions>> = {},
+  overrides: {
+    onError?: (sessionId: SessionId, error: unknown) => void
+    recorder?: ActionTelemetry
+    readBranch?: (cwd: string) => Promise<string | null>
+    createShellRuntime?: ShellRuntimeFactory
+    store?: AppStore
+    /** Exercise the controller's real default-store construction. */
+    useProductionStore?: boolean
+  } = {},
+): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection> }> {
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
     codex: createStubConnection("codex", stubs.codex),
-  } satisfies Record<AgentId, StubConnection>
+  } satisfies Record<ProviderKind, StubConnection>
 
   const controller = await createSessionController({
     config: APP_CONFIG,
     cwd: CWD,
+    store: overrides.useProductionStore ? undefined : overrides.store ?? createAppStore({ focusedSessionId: "claude-code" }),
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
     onError: overrides.onError,
+    recorder: overrides.recorder,
+    readBranch: overrides.readBranch ?? (async () => null),
+    createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
   })
   return { controller, connections }
+}
+
+/**
+ * Three declared sessions in three real, distinct directories inside this repository,
+ * two of them sharing the `claude-code` provider - the multi-session fleet task_03
+ * generalizes the controller to. Real directories so {@link resolveSessions}' existence
+ * probe passes.
+ */
+const FLEET_DIRS = {
+  alpha: process.cwd(),
+  beta: join(process.cwd(), "src"),
+  gamma: join(process.cwd(), "test"),
+} as const
+const THREE_SESSION_CONFIG: AppConfig = {
+  providers: PROVIDERS,
+  sessions: [
+    { provider: "claude-code", cwd: FLEET_DIRS.alpha, title: "Alpha" },
+    { provider: "claude-code", cwd: FLEET_DIRS.beta, title: "Beta" },
+    { provider: "codex", cwd: FLEET_DIRS.gamma, title: "Gamma" },
+  ],
+  shell: APP_CONFIG.shell,
+  persistenceEnabled: true,
+  telemetryEnabled: false,
+  theme: "auto",
+  welcomeBanner: "auto",
+}
+
+/**
+ * Build a controller over a fresh stub per session, capturing every stub created in
+ * plan order. Lets a test inspect the `newSession` directory and permission handler of
+ * each individual session - including two sessions that share a provider kind.
+ */
+async function controllerOverFleet(
+  config: AppConfig,
+  optionsFor: (index: number) => StubOptions = () => ({}),
+  overrides: {
+    readBranch?: (cwd: string) => Promise<string | null>
+    createShellRuntime?: ShellRuntimeFactory
+    sendInitialTasks?: boolean
+  } = {},
+): Promise<{ controller: SessionController; created: StubConnection[] }> {
+  const created: StubConnection[] = []
+  const controller = await createSessionController({
+    config,
+    cwd: process.cwd(),
+    createConnection: (agentConfig) => {
+      const stub = createStubConnection(agentConfig.id, { sessionId: `acp-${created.length}`, ...optionsFor(created.length) })
+      created.push(stub)
+      return stub
+    },
+    newMessageId: () => "msg-1",
+    readBranch: overrides.readBranch ?? (async () => null),
+    createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
+    sendInitialTasks: overrides.sendInitialTasks,
+  })
+  return { controller, created }
+}
+
+function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecord {
+  return {
+    version: 1,
+    runId: "run-07",
+    cwd: CWD,
+    gitBranch: "feat/session-resume",
+    focusedAgentId,
+    createdAt: 1_000,
+    updatedAt: 2_000,
+    agents: {
+      "claude-code": {
+        sessionId: "claude-stored",
+        lastPrompt: "continue claude",
+        messageCount: 1,
+        status: "finished",
+      },
+      codex: {
+        sessionId: "codex-stored",
+        lastPrompt: "continue codex",
+        messageCount: 1,
+        status: "idle",
+      },
+    },
+    handoffBundle: null,
+  }
+}
+
+async function controllerForRestore(
+  restoreOptions: Partial<Record<ProviderKind, StubOptions>> = {},
+  onError?: (sessionId: SessionId, error: unknown) => void,
+  recorder?: TelemetryRecorder,
+): Promise<{ controller: SessionController; restored: Record<ProviderKind, StubConnection> }> {
+  const startup = {
+    "claude-code": createStubConnection("claude-code"),
+    codex: createStubConnection("codex"),
+  } satisfies Record<ProviderKind, StubConnection>
+  const restored = {
+    "claude-code": createStubConnection("claude-code", restoreOptions["claude-code"]),
+    codex: createStubConnection("codex", restoreOptions.codex),
+  } satisfies Record<ProviderKind, StubConnection>
+  const queues = {
+    "claude-code": [startup["claude-code"], restored["claude-code"]],
+    codex: [startup.codex, restored.codex],
+  }
+
+  const controller = await createSessionController({
+    config: APP_CONFIG,
+    cwd: CWD,
+    store: createAppStore({ focusedSessionId: "claude-code" }),
+    createConnection: (config) => queues[config.id].shift()!,
+    onError,
+    recorder,
+    readBranch: async () => null,
+    createShellRuntime: createTestShellFactory(),
+  })
+  return { controller, restored }
 }
 
 /** Poll until `predicate` holds, so a test can await an async round-trip. */
@@ -160,33 +408,90 @@ describe("composePromptBlocks", () => {
   })
 })
 
-describe("nextAgentId", () => {
-  it("Should cycle through the agents in cockpit order", () => {
-    expect(nextAgentId("claude-code")).toBe("codex")
-    expect(nextAgentId("codex")).toBe("claude-code")
+describe("nextSessionId", () => {
+  it("Should cycle through the sessions in display order", () => {
+    const order = ["claude-code", "codex"]
+    expect(nextSessionId(order, "claude-code")).toBe("codex")
+    expect(nextSessionId(order, "codex")).toBe("claude-code")
   })
 })
 
 describe("createSessionController - startup", () => {
+  it("Should pass resolved command and scrollback config to the shell runtime factory", async () => {
+    let received: Parameters<ShellRuntimeFactory>[0] | undefined
+    const shell = createStubShellRuntime()
+    const { controller } = await controllerWithStubs(
+      {},
+      {
+        createShellRuntime: (options) => {
+          received = options
+          return shell
+        },
+      },
+    )
+
+    expect(received).toEqual({ cwd: CWD, command: "/bin/sh", scrollback: 2_500 })
+    await controller.dispose()
+  })
+
   it("Should connect every agent and open one session against the cwd", async () => {
     const { controller, connections } = await controllerWithStubs()
 
     expect(connections["claude-code"].newSessionCwds).toEqual([CWD])
     expect(connections.codex.newSessionCwds).toEqual([CWD])
-    expect(controller.store.getState().sessions["claude-code"].sessionId).toBe("claude-code-session")
-    expect(controller.store.getState().sessions.codex.sessionId).toBe("codex-session")
+    expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-code-session")
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-session")
     expect(controller.runtimes()).toEqual([
-      { agentId: "claude-code", displayName: "Claude Code", ready: true, sessionId: "claude-code-session" },
-      { agentId: "codex", displayName: "Codex", ready: true, sessionId: "codex-session" },
+      {
+        sessionId: "codex",
+        providerKind: "codex",
+        displayName: "Codex",
+        title: "Codex",
+        cwd: CWD,
+        ready: true,
+        acpSessionId: "codex-session",
+      },
+      {
+        sessionId: "claude-code",
+        providerKind: "claude-code",
+        displayName: "Claude Code",
+        title: "Claude Code",
+        cwd: CWD,
+        ready: true,
+        acpSessionId: "claude-code-session",
+      },
     ])
     expect(controller.isReady("claude-code")).toBe(true)
 
     await controller.dispose()
   })
 
-  it("Should focus the first configured agent when it is ready", async () => {
+  it("Should retain an initial focus supplied by the caller's store", async () => {
     const { controller } = await controllerWithStubs()
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    await controller.dispose()
+  })
+
+  it("Should default the built-in zero-config cockpit to Codex", async () => {
+    const { controller } = await controllerWithStubs({}, { useProductionStore: true })
+
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().order).toEqual(["codex", "claude-code"])
+
+    await controller.dispose()
+  })
+
+  it("Should seed the session-start config options into the store as a config_options event", async () => {
+    const { controller } = await controllerWithStubs({
+      "claude-code": { newSessionConfig: [modelOption("opus")] },
+    })
+
+    // The options the agent advertised during newSession populate the selector before
+    // first use, surviving the transcript reset startSession performs.
+    expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([modelOption("opus")])
+    // A session that advertised none stays empty rather than fabricating options.
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([])
+
     await controller.dispose()
   })
 
@@ -196,22 +501,401 @@ describe("createSessionController - startup", () => {
     connections["claude-code"].emit({ kind: "agent_message", messageId: "m1", textDelta: "hello" })
 
     const state = controller.store.getState()
-    expect(state.sessions["claude-code"].turns).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
-    expect(state.sessions.codex.turns).toEqual([])
+    expect(state.sessions["claude-code"]!.turns).toEqual([{ kind: "agent", messageId: "m1", text: "hello" }])
+    expect(state.sessions.codex!.turns).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("Should route scripted shell events into the store shell slice", async () => {
+    const shell = createStubShellRuntime()
+    const { controller } = await controllerWithStubs({}, { createShellRuntime: () => shell })
+
+    shell.emit({ kind: "cwd_changed", cwd: "/workspace/kitten/packages/app" })
+
+    expect(controller.shell).toEqual({ ready: true, runtime: shell })
+    expect(controller.store.getState().shell.cwd).toBe("/workspace/kitten/packages/app")
+
+    await controller.dispose()
+  })
+
+  it("Should read and store the branch for every session cwd at boot", async () => {
+    const calls: string[] = []
+    const branches = new Map([
+      [FLEET_DIRS.alpha, "branch-alpha"],
+      [FLEET_DIRS.beta, "branch-beta"],
+      [FLEET_DIRS.gamma, "branch-gamma"],
+    ])
+    const { controller } = await controllerOverFleet(THREE_SESSION_CONFIG, undefined, {
+      readBranch: async (cwd) => {
+        calls.push(cwd)
+        return branches.get(cwd) ?? null
+      },
+    })
+
+    await waitFor(() => controller.store.getState().sessions.codex?.branch === "branch-gamma", "boot branch reads")
+
+    expect(calls).toEqual([FLEET_DIRS.alpha, FLEET_DIRS.beta, FLEET_DIRS.gamma])
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBe("branch-alpha")
+    expect(controller.store.getState().sessions["claude-code-2"]!.branch).toBe("branch-beta")
+    expect(controller.store.getState().sessions.codex!.branch).toBe("branch-gamma")
+
+    await controller.dispose()
+  })
+
+  it("Should keep branch slots hidden when the reader returns null", async () => {
+    const { controller } = await controllerWithStubs({}, { readBranch: async () => null })
+
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBeUndefined()
+    expect(controller.store.getState().sessions.codex!.branch).toBeUndefined()
 
     await controller.dispose()
   })
 })
 
+describe("createSessionController - persisted restore", () => {
+  it("Should record a picker resume with both panes live", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 1000,
+      sessionRef: "resume-run",
+    })
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      },
+      undefined,
+      recorder,
+    )
+
+    await controller.restore(persistedRun(), "picker")
+
+    expect(records.find((record) => record.type === "session_resumed")).toMatchObject({
+      mode: "picker",
+      liveCount: 2,
+    })
+    expect(records.filter((record) => record.type === "resume_pane_unavailable")).toHaveLength(0)
+    await controller.dispose()
+  })
+
+  it("Should record the unavailable Codex pane without including persisted prompt text", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+    })
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionThrows: new Error("gone"),
+        },
+      },
+      undefined,
+      recorder,
+    )
+
+    await controller.restore(persistedRun(), "last-run")
+
+    expect(records.find((record) => record.type === "resume_pane_unavailable")).toMatchObject({ agent: "codex" })
+    expect(records.find((record) => record.type === "session_resumed")).toMatchObject({
+      mode: "last-run",
+      liveCount: 1,
+    })
+    expect(JSON.stringify(records)).not.toContain("continue codex")
+    await controller.dispose()
+  })
+
+  it("Should emit nothing across a full restore when telemetry is disabled", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      sink: { write: (record) => records.push(record) },
+    })
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionThrows: new Error("gone"),
+        },
+      },
+      undefined,
+      recorder,
+    )
+
+    await controller.restore(persistedRun(), "picker")
+
+    expect(records).toHaveLength(0)
+    await controller.dispose()
+  })
+
+  it("Should load stored sessions and replay their streamed history into both panes", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "user_message", messageId: "claude-replay", text: "restored claude" }],
+      },
+      codex: {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "agent_message", messageId: "codex-replay", textDelta: "restored codex" }],
+      },
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(restored["claude-code"].loadSessionCalls).toEqual([{ sessionId: "claude-stored", cwd: CWD }])
+    expect(restored.codex.loadSessionCalls).toEqual([{ sessionId: "codex-stored", cwd: CWD }])
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
+      { kind: "user", messageId: "claude-replay", text: "restored claude" },
+    ])
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([
+      { kind: "agent", messageId: "codex-replay", text: "restored codex" },
+    ])
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": "live", codex: "live" })
+    await controller.dispose()
+  })
+
+  it("Should retain config options emitted while restoring a stored session", async () => {
+    const { controller } = await controllerForRestore({
+      "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      codex: {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "config_options", options: [modelOption("gpt-5.6-terra")] }],
+      },
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([modelOption("gpt-5.6-terra")])
+    await controller.dispose()
+  })
+
+  it("Should bind and subscribe before loadSession emits its first replay update", async () => {
+    const { controller } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "agent_message", messageId: "immediate", textDelta: "not dropped" }],
+      },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+    controller.store.applyEvent("claude-code", { kind: "agent_message", messageId: "stale", textDelta: "old" })
+
+    await controller.restore(persistedRun())
+
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
+      { kind: "agent", messageId: "immediate", text: "not dropped" },
+    ])
+    await controller.dispose()
+  })
+
+  it("Should isolate a rejected load while the other session restores live", async () => {
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionThrows: new Error("stored transcript is gone"),
+        },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionEvents: [{ kind: "agent_message", messageId: "codex-live", textDelta: "still restored" }],
+        },
+      },
+      (sessionId, error) => errors.push({ sessionId, error }),
+    )
+
+    await expect(controller.restore(persistedRun())).resolves.toBeUndefined()
+
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": "unavailable", codex: "live" })
+    expect(controller.isReady("claude-code")).toBe(false)
+    expect(controller.isReady("codex")).toBe(true)
+    expect(controller.store.getState().sessions.codex!.turns.at(-1)).toMatchObject({ text: "still restored" })
+    expect(errors).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it("Should recover a stale Codex rollout into a fresh usable session", async () => {
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const missingRollout = Object.assign(new Error("Internal error"), {
+      data: { details: "no rollout found for thread id codex-stored" },
+    })
+    const { controller, restored } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          sessionId: "codex-fresh",
+          newSessionConfig: [modelOption("sonnet")],
+          loadSessionThrows: missingRollout,
+        },
+      },
+      (sessionId, error) => errors.push({ sessionId, error }),
+    )
+
+    await controller.restore(persistedRun())
+
+    expect(restored.codex.loadSessionCalls).toEqual([{ sessionId: "codex-stored", cwd: CWD }])
+    expect(restored.codex.newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh")
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([modelOption("sonnet")])
+    expect(controller.store.getState().restoration.codex).toBe("unavailable")
+    expect(controller.isReady("codex")).toBe(true)
+    expect(errors).toEqual([])
+    await controller.dispose()
+  })
+
+  it("Should start fresh and mark unavailable when loadSession is not advertised", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: false },
+        sessionId: "claude-fresh",
+      },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(restored["claude-code"].loadSessionCalls).toEqual([])
+    expect(restored["claude-code"].newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-fresh")
+    expect(controller.store.getState().restoration["claude-code"]).toBe("unavailable")
+    expect(controller.isReady("claude-code")).toBe(true)
+    await controller.dispose()
+  })
+
+  it("Should start fresh for an empty stored session that has no history to restore", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      codex: {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        sessionId: "codex-fresh",
+      },
+    })
+    const record = persistedRun()
+    record.agents.codex = { ...record.agents.codex!, lastPrompt: "", messageCount: 0 }
+
+    await controller.restore(record)
+
+    expect(restored.codex.loadSessionCalls).toEqual([])
+    expect(restored.codex.newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh")
+    expect(controller.store.getState().restoration.codex).toBe("unavailable")
+    expect(controller.isReady("codex")).toBe(true)
+    await controller.dispose()
+  })
+
+  it("Should apply persisted focus only after both restore attempts settle", async () => {
+    let releaseClaude!: () => void
+    const claudeLoad = new Promise<void>((resolve) => {
+      releaseClaude = resolve
+    })
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionWait: claudeLoad,
+      },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+
+    const restoring = controller.restore(persistedRun("codex"))
+    await waitFor(() => restored["claude-code"].loadSessionCalls.length === 1, "claude restore to begin")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+
+    releaseClaude()
+    await restoring
+
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    await controller.dispose()
+  })
+
+  it("Should replace a restored run with fresh sessions and clear the resumed indicator", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const phase = Math.floor(created.length / 2)
+        const connection = createStubConnection(config.id, {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          sessionId: `${config.id}-fresh-${phase}`,
+        })
+        created.push(connection)
+        return connection
+      },
+      readBranch: async () => null,
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    await controller.restore(persistedRun())
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": "live", codex: "live" })
+
+    await controller.actions.startNewRun()
+
+    expect(created.slice(4).map((connection) => connection.newSessionCwds)).toEqual([[CWD], [CWD]])
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": null, codex: null })
+    expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-code-fresh-2")
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh-2")
+    await controller.dispose()
+  })
+})
+
 describe("createSessionController - degraded startup", () => {
+  it("Should not create a runtime when the shell is disabled in config", async () => {
+    let factoryCalls = 0
+    const { controller } = await controllerOverFleet(
+      { ...APP_CONFIG, shell: { ...APP_CONFIG.shell, enabled: false } },
+      undefined,
+      {
+        createShellRuntime: () => {
+          factoryCalls += 1
+          return createStubShellRuntime()
+        },
+      },
+    )
+
+    expect(factoryCalls).toBe(0)
+    expect(controller.shell).toEqual({ ready: false, error: "The integrated shell is disabled in config" })
+    expect(controller.isReady("claude-code")).toBe(true)
+
+    await controller.dispose()
+  })
+
+  it("Should keep agents usable and expose shell unavailability when shell creation fails", async () => {
+    const { controller, connections } = await controllerWithStubs(
+      {},
+      {
+        createShellRuntime: () => {
+          throw new Error("PTY unavailable")
+        },
+      },
+    )
+
+    expect(controller.shell).toEqual({ ready: false, error: "PTY unavailable" })
+    expect(controller.isReady("claude-code")).toBe(true)
+    expect(controller.isReady("codex")).toBe(true)
+    expect(await controller.actions.sendPrompt("agents remain usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.codex.prompts).toHaveLength(1)
+
+    await controller.dispose()
+  })
+
   it("Should report a rejected handshake as not-ready and keep the other agent usable", async () => {
     const { controller, connections } = await controllerWithStubs({
       "claude-code": { ready: { ready: false, error: "not logged in" } },
     })
 
     expect(controller.runtime("claude-code")).toEqual({
-      agentId: "claude-code",
+      sessionId: "claude-code",
+      providerKind: "claude-code",
       displayName: "Claude Code",
+      title: "Claude Code",
+      cwd: CWD,
       ready: false,
       error: "not logged in",
     })
@@ -222,7 +906,7 @@ describe("createSessionController - degraded startup", () => {
     expect(connections["claude-code"].newSessionCwds).toEqual([])
 
     // Focus falls through to the agent that did come up.
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
     await controller.actions.sendPrompt("still works")
     expect(connections.codex.prompts).toHaveLength(1)
 
@@ -230,10 +914,10 @@ describe("createSessionController - degraded startup", () => {
   })
 
   it("Should report a thrown connect as not-ready without rejecting", async () => {
-    const errors: Array<[AgentId, unknown]> = []
+    const errors: Array<[SessionId, unknown]> = []
     const { controller } = await controllerWithStubs(
       { codex: { connectThrows: new Error("spawn ENOENT") } },
-      { onError: (agentId, error) => errors.push([agentId, error]) },
+      { onError: (sessionId, error) => errors.push([sessionId, error]) },
     )
 
     expect(controller.runtime("codex")).toMatchObject({ ready: false, error: "spawn ENOENT" })
@@ -248,7 +932,7 @@ describe("createSessionController - degraded startup", () => {
     const { controller } = await controllerWithStubs({ codex: { newSessionThrows: "no session for you" } })
 
     expect(controller.runtime("codex")).toMatchObject({ ready: false, error: "no session for you" })
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -259,7 +943,7 @@ describe("createSessionController - degraded startup", () => {
       codex: { ready: { ready: false, error: "down" } },
     })
 
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(controller.runtimes().every((runtime) => !runtime.ready)).toBe(true)
     // A not-ready agent has no session, so the action surface is inert rather than fatal.
     expect(await controller.actions.sendPrompt("hello")).toBeNull()
@@ -270,8 +954,107 @@ describe("createSessionController - degraded startup", () => {
 
   it("Should not know an agent the config never named", async () => {
     const { controller } = await controllerWithStubs()
-    expect(controller.runtime("nope" as AgentId)).toBeUndefined()
-    expect(controller.isReady("nope" as AgentId)).toBe(false)
+    expect(controller.runtime("nope" as SessionId)).toBeUndefined()
+    expect(controller.isReady("nope" as SessionId)).toBe(false)
+    await controller.dispose()
+  })
+})
+
+describe("createSessionController - multi-session fleet", () => {
+  it("Should start one runtime per session, keyed by SessionId, in three distinct directories", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+
+    // Two sessions share the claude-code provider; each still gets its own SessionId.
+    expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["claude-code", "claude-code-2", "codex"])
+    expect(controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
+
+    // Each session opened its ACP session against its own working directory.
+    const cwds = created.map((stub) => stub.newSessionCwds)
+    expect(cwds).toEqual([[FLEET_DIRS.alpha], [FLEET_DIRS.beta], [FLEET_DIRS.gamma]])
+    expect(new Set(cwds.flat()).size).toBe(3)
+
+    // The store carries each session's own directory.
+    const state = controller.store.getState()
+    expect(state.sessions["claude-code"]!.cwd).toBe(FLEET_DIRS.alpha)
+    expect(state.sessions["claude-code-2"]!.cwd).toBe(FLEET_DIRS.beta)
+    expect(state.sessions.codex!.cwd).toBe(FLEET_DIRS.gamma)
+
+    // No descriptor carries a task, so no opening prompt is sent.
+    expect(created.every((stub) => stub.prompts.length === 0)).toBe(true)
+
+    await controller.dispose()
+  })
+
+  it("Should record one session not-ready with its reason while the rest of the fleet stays usable", async () => {
+    const { controller } = await controllerOverFleet(THREE_SESSION_CONFIG, (index) =>
+      index === 1 ? { connectThrows: new Error("spawn ENOENT") } : {},
+    )
+
+    expect(controller.runtime("claude-code-2")).toMatchObject({ ready: false, error: "spawn ENOENT" })
+    expect(controller.isReady("claude-code")).toBe(true)
+    expect(controller.isReady("codex")).toBe(true)
+
+    // A sibling session is fully usable despite the one that failed to spawn.
+    expect(await controller.actions.sendPrompt("carry on", "codex")).toEqual({ stopReason: "end_turn" })
+
+    await controller.dispose()
+  })
+
+  it("Should label a parked approval with its session's id, title, and directory", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+
+    // The second claude-code session (title Beta, dir src) raises the request.
+    const pending = created[1]!.ask(PERMISSION_REQUEST)
+
+    expect(controller.store.getState().overlays.approval).toMatchObject({
+      sessionId: "claude-code-2",
+      title: "Beta",
+      cwd: FLEET_DIRS.beta,
+      request: PERMISSION_REQUEST,
+    })
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    await pending
+    await controller.dispose()
+  })
+
+  it("Should send a session's optional first task as its opening prompt", async () => {
+    const config: AppConfig = {
+      providers: PROVIDERS,
+      sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      shell: APP_CONFIG.shell,
+      persistenceEnabled: true,
+      telemetryEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+    }
+    const { controller, created } = await controllerOverFleet(config)
+
+    await waitFor(() => created[0]!.prompts.length === 1, "the opening task prompt to be sent")
+    expect(created[0]!.prompts[0]!.blocks).toEqual([{ type: "text", text: "start the build" }])
+    // The opening prompt is recorded as the session's first user turn.
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([
+      { kind: "user", messageId: "msg-1", text: "start the build" },
+    ])
+
+    await controller.dispose()
+  })
+
+  it("does not send an initial task when boot has a persisted run to restore", async () => {
+    const config: AppConfig = {
+      providers: PROVIDERS,
+      sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      shell: APP_CONFIG.shell,
+      persistenceEnabled: true,
+      telemetryEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+    }
+    const { controller, created } = await controllerOverFleet(config, undefined, { sendInitialTasks: false })
+
+    expect(created[0]!.prompts).toEqual([])
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([])
+
     await controller.dispose()
   })
 })
@@ -288,7 +1071,7 @@ describe("actions - sendPrompt", () => {
     ])
     expect(connections.codex.prompts).toEqual([])
     // The user's turn is recorded: ACP never echoes the prompt back.
-    expect(controller.store.getState().sessions["claude-code"].turns).toEqual([
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
       { kind: "user", messageId: "msg-1", text: "refactor the reducer" },
     ])
 
@@ -304,7 +1087,7 @@ describe("actions - sendPrompt", () => {
       { sessionId: "codex-session", blocks: [{ type: "text", text: "continue this" }] },
     ])
     expect(connections["claude-code"].prompts).toEqual([])
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -314,7 +1097,7 @@ describe("actions - sendPrompt", () => {
 
     expect(await controller.actions.sendPrompt("  \n  ")).toBeNull()
     expect(connections["claude-code"].prompts).toEqual([])
-    expect(controller.store.getState().sessions["claude-code"].turns).toEqual([])
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([])
 
     await controller.dispose()
   })
@@ -335,12 +1118,50 @@ describe("actions - sendPrompt", () => {
   it("Should swallow a failing prompt when no error reporter is configured", async () => {
     const connection = createStubConnection("claude-code", { promptThrows: new Error("broken pipe") })
     const controller = await createSessionController({
-      config: { agents: [CLAUDE], telemetryEnabled: false },
+      config: {
+        providers: PROVIDERS,
+        sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        shell: APP_CONFIG.shell,
+        persistenceEnabled: true,
+        telemetryEnabled: false,
+        theme: "auto",
+        welcomeBanner: "auto",
+      },
       cwd: CWD,
       createConnection: () => connection,
+      createShellRuntime: createTestShellFactory(),
     })
 
     expect(await controller.actions.sendPrompt("hi")).toBeNull()
+    await controller.dispose()
+  })
+
+  it("Should refresh the addressed session branch after a turn completes without waiting for git", async () => {
+    let readCount = 0
+    let resolveTurnRead!: (branch: string | null) => void
+    const turnRead = new Promise<string | null>((resolve) => {
+      resolveTurnRead = resolve
+    })
+    const { controller } = await controllerWithStubs({}, {
+      readBranch: async () => {
+        readCount += 1
+        return readCount <= 2 ? "main" : turnRead
+      },
+    })
+    await waitFor(() => controller.store.getState().sessions["claude-code"]?.branch === "main", "boot branch read")
+
+    const result = await controller.actions.sendPrompt("finish this turn")
+
+    expect(result).toEqual({ stopReason: "end_turn" })
+    await waitFor(() => readCount === 3, "turn-completion branch refresh to start")
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBe("main")
+
+    resolveTurnRead("feature/after-turn")
+    await waitFor(
+      () => controller.store.getState().sessions["claude-code"]?.branch === "feature/after-turn",
+      "turn-completion branch refresh to finish",
+    )
+
     await controller.dispose()
   })
 })
@@ -371,6 +1192,122 @@ describe("actions - cancel", () => {
   })
 })
 
+describe("actions - setSessionConfigOption", () => {
+  it("Should target an explicitly addressed session and call the adapter with the args", async () => {
+    const { controller, connections } = await controllerWithStubs({
+      codex: { configResponse: [modelOption("opus")] },
+    })
+
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "codex")).toBe(true)
+
+    expect(connections.codex.configCalls).toEqual([{ sessionId: "codex-session", configId: "model", value: "opus" }])
+    expect(connections["claude-code"].configCalls).toEqual([])
+    // The store reflects the adapter-reported set.
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([modelOption("opus")])
+
+    await controller.dispose()
+  })
+
+  it("records a model switch as confirmed only when the adapter reports the requested value", async () => {
+    const switches: Array<{ sessionId: SessionId; kind: "model" | "effort"; confirmed: boolean; effortChanged: boolean }> = []
+    const recorder: ActionTelemetry = {
+      focusSwitch() {},
+      recordSwitch: (sessionId, kind, confirmed, effortChanged) => switches.push({ sessionId, kind, confirmed, effortChanged }),
+    }
+    const { controller } = await controllerWithStubs(
+      { codex: { configResponse: [modelOption("opus")] } },
+      { recorder },
+    )
+
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "codex")).toBe(true)
+
+    expect(switches).toEqual([{ sessionId: "codex", kind: "model", confirmed: true, effortChanged: false }])
+    await controller.dispose()
+  })
+
+  it("records an adapter-reported mismatch as unverified rather than confirmed", async () => {
+    const switches: Array<{ sessionId: SessionId; kind: "model" | "effort"; confirmed: boolean; effortChanged: boolean }> = []
+    const recorder: ActionTelemetry = {
+      focusSwitch() {},
+      recordSwitch: (sessionId, kind, confirmed, effortChanged) => switches.push({ sessionId, kind, confirmed, effortChanged }),
+    }
+    const { controller } = await controllerWithStubs(
+      { codex: { configResponse: [modelOption("sonnet")] } },
+      { recorder },
+    )
+
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "codex")).toBe(false)
+
+    expect(switches).toEqual([{ sessionId: "codex", kind: "model", confirmed: false, effortChanged: false }])
+    await controller.dispose()
+  })
+
+  it("Should default to the focused session when no session id is given", async () => {
+    const { controller, connections } = await controllerWithStubs({
+      "claude-code": { configResponse: [modelOption("sonnet")] },
+    })
+
+    await controller.actions.setSessionConfigOption("model", "sonnet")
+
+    expect(connections["claude-code"].configCalls).toEqual([
+      { sessionId: "claude-code-session", configId: "model", value: "sonnet" },
+    ])
+    expect(connections.codex.configCalls).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("Should no-op without throwing when the session has no live connection", async () => {
+    const { controller } = await controllerWithStubs({
+      "claude-code": { ready: { ready: false, error: "down" } },
+    })
+
+    // The not-ready claude-code session resolves to no live session, so this is inert.
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "claude-code")).toBe(false)
+    expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("Should route an adapter error to onError and leave the store's confirmed state intact", async () => {
+    const errors: Array<[SessionId, unknown]> = []
+    const switches: Array<{ sessionId: SessionId; kind: "model" | "effort"; confirmed: boolean; effortChanged: boolean }> = []
+    const recorder: ActionTelemetry = {
+      focusSwitch() {},
+      recordSwitch: (sessionId, kind, confirmed, effortChanged) => switches.push({ sessionId, kind, confirmed, effortChanged }),
+    }
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { newSessionConfig: [modelOption("opus")], setConfigThrows: new Error("switch failed") } },
+      { onError: (sessionId, error) => errors.push([sessionId, error]), recorder },
+    )
+
+    expect(await controller.actions.setSessionConfigOption("model", "sonnet", "claude-code")).toBe(false)
+
+    // The adapter was called, but its failure never reached the store.
+    expect(connections["claude-code"].configCalls).toHaveLength(1)
+    expect(errors).toEqual([["claude-code", new Error("switch failed")]])
+    // The last confirmed value survives, so the overlay can mark the option unverified.
+    expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([modelOption("opus")])
+    expect(switches).toEqual([{ sessionId: "claude-code", kind: "model", confirmed: false, effortChanged: false }])
+
+    await controller.dispose()
+  })
+
+  it("Should reflect the adapter-reported value through selectAgentModel, not the requested one", async () => {
+    // The agent honors the switch with a different value than requested (asked opus,
+    // confirmed sonnet); the store must follow the confirmed state, never the request.
+    const { controller } = await controllerWithStubs({
+      "claude-code": { newSessionConfig: [modelOption("opus")], configResponse: [modelOption("sonnet")] },
+    })
+
+    await controller.actions.setSessionConfigOption("model", "opus", "claude-code")
+
+    expect(selectAgentModel("claude-code")(controller.store.getState())).toBe("sonnet")
+
+    await controller.dispose()
+  })
+})
+
 describe("actions - switchFocus", () => {
   it("Should move focus and leave both sessions live and addressable", async () => {
     const { controller, connections } = await controllerWithStubs()
@@ -379,10 +1316,10 @@ describe("actions - switchFocus", () => {
     controller.actions.switchFocus("codex")
 
     const state = controller.store.getState()
-    expect(state.focusedAgentId).toBe("codex")
+    expect(state.focusedSessionId).toBe("codex")
     expect(state.sessions["claude-code"]).toBe(before["claude-code"])
-    expect(state.sessions["claude-code"].sessionId).toBe("claude-code-session")
-    expect(state.sessions.codex.sessionId).toBe("codex-session")
+    expect(state.sessions["claude-code"]!.acpSessionId).toBe("claude-code-session")
+    expect(state.sessions.codex!.acpSessionId).toBe("codex-session")
 
     // Both connections still accept work after the switch.
     await controller.actions.sendPrompt("now you")
@@ -397,9 +1334,60 @@ describe("actions - switchFocus", () => {
     const { controller } = await controllerWithStubs()
 
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedAgentId).toBe("claude-code")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+
+    await controller.dispose()
+  })
+
+  it("Should re-read the focused session branch and store the changed value", async () => {
+    let branch = "main"
+    let readCount = 0
+    const { controller } = await controllerWithStubs({}, {
+      readBranch: async () => {
+        readCount += 1
+        return branch
+      },
+    })
+    await waitFor(
+      () => controller.store.getState().sessions.codex?.branch === "main" && readCount === 2,
+      "both boot branch reads",
+    )
+
+    branch = "feature/focus-refresh"
+    controller.actions.switchFocus("codex")
+
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    await waitFor(
+      () => controller.store.getState().sessions.codex?.branch === "feature/focus-refresh",
+      "focus-switch branch refresh",
+    )
+    expect(readCount).toBe(3)
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBe("main")
+
+    await controller.dispose()
+  })
+
+  it("Should hide a previously stored branch when a focus refresh returns null", async () => {
+    let readCount = 0
+    const { controller } = await controllerWithStubs({}, {
+      readBranch: async () => {
+        readCount += 1
+        return readCount <= 2 ? "main" : null
+      },
+    })
+    await waitFor(
+      () => controller.store.getState().sessions.codex?.branch === "main" && readCount === 2,
+      "both boot branch reads",
+    )
+
+    controller.actions.switchFocus("codex")
+
+    await waitFor(
+      () => readCount === 3 && controller.store.getState().sessions.codex?.branch === undefined,
+      "null focus refresh to hide the branch",
+    )
 
     await controller.dispose()
   })
@@ -412,7 +1400,9 @@ describe("actions - respondPermission", () => {
     const pending = connections["claude-code"].ask(PERMISSION_REQUEST)
 
     expect(controller.store.getState().overlays.approval).toEqual({
-      agentId: "claude-code",
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: CWD,
       request: PERMISSION_REQUEST,
     })
 
@@ -439,11 +1429,11 @@ describe("actions - respondPermission", () => {
     const first = connections["claude-code"].ask(PERMISSION_REQUEST)
     const second = connections.codex.ask({ ...PERMISSION_REQUEST, sessionId: "codex-session" })
 
-    expect(controller.store.getState().overlays.approval?.agentId).toBe("claude-code")
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("claude-code")
 
     controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
     expect(await first).toEqual({ outcome: "selected", optionId: "allow" })
-    expect(controller.store.getState().overlays.approval?.agentId).toBe("codex")
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("codex")
 
     controller.actions.respondPermission({ outcome: "cancelled" })
     expect(await second).toEqual({ outcome: "cancelled" })
@@ -460,9 +1450,61 @@ describe("actions - respondPermission", () => {
 
     await controller.dispose()
   })
+
+  it("Should settle only the answered same-provider session and keep the other's request pending (task_07)", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+
+    // The two claude-code sessions - identical provider, distinct identity - both ask.
+    let betaSettled = false
+    const askAlpha = created[0]!.ask(PERMISSION_REQUEST)
+    const askBeta = created[1]!.ask(PERMISSION_REQUEST).then((outcome) => {
+      betaSettled = true
+      return outcome
+    })
+
+    // Alpha is on screen, labeled unmistakably as itself and not its same-provider sibling.
+    expect(controller.store.getState().overlays.approval).toMatchObject({
+      sessionId: "claude-code",
+      title: "Alpha",
+      cwd: FLEET_DIRS.alpha,
+    })
+
+    // Answering Alpha settles Alpha alone.
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    expect(await askAlpha).toEqual({ outcome: "selected", optionId: "allow" })
+
+    // Beta's request was never auto-approved by Alpha's decision: it is still waiting on
+    // its own explicit answer, and it - not Alpha - now owns the slot.
+    await Bun.sleep(1)
+    expect(betaSettled).toBe(false)
+    expect(controller.store.getState().overlays.approval).toMatchObject({
+      sessionId: "claude-code-2",
+      title: "Beta",
+      cwd: FLEET_DIRS.beta,
+    })
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    expect(await askBeta).toEqual({ outcome: "cancelled" })
+
+    await controller.dispose()
+  })
 })
 
 describe("createSessionController - dispose", () => {
+  it("Should unsubscribe and dispose the owned shell before late events can reach the store", async () => {
+    const shell = createStubShellRuntime()
+    const { controller } = await controllerWithStubs({}, { createShellRuntime: () => shell })
+    shell.emit({ kind: "cwd_changed", cwd: "/before-dispose" })
+
+    expect(shell.subscriberCount()).toBe(1)
+    await controller.dispose()
+
+    expect(shell.subscriberCount()).toBe(0)
+    expect(shell.isDisposed()).toBe(true)
+    shell.emit({ kind: "cwd_changed", cwd: "/after-dispose" })
+    expect(controller.store.getState().shell.cwd).toBe("/before-dispose")
+  })
+
   it("Should cancel pending approvals, unsubscribe streams, and dispose connections", async () => {
     const { controller, connections } = await controllerWithStubs()
     const pending = connections["claude-code"].ask(PERMISSION_REQUEST)
@@ -476,7 +1518,7 @@ describe("createSessionController - dispose", () => {
 
     // A late update from a disposed connection reaches no slice.
     connections.codex.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
-    expect(controller.store.getState().sessions.codex.turns).toEqual([])
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([])
   })
 
   it("Should cancel a permission request raised after dispose", async () => {
@@ -493,9 +1535,18 @@ describe("createSessionController - dispose", () => {
       throw new Error("kill failed")
     }
     const controller = await createSessionController({
-      config: { agents: [CLAUDE], telemetryEnabled: false },
+      config: {
+        providers: PROVIDERS,
+        sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        shell: APP_CONFIG.shell,
+        persistenceEnabled: true,
+        telemetryEnabled: false,
+        theme: "auto",
+        welcomeBanner: "auto",
+      },
       cwd: CWD,
       createConnection: () => connection,
+      createShellRuntime: createTestShellFactory(),
     })
 
     await controller.dispose()
@@ -504,12 +1555,47 @@ describe("createSessionController - dispose", () => {
 })
 
 describe("createControllerActions", () => {
+  it("Should start a fresh session before sending persisted context to that session", async () => {
+    const store = createAppStore()
+    const connection = createStubConnection("codex")
+    const starts: string[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "codex", acpSessionId: "fresh-codex", connection }),
+      resolvePermission: () => {},
+      startFreshSession: async (sessionId) => {
+        starts.push(sessionId)
+        return true
+      },
+    })
+    const blocks: PromptBlock[] = [{ type: "text", text: "saved context" }]
+
+    await actions.startFreshFromContext(blocks, "codex")
+
+    expect(starts).toEqual(["codex"])
+    expect(connection.prompts).toEqual([{ sessionId: "fresh-codex", blocks }])
+  })
+
+  it("Should not send persisted context when a fresh session cannot start", async () => {
+    const store = createAppStore()
+    const connection = createStubConnection("codex")
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "codex", acpSessionId: "stale-codex", connection }),
+      resolvePermission: () => {},
+      startFreshSession: async () => false,
+    })
+
+    expect(await actions.startFreshFromContext("saved context", "codex")).toBeNull()
+    expect(connection.prompts).toHaveLength(0)
+  })
+
   it("Should default the message id to a fresh uuid per user turn", async () => {
     const store = createAppStore()
     const connection = createStubConnection("claude-code")
     const actions = createControllerActions({
       store,
-      getSession: () => ({ agentId: "claude-code", sessionId: "s1", connection }),
+      getSession: () => ({ sessionId: "claude-code", acpSessionId: "s1", connection }),
       resolvePermission: () => {},
     })
 
@@ -518,7 +1604,7 @@ describe("createControllerActions", () => {
 
     const messageIds = store
       .getState()
-      .sessions["claude-code"].turns.map((turn) => (turn.kind === "user" ? turn.messageId : null))
+      .sessions["claude-code"]!.turns.map((turn) => (turn.kind === "user" ? turn.messageId : null))
     expect(messageIds).toHaveLength(2)
     expect(messageIds[0]).toBeString()
     expect(messageIds[0]).not.toBe(messageIds[1]!)
@@ -532,12 +1618,97 @@ describe("createControllerActions", () => {
     })
     const actions = createControllerActions({
       store,
-      getSession: () => ({ agentId: "codex", sessionId: "s1", connection }),
+      getSession: () => ({ sessionId: "codex", acpSessionId: "s1", connection }),
       resolvePermission: () => {},
     })
 
     expect(await actions.sendPrompt("x", "codex")).toBeNull()
     await actions.cancel("codex")
+  })
+
+  it("Should jump focus to the session selectNextNeedy returns", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/w" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/w" },
+        { id: "c", providerKind: "claude-code", title: "C", cwd: "/w" },
+      ],
+    })
+    // From focused "a": a finished "b" and an awaiting_approval "c"; the approval outranks.
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    store.applyEvent("c", { kind: "status", status: "awaiting_approval" })
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+
+    actions.jumpToNextNeedy()
+
+    expect(store.getState().focusedSessionId).toBe("c")
+  })
+
+  it("Should leave focus alone when no other session needs attention", () => {
+    const store = createAppStore()
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+
+    actions.jumpToNextNeedy()
+
+    expect(store.getState().focusedSessionId).toBe("claude-code")
+  })
+
+  it("Should count an overview switch through the numerator but a direct /switch only through the denominator", () => {
+    const store = createAppStore()
+    const switches: { sessionId: string; viaOverview: boolean }[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
+    })
+
+    // A direct /switch cycle from "claude-code" to "codex": denominator only.
+    actions.switchFocus()
+    // An overview jump-into back to "claude-code": denominator and numerator.
+    actions.switchFocus("claude-code", { viaOverview: true })
+
+    expect(switches).toEqual([
+      { sessionId: "codex", viaOverview: false },
+      { sessionId: "claude-code", viaOverview: true },
+    ])
+  })
+
+  it("Should record a jump-to-next as an overview switch", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/w" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/w" },
+      ],
+    })
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    const switches: { sessionId: string; viaOverview: boolean }[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
+    })
+
+    actions.jumpToNextNeedy()
+
+    expect(switches).toEqual([{ sessionId: "b", viaOverview: true }])
+  })
+
+  it("Should not record a focus switch that does not move focus", () => {
+    const store = createAppStore()
+    const switches: { sessionId: string; viaOverview: boolean }[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
+    })
+
+    // "claude-code" already holds focus, so this is a no-op that must count nothing.
+    actions.switchFocus("claude-code", { viaOverview: true })
+
+    expect(switches).toHaveLength(0)
   })
 })
 
@@ -568,7 +1739,7 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -577,25 +1748,27 @@ describe("integration - two mock ACP agents", () => {
       config: APP_CONFIG,
       cwd: CWD,
       createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
     })
 
-    const result = await controller.actions.sendPrompt("do the thing")
+    const result = await controller.actions.sendPrompt("do the thing", "claude-code")
     expect(result).toEqual({ stopReason: "end_turn" })
 
     const state = controller.store.getState()
-    expect(state.sessions["claude-code"].turns.at(-1)).toEqual({ kind: "agent", messageId: "", text: "on it" })
-    expect(state.sessions["claude-code"].status).toBe("idle")
+    expect(state.sessions["claude-code"]!.turns.at(-1)).toEqual({ kind: "agent", messageId: "", text: "on it" })
+    // The prompt ran to `end_turn`, so the session is `finished` (your move), not idle.
+    expect(state.sessions["claude-code"]!.status).toBe("finished")
 
     // B never saw the prompt, stayed idle, and is still addressable.
     expect(codex.agent.prompts).toHaveLength(0)
-    expect(state.sessions.codex.turns).toEqual([])
-    expect(state.sessions.codex.status).toBe("idle")
-    expect(state.sessions.codex.sessionId).toBe("codex-session")
+    expect(state.sessions.codex!.turns).toEqual([])
+    expect(state.sessions.codex!.status).toBe("idle")
+    expect(state.sessions.codex!.acpSessionId).toBe("codex-session")
 
     controller.actions.switchFocus("codex")
     await controller.actions.sendPrompt("your turn")
     expect(codex.agent.prompts).toHaveLength(1)
-    expect(controller.store.getState().sessions.codex.turns.at(0)).toMatchObject({ kind: "user", text: "your turn" })
+    expect(controller.store.getState().sessions.codex!.turns.at(0)).toMatchObject({ kind: "user", text: "your turn" })
 
     await controller.dispose()
   })
@@ -611,7 +1784,7 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -620,23 +1793,49 @@ describe("integration - two mock ACP agents", () => {
       config: APP_CONFIG,
       cwd: CWD,
       createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
     })
 
-    const prompt = controller.actions.sendPrompt("edit the readme")
+    const prompt = controller.actions.sendPrompt("edit the readme", "claude-code")
     await waitFor(() => controller.store.getState().overlays.approval !== null, "the approval overlay to open")
 
     const approval = controller.store.getState().overlays.approval!
-    expect(approval.agentId).toBe("claude-code")
+    expect(approval.sessionId).toBe("claude-code")
     expect(approval.request.toolCall).toMatchObject({ toolCallId: "call-1", kind: "edit", title: "Edit README.md" })
     expect(approval.request.options.map((option) => option.optionId)).toEqual(["allow", "reject"])
-    expect(controller.store.getState().sessions["claude-code"].status).toBe("awaiting_approval")
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("awaiting_approval")
 
     controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
     await prompt
 
     expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "selected", optionId: "allow" }])
     expect(controller.store.getState().overlays.approval).toBeNull()
-    expect(controller.store.getState().sessions["claude-code"].status).toBe("idle")
+    // After the approval the turn ran to `end_turn`, so the session is `finished`.
+    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("finished")
+
+    await controller.dispose()
+  })
+
+  it("Should boot a three-session fleet, focus the first ready session, and open each against its own directory", async () => {
+    const agents: MockAgentHandle[] = []
+    const controller = await createSessionController({
+      config: THREE_SESSION_CONFIG,
+      cwd: process.cwd(),
+      createConnection: (config) => {
+        const { connection, agent } = connectionToMockAgent(config, { sessionId: `acp-${agents.length}` })
+        agents.push(agent)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    // Three live runtimes, two sharing a provider, each with a distinct SessionId.
+    expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["claude-code", "claude-code-2", "codex"])
+    expect(controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+
+    // Each mock agent opened its session against its descriptor's own directory.
+    expect(agents.map((agent) => agent.newSessionCwds)).toEqual([[FLEET_DIRS.alpha], [FLEET_DIRS.beta], [FLEET_DIRS.gamma]])
 
     await controller.dispose()
   })
@@ -648,7 +1847,7 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<AgentId, AgentConnection> = {
+    const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": claude.connection,
       codex: codex.connection,
     }
@@ -657,6 +1856,7 @@ describe("integration - two mock ACP agents", () => {
       config: APP_CONFIG,
       cwd: CWD,
       createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
     })
 
     const claudeRuntime = controller.runtime("claude-code")!
@@ -664,7 +1864,7 @@ describe("integration - two mock ACP agents", () => {
     expect(claudeRuntime.ready === false && claudeRuntime.error).toContain("authenticate first")
 
     expect(controller.isReady("codex")).toBe(true)
-    expect(controller.store.getState().focusedAgentId).toBe("codex")
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
 
     const result = await controller.actions.sendPrompt("carry on")
     expect(result).toEqual({ stopReason: "end_turn" })

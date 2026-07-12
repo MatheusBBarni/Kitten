@@ -25,8 +25,8 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
 
-import type { AgentConfig, AgentId, AgentStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
-import { translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import type { AgentConfig, ConfigOption, ProviderKind, SessionStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
+import { translateConfigOptions, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
 import { spawnAgentTransport, type AgentTransport, type TransportFactory } from "./transport.ts"
 
 /** A block of prompt content sent to an agent. V1 sends plain text. */
@@ -44,7 +44,9 @@ export interface PromptResult {
 }
 
 /** Outcome of `connect`: a completed handshake, or a legible not-ready reason. */
-export type ReadyState = { ready: true; protocolVersion: number } | { ready: false; error: string }
+export type ReadyState =
+  | { ready: true; protocolVersion: number; canLoadSession: boolean }
+  | { ready: false; error: string }
 
 /**
  * The ACP protocol version Kitten negotiates during `initialize`.
@@ -76,11 +78,20 @@ type Unsubscribe = () => void
 
 /** The adapter boundary the rest of the app depends on (TechSpec "Core Interfaces"). */
 export interface AgentConnection {
-  readonly id: AgentId
+  readonly id: ProviderKind
   connect(): Promise<ReadyState>
   newSession(cwd: string): Promise<string>
+  loadSession(sessionId: string, cwd: string): Promise<void>
   prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult>
   cancel(sessionId: string): Promise<void>
+  /**
+   * Change one config option (model, reasoning effort, ...) on the live session and
+   * return the agent-confirmed full option set - the source of confirmed state
+   * (ADR-004). The session is never torn down or re-spawned. On a transport failure
+   * this propagates like {@link cancel} so the controller action routes it to
+   * `onError` rather than letting it reject into the UI; no config event is emitted.
+   */
+  setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[]>
   onUpdate(cb: (event: DomainSessionEvent) => void): Unsubscribe
   onPermission(handler: (req: PermissionRequest) => Promise<PermissionOutcome>): void
   dispose(): Promise<void>
@@ -136,7 +147,7 @@ interface BufferedMessage {
 }
 
 class AgentConnectionImpl implements AgentConnection {
-  readonly id: AgentId
+  readonly id: ProviderKind
 
   private readonly config: AgentConfig
   private readonly transportFactory: TransportFactory
@@ -144,6 +155,10 @@ class AgentConnectionImpl implements AgentConnection {
 
   private transport: AgentTransport | null = null
   private connection: ClientSideConnection | null = null
+
+  /** Set the instant `dispose` begins, so an intentional teardown's transport close
+   * does not masquerade as a crash. */
+  private closing = false
 
   private readonly subscribers = new Set<(event: DomainSessionEvent) => void>()
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
@@ -161,13 +176,32 @@ class AgentConnectionImpl implements AgentConnection {
   async connect(): Promise<ReadyState> {
     try {
       this.transport = this.transportFactory(this.config)
+      // A transport close we did not ask for is a lost subprocess: surface `error`
+      // (ADR-006). The `closing` guard suppresses the close that `dispose` itself
+      // triggers, so only an unexpected exit reaches the overview. The transport's
+      // `onClose` is backed by the subprocess `exited` promise (`transport.ts`), so
+      // this is a real signal - no fallback to holding the last state is needed.
+      this.transport.onClose(() => {
+        if (this.closing) return
+        this.emit({ kind: "status", status: "error" })
+      })
       this.connection = new ClientSideConnection(() => this.buildClient(), this.transport.stream)
       const result = await this.connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+          // Select config options are part of Kitten's confirmed session state. Advertise
+          // that surface so ACP agents can safely return model and reasoning controls.
+          // Boolean options remain intentionally unsupported by the V1 UI.
+          session: { configOptions: {} },
+        },
         clientInfo: { name: "kitten", version: "0.0.0" },
       })
-      return { ready: true, protocolVersion: result.protocolVersion }
+      return {
+        ready: true,
+        protocolVersion: result.protocolVersion,
+        canLoadSession: result.agentCapabilities?.loadSession === true,
+      }
     } catch (error) {
       return { ready: false, error: handshakeErrorMessage(error) }
     }
@@ -176,7 +210,25 @@ class AgentConnectionImpl implements AgentConnection {
   async newSession(cwd: string): Promise<string> {
     const connection = this.requireConnection()
     const result = await connection.newSession({ cwd, mcpServers: [] })
+    // Seed the pane's confirmed config state from what the session already advertises
+    // instead of discarding it. Emit only when the agent actually returned the field:
+    // an absent `configOptions` means the agent has no config surface (the reducer's
+    // `[]` default already covers it), while an explicit empty list is emitted as an
+    // empty set - never fabricate options the agent did not advertise (ADR-003/ADR-004).
+    if (result.configOptions != null) {
+      this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
+    }
     return result.sessionId
+  }
+
+  async loadSession(sessionId: string, cwd: string): Promise<void> {
+    const connection = this.requireConnection()
+    const result = await connection.loadSession({ sessionId, cwd, mcpServers: [] })
+    // A resumed session returns the same initial config snapshot as a fresh one.
+    // Preserve it so model and reasoning selectors retain their confirmed state.
+    if (result.configOptions != null) {
+      this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
+    }
   }
 
   async prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult> {
@@ -187,15 +239,36 @@ class AgentConnectionImpl implements AgentConnection {
         sessionId,
         prompt: blocks.map((block) => ({ type: "text", text: block.text })),
       })
-      return { stopReason: result.stopReason satisfies StopReason }
-    } finally {
-      this.emit({ kind: "status", status: "idle" })
+      const stopReason = result.stopReason satisfies StopReason
+      // Map the terminal stop reason to a status instead of always emitting `idle`
+      // (ADR-006): a turn that ran to its end is `finished` (your move), a turn the
+      // developer cancelled is `idle`. Deriving only from this terminal signal keeps
+      // `finished` from flickering off a mid-turn streaming update.
+      this.emit({ kind: "status", status: statusForStopReason(stopReason) })
+      return { stopReason }
+    } catch (error) {
+      // A thrown prompt is a lost turn, not a completed one: surface `error` so the
+      // overview can route the developer to the broken session (ADR-006), then let
+      // the failure propagate to the controller's `onError`.
+      this.emit({ kind: "status", status: "error" })
+      throw error
     }
   }
 
   async cancel(sessionId: string): Promise<void> {
     const connection = this.requireConnection()
     await connection.cancel({ sessionId })
+  }
+
+  async setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[]> {
+    const connection = this.requireConnection()
+    // The agent echoes back the full refreshed option set (not a delta), so map the
+    // response verbatim - it is the confirmed state the overlay renders. A thrown call
+    // propagates to the controller action (the existing error path), which reports it
+    // through `onError`; it is deliberately not caught here, so the caller can keep
+    // showing its last confirmed value and mark the option `unverified` (ADR-004).
+    const result = await connection.setSessionConfigOption({ sessionId, configId, value })
+    return translateConfigOptions(result.configOptions)
   }
 
   onUpdate(cb: (event: DomainSessionEvent) => void): Unsubscribe {
@@ -210,6 +283,7 @@ class AgentConnectionImpl implements AgentConnection {
   }
 
   async dispose(): Promise<void> {
+    this.closing = true
     this.scheduler.dispose()
     this.subscribers.clear()
     this.permissionHandler = null
@@ -316,6 +390,18 @@ async function readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileRe
 async function writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
   await Bun.write(params.path, params.content)
   return {}
+}
+
+/**
+ * The status a completed prompt turn leaves the session in (ADR-006).
+ *
+ * Every reason the turn ran to its own end - `end_turn`, a token or turn-request
+ * limit, or a `refusal` - is `finished`: the turn is over and the developer's input
+ * is expected. Only `cancelled` (the developer interrupted) returns the session to
+ * `idle`. A thrown prompt never reaches here; it maps to `error` at the call site.
+ */
+function statusForStopReason(reason: PromptStopReason): SessionStatus {
+  return reason === "cancelled" ? "idle" : "finished"
 }
 
 function toAcpOutcome(outcome: PermissionOutcome): RequestPermissionResponse["outcome"] {

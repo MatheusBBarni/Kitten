@@ -14,7 +14,8 @@
 
 import { createContext, useCallback, useContext, useSyncExternalStore, type ReactNode } from "react"
 
-import type { SessionController } from "../app/controller.ts"
+import type { SessionController, ShellRuntimeState } from "../app/controller.ts"
+import type { ShellBufferType } from "../shell/shellRuntime.ts"
 import type { Selector } from "../store/appStore.ts"
 
 const ControllerContext = createContext<SessionController | null>(null)
@@ -37,11 +38,32 @@ export function useController(): SessionController {
   return controller
 }
 
+/** The controller-owned shell runtime, including its fail-soft unavailable state. */
+export function useShellRuntime(): ShellRuntimeState {
+  return useController().shell
+}
+
+/** Subscribe narrowly to primary/alternate buffer activation in the imperative runtime. */
+export function useShellBufferType(): ShellBufferType {
+  const shell = useShellRuntime()
+  const subscribe = useCallback(
+    (onStoreChange: () => void) =>
+      shell.ready ? shell.runtime.onBufferChange(() => onStoreChange()) : () => {},
+    [shell],
+  )
+  const getSnapshot = useCallback(
+    (): ShellBufferType => (shell.ready ? shell.runtime.bufferType() : "normal"),
+    [shell],
+  )
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
 /**
  * Read one narrow slice of application state and re-render only when it changes.
  *
  * `selector` must be referentially stable across renders: an inline arrow (or an
- * un-memoized curried selector such as `selectAgentStatus(id)`) re-subscribes on
+ * un-memoized curried selector such as `selectSessionStatus(id)`) re-subscribes on
  * every render. Hoist module-level selectors, and wrap per-agent ones in `useMemo`.
  */
 export function useAppSelector<T>(selector: Selector<T>, isEqual: (a: T, b: T) => boolean = Object.is): T {

@@ -2,8 +2,9 @@ import { describe, expect, it } from "bun:test"
 
 import type { SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
 
+import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import type { DomainSessionEvent } from "../core/types.ts"
-import { toUnifiedDiff, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import { toUnifiedDiff, translateAvailableCommand, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
 
 /**
  * Unit tests for the pure ACP → domain translator. These assert that every
@@ -117,7 +118,7 @@ describe("translateSessionUpdate: tool calls", () => {
   })
 })
 
-describe("translateSessionUpdate: plan and ignored variants", () => {
+describe("translateSessionUpdate: plan, commands, and ignored variants", () => {
   it("maps a plan update to plan entries", () => {
     const update: SessionUpdate = {
       sessionUpdate: "plan",
@@ -137,10 +138,229 @@ describe("translateSessionUpdate: plan and ignored variants", () => {
 
   it.each<SessionUpdate>([
     { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } },
-    { sessionUpdate: "available_commands_update", availableCommands: [] },
     { sessionUpdate: "current_mode_update", currentModeId: "code" },
+    { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p1", content: "# plan" } },
+    { sessionUpdate: "usage_update", used: 100, size: 200000 },
   ])("returns null for the unsurfaced variant %o", (update) => {
     expect(translateSessionUpdate(update)).toBeNull()
+  })
+})
+
+describe("translateSessionUpdate: available commands", () => {
+  it("maps advertised commands into protocol-free domain records", () => {
+    const event = translateSessionUpdate({
+      sessionUpdate: "available_commands_update",
+      availableCommands: [
+        {
+          name: "review",
+          description: "Review the current changes",
+          input: { hint: "[scope]", _meta: { ignored: true } },
+          _meta: { ignored: true },
+        },
+        { name: "test", description: "Run tests" },
+      ],
+      _meta: { ignored: true },
+    })
+
+    expect(event).toEqual({
+      kind: "commands",
+      commands: [
+        { name: "review", description: "Review the current changes", hint: "[scope]" },
+        { name: "test", description: "Run tests" },
+      ],
+    })
+  })
+
+  it("drops ACP metadata and an empty input hint", () => {
+    expect(
+      translateAvailableCommand({
+        name: "status",
+        description: "Show status",
+        input: { hint: "", _meta: { internal: true } },
+        _meta: { internal: true },
+      }),
+    ).toEqual({ name: "status", description: "Show status" })
+  })
+
+  it("flows an available-commands update through the reducer", () => {
+    const event = translateSessionUpdate({
+      sessionUpdate: "available_commands_update",
+      availableCommands: [{ name: "review", description: "Review the current changes" }],
+    })
+    if (event === null || event.kind !== "commands") throw new Error("expected a commands event")
+
+    const state = createSessionState({ id: "s1", providerKind: "claude-code", title: "t", cwd: "/repo" })
+    expect(sessionReducer(state, event).commands).toEqual([{ name: "review", description: "Review the current changes" }])
+  })
+})
+
+describe("translateSessionUpdate: config options", () => {
+  const modelOption: SessionUpdate = {
+    sessionUpdate: "config_option_update",
+    configOptions: [
+      {
+        type: "select",
+        id: "model",
+        name: "Model",
+        category: "model",
+        currentValue: "opus",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "sonnet", name: "Sonnet" },
+        ],
+      },
+    ],
+  }
+
+  it("translates a model select option into a config_options event", () => {
+    expect(translateSessionUpdate(modelOption)).toEqual({
+      kind: "config_options",
+      options: [
+        {
+          id: "model",
+          category: "model",
+          label: "Model",
+          currentValue: "opus",
+          options: [
+            { value: "opus", name: "Opus" },
+            { value: "sonnet", name: "Sonnet" },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("maps both model and thought_level options, preserving currentValue and the option list", () => {
+    const update: SessionUpdate = {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          category: "model",
+          currentValue: "sonnet",
+          options: [
+            { value: "opus", name: "Opus" },
+            { value: "sonnet", name: "Sonnet" },
+          ],
+        },
+        {
+          type: "select",
+          id: "thought_level",
+          name: "Reasoning",
+          category: "thought_level",
+          currentValue: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    }
+    expect(translateSessionUpdate(update)).toEqual({
+      kind: "config_options",
+      options: [
+        {
+          id: "model",
+          category: "model",
+          label: "Model",
+          currentValue: "sonnet",
+          options: [
+            { value: "opus", name: "Opus" },
+            { value: "sonnet", name: "Sonnet" },
+          ],
+        },
+        {
+          id: "thought_level",
+          category: "thought_level",
+          label: "Reasoning",
+          currentValue: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("skips a boolean config option instead of crashing", () => {
+    const update: SessionUpdate = {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        { type: "boolean", id: "fast_mode", name: "Fast mode", category: "model_config", currentValue: true },
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          category: "model",
+          currentValue: "opus",
+          options: [{ value: "opus", name: "Opus" }],
+        },
+      ],
+    }
+    const event = translateSessionUpdate(update)
+    expect(event).toEqual({
+      kind: "config_options",
+      options: [
+        { id: "model", category: "model", label: "Model", currentValue: "opus", options: [{ value: "opus", name: "Opus" }] },
+      ],
+    })
+  })
+
+  it("defaults an absent category to an empty string, kept opaque", () => {
+    const update: SessionUpdate = {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        { type: "select", id: "x", name: "X", currentValue: "a", options: [{ value: "a", name: "A" }] },
+      ],
+    }
+    const event = translateSessionUpdate(update)
+    expect(event?.kind === "config_options" && event.options[0]?.category).toBe("")
+  })
+
+  it("flattens grouped select options into a single ordered list", () => {
+    const update: SessionUpdate = {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          category: "model",
+          currentValue: "opus",
+          options: [
+            { group: "anthropic", name: "Anthropic", options: [{ value: "opus", name: "Opus" }] },
+            { group: "openai", name: "OpenAI", options: [{ value: "gpt", name: "GPT" }] },
+          ],
+        },
+      ],
+    }
+    const event = translateSessionUpdate(update)
+    expect(event?.kind === "config_options" && event.options[0]?.options).toEqual([
+      { value: "opus", name: "Opus" },
+      { value: "gpt", name: "GPT" },
+    ])
+  })
+
+  it("flows through the reducer into SessionState.configOptions unchanged", () => {
+    const event = translateSessionUpdate(modelOption)
+    if (event === null) throw new Error("expected a config_options event")
+    const state = createSessionState({ id: "s1", providerKind: "claude-code", title: "t", cwd: "/repo" })
+    const next = sessionReducer(state, event)
+    expect(next.configOptions).toEqual([
+      {
+        id: "model",
+        category: "model",
+        label: "Model",
+        currentValue: "opus",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "sonnet", name: "Sonnet" },
+        ],
+      },
+    ])
   })
 })
 

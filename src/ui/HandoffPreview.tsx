@@ -34,15 +34,17 @@
  */
 
 import type { KeyEvent, TextareaRenderable } from "@opentui/core"
-import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useRef, useState, type ReactNode } from "react"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
+import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { HandoffFlow } from "../app/handoff.ts"
-import type { PendingDiff } from "../core/types.ts"
+import type { ConfigOption, PendingDiff, ShellCommandRecord } from "../core/types.ts"
 import type { HandoffPreviewOverlay } from "../store/appStore.ts"
 import { selectHandoffPreview, selectIsApprovalOpen } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
-import { HANDOFF_EDIT_HINT, HANDOFF_HINT, matchHandoffCommand } from "./keymap.ts"
+import { CURRENT_MARK, ModelEffortControl, modelEffortValueRows, TARGET_MARK, type ModelEffortValueRow } from "./ModelSelect.tsx"
+import { Markdown } from "./Markdown.tsx"
+import { HANDOFF_CONFIG_HINT, HANDOFF_EDIT_HINT, HANDOFF_HINT, matchHandoffCommand, matchModelSelectCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 import { ToolCallDiffView } from "./ToolCallRow.tsx"
 
@@ -59,8 +61,13 @@ export function redactionNotice(count: number): string {
 
 /** Section headings, in the order the developer reads them. */
 export const SUMMARY_HEADING = "Summary"
+export const TARGET_CONFIG_HEADING = "Target model & reasoning effort"
 export const FILES_HEADING = "Referenced files"
 export const DIFFS_HEADING = "Pending diffs"
+export const SHELL_HEADING = "Shell context"
+
+/** Shown when the target advertises no model or effort choice to carry with the hand-off. */
+export const NO_TARGET_CONFIG_OPTIONS = "Target agent advertises no model or reasoning-effort options."
 
 /** Shown in place of a section that the source session gave nothing for. */
 export const NO_FILES = "None"
@@ -71,6 +78,11 @@ export const ITEM_MARKER = "▸"
 /** How a kept row and a dropped row are told apart at a glance. */
 export const KEPT_BOX = "[x]"
 export const DROPPED_BOX = "[ ]"
+
+/** The OSC 8 target for a referenced file, or plain-text fallback metadata. */
+export function fileProvenanceTarget(path: string, hyperlinks: boolean): string | undefined {
+  return hyperlinks ? `file://${path}` : undefined
+}
 
 /** How tall the summary editor is before it scrolls its own content. */
 const SUMMARY_ROWS = 6
@@ -89,21 +101,35 @@ export function HandoffPreview({ flow }: { flow: HandoffFlow }): ReactNode {
 function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow: HandoffFlow }): ReactNode {
   const controller = useController()
   const palette = usePalette()
+  const renderer = useRenderer()
   const { height } = useTerminalDimensions()
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
 
-  const { bundle, sourceAgentId, targetAgentId } = overlay
-  const itemCount = bundle.files.length + bundle.pendingDiffs.length
+  const { bundle, sourceSessionId, targetSessionId, targetConfigOptions } = overlay
+  const shellCommands = bundle.shell?.commands ?? []
+  const shellOffset = bundle.files.length + bundle.pendingDiffs.length
+  const itemCount = shellOffset + shellCommands.length
 
   const [selected, setSelected] = useState(0)
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(() => new Set())
   const [excludedDiffs, setExcludedDiffs] = useState<ReadonlySet<string>>(() => new Set())
+  const [excludedCommands, setExcludedCommands] = useState<ReadonlySet<string>>(() => new Set())
   const [editing, setEditing] = useState(false)
+  const [summaryDraft, setSummaryDraft] = useState(bundle.summary)
+  const [editingTargetConfig, setEditingTargetConfig] = useState(false)
+  const [targetSelected, setTargetSelected] = useState(0)
+  const targetSelectedRef = useRef(0)
+  const [targetConfig, setTargetConfig] = useState<ReadonlyMap<string, string>>(() => new Map())
 
-  // The textarea's own edit buffer is the summary draft, read once on send - the same
-  // arrangement the composer uses, and for the same reason: a keystroke repaints the
-  // renderable without waking the reconciler to re-render the diff below it.
+  // The textarea is an editing surface, not the summary's authority. Read mode and
+  // send both consume `summaryDraft`, so leaving edit mode can never expose or forward
+  // the stale bundle value.
   const summary = useRef<TextareaRenderable | null>(null)
+
+  const onSummaryChange = useCallback((): void => {
+    const editor = summary.current
+    if (editor) setSummaryDraft(editor.plainText)
+  }, [])
 
   const toggle = useCallback(
     (index: number): void => {
@@ -113,18 +139,51 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
         return
       }
       const diff = bundle.pendingDiffs[index - bundle.files.length]
-      if (diff) setExcludedDiffs((ids) => without(ids, diff.toolCallId))
+      if (diff) {
+        setExcludedDiffs((ids) => without(ids, diff.toolCallId))
+        return
+      }
+      const command = shellCommands[index - shellOffset]
+      if (command) setExcludedCommands((ids) => without(ids, command.id))
     },
-    [bundle],
+    [bundle, shellCommands, shellOffset],
   )
+
+  const targetRows = useMemo(() => modelEffortValueRows(targetConfigOptions), [targetConfigOptions])
+  const clampedTargetSelected = Math.min(targetSelected, Math.max(targetRows.length - 1, 0))
+  // Preserve the target's advertised section order (model before effort in normal ACP
+  // advertisements) rather than the order in which the developer happened to choose
+  // values. This lets a model change refresh before the chosen effort is applied.
+  const targetConfigEdits = useMemo(
+    () =>
+      targetConfigOptions.flatMap((option) => {
+        const value = targetConfig.get(option.id)
+        return value === undefined ? [] : [{ configId: option.id, value }]
+      }),
+    [targetConfig, targetConfigOptions],
+  )
+
+  const chooseTargetConfig = useCallback((row: ModelEffortValueRow | undefined): void => {
+    if (!row) return
+    setTargetConfig((previous) => {
+      const next = new Map(previous)
+      // Choosing the target's already-confirmed value restores the no-change path.
+      if (row.value === row.option.currentValue) next.delete(row.option.id)
+      else next.set(row.option.id, row.value)
+      return next
+    })
+    setEditingTargetConfig(false)
+  }, [])
 
   const send = useCallback((): void => {
     void flow.confirm({
-      summary: summary.current?.plainText ?? bundle.summary,
+      summary: summaryDraft,
       excludedFiles,
       excludedDiffs,
+      excludedCommands,
+      targetConfig: targetConfigEdits,
     })
-  }, [bundle, excludedDiffs, excludedFiles, flow])
+  }, [excludedCommands, excludedDiffs, excludedFiles, flow, summaryDraft, targetConfigEdits])
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
@@ -145,6 +204,30 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
       // this dialog claims it. The shell stands its own chords down separately.
       key.preventDefault()
 
+      if (editingTargetConfig) {
+        // Reuse the live selector's navigation, but not its mid-conversation confirm:
+        // this target has not received the hand-off prompt yet, so its configuration is
+        // applied only as part of the explicit send.
+        switch (matchModelSelectCommand(key)) {
+          case "prev-option":
+            targetSelectedRef.current = Math.max(targetSelectedRef.current - 1, 0)
+            setTargetSelected(targetSelectedRef.current)
+            return
+          case "next-option":
+            targetSelectedRef.current = Math.min(targetSelectedRef.current + 1, Math.max(targetRows.length - 1, 0))
+            setTargetSelected(targetSelectedRef.current)
+            return
+          case "confirm":
+            chooseTargetConfig(targetRows[Math.min(targetSelectedRef.current, Math.max(targetRows.length - 1, 0))])
+            return
+          case "cancel":
+            setEditingTargetConfig(false)
+            return
+          default:
+            return
+        }
+      }
+
       switch (matchHandoffCommand(key)) {
         case "prev-item":
           setSelected((index) => Math.max(index - 1, 0))
@@ -156,6 +239,9 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
           return
         case "toggle-item":
           toggle(selected)
+          return
+        case "edit-target-config":
+          setEditingTargetConfig(true)
           return
         case "edit-summary":
           setEditing(true)
@@ -170,13 +256,14 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
           return
       }
     },
-    [approvalOpen, editing, flow, itemCount, selected, send, toggle],
+    [approvalOpen, chooseTargetConfig, clampedTargetSelected, editing, editingTargetConfig, flow, itemCount, selected, send, targetRows, toggle],
   )
   useKeyboard(onKey)
 
-  const sourceName = controller.runtime(sourceAgentId)?.displayName ?? sourceAgentId
-  const targetName = controller.runtime(targetAgentId)?.displayName ?? targetAgentId
+  const sourceName = controller.runtime(sourceSessionId)?.displayName ?? sourceSessionId
+  const targetName = controller.runtime(targetSessionId)?.displayName ?? targetSessionId
   const selectedDiff = bundle.pendingDiffs[selected - bundle.files.length]
+  const selectedCommand = shellCommands[selected - shellOffset]
 
   return (
     <box
@@ -204,20 +291,46 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
         {redactionNotice(bundle.redactionCount)}
       </text>
 
+      <SectionHeading>{TARGET_CONFIG_HEADING}</SectionHeading>
+      {editingTargetConfig ? (
+        <ModelEffortControl
+          options={targetConfigOptions}
+          highlighted={clampedTargetSelected}
+          outgoing={targetConfig}
+          emptyNotice={NO_TARGET_CONFIG_OPTIONS}
+        />
+      ) : (
+        <TargetConfigSummary options={targetConfigOptions} outgoing={targetConfig} />
+      )}
+
       <SectionHeading>{SUMMARY_HEADING}</SectionHeading>
-      <textarea
-        ref={summary}
-        focused={editing}
-        style={{
-          height: SUMMARY_ROWS,
-          minHeight: MIN_SUMMARY_ROWS,
-          flexShrink: 1,
-          wrapMode: "word",
-          textColor: editing ? palette.text : palette.muted,
-          cursorColor: palette.accent,
-        }}
-        initialValue={bundle.summary}
-      />
+      {editing ? (
+        <textarea
+          ref={summary}
+          focused
+          style={{
+            height: SUMMARY_ROWS,
+            minHeight: MIN_SUMMARY_ROWS,
+            flexShrink: 1,
+            wrapMode: "word",
+            textColor: palette.text,
+            cursorColor: palette.accent,
+          }}
+          initialValue={summaryDraft}
+          onContentChange={onSummaryChange}
+        />
+      ) : (
+        <box
+          style={{
+            height: SUMMARY_ROWS,
+            minHeight: MIN_SUMMARY_ROWS,
+            flexShrink: 1,
+            overflow: "hidden",
+          }}
+        >
+          <Markdown content={summaryDraft} fg={palette.muted} />
+        </box>
+      )}
 
       <SectionHeading>{FILES_HEADING}</SectionHeading>
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
@@ -228,8 +341,9 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
             <ItemRow
               key={file.path}
               label={`${file.path} (${file.reason})`}
+              href={fileProvenanceTarget(file.path, renderer.capabilities?.hyperlinks ?? false)}
               kept={!excludedFiles.has(file.path)}
-              highlighted={!editing && selected === index}
+              highlighted={!editing && !editingTargetConfig && selected === index}
             />
           ))
         )}
@@ -245,11 +359,28 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
               key={diff.toolCallId}
               label={diff.path}
               kept={!excludedDiffs.has(diff.toolCallId)}
-              highlighted={!editing && selected === bundle.files.length + index}
+              highlighted={!editing && !editingTargetConfig && selected === bundle.files.length + index}
             />
           ))
         )}
       </box>
+
+      {bundle.shell ? (
+        <>
+          <SectionHeading>{SHELL_HEADING}</SectionHeading>
+          <text style={{ flexShrink: 0 }} fg={palette.muted}>{` cwd ${bundle.shell.cwd}`}</text>
+          <box style={{ flexDirection: "column", flexShrink: 0 }}>
+            {shellCommands.map((command, index) => (
+              <ItemRow
+                key={command.id}
+                label={shellCommandLabel(command)}
+                kept={!excludedCommands.has(command.id)}
+                highlighted={!editing && !editingTargetConfig && selected === shellOffset + index}
+              />
+            ))}
+          </box>
+        </>
+      ) : null}
 
       {/*
         Only the highlighted diff is drawn, and it is the only part of the dialog
@@ -257,10 +388,11 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
         row the developer is deciding about - off a 24-row terminal, and they cannot
         judge a diff they have not selected anyway.
       */}
-      {selectedDiff && !editing ? <SelectedDiff diff={selectedDiff} /> : null}
+      {selectedDiff && !editing && !editingTargetConfig ? <SelectedDiff diff={selectedDiff} /> : null}
+      {selectedCommand && !editing && !editingTargetConfig ? <SelectedCommand command={selectedCommand} /> : null}
 
       <text style={{ flexShrink: 0 }} fg={palette.muted}>
-        {editing ? HANDOFF_EDIT_HINT : HANDOFF_HINT}
+        {editing ? HANDOFF_EDIT_HINT : editingTargetConfig ? HANDOFF_CONFIG_HINT : HANDOFF_HINT}
       </text>
     </box>
   )
@@ -289,14 +421,50 @@ function EmptySection(): ReactNode {
   return <text fg={palette.muted}>{` ${NO_FILES}`}</text>
 }
 
-/** One keepable row: the highlight, the keep/drop box, and what it names. */
-function ItemRow({ label, kept, highlighted }: { label: string; kept: boolean; highlighted: boolean }): ReactNode {
+/**
+ * The compact, always-visible summary of the target's config. Expanding it with `m`
+ * reuses the full task-06 control without pushing the preview's file/diff curation off
+ * a short terminal.
+ */
+function TargetConfigSummary({ options, outgoing }: { options: ConfigOption[]; outgoing: ReadonlyMap<string, string> }): ReactNode {
   const palette = usePalette()
+  const selectable = options.filter((option) => option.options.length > 0)
+  if (selectable.length === 0) return <text fg={palette.muted}>{NO_TARGET_CONFIG_OPTIONS}</text>
+
+  return (
+    <text style={{ flexShrink: 0 }}>
+      {selectable.map((option, index) => {
+        const selected = outgoing.get(option.id)
+        const value = selected ?? option.currentValue
+        const name = option.options.find((candidate) => candidate.value === value)?.name ?? value
+        const changed = selected !== undefined
+        return (
+          <Fragment key={option.id}>
+            {index > 0 ? <span fg={palette.muted}>{"  "}</span> : null}
+            <span fg={palette.muted}>{`${option.label}: `}</span>
+            <span fg={changed ? palette.accent : palette.tool.completed}>{`${changed ? TARGET_MARK : CURRENT_MARK} ${name}`}</span>
+          </Fragment>
+        )
+      })}
+    </text>
+  )
+}
+
+/** One keepable row: the highlight, the keep/drop box, and what it names. */
+function ItemRow({ label, href, kept, highlighted }: { label: string; href?: string; kept: boolean; highlighted: boolean }): ReactNode {
+  const palette = usePalette()
+  const labelColor = kept ? palette.text : palette.muted
   return (
     <text style={{ flexShrink: 0 }}>
       <span fg={palette.accent}>{highlighted ? ITEM_MARKER : " "}</span>
       <span fg={kept ? palette.tool.completed : palette.muted}>{` ${kept ? KEPT_BOX : DROPPED_BOX} `}</span>
-      <span fg={kept ? palette.text : palette.muted}>{label}</span>
+      {href ? (
+        <a href={href} fg={labelColor}>
+          {label}
+        </a>
+      ) : (
+        <span fg={labelColor}>{label}</span>
+      )}
     </text>
   )
 }
@@ -306,6 +474,22 @@ function SelectedDiff({ diff }: { diff: PendingDiff }): ReactNode {
   return (
     <box style={{ flexDirection: "column", flexShrink: 1, marginTop: 1, overflow: "hidden" }}>
       <ToolCallDiffView diff={{ path: diff.path, unified: diff.unified }} />
+    </box>
+  )
+}
+
+/** The command row keeps status textual so color is never the only signal. */
+function shellCommandLabel(command: ShellCommandRecord): string {
+  return `${command.command} (${command.exitCode === null ? "running" : `exit ${command.exitCode}`})`
+}
+
+/** Show the highlighted command's redacted output without expanding every row at once. */
+function SelectedCommand({ command }: { command: ShellCommandRecord }): ReactNode {
+  const palette = usePalette()
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 1, marginTop: 1, overflow: "hidden" }}>
+      <text fg={palette.muted}>Output</text>
+      <text fg={palette.text}>{command.output.length > 0 ? command.output : "(no output)"}</text>
     </box>
   )
 }

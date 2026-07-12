@@ -11,16 +11,25 @@
  */
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
-import { nextAgentId, type PromptInput } from "../src/app/actions.ts"
-import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
-import type { AgentId } from "../src/core/types.ts"
+import { nextSessionId, type PromptInput } from "../src/app/actions.ts"
+import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
+import type { SessionId } from "../src/core/types.ts"
+import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
+import { selectNextNeedy } from "../src/store/selectors.ts"
+import type { ResumeMode } from "../src/telemetry/recorder.ts"
 
 /** Every action call the cockpit made, in order. */
 export interface RecordedCalls {
-  sendPrompt: { input: PromptInput; agentId: AgentId | undefined }[]
-  cancel: (AgentId | undefined)[]
-  switchFocus: (AgentId | undefined)[]
+  sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
+  cancel: (SessionId | undefined)[]
+  setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
+  switchFocus: (SessionId | undefined)[]
+  jumpToNextNeedy: number
+  startNewRun: number
+  startFreshFromContext: { input: PromptInput; sessionId: SessionId | undefined }[]
+  restore: PersistedRunRecord[]
+  restoreModes: ResumeMode[]
   respondPermission: PermissionOutcome[]
   dispose: number
 }
@@ -30,44 +39,100 @@ export interface FakeController extends SessionController {
   readonly calls: RecordedCalls
 }
 
-/** Construction options; both agents are ready and idle by default. */
+/** Construction options; both sessions are ready and idle by default. */
 export interface FakeControllerOptions {
-  /** Per-agent standing, in cockpit order. */
+  /** Per-session standing, in cockpit order. */
   runtimes?: AgentRuntimeState[]
   /** The store to drive. Defaults to a fresh one. */
   store?: AppStore
+  /** Shell standing exposed to shell-aware views. Defaults to unavailable. */
+  shell?: ShellRuntimeState
 }
 
-/** Both agents up, sessions open. The ordinary case. */
+/**
+ * Both sessions up, ACP sessions open. The ordinary case. The working directory is
+ * the process cwd (this repo, a git repository) so a runtime that flows through the
+ * boot readiness gate passes its per-session repo check (ADR-005).
+ */
 export function readyRuntimes(): AgentRuntimeState[] {
+  const cwd = process.cwd()
   return [
-    { agentId: "claude-code", displayName: "Claude Code", ready: true, sessionId: "session-claude" },
-    { agentId: "codex", displayName: "Codex", ready: true, sessionId: "session-codex" },
+    {
+      sessionId: "claude-code",
+      providerKind: "claude-code",
+      displayName: "Claude Code",
+      title: "Claude Code",
+      cwd,
+      ready: true,
+      acpSessionId: "session-claude",
+    },
+    {
+      sessionId: "codex",
+      providerKind: "codex",
+      displayName: "Codex",
+      title: "Codex",
+      cwd,
+      ready: true,
+      acpSessionId: "session-codex",
+    },
   ]
 }
 
 /** Build a `SessionController` that records what the UI asked it to do. */
 export function createFakeController(options: FakeControllerOptions = {}): FakeController {
-  const store = options.store ?? createAppStore()
+  // Most view tests intentionally exercise Claude turns. Keep that fixture focus
+  // explicit so production's Codex-first default is covered by real-store tests.
+  const store = options.store ?? createAppStore({ focusedSessionId: "claude-code" })
   const runtimes = options.runtimes ?? readyRuntimes()
-  const calls: RecordedCalls = { sendPrompt: [], cancel: [], switchFocus: [], respondPermission: [], dispose: 0 }
+  const calls: RecordedCalls = {
+    sendPrompt: [],
+    cancel: [],
+    setSessionConfigOption: [],
+    switchFocus: [],
+    jumpToNextNeedy: 0,
+    startNewRun: 0,
+    startFreshFromContext: [],
+    restore: [],
+    restoreModes: [],
+    respondPermission: [],
+    dispose: 0,
+  }
 
-  const find = (agentId: AgentId): AgentRuntimeState | undefined => runtimes.find((r) => r.agentId === agentId)
+  const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
 
   return {
     store,
+    shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {
-      async sendPrompt(input: PromptInput, agentId?: AgentId): Promise<PromptResult | null> {
-        calls.sendPrompt.push({ input, agentId })
+      async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
+        calls.sendPrompt.push({ input, sessionId })
         return null
       },
-      async cancel(agentId?: AgentId): Promise<void> {
-        calls.cancel.push(agentId)
+      async cancel(sessionId?: SessionId): Promise<void> {
+        calls.cancel.push(sessionId)
       },
-      switchFocus(agentId?: AgentId): void {
-        calls.switchFocus.push(agentId)
-        store.setFocus(agentId ?? nextAgentId(store.getState().focusedAgentId))
+      async setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<boolean> {
+        calls.setSessionConfigOption.push({ configId, value, sessionId })
+        return true
+      },
+      switchFocus(sessionId?: SessionId): void {
+        calls.switchFocus.push(sessionId)
+        store.setFocus(sessionId ?? nextSessionId(store.getState().order, store.getState().focusedSessionId))
+      },
+      jumpToNextNeedy(): void {
+        calls.jumpToNextNeedy++
+        const target = selectNextNeedy(store.getState().focusedSessionId)(store.getState())
+        if (target) store.setFocus(target)
+      },
+      async startNewRun(): Promise<void> {
+        calls.startNewRun++
+        for (const sessionId of store.getState().order) store.setRestoration(sessionId, null)
+      },
+      async startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
+        calls.startFreshFromContext.push({ input, sessionId })
+        if (sessionId) store.setRestoration(sessionId, null)
+        return null
       },
       respondPermission(outcome: PermissionOutcome): void {
         calls.respondPermission.push(outcome)
@@ -79,7 +144,12 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     },
     runtimes: () => runtimes,
     runtime: find,
-    isReady: (agentId) => find(agentId)?.ready === true,
+    isReady: (sessionId) => find(sessionId)?.ready === true,
+    async restore(record, mode = "last-run"): Promise<void> {
+      calls.restore.push(record)
+      calls.restoreModes.push(mode)
+      store.setFocus(record.focusedAgentId)
+    },
     async dispose(): Promise<void> {
       calls.dispose++
     },

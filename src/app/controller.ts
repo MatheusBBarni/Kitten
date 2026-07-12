@@ -20,28 +20,61 @@
 
 import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
-import type { AgentConfig, AgentId, AppConfig } from "../core/types.ts"
-import { createAppStore, type AppStore, type Unsubscribe } from "../store/appStore.ts"
-import { createControllerActions, type AgentSession, type ControllerActions } from "./actions.ts"
+import { resolveSessions } from "../config/configLoader.ts"
+import { readGitBranch } from "../config/gitBranch.ts"
+import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
+import type { PersistedAgent, PersistedRunRecord } from "../persistence/runRecord.ts"
+import {
+  createShellRuntime as createRealShellRuntime,
+  type ShellRuntime,
+  type ShellRuntimeFactory,
+} from "../shell/shellRuntime.ts"
+import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
+import type { ResumeLiveCount, ResumeMode, SessionResumedInput } from "../telemetry/recorder.ts"
+import { createControllerActions, type ActionTelemetry, type AgentSession, type ControllerActions } from "./actions.ts"
 
-/** One agent's run-time standing, as the status strip and prompt gate read it. */
+/** The additional content-free telemetry emitted by resume orchestration. */
+export interface ControllerTelemetry extends ActionTelemetry {
+  resumeLoadStarted?(): void
+  sessionResumed?(input: SessionResumedInput): void
+  resumePaneUnavailable?(sessionId: SessionId): void
+}
+
+/**
+ * One session's run-time standing, as the status strip and prompt gate read it.
+ * `cwd` is the session's own working directory (ADR-005): it labels approvals and
+ * feeds the per-session repo check the first-run gate runs.
+ */
 export type AgentRuntimeState =
-  | { agentId: AgentId; displayName: string; ready: true; sessionId: string }
-  | { agentId: AgentId; displayName: string; ready: false; error: string }
+  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; cwd: string; ready: true; acpSessionId: string }
+  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; cwd: string; ready: false; error: string }
+
+/** The controller-owned shell boundary, including a legible degraded state. */
+export type ShellRuntimeState =
+  | { readonly ready: true; readonly runtime: ShellRuntime }
+  | { readonly ready: false; readonly error: string }
 
 /** Injectable seams so the controller can be driven against mock connections. */
 export interface SessionControllerOptions {
   config: AppConfig
-  /** The working directory each agent session is opened against. Defaults to `process.cwd()`. */
+  /** The working directory each session is opened against. Defaults to `process.cwd()`. */
   cwd?: string
-  /** The store to drive. Defaults to a fresh one holding an empty slice per agent. */
+  /** The store to drive. Defaults to one seeded from the config's providers. */
   store?: AppStore
-  /** How to build a connection for an agent. Defaults to a real spawning connection. */
+  /** How to build a connection for a provider. Defaults to a real spawning connection. */
   createConnection?: (config: AgentConfig) => AgentConnection
+  /** How to build the persistent shell. Defaults to the real PTY-backed runtime. */
+  createShellRuntime?: ShellRuntimeFactory
   /** Ids for recorded user turns. Defaults to a random UUID. */
   newMessageId?: () => string
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
-  onError?: (agentId: AgentId, error: unknown) => void
+  onError?: (sessionId: SessionId, error: unknown) => void
+  /** Off-render-path git branch reader. Defaults to the fail-soft production reader. */
+  readBranch?: (cwd: string) => Promise<string | null>
+  /** The telemetry recorder actions report navigation and switch outcomes to. */
+  recorder?: ControllerTelemetry
+  /** Whether configured first tasks should be sent after startup. Defaults to true. */
+  sendInitialTasks?: boolean
 }
 
 /** The orchestrator the UI is handed at boot. */
@@ -50,29 +83,34 @@ export interface SessionController {
   readonly store: AppStore
   /** The only surface through which the UI drives the agents. */
   readonly actions: ControllerActions
-  /** Every agent's standing, in config order. */
+  /** Imperative shell access for the UI/hand-off, or its fail-soft startup error. */
+  readonly shell: ShellRuntimeState
+  /** Every session's standing, in display order. */
   runtimes(): AgentRuntimeState[]
-  /** One agent's standing, or `undefined` when the config does not name it. */
-  runtime(agentId: AgentId): AgentRuntimeState | undefined
-  /** Whether the agent completed its handshake and holds a live session. */
-  isReady(agentId: AgentId): boolean
+  /** One session's standing, or `undefined` when no session has that id. */
+  runtime(sessionId: SessionId): AgentRuntimeState | undefined
+  /** Whether the session completed its handshake and holds a live ACP session. */
+  isReady(sessionId: SessionId): boolean
+  /** Replace the current sessions with the independently restored sides of one persisted run. */
+  restore(record: PersistedRunRecord, mode?: ResumeMode): Promise<void>
   /** Cancel pending approvals and tear every connection down. Never throws. */
   dispose(): Promise<void>
 }
 
 /** A permission request waiting on the user, and the promise the agent is blocked on. */
 interface PendingPermission {
-  agentId: AgentId
+  sessionId: SessionId
   request: PermissionRequest
   resolve: (outcome: PermissionOutcome) => void
 }
 
-/** Everything the controller owns for one agent. */
+/** Everything the controller owns for one session. */
 interface AgentRuntime {
+  seed: SessionSeed
   config: AgentConfig
   state: AgentRuntimeState
   connection: AgentConnection | null
-  sessionId: string | null
+  acpSessionId: string | null
   unsubscribe: Unsubscribe | null
 }
 
@@ -82,14 +120,71 @@ interface AgentRuntime {
  * marked not-ready - never rejects, because a broken agent is a state, not a crash.
  */
 export async function createSessionController(options: SessionControllerOptions): Promise<SessionController> {
-  const store = options.store ?? createAppStore()
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
+  const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
+  const readBranch = options.readBranch ?? readGitBranch
 
-  const runtimes = new Map<AgentId, AgentRuntime>()
+  // The resolved fleet, in declared order (ADR-005): one session per configured
+  // provider in the launch directory when the config declares none, else each
+  // declared session with its own `cwd`/`title`/`task` and a distinct session id.
+  const plan: { seed: SessionSeed; config: AgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
+    (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
+  )
+
+  const store = options.store ?? createAppStore({ seeds: plan.map((entry) => entry.seed) })
+
+  const runtimes = new Map<SessionId, AgentRuntime>()
+  const seeds = new Map(plan.map((entry) => [entry.seed.id, entry.seed]))
+  const branchReadGenerations = new Map<SessionId, number>()
   const pending: PendingPermission[] = []
   let disposed = false
+  let ownedShell: ShellRuntime | null = null
+  let unsubscribeShell: Unsubscribe | null = null
+  let shell: ShellRuntimeState
+
+  if (!options.config.shell.enabled) {
+    shell = { ready: false, error: "The integrated shell is disabled in config" }
+  } else {
+    try {
+      ownedShell = createShell({
+        cwd,
+        command: options.config.shell.command,
+        scrollback: options.config.shell.scrollback,
+      })
+      unsubscribeShell = ownedShell.onEvent((event) => store.applyShellEvent(event))
+      shell = { ready: true, runtime: ownedShell }
+    } catch (error) {
+      unsubscribeShell?.()
+      unsubscribeShell = null
+      await disposeQuietly(ownedShell ?? undefined)
+      ownedShell = null
+      shell = { ready: false, error: errorMessage(error) }
+    }
+  }
+
+  /**
+   * Schedule a fail-soft branch read for one session without making its caller wait.
+   * A generation guard prevents an older, slower read from overwriting a newer
+   * boundary result. Null emits a blank event that clears the optional field.
+   */
+  function refreshBranch(sessionId: SessionId): void {
+    const seed = seeds.get(sessionId)
+    if (!seed || disposed) return
+    const generation = (branchReadGenerations.get(sessionId) ?? 0) + 1
+    branchReadGenerations.set(sessionId, generation)
+
+    void (async () => {
+      try {
+        const branch = await readBranch(seed.cwd)
+        if (disposed || branchReadGenerations.get(sessionId) !== generation) return
+        store.applyEvent(sessionId, { kind: "branch", branch: branch ?? "" })
+      } catch {
+        // The production reader is fail-soft; keep that contract for injected readers too.
+      }
+    })()
+  }
 
   /**
    * Park a permission request until the user answers it.
@@ -99,11 +194,11 @@ export async function createSessionController(options: SessionControllerOptions)
    * surface in arrival order. The agent stays blocked on this promise meanwhile,
    * which is exactly the back-pressure ACP expects.
    */
-  function enqueuePermission(agentId: AgentId, request: PermissionRequest): Promise<PermissionOutcome> {
+  function enqueuePermission(sessionId: SessionId, request: PermissionRequest): Promise<PermissionOutcome> {
     if (disposed) return Promise.resolve({ outcome: "cancelled" })
     return new Promise<PermissionOutcome>((resolve) => {
-      pending.push({ agentId, request, resolve })
-      if (pending.length === 1) store.openApproval({ agentId, request })
+      pending.push({ sessionId, request, resolve })
+      if (pending.length === 1) store.openApproval(approvalOverlay(sessionId, request))
     })
   }
 
@@ -113,59 +208,217 @@ export async function createSessionController(options: SessionControllerOptions)
     if (!current) return
     current.resolve(outcome)
     const next = pending[0]
-    if (next) store.openApproval({ agentId: next.agentId, request: next.request })
+    if (next) store.openApproval(approvalOverlay(next.sessionId, next.request))
     else store.closeApproval()
   }
 
-  function getSession(agentId: AgentId): AgentSession | undefined {
-    const runtime = runtimes.get(agentId)
-    if (!runtime?.connection || runtime.sessionId === null) return undefined
-    return { agentId, sessionId: runtime.sessionId, connection: runtime.connection }
+  /**
+   * Label a parked approval with the session it belongs to. `title` and `cwd` come
+   * from the session's seed so the prompt names which agent, in which directory, is
+   * asking - the answer can never be misattributed across a multi-session fleet.
+   */
+  function approvalOverlay(sessionId: SessionId, request: PermissionRequest): ApprovalOverlay {
+    const seed = runtimes.get(sessionId)?.seed
+    return { sessionId, title: seed?.title ?? sessionId, cwd: seed?.cwd ?? "", request }
   }
 
-  /** Bring one agent up, or record precisely why it did not come up. */
-  async function startAgent(config: AgentConfig): Promise<void> {
+  function getSession(sessionId: SessionId): AgentSession | undefined {
+    const runtime = runtimes.get(sessionId)
+    if (!runtime?.connection || runtime.acpSessionId === null) return undefined
+    return { sessionId, acpSessionId: runtime.acpSessionId, connection: runtime.connection }
+  }
+
+  /** Bring one session up, or record precisely why it did not come up. */
+  async function startSession(seed: SessionSeed, config: AgentConfig): Promise<void> {
     let connection: AgentConnection | undefined
     try {
       connection = create(config)
       const ready = await connection.connect()
       if (!ready.ready) {
-        await failAgent(config, connection, ready.error)
+        await failSession(seed, config, connection, ready.error)
         return
       }
-      const sessionId = await connection.newSession(cwd)
+      // The agent may advertise its current model/effort in the `session/new` response,
+      // which the adapter emits as a `config_options` event *during* `newSession`. The
+      // permanent subscription below is bound only after `startSession` resets the slice,
+      // so capture that seed here and replay it after the reset - otherwise the selector
+      // starts empty and the picker is blank until the first switch (ADR-004).
+      let seededConfig: DomainSessionEvent | null = null
+      const captureSeed = connection.onUpdate((event) => {
+        if (event.kind === "config_options") seededConfig = event
+      })
+      const acpSessionId = await connection.newSession(seed.cwd)
+      captureSeed()
       // Bind the slice before subscribing: `startSession` resets the transcript, so
       // an event that arrived first would be thrown away.
-      store.startSession(config.id, sessionId)
-      const unsubscribe = connection.onUpdate((event) => store.applyEvent(config.id, event))
-      connection.onPermission((request) => enqueuePermission(config.id, request))
-      runtimes.set(config.id, {
+      store.startSession(seed.id, acpSessionId)
+      if (seededConfig) store.applyEvent(seed.id, seededConfig)
+      const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
+      connection.onPermission((request) => enqueuePermission(seed.id, request))
+      runtimes.set(seed.id, {
+        seed,
         config,
-        state: { agentId: config.id, displayName: config.displayName, ready: true, sessionId },
+        state: {
+          sessionId: seed.id,
+          providerKind: seed.providerKind,
+          displayName: config.displayName,
+          title: seed.title,
+          cwd: seed.cwd,
+          ready: true,
+          acpSessionId,
+        },
         connection,
-        sessionId,
+        acpSessionId,
         unsubscribe,
       })
     } catch (error) {
-      onError(config.id, error)
-      await failAgent(config, connection, errorMessage(error))
+      onError(seed.id, error)
+      await failSession(seed, config, connection, errorMessage(error))
     }
   }
 
-  /** Record an agent as not-ready and release the connection it never got to use. */
-  async function failAgent(config: AgentConfig, connection: AgentConnection | undefined, error: string): Promise<void> {
-    runtimes.set(config.id, {
+  /** Record a session as not-ready and release the connection it never got to use. */
+  async function failSession(
+    seed: SessionSeed,
+    config: AgentConfig,
+    connection: AgentConnection | undefined,
+    error: string,
+  ): Promise<void> {
+    runtimes.set(seed.id, {
+      seed,
       config,
-      state: { agentId: config.id, displayName: config.displayName, ready: false, error },
+      state: {
+        sessionId: seed.id,
+        providerKind: seed.providerKind,
+        displayName: config.displayName,
+        title: seed.title,
+        cwd: seed.cwd,
+        ready: false,
+        error,
+      },
       connection: null,
-      sessionId: null,
+      acpSessionId: null,
       unsubscribe: null,
     })
     await disposeQuietly(connection)
   }
 
-  await Promise.all(options.config.agents.map(startAgent))
-  focusReadyAgent(store, options.config, runtimes)
+  /**
+   * Open a clean ACP session while preserving the config snapshot the agent emits
+   * during `session/new`. Restore fallbacks share this path so a rejected resume
+   * cannot leave a partly replayed transcript or an empty model picker behind.
+   */
+  async function startFreshRestoredSession(
+    connection: AgentConnection,
+    seed: SessionSeed,
+  ): Promise<{ acpSessionId: string; unsubscribe: Unsubscribe }> {
+    let seededConfig: DomainSessionEvent | null = null
+    const captureSeed = connection.onUpdate((event) => {
+      if (event.kind === "config_options") seededConfig = event
+    })
+    let acpSessionId: string
+    try {
+      acpSessionId = await connection.newSession(seed.cwd)
+    } finally {
+      captureSeed()
+    }
+    store.startSession(seed.id, acpSessionId!)
+    if (seededConfig) store.applyEvent(seed.id, seededConfig)
+    const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
+    connection.onPermission((request) => enqueuePermission(seed.id, request))
+    return { acpSessionId: acpSessionId!, unsubscribe }
+  }
+
+  /**
+   * Replace one live runtime from a persisted pointer without coupling its outcome
+   * to any peer. The store slice is reset and subscribed before `loadSession`, so
+   * replay emitted synchronously by the adapter cannot arrive before its owner is
+   * bound (ADR-004).
+   */
+  async function restoreSession(seed: SessionSeed, config: AgentConfig, stored: PersistedAgent | undefined): Promise<void> {
+    const previous = runtimes.get(seed.id)
+    previous?.unsubscribe?.()
+    if (previous) {
+      previous.unsubscribe = null
+      const previousConnection = previous.connection
+      previous.connection = null
+      await disposeQuietly(previousConnection ?? undefined)
+    }
+
+    let connection: AgentConnection | undefined
+    let unsubscribe: Unsubscribe | undefined
+    try {
+      connection = create(config)
+      const ready = await connection.connect()
+      if (!ready.ready) {
+        store.setRestoration(seed.id, "unavailable")
+        await failSession(seed, config, connection, ready.error)
+        return
+      }
+
+      let acpSessionId: string
+      // A zero-turn record has no history to restore. Some ACP adapters (including
+      // Codex) do not make that just-created session durable until its first turn,
+      // so asking them to load it later only turns an otherwise usable pane into an
+      // avoidable error. Start a fresh session in that case.
+      if (ready.canLoadSession && stored?.sessionId && stored.messageCount > 0) {
+        acpSessionId = stored.sessionId
+        store.startSession(seed.id, acpSessionId)
+        unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
+        connection.onPermission((request) => enqueuePermission(seed.id, request))
+        try {
+          await connection.loadSession(acpSessionId, seed.cwd)
+          store.setRestoration(seed.id, "live")
+        } catch (error) {
+          unsubscribe()
+          unsubscribe = undefined
+          if (!isMissingCodexRollout(seed.providerKind, error)) throw error
+
+          // Codex reports stale local threads as a generic internal error with a
+          // nested "no rollout found" detail. The agent remains healthy, so recover
+          // into a fresh live session rather than turning the whole pane into error.
+          const fresh = await startFreshRestoredSession(connection, seed)
+          acpSessionId = fresh.acpSessionId
+          unsubscribe = fresh.unsubscribe
+          store.setRestoration(seed.id, "unavailable")
+        }
+      } else {
+        const fresh = await startFreshRestoredSession(connection, seed)
+        acpSessionId = fresh.acpSessionId
+        unsubscribe = fresh.unsubscribe
+        store.setRestoration(seed.id, "unavailable")
+      }
+
+      runtimes.set(seed.id, {
+        seed,
+        config,
+        state: {
+          sessionId: seed.id,
+          providerKind: seed.providerKind,
+          displayName: config.displayName,
+          title: seed.title,
+          cwd: seed.cwd,
+          ready: true,
+          acpSessionId,
+        },
+        connection,
+        acpSessionId,
+        unsubscribe,
+      })
+    } catch (error) {
+      unsubscribe?.()
+      store.setRestoration(seed.id, "unavailable")
+      onError(seed.id, error)
+      await failSession(seed, config, connection, errorMessage(error))
+    }
+  }
+
+  await Promise.all(plan.map((entry) => startSession(entry.seed, entry.config)))
+  focusReadySession(store, plan, runtimes)
+
+  // Start one read per session after startup has bound/reset every store slice.
+  // Do not await these: branch discovery must never extend boot or block the UI.
+  for (const entry of plan) refreshBranch(entry.seed.id)
 
   const actions = createControllerActions({
     store,
@@ -173,54 +426,116 @@ export async function createSessionController(options: SessionControllerOptions)
     resolvePermission,
     newMessageId: options.newMessageId,
     onError,
+    refreshBranch,
+    recorder: options.recorder,
+    startNewRun: async () => {
+      if (disposed) return
+      store.setRestorationBundle(null)
+      await Promise.all(plan.map((entry) => restoreSession(entry.seed, entry.config, undefined)))
+      for (const entry of plan) store.setRestoration(entry.seed.id, null)
+      focusReadySession(store, plan, runtimes)
+    },
+    startFreshSession: async (sessionId) => {
+      if (disposed) return false
+      const entry = plan.find((candidate) => candidate.seed.id === sessionId)
+      if (!entry) return false
+      await restoreSession(entry.seed, entry.config, undefined)
+      const ready = getSession(sessionId) !== undefined
+      if (ready) store.setRestoration(sessionId, null)
+      return ready
+    },
   })
+
+  // Send each ready session its optional first task as the opening prompt (ADR-005),
+  // unless boot already found a persisted run that it will restore. A restore replaces
+  // these fresh ACP sessions, so sending first would duplicate configured work.
+  // Fire-and-forget: the opening turn must not block boot on the agent's full reply,
+  // and `sendPrompt` already records the user turn and routes failures to `onError`.
+  if (options.sendInitialTasks !== false) {
+    for (const entry of plan) {
+      const task = entry.seed.task
+      if (task && runtimes.get(entry.seed.id)?.state.ready) {
+        void actions.sendPrompt(task, entry.seed.id)
+      }
+    }
+  }
 
   return {
     store,
     actions,
-    runtimes: () => options.config.agents.map((agent) => runtimes.get(agent.id)!.state),
-    runtime: (agentId) => runtimes.get(agentId)?.state,
-    isReady: (agentId) => runtimes.get(agentId)?.state.ready === true,
+    shell,
+    runtimes: () => plan.map((entry) => runtimes.get(entry.seed.id)!.state),
+    runtime: (sessionId) => runtimes.get(sessionId)?.state,
+    isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
+    async restore(record, mode = "last-run"): Promise<void> {
+      if (disposed) return
+      options.recorder?.resumeLoadStarted?.()
+      store.setRestorationBundle(record.handoffBundle)
+      await Promise.all(
+        plan.map((entry) => restoreSession(entry.seed, entry.config, record.agents[entry.seed.id])),
+      )
+      store.setFocus(record.focusedAgentId)
+      const restoration = store.getState().restoration
+      let live = 0
+      for (const entry of plan) {
+        const outcome = restoration[entry.seed.id]
+        if (outcome === "live") live += 1
+        else if (outcome === "unavailable") options.recorder?.resumePaneUnavailable?.(entry.seed.id)
+      }
+      const liveCount: ResumeLiveCount = live <= 0 ? 0 : live === 1 ? 1 : 2
+      options.recorder?.sessionResumed?.({ mode, liveCount })
+    },
     async dispose(): Promise<void> {
       disposed = true
+      unsubscribeShell?.()
+      unsubscribeShell = null
+      const shellRuntime = ownedShell
+      ownedShell = null
       // Nothing will ever answer these now; unblock the agents rather than leak
       // their in-flight `requestPermission` calls.
       for (const request of pending.splice(0)) request.resolve({ outcome: "cancelled" })
       store.closeApproval()
       await Promise.all(
-        [...runtimes.values()].map(async (runtime) => {
-          runtime.unsubscribe?.()
-          runtime.unsubscribe = null
-          const connection = runtime.connection
-          runtime.connection = null
-          await disposeQuietly(connection ?? undefined)
-        }),
+        [
+          disposeQuietly(shellRuntime ?? undefined),
+          ...[...runtimes.values()].map(async (runtime) => {
+            runtime.unsubscribe?.()
+            runtime.unsubscribe = null
+            const connection = runtime.connection
+            runtime.connection = null
+            await disposeQuietly(connection ?? undefined)
+          }),
+        ],
       )
     },
   }
 }
 
 /**
- * Keep focus on a usable agent: if the agent the store starts focused on failed to
- * come up, focus the first one that did. When neither is ready, focus is left where
- * it was so the status strip still names an agent to explain.
+ * Keep focus on a usable session: if the session the store starts focused on failed
+ * to come up, focus the first one that did. When none is ready, focus is left where
+ * it was so the status strip still names a session to explain.
  */
-function focusReadyAgent(store: AppStore, config: AppConfig, runtimes: Map<AgentId, AgentRuntime>): void {
-  const focused = store.getState().focusedAgentId
+function focusReadySession(
+  store: AppStore,
+  plan: { seed: SessionSeed }[],
+  runtimes: Map<SessionId, AgentRuntime>,
+): void {
+  const focused = store.getState().focusedSessionId
   if (runtimes.get(focused)?.state.ready) return
-  const firstReady = config.agents.find((agent) => runtimes.get(agent.id)?.state.ready)
-  if (firstReady) store.setFocus(firstReady.id)
+  const firstReady = plan.find((entry) => runtimes.get(entry.seed.id)?.state.ready)
+  if (firstReady) store.setFocus(firstReady.seed.id)
 }
 
 function defaultCreateConnection(config: AgentConfig): AgentConnection {
   return createAgentConnection({ config })
 }
 
-/** Tear a connection down; a noisy teardown must not mask why we are tearing it down. */
-async function disposeQuietly(connection: AgentConnection | undefined): Promise<void> {
-  if (!connection) return
+/** Tear an owned runtime down; a noisy teardown must not mask the shutdown path. */
+async function disposeQuietly(runtime: { dispose(): Promise<void> } | undefined): Promise<void> {
+  if (!runtime) return
   try {
-    await connection.dispose()
+    await runtime.dispose()
   } catch {
     // Nothing actionable: the caller is already on an error or shutdown path.
   }
@@ -228,4 +543,20 @@ async function disposeQuietly(connection: AgentConnection | undefined): Promise<
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Recover only Codex's known stale-rollout response; all other load failures remain visible. */
+function isMissingCodexRollout(provider: ProviderKind, error: unknown): boolean {
+  if (provider !== "codex") return false
+  const details = errorDetails(error)
+  return `${errorMessage(error)} ${details ?? ""}`.toLowerCase().includes("no rollout found")
+}
+
+/** Pull the JSON-RPC wrapper's actionable nested detail without importing its SDK type. */
+function errorDetails(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("data" in error)) return null
+  const data = (error as { data: unknown }).data
+  if (typeof data !== "object" || data === null || !("details" in data)) return null
+  const details = (data as { details: unknown }).details
+  return typeof details === "string" && details.length > 0 ? details : null
 }

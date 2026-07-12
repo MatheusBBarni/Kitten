@@ -1,17 +1,28 @@
 import { describe, expect, it } from "bun:test"
 
-import { RGBA } from "@opentui/core"
-import { createMockMouse, type TestRenderer } from "@opentui/core/testing"
+import { destroyTreeSitterClient, RGBA } from "@opentui/core"
+import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
-import { createFakeController, type FakeController } from "../../test/fakeController.ts"
+import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import type { AgentId, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
+import { composeHandoffBlocks, createHandoffEdits } from "../app/handoff.ts"
+import { bannerVariant, type BannerVariant } from "../config/appState.ts"
+import type { HandoffBundle, ProviderKind, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
-import { ConversationView, EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
+import {
+  ConversationView,
+  EMPTY_TRANSCRIPT_HINT,
+  RESTORATION_CONTEXT_LABEL,
+  RESTORATION_FRESH_LABEL,
+  RESTORATION_LIVE_LABEL,
+  RESTORATION_UNAVAILABLE_LABEL,
+  START_FRESH_LABEL,
+} from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
+import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 /** The `rgba(...)` string OpenTUI stores for a palette hex, for comparing to a captured cell. */
 function paletteColor(hex: string): string {
@@ -24,30 +35,56 @@ const HEIGHT = 20
 /** A unified diff of the shape `toUnifiedDiff` produces in the adapter. */
 const UNIFIED = ["--- a/src/app.ts", "+++ b/src/app.ts", "@@ -1,2 +1,2 @@", " const a = 1", "-const b = 2", "+const b = 3"].join("\n")
 
+const RESTORED_BUNDLE: HandoffBundle = {
+  intent: "continue",
+  summary: "Preserve the restoration selector seam.",
+  files: [{ path: "src/ui/ConversationView.tsx", reason: "edited" }],
+  pendingDiffs: [],
+  redactionCount: 0,
+}
+
 /** Mount the conversation inside the real shell, so focus and the store are wired as in production. */
-async function renderConversation(controller: FakeController, width = WIDTH, height = HEIGHT) {
+async function renderConversation(
+  controller: FakeController,
+  width = WIDTH,
+  height = HEIGHT,
+  welcomeBannerVariant: BannerVariant = "full",
+) {
   const setup = await testRender(
     <CockpitApp controller={controller}>
-      <ConversationView />
+      <ConversationView welcomeBannerVariant={welcomeBannerVariant} />
     </CockpitApp>,
     { width, height },
   )
-  await setup.waitForFrame((f) => f.includes("Claude Code"))
+  // The frame title is present for both the normal banner and degraded restoration
+  // states; the latter intentionally omit the greeting.
+  await setup.waitForFrame((f) => f.includes("Kitten"))
   return setup
 }
 
+/** Run a Kitten slash command through the real prompt menu. */
+async function runSlashCommand(setup: TestRendererSetup, command: string): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText(`/${command}`)
+  })
+  await setup.waitForFrame((frame) => frame.includes(`/${command}`))
+  await actAsync(() => {
+    setup.mockInput.pressEnter()
+  })
+}
+
 /** Push a user turn onto an agent's transcript. */
-function userMessage(controller: FakeController, agentId: AgentId, messageId: string, text: string): void {
+function userMessage(controller: FakeController, agentId: ProviderKind, messageId: string, text: string): void {
   controller.store.applyEvent(agentId, { kind: "user_message", messageId, text })
 }
 
 /** Append a streamed delta to an agent's message, exactly as the coalescer would. */
-function agentDelta(controller: FakeController, agentId: AgentId, messageId: string, textDelta: string): void {
+function agentDelta(controller: FakeController, agentId: ProviderKind, messageId: string, textDelta: string): void {
   controller.store.applyEvent(agentId, { kind: "agent_message", messageId, textDelta })
 }
 
 /** Upsert a tool call by id. */
-function toolCall(controller: FakeController, agentId: AgentId, call: ToolCallUpdate): void {
+function toolCall(controller: FakeController, agentId: ProviderKind, call: ToolCallUpdate): void {
   controller.store.applyEvent(agentId, { kind: "tool_call", call })
 }
 
@@ -67,12 +104,78 @@ async function selectText(renderer: TestRenderer, from: [number, number], to: [n
 /** The box-drawing and gutter glyphs the cockpit paints around the transcript. */
 const CHROME_GLYPHS = /[│┌┐└┘─█▄▌▸]/
 
+function expectAlignedTranscriptTable(frame: string): void {
+  const rows = frame
+    .split("\n")
+    .filter((row) => [...row.matchAll(/│/g)].length >= 4)
+  expect(rows.length).toBeGreaterThanOrEqual(3)
+
+  const expectedBoundaries = [...rows[0]!.matchAll(/│/g)].map((match) => match.index)
+  for (const row of rows) {
+    expect([...row.matchAll(/│/g)].map((match) => match.index)).toEqual(expectedBoundaries)
+  }
+}
+
 describe("ConversationView turns", () => {
-  it("shows an empty-state hint before the first turn", async () => {
+  it("shows the ASCII Kitten banner, neutral ready states, cwd, and command on-ramp before the first turn", async () => {
     const controller = createFakeController()
     const { renderer, captureCharFrame } = await renderConversation(controller)
 
-    expect(captureCharFrame()).toContain(EMPTY_TRANSCRIPT_HINT)
+    const frame = captureCharFrame()
+    expect(frame).toContain(WELCOME_GREETING)
+    expect(frame).toContain(WELCOME_KITTEN[0])
+    expect(frame).toContain(WELCOME_KITTEN[1])
+    expect(frame).toContain(WELCOME_KITTEN[2])
+    expect(frame).toContain("Agents: ready · ready")
+    expect(frame).toContain(`Working directory: ${process.cwd()}`)
+    expect(frame).toContain(WELCOME_ON_RAMP)
+    expect(frame).not.toContain("Claude Code")
+    expect(frame).not.toContain("Codex")
+    expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps the ASCII kitten mascot in the quiet first-run variant", async () => {
+    const controller = createFakeController()
+    const variant = bannerVariant("auto", true)
+    expect(variant).toBe("quiet")
+    const { renderer, captureCharFrame } = await renderConversation(controller, WIDTH, HEIGHT, variant)
+
+    const frame = captureCharFrame()
+    expect(frame).toContain(WELCOME_GREETING)
+    expect(frame).toContain(WELCOME_KITTEN[0])
+    expect(frame).not.toContain("Agents:")
+    expect(frame).not.toContain(WELCOME_ON_RAMP)
+
+    await destroyMounted(renderer)
+  })
+
+  it("falls back to the one-line greeting at narrow width", async () => {
+    const controller = createFakeController()
+    const { renderer, captureCharFrame } = await renderConversation(controller, 48, 14)
+
+    const frame = captureCharFrame()
+    expect(frame).toContain(WELCOME_GREETING)
+    expect(frame).not.toContain(WELCOME_KITTEN[0])
+    expect(frame).not.toContain("Agents:")
+    expect(frame).not.toContain(WELCOME_ON_RAMP)
+
+    await destroyMounted(renderer)
+  })
+
+  it("replaces the idle banner with the transcript when the first turn arrives", async () => {
+    const controller = createFakeController()
+    const { renderer, captureCharFrame, waitForFrame } = await renderConversation(controller)
+
+    expect(captureCharFrame()).toContain(WELCOME_GREETING)
+
+    await actAsync(() => userMessage(controller, "claude-code", "m1", "FIRST_TRANSCRIPT_TURN"))
+    const frame = await waitForFrame((candidate) => candidate.includes("FIRST_TRANSCRIPT_TURN"))
+
+    expect(frame).not.toContain(WELCOME_GREETING)
+    expect(frame).not.toContain(WELCOME_ON_RAMP)
+    expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
 
     await destroyMounted(renderer)
   })
@@ -102,6 +205,30 @@ describe("ConversationView turns", () => {
     await destroyMounted(renderer)
   })
 
+  it("keeps a transcript table aligned across a terminal resize", async () => {
+    const controller = createFakeController()
+    const setup = await renderConversation(controller, 72, 24)
+    const table = [
+      "| Service | Status | Notes |",
+      "| --- | --- | --- |",
+      "| api | ready | short |",
+      "| worker | active | wraps cleanly when the terminal narrows |",
+    ].join("\n")
+
+    await actAsync(() => agentDelta(controller, "claude-code", "m1", table))
+    const wide = await setup.waitForFrame(
+      (frame) => frame.includes("worker") && frame.includes("terminal narrows"),
+    )
+    expectAlignedTranscriptTable(wide)
+
+    await actAsync(() => setup.resize(44, 24))
+    const narrow = await setup.waitForFrame((frame) => frame.includes("terminal narrows") && frame !== wide)
+    expectAlignedTranscriptTable(narrow)
+    expect(narrow).not.toContain("…")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("sets the user's words on a tinted band the agent's words do not share", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
@@ -126,6 +253,136 @@ describe("ConversationView turns", () => {
     // is a background attribute, not a border, so it never lands in a copied selection.
     expect(userWord!.bg.toString()).toBe(paletteColor(DARK_PALETTE.userMessageSurface))
     expect(agentWord!.bg.toString()).not.toBe(userWord!.bg.toString())
+
+    await destroyMounted(renderer)
+  })
+
+  it("renders a Markdown heading with a non-default transcript foreground", async () => {
+    await destroyTreeSitterClient()
+    const controller = createFakeController()
+    const { renderer, waitForFrame, waitFor, captureSpans } = await renderConversation(controller)
+
+    await actAsync(() => agentDelta(controller, "claude-code", "m1", "## STRUCTURED_HEADING"))
+    await waitForFrame((frame) => frame.includes("STRUCTURED_HEADING"))
+
+    const headingSpan = () =>
+      captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes("STRUCTURED_HEADING"))
+    await waitFor(() => {
+      const styled = headingSpan()?.fg?.toString() === paletteColor(DARK_PALETTE.accent)
+      if (!styled) renderer.requestRender()
+      return styled
+    })
+
+    expect(headingSpan()?.fg?.toString()).toBe(paletteColor(DARK_PALETTE.accent))
+    expect(headingSpan()?.fg?.toString()).not.toBe(paletteColor(DARK_PALETTE.text))
+
+    await destroyMounted(renderer)
+  })
+})
+
+describe("ConversationView restoration degradation", () => {
+  it("shows an unobtrusive live badge without claiming history is unavailable", async () => {
+    const controller = createFakeController()
+    controller.store.setRestoration("claude-code", "live")
+
+    const { renderer, captureCharFrame } = await renderConversation(controller)
+    const frame = captureCharFrame()
+
+    expect(frame).toContain(RESTORATION_LIVE_LABEL)
+    expect(frame).not.toContain(RESTORATION_UNAVAILABLE_LABEL)
+
+    await destroyMounted(renderer)
+  })
+
+  it("shows persisted hand-off context when restored history is unavailable", async () => {
+    const controller = createFakeController()
+    controller.store.setRestorationBundle(RESTORED_BUNDLE)
+    controller.store.setRestoration("claude-code", "unavailable")
+
+    const { renderer, captureCharFrame } = await renderConversation(controller)
+    const frame = captureCharFrame()
+
+    expect(frame).toContain(RESTORATION_UNAVAILABLE_LABEL)
+    expect(frame).toContain(RESTORATION_CONTEXT_LABEL)
+    expect(frame).toContain(RESTORED_BUNDLE.summary)
+    expect(frame).toContain("/new")
+    expect(frame).toContain(START_FRESH_LABEL)
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps a fresh replacement session usable when its previous history is unavailable", async () => {
+    const controller = createFakeController()
+    controller.store.setRestoration("claude-code", "unavailable")
+
+    const { renderer, captureCharFrame } = await renderConversation(controller)
+    const frame = captureCharFrame()
+
+    expect(frame).toContain(RESTORATION_FRESH_LABEL)
+    expect(frame).toContain(WELCOME_GREETING)
+    expect(frame).not.toContain(RESTORATION_CONTEXT_LABEL)
+
+    await destroyMounted(renderer)
+  })
+
+  it("starts one fresh agent session from the canonical persisted bundle blocks", async () => {
+    const controller = createFakeController()
+    controller.store.setRestorationBundle(RESTORED_BUNDLE)
+    controller.store.setRestoration("claude-code", "unavailable")
+    const setup = await renderConversation(controller)
+
+    await runSlashCommand(setup, "new")
+
+    expect(controller.calls.startFreshFromContext).toEqual([
+      {
+        input: composeHandoffBlocks(RESTORED_BUNDLE, createHandoffEdits(RESTORED_BUNDLE)),
+        sessionId: "claude-code",
+      },
+    ])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("leaves a normal null-restoration pane on the existing welcome path", async () => {
+    const controller = createFakeController()
+    const { renderer, captureCharFrame } = await renderConversation(controller)
+    const frame = captureCharFrame()
+
+    expect(frame).toContain(WELCOME_GREETING)
+    expect(frame).not.toContain(RESTORATION_LIVE_LABEL)
+    expect(frame).not.toContain(RESTORATION_UNAVAILABLE_LABEL)
+    expect(frame).not.toContain(START_FRESH_LABEL)
+
+    await destroyMounted(renderer)
+  })
+
+  it("shows no fabricated transcript or seed action when unavailable without a bundle", async () => {
+    const controller = createFakeController({
+      runtimes: [
+        {
+          sessionId: "claude-code",
+          providerKind: "claude-code",
+          displayName: "Claude Code",
+          title: "Claude Code",
+          cwd: process.cwd(),
+          ready: false,
+          error: "restoration failed",
+        },
+        readyRuntimes()[1]!,
+      ],
+    })
+    userMessage(controller, "claude-code", "stale", "TRANSCRIPT_MUST_STAY_HIDDEN")
+    controller.store.setRestoration("claude-code", "unavailable")
+
+    const { renderer, captureCharFrame } = await renderConversation(controller)
+    const frame = captureCharFrame()
+
+    expect(frame).toContain(RESTORATION_UNAVAILABLE_LABEL)
+    expect(frame).not.toContain("TRANSCRIPT_MUST_STAY_HIDDEN")
+    expect(frame).not.toContain(RESTORATION_CONTEXT_LABEL)
+    expect(frame).not.toContain(START_FRESH_LABEL)
 
     await destroyMounted(renderer)
   })
@@ -156,10 +413,10 @@ describe("ConversationView streaming", () => {
     await destroyMounted(renderer)
   })
 
-  it("matches the expected frames as a message streams in", async () => {
+  it("keeps user and streamed agent content distinct as the message settles", async () => {
     const controller = createFakeController()
-    // Tall enough that the transcript, the prompt editor and the strip all fit, so the
-    // snapshots capture the streaming message rather than a scrolled-away one.
+    // Tall enough that the transcript, prompt editor, and strip all fit, so each
+    // assertion observes the streaming content rather than a scrolled-away row.
     const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller, WIDTH, 18)
 
     await actAsync(() => userMessage(controller, "claude-code", "m1", "ping"))
@@ -167,15 +424,28 @@ describe("ConversationView streaming", () => {
     // "Shift" (which contains "hi"), so the sentinel must be a word the chrome never
     // paints. "ping" appears only once the user's band renders.
     await waitForFrame((f) => f.includes("ping"))
-    expect(captureCharFrame()).toMatchSnapshot("01-user-turn")
+    const userFrame = captureCharFrame()
+    expect(userFrame).toContain("ping")
+    expect(userFrame).not.toContain("Hello")
+    expect(userFrame).toContain("Kitten")
+    expect(userFrame).not.toContain("Claude Code")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))
     await waitForFrame((f) => f.includes("Hello"))
-    expect(captureCharFrame()).toMatchSnapshot("02-first-chunk")
+    const firstChunk = captureCharFrame()
+    expect(firstChunk).toContain("ping")
+    expect(firstChunk).toContain(ROLE_LABELS.agent)
+    expect(firstChunk).toContain("Hello")
+    expect(firstChunk).not.toContain("Hello, world.")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", ", world."))
     await waitForFrame((f) => f.includes("Hello, world."))
-    expect(captureCharFrame()).toMatchSnapshot("03-settled")
+    const settled = captureCharFrame()
+    expect(settled).toContain("ping")
+    expect(settled).toContain("Hello, world.")
+    expect(settled.match(/Hello, world\./g)).toHaveLength(1)
+    expect(settled).toContain("/help")
+    expect(settled).not.toContain("Claude Code")
 
     await destroyMounted(renderer)
   })
@@ -247,7 +517,7 @@ describe("ConversationView tool calls", () => {
     await destroyMounted(renderer)
   })
 
-  it("renders a bold tool name so the header reads like a Claude Code action", async () => {
+  it("renders a bold tool name so the header reads like an agent action", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
 

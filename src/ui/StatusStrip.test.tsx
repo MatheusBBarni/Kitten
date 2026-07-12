@@ -1,115 +1,186 @@
+// Suite: compact slash-first status bar
+// Invariant: model identity is readable without provider-name chrome or a shortcut wall.
+
 import { describe, expect, it } from "bun:test"
 
+import { RGBA } from "@opentui/core"
+import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { FOCUS_MARKER, StatusStrip, STATUS_LABELS } from "./StatusStrip.tsx"
+import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
+import {
+  RESUMED_RUN_LABEL,
+  STATUS_LABELS,
+  StatusStrip,
+  type StatusSlotSelectors,
+} from "./StatusStrip.tsx"
+import { DARK_PALETTE, type StatusTone } from "./theme.ts"
 
-/** Mount the strip alone, on a single row, so assertions read one line of frame. */
-async function renderStrip(controller: ReturnType<typeof createFakeController>) {
-  return testRender(
-    <CockpitProvider controller={controller}>
-      <StatusStrip />
-    </CockpitProvider>,
-    { width: 80, height: 3 },
-  )
+const HEIGHT = 1
+
+const HIDDEN_SELECTORS: StatusSlotSelectors = {
+  model: () => () => null,
+  effort: () => () => undefined,
 }
 
-describe("StatusStrip", () => {
-  it("shows working for the busy agent and idle for the other", async () => {
-    const controller = createFakeController()
-    const { renderer, waitForFrame } = await renderStrip(controller)
-    await waitForFrame((f) => f.includes("Claude Code"))
+function slotSelectors(values: {
+  model?: Partial<Record<SessionId, string>>
+  effort?: Partial<Record<SessionId, string>>
+}): StatusSlotSelectors {
+  return {
+    ...HIDDEN_SELECTORS,
+    model: (sessionId) => () => values.model?.[sessionId] ?? null,
+    effort: (sessionId) => () => values.effort?.[sessionId],
+  }
+}
 
-    await actAsync(() => {
-      controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+async function renderStrip(
+  controller = createFakeController(),
+  width = 80,
+  selectors: StatusSlotSelectors = HIDDEN_SELECTORS,
+): Promise<TestRendererSetup> {
+  const setup = await testRender(
+    <CockpitProvider controller={controller}>
+      <StatusStrip selectors={selectors} />
+    </CockpitProvider>,
+    { width, height: HEIGHT },
+  )
+  await setup.waitForFrame((frame) => frame.includes("claude:"))
+  return setup
+}
+
+function foregroundOf(setup: TestRendererSetup, needle: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text.includes(needle))
+    ?.fg.toString()
+}
+
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
+}
+
+describe("StatusStrip agent state", () => {
+  it("renders only the focused status beside the provider and model", async () => {
+    const controller = createFakeController()
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS.idle}`)
+    expect(setup.captureCharFrame()).not.toContain("codex:—")
+
+    await actAsync(() => controller.actions.switchFocus())
+    const codex = await setup.waitForFrame((frame) => frame.includes(`codex:— - ${STATUS_LABELS.idle}`))
+    expect(codex).not.toContain("claude:—")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  for (const { status, tone } of [
+    { status: "idle", tone: "idle" },
+    { status: "working", tone: "working" },
+    { status: "awaiting_approval", tone: "awaiting_approval" },
+  ] as const satisfies readonly { status: SessionStatus; tone: StatusTone }[]) {
+    it(`renders ${status} with an inline label and semantic color`, async () => {
+      const controller = createFakeController()
+      controller.store.applyEvent("claude-code", { kind: "status", status })
+      const setup = await renderStrip(controller)
+
+      expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS[tone]}`)
+      expect(foregroundOf(setup, STATUS_LABELS[tone])).toBe(paletteColor(DARK_PALETTE.status[tone]))
+
+      await destroyMounted(setup.renderer)
     })
+  }
 
-    const frame = await waitForFrame((f) => f.includes(STATUS_LABELS.working))
-    expect(frame).toContain(`Claude Code: ${STATUS_LABELS.working}`)
-    expect(frame).toContain(`Codex: ${STATUS_LABELS.idle}`)
+  it("renders an unavailable runtime as not ready", async () => {
+    const [claude, codex] = readyRuntimes()
+    const runtimes: AgentRuntimeState[] = [{ ...claude!, ready: false, error: "claude-acp: command not found" }, codex!]
+    const setup = await renderStrip(createFakeController({ runtimes }))
 
-    await destroyMounted(renderer)
+    expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS.not_ready}`)
+    expect(foregroundOf(setup, STATUS_LABELS.not_ready)).toBe(paletteColor(DARK_PALETTE.status.not_ready))
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("StatusStrip model identity and discovery", () => {
+  const models = slotSelectors({
+    model: { "claude-code": "opus", codex: "gpt-5.6-terra" },
+    effort: { "claude-code": "high", codex: "ultra" },
   })
 
-  it("shows awaiting approval while an agent is blocked on the user", async () => {
+  it("puts the focused provider, model, effort, and status in the compact row", async () => {
+    const setup = await renderStrip(createFakeController(), 100, models)
+    const claude = setup.captureCharFrame()
+
+    expect(claude).toContain("claude:opus:high - idle")
+    expect(claude).not.toContain("codex:gpt-5.6-terra")
+    expect(claude).not.toContain("codex:gpt-5.6-terra:ultra")
+    expect(claude).toContain(KEYMAP_HINT)
+    expect(claude).not.toContain("^T hand off")
+    expect(claude).not.toContain("^R resume")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("changes the compact model readout with focus", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame } = await renderStrip(controller)
-    await waitForFrame((f) => f.includes("Codex"))
+    const setup = await renderStrip(controller, 100, models)
 
-    await actAsync(() => {
-      controller.store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
-    })
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    const codex = await setup.waitForFrame((frame) => frame.includes("codex:gpt-5.6-terra:ultra - idle"))
 
-    const frame = await waitForFrame((f) => f.includes(STATUS_LABELS.awaiting_approval))
-    expect(frame).toContain(`Codex: ${STATUS_LABELS.awaiting_approval}`)
+    expect(codex).not.toContain("claude:opus")
+    expect(codex).not.toContain("claude:opus:high")
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
-  it("marks an agent that never came up as not ready, whatever its session status says", async () => {
-    const runtimes: AgentRuntimeState[] = [
-      readyRuntimes()[0]!,
-      { agentId: "codex", displayName: "Codex", ready: false, error: "codex-acp: command not found" },
-    ]
-    const controller = createFakeController({ runtimes })
-    const { renderer, waitForFrame } = await renderStrip(controller)
-
-    const frame = await waitForFrame((f) => f.includes(STATUS_LABELS.not_ready))
-    expect(frame).toContain(`Codex: ${STATUS_LABELS.not_ready}`)
-    expect(frame).toContain(`Claude Code: ${STATUS_LABELS.idle}`)
-    expect(frame).not.toContain(`Codex: ${STATUS_LABELS.idle}`)
-
-    await destroyMounted(renderer)
-  })
-
-  it("marks only the focused agent, and moves the marker when focus moves", async () => {
+  it("uses the advertised label instead of a provider's opaque model value", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame } = await renderStrip(controller)
+    const rawModel: ConfigOption = {
+      id: "model",
+      category: "model",
+      label: "Model",
+      currentValue: "opus[1m]",
+      options: [{ value: "opus[1m]", name: "Opus" }],
+    }
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: [rawModel] })
+    const setup = await renderStrip(controller, 100, slotSelectors({ model: { "claude-code": "opus[1m]" } }))
 
-    const initial = await waitForFrame((f) => f.includes(FOCUS_MARKER))
-    expect(initial).toContain(`${FOCUS_MARKER} Claude Code`)
-    expect(initial).not.toContain(`${FOCUS_MARKER} Codex`)
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("claude:Opus")
+    expect(frame).not.toContain("opus[1m]")
 
-    await actAsync(() => {
-      controller.actions.switchFocus()
-    })
-
-    const switched = await waitForFrame((f) => f.includes(`${FOCUS_MARKER} Codex`))
-    expect(switched).not.toContain(`${FOCUS_MARKER} Claude Code`)
-
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
-  it("keeps the keymap hint visible next to both agents", async () => {
+  it("shows the resumed state without adding a second command affordance", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame } = await renderStrip(controller)
+    controller.store.setRestoration("claude-code", "live")
+    const setup = await renderStrip(controller)
 
-    const frame = await waitForFrame((f) => f.includes("F1 help"))
-    expect(frame).toContain("^O switch")
-
-    await destroyMounted(renderer)
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(RESUMED_RUN_LABEL)
+    expect(frame).not.toContain("/new")
+    await destroyMounted(setup.renderer)
   })
 
-  it("fits both agents' longest state, plus the hint, into 80 columns", async () => {
+  it("shows the shell exit chord instead of the generic help hint while the shell owns focus", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame, captureCharFrame } = await renderStrip(controller)
+    controller.store.setFocusedPane({ kind: "shell" })
+    const setup = await renderStrip(controller)
 
-    await actAsync(() => {
-      controller.store.applyEvent("claude-code", { kind: "status", status: "awaiting_approval" })
-      controller.store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
-    })
+    expect(setup.captureCharFrame()).toContain(SHELL_EXIT_HINT)
+    expect(setup.captureCharFrame()).not.toContain(KEYMAP_HINT)
 
-    const frame = await waitForFrame((f) => f.includes(`Codex: ${STATUS_LABELS.awaiting_approval}`))
-    expect(frame).toContain(`Claude Code: ${STATUS_LABELS.awaiting_approval}`)
-    expect(frame).toContain("F1 help")
-
-    const strip = captureCharFrame().split("\n")[0] ?? ""
-    expect([...strip].length).toBe(80)
-
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 })

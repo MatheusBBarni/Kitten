@@ -7,7 +7,7 @@
  * Both are wrapped here so no test has to remember.
  */
 
-import { type CliRenderer } from "@opentui/core"
+import { CodeRenderable, type BaseRenderable, type CliRenderer } from "@opentui/core"
 import { act } from "react"
 
 /** Run a callback with React's act environment enabled, restoring the flag after. */
@@ -43,8 +43,29 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function collectCodeRenderables(root: BaseRenderable): CodeRenderable[] {
+  const codes = root instanceof CodeRenderable ? [root] : []
+  for (const child of root.getChildren()) {
+    codes.push(...collectCodeRenderables(child))
+  }
+  return codes
+}
+
+/** Wait for syntax work owned by code leaves that are still mounted. */
+export async function settleMountedHighlights(renderer: CliRenderer): Promise<void> {
+  await Promise.all(collectCodeRenderables(renderer.root).map((code) => code.highlightingDone))
+}
+
 /** Destroy a renderer that has a mounted React root, flushing teardown inside act. */
 export async function destroyMounted(renderer: CliRenderer): Promise<void> {
+  if (renderer.isDestroyed) return
+  // OpenTUI tears down its shared Tree-sitter client before React unmounts the root.
+  // Let a just-committed React update reach the native tree, then await in-flight
+  // syntax work and its follow-up paint. Otherwise an overlay removed by the last
+  // input event can leave a Markdown leaf resuming against the destroyed client.
+  await renderer.idle()
+  await settleMountedHighlights(renderer)
+  await renderer.idle()
   await actAsync(() => {
     renderer.destroy()
   })

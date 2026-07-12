@@ -4,13 +4,16 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { compileCommand, type BuildTarget } from "../scripts/build.ts"
+import { SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
 
 /**
  * The ADR-006 acceptance test: a real `bun build --compile` artifact must boot
  * headlessly, load config, and reach the cockpit frame without a native crash. It is
  * compiled for the host target (cross-targets are validated per platform in CI) and
  * driven through the `--self-check` mode, which mounts the cockpit into an in-memory
- * renderer - exercising OpenTUI's native core end to end in the compiled binary.
+ * renderer - exercising OpenTUI's native core and its embedded tree-sitter worker end
+ * to end in the compiled binary. The in-process self-check rejects unless its known
+ * Markdown and diff tokens have non-default foreground spans.
  */
 describe("compiled artifact self-check (ADR-006)", () => {
   it("compiles for the host and reaches the cockpit frame headlessly", async () => {
@@ -27,9 +30,13 @@ describe("compiled artifact self-check (ADR-006)", () => {
 
       const run = Bun.spawnSync([outfile, "--self-check"], { stdout: "pipe", stderr: "pipe" })
       const stdout = run.stdout.toString()
+      const stderr = run.stderr.toString()
+      if (run.exitCode !== 0) throw new Error(`compiled self-check failed:\n${stderr}`)
       expect(run.exitCode).toBe(0)
       expect(stdout).toContain("SELF-CHECK OK")
-      expect(stdout).toContain("Claude Code")
+      expect(stdout).toContain("Kitten")
+      expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
+      expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
