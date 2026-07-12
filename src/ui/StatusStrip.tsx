@@ -12,14 +12,11 @@ import { useTerminalDimensions } from "@opentui/react"
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import type { HandoffBlockedReason } from "../app/handoff.ts"
-import type { ContextUsage, SessionId } from "../core/types.ts"
+import type { SessionId } from "../core/types.ts"
 import type { Selector } from "../store/appStore.ts"
 import {
   selectAgentEffort,
   selectAgentModel,
-  selectFocusedSessionId,
-  selectHasOpenOverlay,
   selectIsFocused,
   selectSessionBranch,
   selectSessionContext,
@@ -27,7 +24,7 @@ import {
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
-import { HANDOFF_KEY_HINT, KEYMAP_HINT, NEW_RUN_KEY_HINT } from "./keymap.ts"
+import { KEYMAP_HINT } from "./keymap.ts"
 import { usePalette, type CockpitPalette, type StatusTone } from "./theme.ts"
 
 /** User-facing run-state vocabulary; awaiting approval is explicitly the user's turn. */
@@ -61,17 +58,8 @@ const selectIsResumedRun: Selector<boolean> = (state) =>
 
 /** A slot is shed below its threshold; values encode the declared priority order. */
 export const COLLAPSE_WIDTHS = {
-  branch: 80,
-  context: 79,
   effort: 71,
 } as const
-
-/** Concise reasons aligned one-for-one with `HandoffFlow.begin()`. */
-export const HANDOFF_BLOCKED_LABELS: Readonly<Record<HandoffBlockedReason, string>> = {
-  "overlay-open": "overlay open",
-  "no-target": "no target ready",
-  "empty-source": "nothing to hand off",
-}
 
 /** Selector factories consumed by the bar; injectable so nullable delegated slots can be exercised in isolation. */
 export interface StatusSlotSelectors {
@@ -112,11 +100,8 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
   const palette = usePalette()
   const { width } = useTerminalDimensions()
   const runtimes = controller.runtimes()
-  const workspaceRuntime = runtimes[0]
   const resumed = useAppSelector(selectIsResumedRun)
 
-  const showBranch = width >= COLLAPSE_WIDTHS.branch
-  const showContext = width >= COLLAPSE_WIDTHS.context
   const showEffort = width >= COLLAPSE_WIDTHS.effort
 
   return (
@@ -131,23 +116,18 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
       }}
     >
       <box style={{ flexDirection: "row", justifyContent: "space-between", overflow: "hidden" }}>
-        {workspaceRuntime ? (
-          <SharedWorkspace
-            runtime={workspaceRuntime}
-            branchSelector={selectors.branch}
-            showBranch={showBranch}
-            palette={palette}
-          />
-        ) : null}
+        <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, gap: 1, overflow: "hidden" }}>
+          {runtimes.map((runtime) => (
+            <AgentModelSummary key={runtime.sessionId} runtime={runtime} selectors={selectors} showEffort={showEffort} />
+          ))}
+        </box>
         <box style={{ flexDirection: "row", flexShrink: 0, gap: 2, overflow: "hidden" }}>
           {resumed ? (
             <text style={{ flexShrink: 0 }}>
               <span fg={palette.status.finished}>{RESUMED_RUN_LABEL}</span>
-              <span fg={palette.muted}>{` · ${NEW_RUN_KEY_HINT} new run`}</span>
             </text>
           ) : null}
           <text fg={palette.accent}>{KEYMAP_HINT}</text>
-          <HandoffAffordance runtimes={runtimes} palette={palette} />
         </box>
       </box>
 
@@ -157,8 +137,6 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
             key={runtime.sessionId}
             runtime={runtime}
             selectors={selectors}
-            showContext={showContext}
-            showEffort={showEffort}
             palette={palette}
           />
         ))}
@@ -167,22 +145,26 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
   )
 }
 
-interface SharedWorkspaceProps {
+interface AgentModelSummaryProps {
   runtime: AgentRuntimeState
-  branchSelector: typeof selectSessionBranch
-  showBranch: boolean
-  palette: CockpitPalette
+  selectors: StatusSlotSelectors
+  showEffort: boolean
 }
 
-/** One shared workspace segment; the optional branch delimiter vanishes with the branch. */
-function SharedWorkspace({ runtime, branchSelector, showBranch, palette }: SharedWorkspaceProps): ReactNode {
-  const selector = useMemo(() => branchSelector(runtime.sessionId), [branchSelector, runtime.sessionId])
-  const branch = useAppSelector(selector)
+/** The focused model names live in the compact upper row, not inside status chips. */
+function AgentModelSummary({ runtime, selectors, showEffort }: AgentModelSummaryProps): ReactNode {
+  const palette = usePalette()
+  const modelSelector = useMemo(() => selectors.model(runtime.sessionId), [selectors.model, runtime.sessionId])
+  const effortSelector = useMemo(() => selectors.effort(runtime.sessionId), [selectors.effort, runtime.sessionId])
+  const model = useAppSelector(modelSelector)
+  const effort = useAppSelector(effortSelector)
+  const provider = runtime.providerKind === "claude-code" ? "claude" : "codex"
 
   return (
-    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none" fg={palette.muted}>
-      {displayCwd(runtime.cwd)}
-      {showBranch && branch !== null ? <span fg={palette.text}>{` · ${branch}`}</span> : null}
+    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none">
+      <span fg={palette.accent}>{`${provider}:`}</span>
+      <span fg={model === null ? palette.muted : palette.text}>{model ?? "—"}</span>
+      {showEffort && effort !== null ? <span fg={palette.muted}>{`/${effort}`}</span> : null}
     </text>
   )
 }
@@ -190,30 +172,20 @@ function SharedWorkspace({ runtime, branchSelector, showBranch, palette }: Share
 interface AgentStatusLozengeProps {
   runtime: AgentRuntimeState
   selectors: StatusSlotSelectors
-  showContext: boolean
-  showEffort: boolean
   palette: CockpitPalette
 }
 
 /** Focus, state, and every nullable session slot for one agent. */
 function AgentStatusLozenge({
   runtime,
-  selectors,
-  showContext,
-  showEffort,
+  selectors: _selectors,
   palette,
 }: AgentStatusLozengeProps): ReactNode {
   const { sessionId } = runtime
   const statusSelector = useMemo(() => selectSessionStatus(sessionId), [sessionId])
   const focusSelector = useMemo(() => selectIsFocused(sessionId), [sessionId])
-  const modelSelector = useMemo(() => selectors.model(sessionId), [selectors.model, sessionId])
-  const contextSelector = useMemo(() => selectors.context(sessionId), [selectors.context, sessionId])
-  const effortSelector = useMemo(() => selectors.effort(sessionId), [selectors.effort, sessionId])
   const status = useAppSelector(statusSelector)
   const focused = useAppSelector(focusSelector)
-  const model = useAppSelector(modelSelector)
-  const context = useAppSelector(contextSelector)
-  const effort = useAppSelector(effortSelector)
   const tone: StatusTone = runtime.ready ? status : "not_ready"
 
   return (
@@ -221,63 +193,8 @@ function AgentStatusLozenge({
       <span fg={focused ? palette.accent : palette.muted}>[</span>
       {focused ? <span fg={palette.accent}>{`${FOCUS_MARKER} `}</span> : null}
       <span fg={palette.status[tone]}>{`${RUN_STATE_GLYPHS[tone]} `}</span>
-      <span fg={focused ? palette.text : palette.muted}>{`${runtime.title}: `}</span>
       <span fg={palette.status[tone]}>{STATUS_LABELS[tone]}</span>
-      {model !== null ? <span fg={palette.muted}>{` ${model}`}</span> : null}
-      {showEffort && effort !== null ? <span fg={palette.muted}>{model === null ? ` ${effort}` : `/${effort}`}</span> : null}
-      {showContext && context !== null ? (
-        <span fg={contextColor(context, palette.context)}>{` ${Math.round(context.percent * 100)}%`}</span>
-      ) : null}
       <span fg={focused ? palette.accent : palette.muted}>]</span>
     </text>
   )
-}
-
-function HandoffAffordance({
-  runtimes,
-  palette,
-}: {
-  runtimes: AgentRuntimeState[]
-  palette: CockpitPalette
-}): ReactNode {
-  const controller = useController()
-  const focusedSessionId = useAppSelector(selectFocusedSessionId)
-  const overlayOpen = useAppSelector(selectHasOpenOverlay)
-  const hasTurnsSelector = useMemo(
-    (): Selector<boolean> => (state) => (state.sessions[focusedSessionId]?.turns.length ?? 0) > 0,
-    [focusedSessionId],
-  )
-  const hasTurns = useAppSelector(hasTurnsSelector)
-  const recipients = runtimes.filter(
-    (runtime) => runtime.sessionId !== focusedSessionId && controller.isReady(runtime.sessionId),
-  )
-  const target = recipients.length === 1 ? recipients[0]!.title : recipients.length > 1 ? "choose target" : null
-  const reason: HandoffBlockedReason | null = overlayOpen
-    ? "overlay-open"
-    : !hasTurns
-      ? "empty-source"
-      : target === null
-        ? "no-target"
-        : null
-  const direction = target === null ? "" : ` -> ${target}`
-
-  return (
-    <text style={{ flexShrink: 0 }}>
-      <span fg={palette.accent}>{HANDOFF_KEY_HINT}</span>
-      <span fg={reason === null ? palette.text : palette.muted}>
-        {` hand off${direction}${reason === null ? "" : ` — ${HANDOFF_BLOCKED_LABELS[reason]}`}`}
-      </span>
-    </text>
-  )
-}
-
-function contextColor(context: ContextUsage, palette: { ok: string; warn: string; critical: string }): string {
-  if (context.percent > 0.85) return palette.critical
-  if (context.percent >= 0.7) return palette.warn
-  return palette.ok
-}
-
-function displayCwd(cwd: string): string {
-  const normalized = cwd.replace(/[\\/]+$/, "")
-  return normalized.split(/[\\/]/).at(-1) || cwd
 }

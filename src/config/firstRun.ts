@@ -180,7 +180,7 @@ export function formatFirstRunReport(
   }
   if (options.persistenceEnabled && options.sessionsPath) {
     lines.push(
-      `Kitten remembers sessions for this project in ${options.sessionsPath}; press Ctrl+R, then Ctrl+D to delete one or Ctrl+A to delete all.`,
+      `Kitten remembers sessions for this project in ${options.sessionsPath}; use /resume to restore one, then Ctrl+D to delete one or Ctrl+A to delete all.`,
     )
   }
   return lines

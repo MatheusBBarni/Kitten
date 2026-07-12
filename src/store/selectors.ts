@@ -16,6 +16,7 @@
 
 import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
 import type {
+  AvailableCommand,
   ConfigOption,
   ContextUsage,
   PendingDiff,
@@ -131,6 +132,16 @@ export const selectSessionPlan =
   (state) =>
     state.sessions[sessionId]!.plan
 
+/**
+ * One session's latest agent-advertised slash commands. The reducer replaces this
+ * array only for a `commands` event, so its reference stays stable while the user
+ * types in the command menu or another session streams.
+ */
+export const selectSessionCommands =
+  (sessionId: SessionId): Selector<AvailableCommand[]> =>
+  (state) =>
+    state.sessions[sessionId]!.commands
+
 /** One session's proposed-but-unapplied edit diffs. */
 export const selectSessionPendingDiffs =
   (sessionId: SessionId): Selector<PendingDiff[]> =>
@@ -200,7 +211,7 @@ export interface SessionListItem {
 const sessionListCache = new WeakMap<AppState, SessionListItem[]>()
 
 /**
- * Every session with its status, in display order (ADR-006). The Ctrl+S overview
+ * Every session with its status, in display order (ADR-006). The `/sessions` overview
  * (task_05) reads this to draw its card list and mark which rows need you. It is
  * memoized per state object (see {@link sessionListCache}): a subscriber wakes on any
  * committed change but a repeated read of the same state returns the same array.
@@ -290,7 +301,7 @@ export const selectHandoffPreview: Selector<HandoffPreviewOverlay | null> = (sta
 export const selectHandoffTarget: Selector<HandoffTargetOverlay | null> = (state) => state.overlays.handoffTarget
 
 /**
- * Whether the Ctrl+S sessions overview is open (task_05). The overview is modal like
+ * Whether the `/sessions` overview is open (task_05). The overview is modal like
  * the other overlays, so it too is folded into {@link selectHasOpenOverlay} and stands
  * the shell's chords down while it is up.
  */

@@ -39,7 +39,7 @@ import { DARK_PALETTE } from "./theme.ts"
 
 /**
  * The preview is exercised inside the real shell, because most of what it promises is
- * about the shell: the hand-off chord must reach it, it must paint over the cockpit,
+ * about the shell: the `/handoff` command must reach it, it must paint over the cockpit,
  * it must take every key from the composer, and on confirm the focused pane must
  * retitle to the agent that received the bundle.
  *
@@ -158,15 +158,24 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     height: HEIGHT,
     kittyKeyboard: true,
   })
-  await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
   return setup
 }
 
-/** Press the hand-off chord and wait for the preview to paint. */
-async function handoff(setup: TestRendererSetup): Promise<string> {
-  await actAsync(() => {
-    setup.mockInput.pressKey("t", { ctrl: true })
+/** Run one cockpit slash command through the real prompt menu. */
+async function runSlashCommand(setup: TestRendererSetup, command: string): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText(`/${command}`)
   })
+  await setup.waitForFrame((frame) => frame.includes(`/${command}`))
+  await actAsync(() => {
+    setup.mockInput.pressEnter()
+  })
+}
+
+/** Run `/handoff` and wait for the preview to paint. */
+async function handoff(setup: TestRendererSetup): Promise<string> {
+  await runSlashCommand(setup, "handoff")
   return setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT))
 }
 
@@ -207,7 +216,7 @@ describe("fileProvenanceTarget", () => {
 })
 
 describe("HandoffPreview visibility", () => {
-  it("renders nothing until the hand-off chord is pressed", async () => {
+  it("renders nothing until /handoff is run", async () => {
     const controller = createFakeController()
     seed(controller, "claude-code")
     const { renderer, captureCharFrame } = await renderCockpit(controller)
@@ -225,7 +234,8 @@ describe("HandoffPreview visibility", () => {
     controller.store.applyEvent("codex", { kind: "config_options", options: targetConfigOptions() })
     const setup = await renderWithPreview(controller)
 
-    const frame = setup.captureCharFrame()
+    const frame = await setup.waitForFrame((candidate) => !candidate.includes("/handoff"))
+    expect(frame).toContain(PROMPT_PLACEHOLDER)
     expect(frame).toContain(TARGET_CONFIG_HEADING)
     expect(frame).toContain(MODEL_HEADING)
     expect(frame).toContain(EFFORT_HEADING)
@@ -324,16 +334,13 @@ describe("HandoffPreview visibility", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("keeps the app stable and the preview closed when an empty source blocks the hand-off chord", async () => {
+  it("keeps the app stable and the preview closed when /handoff has an empty source", async () => {
     const controller = createFakeController()
     const setup = await renderCockpit(controller)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("t", { ctrl: true })
-    })
+    await runSlashCommand(setup, "handoff")
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain(PROMPT_PLACEHOLDER)
     expect(frame).not.toContain(HANDOFF_HINT)
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
@@ -358,9 +365,7 @@ describe("HandoffPreview visibility", () => {
     seed(controller, "claude-code")
     const setup = await renderCockpit(controller)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("t", { ctrl: true })
-    })
+    await runSlashCommand(setup, "handoff")
 
     // The store is the authority here: a frame captured right after a keypress can miss
     // a paint, so a frame-only assertion would pass whether or not the preview opened.
@@ -690,9 +695,8 @@ describe("HandoffPreview outcome", () => {
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
     expect(controller.store.getState().focusedSessionId).toBe("codex")
 
-    // The preview is gone and the focused pane has retitled to the receiving agent.
+    // The preview is gone and focus has moved to the receiving agent.
     const closed = await setup.waitForFrame((f) => !f.includes(HANDOFF_HINT))
-    expect(closed.split("\n")[0]).toContain("Codex")
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(setup.renderer)
@@ -711,7 +715,7 @@ describe("HandoffPreview outcome", () => {
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
     expect(controller.store.getState().focusedSessionId).toBe("claude-code")
-    expect(closed.split("\n")[0]).toContain("Claude Code")
+    expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(setup.renderer)
   })
@@ -760,7 +764,7 @@ describe("HandoffPreview outcome", () => {
     seed(controller, "codex")
     controller.store.setFocus("codex")
     const setup = await renderCockpit(controller)
-    await setup.waitForFrame((f) => f.split("\n")[0]?.includes("Codex") === true)
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
 
     const frame = await handoff(setup)
     expect(frame).toContain(handoffTitleFor("Codex", "Claude Code"))
@@ -783,14 +787,12 @@ describe("HandoffPreview modality", () => {
     const setup = await renderWithPreview(controller)
 
     await actAsync(async () => {
-      setup.mockInput.pressKey("o", { ctrl: true })
-      setup.mockInput.pressKey("F1")
+      setup.mockInput.pressKey("`", { ctrl: true })
       await setup.mockInput.typeText(DRAFT_MARKER)
     })
 
-    // `toEqual([])` would also accept `[undefined]`, which is exactly the call the focus
-    // chord makes. Assert on the length so a leaked chord cannot hide here.
-    expect(controller.calls.switchFocus).toHaveLength(0)
+    // Neither the global shell chord nor the prompt command reached through the preview.
+    expect(controller.store.getState().focusedPane.kind).toBe("agent")
     expect(controller.store.getState().focusedSessionId).toBe("claude-code")
     expect(await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))).not.toContain(HELP_TITLE)
 
@@ -843,9 +845,7 @@ describe("HandoffPreview modality", () => {
     seed(controller, "claude-code")
     const setup = await renderCockpit(controller)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("F1")
-    })
+    await runSlashCommand(setup, "help")
     await setup.waitForFrame((f) => f.includes(HELP_TITLE))
 
     const frame = await handoff(setup)
@@ -922,16 +922,14 @@ describe("integration - hand-off across two mock agents", () => {
       height: HEIGHT,
       kittyKeyboard: true,
     })
-    await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
 
     await actAsync(async () => {
       await controller.actions.sendPrompt("bump b")
     })
 
-    // One keystroke assembles the bundle. Nothing has reached Codex yet.
-    await actAsync(() => {
-      setup.mockInput.pressKey("t", { ctrl: true })
-    })
+    // `/handoff` assembles the bundle. Nothing has reached Codex yet.
+    await runSlashCommand(setup, "handoff")
     const preview = await setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT))
     expect(preview).toContain(handoffTitleFor("Claude Code", "Codex"))
     expect(preview).toContain(redactionNotice(1))

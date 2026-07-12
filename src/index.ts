@@ -64,7 +64,7 @@ export interface CockpitSession {
   controller: SessionController
   /** The recorder wired to this run; a no-op when telemetry is disabled in config. */
   recorder: TelemetryRecorder
-  /** The persistence boundary shared with the Ctrl+R picker. */
+  /** The persistence boundary shared with the `/resume` picker. */
   runStore?: RunStore
   /** Project identity used for project-scoped saved-run lookup. */
   cwd?: string
@@ -311,6 +311,12 @@ export interface MainDeps {
   /** How to obtain the renderer; defaults to the real interactive renderer. */
   createRenderer?: RendererFactory
   /**
+   * Prepare OpenTUI's tree-sitter worker before the Markdown-capable cockpit mounts.
+   * The transient boot banner is text-only, so this seam intentionally runs after
+   * that first visible feedback has been mounted.
+   */
+  configureTreeSitterWorker?: typeof configureTreeSitterWorker
+  /**
    * How to obtain just the controller. When given, telemetry is not wired (the tests
    * use this to drive a fake controller). Takes precedence over `createSession`.
    */
@@ -347,6 +353,13 @@ export interface BootedCockpit {
   closed: Promise<void>
 }
 
+/** Results that can be prepared concurrently before the cockpit root mounts. */
+interface PreparedCockpitSession {
+  controller: SessionController
+  recorder?: TelemetryRecorder
+  sessionPicker?: { runStore: RunStore; cwd: string }
+}
+
 /**
  * Boot the cockpit for a real run.
  *
@@ -377,7 +390,6 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
     return null
   }
 
-  await configureTreeSitterWorker()
   const renderer = await createRenderer()
 
   let controller: SessionController
@@ -408,16 +420,33 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
       cwd,
     })
 
-    if (deps.createController) {
-      controller = await deps.createController()
-    } else {
-      const session = deps.createSession
-        ? await deps.createSession()
-        : await createCockpitSession({ config, cwd })
-      controller = session.controller
-      recorder = session.recorder
-      if (session.runStore) sessionPicker = { runStore: session.runStore, cwd: session.cwd ?? cwd }
+    // The boot banner contains only plain text, whereas the cockpit can mount
+    // Markdown immediately. Start the standalone-worker setup and the agent
+    // handshakes together behind that visible feedback, then wait for both before
+    // swapping in the Markdown-capable cockpit. Neither preparation path renders,
+    // so they are independent and safely overlap on the critical path.
+    const workerSetup = (deps.configureTreeSitterWorker ?? configureTreeSitterWorker)()
+    const sessionSetup: Promise<PreparedCockpitSession> = deps.createController
+      ? deps.createController().then((nextController) => ({ controller: nextController }))
+      : (deps.createSession
+          ? deps.createSession()
+          : createCockpitSession({ config, cwd })
+        ).then((session) => ({
+          controller: session.controller,
+          recorder: session.recorder,
+          sessionPicker: session.runStore ? { runStore: session.runStore, cwd: session.cwd ?? cwd } : undefined,
+        }))
+    const [workerResult, sessionResult] = await Promise.allSettled([workerSetup, sessionSetup])
+
+    if (workerResult.status === "rejected") {
+      if (sessionResult.status === "fulfilled") await sessionResult.value.controller.dispose()
+      throw workerResult.reason
     }
+    if (sessionResult.status === "rejected") throw sessionResult.reason
+
+    controller = sessionResult.value.controller
+    recorder = sessionResult.value.recorder
+    sessionPicker = sessionResult.value.sessionPicker
   } catch (error) {
     // The renderer already owns the terminal (raw mode, alternate screen). Give it
     // back before the error escapes, or the user's shell is left unusable.

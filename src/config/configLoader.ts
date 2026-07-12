@@ -45,7 +45,7 @@ import { PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
  * or handshake behavior beneath us.
  */
 export const CLAUDE_CODE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.57.0"
-export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.1.0"
+export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.1.2"
 
 /** The default spawn recipe for each provider kind, pinned to the known-good adapter. */
 const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {

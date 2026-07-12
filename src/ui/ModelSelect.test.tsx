@@ -27,6 +27,7 @@ import {
   NO_OPTIONS_NOTICE,
   OTHER_MARK,
   ROW_MARKER,
+  TAB_MARKER,
   UNVERIFIED_LABEL,
 } from "./ModelSelect.tsx"
 import { APPROVAL_HINT, MODEL_SELECT_CONFIRM_HINT, MODEL_SELECT_HINT } from "./keymap.ts"
@@ -78,6 +79,32 @@ function modelOnlyOptions(): ConfigOption[] {
   return [configOptions()[0]!]
 }
 
+/** A deliberately distinct Codex advertisement; tabs must never merge it with Claude's. */
+function codexConfigOptions(currentModel = "gpt-5.6-terra", currentEffort = "ultra"): ConfigOption[] {
+  return [
+    {
+      id: "model",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: currentModel,
+      options: [
+        { value: "gpt-5.6-terra", name: "Terra" },
+        { value: "gpt-5.6-luna", name: "Luna" },
+      ],
+    },
+    {
+      id: "reasoning_effort",
+      category: EFFORT_CATEGORY,
+      label: "Reasoning effort",
+      currentValue: currentEffort,
+      options: [
+        { value: "ultra", name: "Ultra" },
+        { value: "max", name: "Max" },
+      ],
+    },
+  ]
+}
+
 /** Seed a session's advertised config options through the reducer. */
 function seedOptions(controller: FakeController, sessionId: SessionId, options: ConfigOption[]): void {
   controller.store.applyEvent(sessionId, { kind: "config_options", options })
@@ -94,14 +121,17 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     height: HEIGHT,
     kittyKeyboard: true,
   })
-  await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
   return setup
 }
 
-/** Press the selector chord and wait for it to paint. */
-async function openSelector(setup: TestRendererSetup): Promise<string> {
+/** Open the selector the same way CockpitApp's `/model` command dispatcher does. */
+async function openSelector(
+  setup: TestRendererSetup,
+  controller: { store: FakeController["store"] },
+): Promise<string> {
   await actAsync(() => {
-    setup.mockInput.pressKey("e", { ctrl: true })
+    controller.store.openModelSelect({ sessionId: controller.store.getState().focusedSessionId })
   })
   return setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_HINT))
 }
@@ -109,12 +139,12 @@ async function openSelector(setup: TestRendererSetup): Promise<string> {
 /** Mount the cockpit over a session with config options, then open the selector. */
 async function renderWithSelector(controller: FakeController): Promise<TestRendererSetup> {
   const setup = await renderCockpit(controller)
-  await openSelector(setup)
+  await openSelector(setup, controller)
   return setup
 }
 
 describe("ModelSelect visibility and content", () => {
-  it("renders nothing until the selector chord is pressed", async () => {
+  it("renders nothing until the selector is opened", async () => {
     const controller = createFakeController()
     seedOptions(controller, "claude-code", configOptions())
     const setup = await renderCockpit(controller)
@@ -132,7 +162,7 @@ describe("ModelSelect visibility and content", () => {
     const setup = await renderWithSelector(controller)
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain(modelSelectTitleFor("Claude Code"))
+    expect(frame).toContain(modelSelectTitleFor("Claude"))
     expect(frame).toContain(MODEL_HEADING)
     expect(frame).toContain(EFFORT_HEADING)
     // Both values of each section are listed, and the live one carries the current mark.
@@ -170,6 +200,57 @@ describe("ModelSelect visibility and content", () => {
     const setup = await renderWithSelector(controller)
 
     expect(setup.captureCharFrame()).toContain(NO_OPTIONS_NOTICE)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("tabs through each session's own runtime-advertised model and effort choices", async () => {
+    const controller = createFakeController()
+    seedOptions(controller, "claude-code", configOptions("opus", "high"))
+    seedOptions(controller, "codex", codexConfigOptions())
+    const setup = await renderWithSelector(controller)
+
+    const claude = setup.captureCharFrame()
+    expect(claude).toContain(`${TAB_MARKER} Claude`)
+    expect(claude).toContain("Codex")
+    expect(claude).toContain("Sonnet")
+
+    await actAsync(() => {
+      setup.mockInput.pressTab()
+    })
+    const codex = await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor("Codex")))
+    expect(codex).toContain(`${TAB_MARKER} Codex`)
+    expect(codex).toContain("Terra")
+    expect(codex).toContain("Luna")
+    expect(codex).toContain("Ultra")
+    expect(codex).toContain("Max")
+    expect(codex).not.toContain("Sonnet")
+
+    // Shift+Tab wraps in the opposite direction and restores the other session's
+    // own advertisement before Tab moves forward again.
+    await actAsync(() => {
+      setup.mockInput.pressTab({ shift: true })
+    })
+    const backOnClaude = await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor("Claude")))
+    expect(backOnClaude).toContain(`${TAB_MARKER} Claude`)
+    expect(backOnClaude).toContain("Sonnet")
+    await actAsync(() => {
+      setup.mockInput.pressTab()
+    })
+    await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor("Codex")))
+
+    // The selected model belongs to the active Codex tab, never the pane that opened
+    // the selector. A fresh session applies without the mid-conversation confirmation.
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(`${ROW_MARKER} ${OTHER_MARK} Luna`))
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    expect(controller.calls.setSessionConfigOption).toEqual([
+      { configId: "model", value: "gpt-5.6-luna", sessionId: "codex" },
+    ])
 
     await destroyMounted(setup.renderer)
   })
@@ -473,11 +554,11 @@ describe("integration - a confirmed switch across a mock agent", () => {
       height: HEIGHT,
       kittyKeyboard: true,
     })
-    await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
 
     // The controller seeded the advertised options at session start, so the selector
     // opens straight onto the confirmed model.
-    await openSelector(setup)
+    await openSelector(setup, controller)
     const opened = setup.captureCharFrame()
     expect(opened).toContain(`${CURRENT_MARK} Sonnet`)
 

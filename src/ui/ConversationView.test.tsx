@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { destroyTreeSitterClient, RGBA } from "@opentui/core"
-import { createMockMouse, type TestRenderer } from "@opentui/core/testing"
+import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
@@ -21,7 +21,7 @@ import {
 import { ROLE_LABELS } from "./MessageView.tsx"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
-import { WELCOME_GREETING, WELCOME_MASCOT, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_WORDMARK, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 /** The `rgba(...)` string OpenTUI stores for a palette hex, for comparing to a captured cell. */
 function paletteColor(hex: string): string {
@@ -55,8 +55,21 @@ async function renderConversation(
     </CockpitApp>,
     { width, height },
   )
-  await setup.waitForFrame((f) => f.includes("Claude Code"))
+  // The frame title is present for both the normal banner and degraded restoration
+  // states; the latter intentionally omit the greeting.
+  await setup.waitForFrame((f) => f.includes("Kitten"))
   return setup
+}
+
+/** Run a Kitten slash command through the real prompt menu. */
+async function runSlashCommand(setup: TestRendererSetup, command: string): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText(`/${command}`)
+  })
+  await setup.waitForFrame((frame) => frame.includes(`/${command}`))
+  await actAsync(() => {
+    setup.mockInput.pressEnter()
+  })
 }
 
 /** Push a user turn onto an agent's transcript. */
@@ -103,22 +116,26 @@ function expectAlignedTranscriptTable(frame: string): void {
 }
 
 describe("ConversationView turns", () => {
-  it("shows both ready agents, cwd, and the hand-off on-ramp before the first turn", async () => {
+  it("shows the ASCII Kitten banner, neutral ready states, cwd, and command on-ramp before the first turn", async () => {
     const controller = createFakeController()
     const { renderer, captureCharFrame } = await renderConversation(controller)
 
     const frame = captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
-    expect(frame).toContain("Claude Code: ready")
-    expect(frame).toContain("Codex: ready")
+    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).toContain(WELCOME_WORDMARK[1])
+    expect(frame).toContain(WELCOME_WORDMARK[2])
+    expect(frame).toContain("Agents: ready · ready")
     expect(frame).toContain(`Working directory: ${process.cwd()}`)
     expect(frame).toContain(WELCOME_ON_RAMP)
+    expect(frame).not.toContain("Claude Code")
+    expect(frame).not.toContain("Codex")
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
 
     await destroyMounted(renderer)
   })
 
-  it("shows the quiet greeting after first-run state selects the auto quiet variant", async () => {
+  it("keeps the ASCII Kitten wordmark in the quiet first-run variant", async () => {
     const controller = createFakeController()
     const variant = bannerVariant("auto", true)
     expect(variant).toBe("quiet")
@@ -126,8 +143,8 @@ describe("ConversationView turns", () => {
 
     const frame = captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
-    expect(frame).not.toContain(WELCOME_MASCOT[0])
-    expect(frame).not.toContain("Codex: ready")
+    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).not.toContain("Agents:")
     expect(frame).not.toContain(WELCOME_ON_RAMP)
 
     await destroyMounted(renderer)
@@ -139,8 +156,8 @@ describe("ConversationView turns", () => {
 
     const frame = captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
-    expect(frame).not.toContain(WELCOME_MASCOT[0])
-    expect(frame).not.toContain("Codex: ready")
+    expect(frame).not.toContain(WELCOME_WORDMARK[0])
+    expect(frame).not.toContain("Agents:")
     expect(frame).not.toContain(WELCOME_ON_RAMP)
 
     await destroyMounted(renderer)
@@ -285,6 +302,7 @@ describe("ConversationView restoration degradation", () => {
     expect(frame).toContain(RESTORATION_UNAVAILABLE_LABEL)
     expect(frame).toContain(RESTORATION_CONTEXT_LABEL)
     expect(frame).toContain(RESTORED_BUNDLE.summary)
+    expect(frame).toContain("/new")
     expect(frame).toContain(START_FRESH_LABEL)
 
     await destroyMounted(renderer)
@@ -296,7 +314,7 @@ describe("ConversationView restoration degradation", () => {
     controller.store.setRestoration("claude-code", "unavailable")
     const setup = await renderConversation(controller)
 
-    await actAsync(() => setup.mockInput.pressKey("n", { ctrl: true }))
+    await runSlashCommand(setup, "new")
 
     expect(controller.calls.startFreshFromContext).toEqual([
       {
@@ -363,10 +381,10 @@ describe("ConversationView streaming", () => {
     await destroyMounted(renderer)
   })
 
-  it("matches the expected frames as a message streams in", async () => {
+  it("keeps user and streamed agent content distinct as the message settles", async () => {
     const controller = createFakeController()
-    // Tall enough that the transcript, the prompt editor and the strip all fit, so the
-    // snapshots capture the streaming message rather than a scrolled-away one.
+    // Tall enough that the transcript, prompt editor, and strip all fit, so each
+    // assertion observes the streaming content rather than a scrolled-away row.
     const { renderer, waitForFrame, captureCharFrame } = await renderConversation(controller, WIDTH, 18)
 
     await actAsync(() => userMessage(controller, "claude-code", "m1", "ping"))
@@ -374,15 +392,28 @@ describe("ConversationView streaming", () => {
     // "Shift" (which contains "hi"), so the sentinel must be a word the chrome never
     // paints. "ping" appears only once the user's band renders.
     await waitForFrame((f) => f.includes("ping"))
-    expect(captureCharFrame()).toMatchSnapshot("01-user-turn")
+    const userFrame = captureCharFrame()
+    expect(userFrame).toContain("ping")
+    expect(userFrame).not.toContain("Hello")
+    expect(userFrame).toContain("Kitten")
+    expect(userFrame).not.toContain("Claude Code")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))
     await waitForFrame((f) => f.includes("Hello"))
-    expect(captureCharFrame()).toMatchSnapshot("02-first-chunk")
+    const firstChunk = captureCharFrame()
+    expect(firstChunk).toContain("ping")
+    expect(firstChunk).toContain(ROLE_LABELS.agent)
+    expect(firstChunk).toContain("Hello")
+    expect(firstChunk).not.toContain("Hello, world.")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", ", world."))
     await waitForFrame((f) => f.includes("Hello, world."))
-    expect(captureCharFrame()).toMatchSnapshot("03-settled")
+    const settled = captureCharFrame()
+    expect(settled).toContain("ping")
+    expect(settled).toContain("Hello, world.")
+    expect(settled.match(/Hello, world\./g)).toHaveLength(1)
+    expect(settled).toContain("/help")
+    expect(settled).not.toContain("Claude Code")
 
     await destroyMounted(renderer)
   })
@@ -454,7 +485,7 @@ describe("ConversationView tool calls", () => {
     await destroyMounted(renderer)
   })
 
-  it("renders a bold tool name so the header reads like a Claude Code action", async () => {
+  it("renders a bold tool name so the header reads like an agent action", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
 

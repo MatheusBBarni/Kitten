@@ -2,7 +2,7 @@
  * The cockpit shell: the frame every other view mounts into.
  *
  * The layout is a focused pane, not a split. One agent conversation or the integrated
- * shell owns the full-width main region at a time; dedicated chords move between
+ * shell owns the full-width main region at a time; slash commands move between
  * agents and toggle the shell without sacrificing the readable 80-column layout.
  * Beneath it sit the prompt editor and the status strip. An alternate-screen app
  * temporarily yields those rows to the shell pane, then restores them on exit.
@@ -14,8 +14,8 @@
  * first, so it must stand down here rather than leaving it to an overlay's
  * `preventDefault`, which only reaches focused renderables.
  *
- * The hand-off is the product (PRD F3). Its keystroke lives in the same table as every
- * other chord and does nothing but open the flow - a target picker when the fleet gives
+ * The hand-off is the product (PRD F3). Its slash command lives in the same registry as every
+ * other cockpit action and does nothing but open the flow - a target picker when the fleet gives
  * a choice of recipient, the redacted preview otherwise. `HandoffFlow` owns everything
  * past that, and nothing sends without a confirm.
  *
@@ -52,11 +52,11 @@ import { ShellPane } from "./ShellPane.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
-import { COCKPIT_KEYMAP, HELP_ENTRIES, matchCommand } from "./keymap.ts"
+import { HELP_ENTRIES, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
-export const HELP_TITLE = "Keyboard shortcuts"
+export const HELP_TITLE = "Commands"
 
 /** Copy-result labels are exported so the rendered action stays an explicit UI contract. */
 export const EXTERNAL_RUN_COPIED_PREFIX = "Copied for external terminal:"
@@ -81,7 +81,7 @@ export interface CockpitAppProps {
   welcomeBannerVariant?: BannerVariant
   /** Optional telemetry recorder; the hand-off flow records its metrics through it. */
   recorder?: TelemetryRecorder
-  /** Saved-run persistence boundary and project identity for the Ctrl+R picker. */
+  /** Saved-run persistence boundary and project identity for the `/resume` picker. */
   sessionPicker?: SessionPickerSource
 }
 
@@ -130,109 +130,74 @@ function CockpitFrame({
   // same mechanism pointed the other way, and it derives its direction from focus.
   const handoff = useMemo(() => createHandoffFlow({ controller, recorder }), [controller, recorder])
 
-  const onKey = useCallback(
-    (key: KeyEvent) => {
-      // A modal overlay owns the keyboard outright. Precedence is declared here rather
-      // than left to the framework: global listeners fire in the order they mounted, and
-      // this one mounts before the overlays that would otherwise outrank it.
-      if (overlayOpen) return
-
-      const command = matchCommand(key)
-      const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
-
-      // The shell toggle stays Kitten-owned from either pane. Close local help before
-      // moving focus so no agent-only overlay remains painted over the shell.
-      if (command === "toggle-shell") {
-        key.preventDefault()
-        setHelpOpen(false)
-        setExternalRunNotice(null)
-        controller.store.setFocusedPane(
-          shellFocusedNow
-            ? { kind: "agent", agentId: controller.store.getState().focusedSessionId }
-            : { kind: "shell" },
-        )
-        return
-      }
-
-      // F3 is Kitten-owned only while the shell is focused. Copying via OSC 52 keeps
-      // command content local to the terminal; telemetry receives only the intent.
-      if (command === "run-externally") {
-        if (!shellFocusedNow) return
-        key.preventDefault()
-        const commandText = controller.store.getState().shell.commands.at(-1)?.command.trim() ?? ""
-        if (commandText.length === 0) {
-          setExternalRunNotice({ command: null, copied: false })
-          return
-        }
-        let copied = false
-        try {
-          copied = renderer.copyToClipboardOSC52(commandText)
-        } catch {
-          // A terminal without a usable clipboard still gets the visible command.
-        }
-        setExternalRunNotice({ command: commandText, copied })
-        recorder?.externalRun()
-        return
-      }
-
-      // Shell focus is modal with respect to cockpit chords: after the reserved
-      // toggle/external-run actions, every encodable key belongs to the PTY,
-      // including Ctrl+C (0x03).
-      if (shellFocusedNow) {
-        key.preventDefault()
-        setExternalRunNotice(null)
-        const bytes = encodeKey(key)
-        if (!bytes || !controller.shell.ready) return
-        controller.shell.runtime.write(bytes)
-        return
-      }
+  /** One cockpit dispatch path shared by `/commands` and the remaining global chord. */
+  const runCockpitCommand = useCallback(
+    (command: CockpitCommand): void => {
+      const state = controller.store.getState()
 
       switch (command) {
+        case "toggle-shell":
+          setHelpOpen(false)
+          setExternalRunNotice(null)
+          controller.store.setFocusedPane(
+            state.focusedPane.kind === "shell"
+              ? { kind: "agent", agentId: state.focusedSessionId }
+              : { kind: "shell" },
+          )
+          return
+        case "run-externally": {
+          const commandText = state.shell.commands.at(-1)?.command.trim() ?? ""
+          if (commandText.length === 0) {
+            setExternalRunNotice({ command: null, copied: false })
+            return
+          }
+          let copied = false
+          try {
+            copied = renderer.copyToClipboardOSC52(commandText)
+          } catch {
+            // A terminal without OSC 52 support still gets the command in the pane.
+          }
+          setExternalRunNotice({ command: commandText, copied })
+          recorder?.externalRun()
+          return
+        }
         case "switch-focus":
           controller.actions.switchFocus()
           return
         case "hand-off":
-          // The panel would otherwise sit behind the preview with no key left to close
-          // it, since the preview spends Escape on discarding the bundle.
           if (handoff.begin().ok) setHelpOpen(false)
           return
         case "sessions":
-          // Same reason as the hand-off: the overview is modal and spends Escape on
-          // dismissing itself, so close the help panel before it opens.
           setHelpOpen(false)
           controller.store.openSessions()
           return
         case "resume-session":
-          key.preventDefault()
           setHelpOpen(false)
           recorder?.resumePickerOpened()
           controller.store.openSessionPicker()
           return
-        case "start-new-run":
-          key.preventDefault()
+        case "start-new-run": {
           setHelpOpen(false)
-          {
-            const state = controller.store.getState()
-            const sessionId = state.focusedSessionId
-            const bundle = state.restorationBundle
-            if (state.restoration[sessionId] === "unavailable" && bundle) {
-              const blocks = composeHandoffBlocks(bundle, createHandoffEdits(bundle))
-              void controller.actions.startFreshFromContext(blocks, sessionId)
-            } else {
-              void controller.actions.startNewRun()
-            }
+          const bundle = state.restorationBundle
+          if (state.restoration[state.focusedSessionId] === "unavailable" && bundle) {
+            void controller.actions.startFreshFromContext(
+              composeHandoffBlocks(bundle, createHandoffEdits(bundle)),
+              state.focusedSessionId,
+            )
+          } else {
+            void controller.actions.startNewRun()
           }
           return
-        case "model-select":
-          // The selector is modal too and spends Escape on closing itself, so the help
-          // panel must stand down first. It always opens for the focused pane; an agent
-          // that advertises no visible options simply shows an empty selector.
+        }
+        case "clear-run":
           setHelpOpen(false)
-          controller.store.openModelSelect({ sessionId: controller.store.getState().focusedSessionId })
+          void controller.actions.startNewRun()
+          return
+        case "model-select":
+          setHelpOpen(false)
+          controller.store.openModelSelect({ sessionId: state.focusedSessionId })
           return
         case "open-settings":
-          // Settings is modal and spends Escape on closing itself, so help cannot
-          // remain open behind it. Record reach only after the store slot opens.
           setHelpOpen(false)
           controller.store.openSettings()
           recorder?.settingsOpened()
@@ -241,18 +206,42 @@ function CockpitFrame({
           setHelpOpen((open) => !open)
           return
         case "close-help":
-          // Escape belongs to the editor and the overlays unless help is showing.
-          // Consuming it here stops the focused textarea from ever seeing the key,
-          // so dismissing help cannot also interrupt a working agent.
-          if (!helpOpen) return
-          key.preventDefault()
-          setHelpOpen(false)
-          return
-        default:
+          if (helpOpen) setHelpOpen(false)
           return
       }
     },
-    [controller, handoff, helpOpen, overlayOpen, recorder, renderer],
+    [controller, handoff, helpOpen, recorder, renderer],
+  )
+
+  const onKey = useCallback(
+    (key: KeyEvent) => {
+      if (overlayOpen) return
+
+      const command = matchCommand(key)
+      const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
+
+      if (command === "toggle-shell") {
+        key.preventDefault()
+        runCockpitCommand(command)
+        return
+      }
+      if (command === "close-help" && helpOpen) {
+        key.preventDefault()
+        runCockpitCommand(command)
+        return
+      }
+
+      // Once the explicit shell-toggle chord has been consumed, every encodable key
+      // belongs to the PTY. This preserves real foreground Ctrl+C semantics.
+      if (shellFocusedNow) {
+        key.preventDefault()
+        setExternalRunNotice(null)
+        const bytes = encodeKey(key)
+        if (!bytes || !controller.shell.ready) return
+        controller.shell.runtime.write(bytes)
+      }
+    },
+    [controller, helpOpen, overlayOpen, runCockpitCommand],
   )
   useKeyboard(onKey)
 
@@ -263,7 +252,7 @@ function CockpitFrame({
   )
   const focusedRestoration = useAppSelector(focusedRestorationSelector)
   const focused = controller.runtime(focusedSessionId)
-  const paneTitle = isShellFocused ? "Shell · focused" : (focused?.displayName ?? focusedSessionId)
+  const paneTitle = isShellFocused ? "Shell · focused" : "Kitten"
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
 
   return (
@@ -294,18 +283,16 @@ function CockpitFrame({
         titleColor={palette.accent}
       >
         {isShellFocused ? (
-          <>
-            <ShellPane />
-            {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
-          </>
+          <ShellPane />
         ) : focused && !focused.ready && focusedRestoration !== "unavailable" ? (
           <NotReadyNotice error={focused.error} />
         ) : (
           (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
         )}
+        {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
       </box>
 
-      {shellFullHeight ? null : <PromptEditor />}
+      {shellFullHeight ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
 
       {shellFullHeight ? null : <StatusStrip />}
 
@@ -360,7 +347,7 @@ function NotReadyNotice({ error }: { error: string }): ReactNode {
     <box style={{ flexDirection: "column", gap: 1 }}>
       <text fg={palette.status.not_ready}>This agent is not ready.</text>
       <text fg={palette.text}>{error}</text>
-      <text fg={palette.muted}>{`Press ${COCKPIT_KEYMAP[0]!.keys} to switch to the other agent.`}</text>
+      <text fg={palette.muted}>Use /switch to focus another ready agent.</text>
     </box>
   )
 }

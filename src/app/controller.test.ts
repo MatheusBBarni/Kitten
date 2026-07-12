@@ -1552,7 +1552,7 @@ describe("createControllerActions", () => {
     expect(store.getState().focusedSessionId).toBe("claude-code")
   })
 
-  it("Should count an overview switch through the numerator but a blind Ctrl+O only through the denominator", () => {
+  it("Should count an overview switch through the numerator but a direct /switch only through the denominator", () => {
     const store = createAppStore()
     const switches: { sessionId: string; viaOverview: boolean }[] = []
     const actions = createControllerActions({
@@ -1562,7 +1562,7 @@ describe("createControllerActions", () => {
       recorder: { focusSwitch: (sessionId, viaOverview) => switches.push({ sessionId, viaOverview }) },
     })
 
-    // A blind Ctrl+O cycle from "claude-code" to "codex": denominator only.
+    // A direct /switch cycle from "claude-code" to "codex": denominator only.
     actions.switchFocus()
     // An overview jump-into back to "claude-code": denominator and numerator.
     actions.switchFocus("claude-code", { viaOverview: true })

@@ -1,9 +1,10 @@
 // Suite: saved-run picker component
 // Invariant: while open, project runs alone own filtering, preview, confirmed deletion, cancel, and explicit restore.
 // Boundary IN: real AppStore, OpenTUI renderer/input/focus, picker UI, and injected RunStore boundary.
-// Boundary OUT: shell Ctrl+R dispatch (CockpitApp.test.tsx) and live ACP replay (test/sessionRestore.integration.test.ts).
+// Boundary OUT: `/resume` dispatch (CockpitApp.test.tsx) and live ACP replay (test/sessionRestore.integration.test.ts).
 
 import { describe, expect, it } from "bun:test"
+import { type ScrollBoxRenderable } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
@@ -18,6 +19,7 @@ import {
   NO_MATCHING_RUNS,
   NO_SAVED_RUNS,
   PREVIEW_HEADING,
+  SESSION_PICKER_SCROLLBOX_ID,
   SESSION_PICKER_TITLE,
   SessionPicker,
   formatRelativeTime,
@@ -200,6 +202,34 @@ describe("SessionPicker visibility and listing", () => {
     expect(filtered).toContain("refactor the auth guard")
     expect(filtered).not.toContain("polish usage dashboard")
     expect(filtered).not.toContain(NO_MATCHING_RUNS)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("scrolls the highlighted saved run into view during arrow navigation", async () => {
+    const runs = Array.from({ length: 12 }, (_, index) =>
+      savedRun(
+        `scroll-${index}`,
+        `scroll target ${index}`,
+        NOW - index * DAY,
+        "feat/scroll",
+        index,
+        `Scroll summary ${index}`,
+      ),
+    )
+    const setup = await renderPicker(pickerSource(runs))
+    const scrollbox = setup.renderer.root.findDescendantById(SESSION_PICKER_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await setup.waitFor(() => scrollbox!.scrollHeight > scrollbox!.viewport.height)
+
+    await actAsync(() => {
+      for (let index = 1; index < runs.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    const frame = await setup.waitForFrame((value) => value.includes("scroll target 11"))
+
+    expect(frame).toContain("scroll target 11")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
 
     await destroyMounted(setup.renderer)
   })

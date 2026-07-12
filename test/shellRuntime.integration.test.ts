@@ -329,6 +329,7 @@ test("real PTY colored output preserves its ANSI foreground", async () => {
 
 test("bash integration reports cd cwd and a failing command", async () => {
   const home = mkdtempSync(join(tmpdir(), "kitten-bash-home-"))
+  writeFileSync(join(home, ".bashrc"), "PS1='__KITTEN_BASH_PROMPT__ '\n")
   const runtime = createShellRuntime({
     cwd: process.cwd(),
     command: "/bin/bash",
@@ -338,6 +339,8 @@ test("bash integration reports cd cwd and a failing command", async () => {
   })
   try {
     await waitForEvent(runtime, (event) => event.kind === "cwd_changed")
+    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).includes("__KITTEN_BASH_PROMPT__")))
+    expect(runtime.view().map(lineText).join("\n")).not.toContain("\\033]133;B\\007")
     runtime.write(encoder.encode("printf '__KITTEN_BASH_PIPE__\\n' | cat\ncd /tmp\nfalse\n"))
 
     const snapshot = await waitForSnapshot(
@@ -366,6 +369,7 @@ test("zsh integration reports a successful command and its output", async () => 
   if (!zsh) throw new Error("zsh is required for the shell integration contract test")
 
   const home = mkdtempSync(join(tmpdir(), "kitten-zsh-home-"))
+  writeFileSync(join(home, ".zshrc"), "PS1='__KITTEN_ZSH_PROMPT__ '\n")
   const runtime = createShellRuntime({
     cwd: process.cwd(),
     command: zsh,
@@ -375,6 +379,8 @@ test("zsh integration reports a successful command and its output", async () => 
   })
   try {
     await waitForEvent(runtime, (event) => event.kind === "cwd_changed")
+    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).includes("__KITTEN_ZSH_PROMPT__")))
+    expect(runtime.view().map(lineText).join("\n")).not.toContain("\\033]133;B\\007")
     runtime.write(encoder.encode("printf '__KITTEN_ZSH_OK__\\n'\n"))
 
     const snapshot = await waitForSnapshot(runtime, (value) =>

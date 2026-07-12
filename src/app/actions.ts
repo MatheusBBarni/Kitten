@@ -30,7 +30,7 @@ export interface AgentSession {
 
 /**
  * The narrow slice of the telemetry recorder the actions drive: a focus switch, tagged
- * with whether it came through the Ctrl+S overview (task_09). Declared here rather than
+ * with whether it came through the `/sessions` overview (task_09). Declared here rather than
  * imported so the action surface depends only on what it calls; the full recorder
  * satisfies it structurally.
  */
@@ -55,7 +55,7 @@ const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
 
 /** How a focus switch was initiated, so the overview-reliance metric can tell them apart. */
 export interface SwitchFocusOptions {
-  /** True when the switch came through the Ctrl+S overview rather than a blind Ctrl+O. */
+  /** True when the switch came through `/sessions` rather than a direct `/switch`. */
   viaOverview?: boolean
 }
 
@@ -101,7 +101,7 @@ export interface ControllerActions {
   setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<void>
   /**
    * Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live.
-   * `options.viaOverview` records the switch as one made through the Ctrl+S overview
+   * `options.viaOverview` records the switch as one made through the `/sessions` overview
    * (task_09); the default is a blind cycle.
    */
   switchFocus(sessionId?: SessionId, options?: SwitchFocusOptions): void

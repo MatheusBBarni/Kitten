@@ -21,6 +21,7 @@ import {
   PROMPT_TITLE,
   PromptEditor,
 } from "./PromptEditor.tsx"
+import type { CockpitCommand } from "./keymap.ts"
 import { DARK_PALETTE } from "./theme.ts"
 
 /**
@@ -31,10 +32,23 @@ import { DARK_PALETTE } from "./theme.ts"
  * lone byte the parser must wait out. Both are what this component's key handling is
  * about, so the tests speak the protocol that can express them.
  */
-async function renderEditor(controller: FakeController, height = 10): Promise<TestRendererSetup> {
+async function renderEditor(
+  controller: FakeController,
+  height = 10,
+  onRunCommand?: (command: CockpitCommand) => void,
+  dockPromptAtBottom = false,
+): Promise<TestRendererSetup> {
+  const editor = <PromptEditor onRunCommand={onRunCommand} />
   const setup = await testRender(
     <CockpitProvider controller={controller}>
-      <PromptEditor />
+      {dockPromptAtBottom ? (
+        <box style={{ height, flexDirection: "column" }}>
+          <box style={{ flexGrow: 1 }} />
+          {editor}
+        </box>
+      ) : (
+        editor
+      )}
     </CockpitProvider>,
     { width: 64, height, kittyKeyboard: true },
   )
@@ -207,6 +221,84 @@ describe("PromptEditor interrupt", () => {
     })
     await pressEscape(setup)
     expect(controller.calls.cancel).toEqual([undefined])
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor slash commands", () => {
+  it("filters agent commands and inserts the selected command without sending it", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", {
+      kind: "commands",
+      commands: [
+        { name: "review", description: "Review the current diff", hint: "[scope]" },
+        { name: "test", description: "Run the focused tests" },
+      ],
+    })
+    // The menu is positioned above the prompt, as it is in the real cockpit. Dock
+    // the standalone editor to the bottom so the test observes that real layout.
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/review")
+    const menu = await frameWith(setup, "Commands", "Agent commands", "/review", "[scope]")
+    expect(menu).not.toContain("/settings")
+
+    await pressEnter(setup)
+    expect(controller.calls.sendPrompt).toEqual([])
+    await frameWith(setup, "/review")
+
+    // Selecting an agent command owns the separating space; subsequent prompt text
+    // must append directly instead of creating an accidental double space.
+    await type(setup, "src/ui")
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("/review src/ui")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("dispatches a selected Kitten command instead of sending it to the agent", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
+
+    await type(setup, "/model")
+    await frameWith(setup, "Commands", "/model", "Choose an agent model")
+    await pressEnter(setup)
+
+    expect(dispatched).toEqual(["model-select"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/model")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor shell shortcut", () => {
+  it("opens the shell when bang is the first prompt character", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 10, (command) => dispatched.push(command))
+
+    await type(setup, "!")
+
+    expect(dispatched).toEqual(["toggle-shell"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("!")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps bang as prompt text after the prompt already has content", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 10, (command) => dispatched.push(command))
+
+    await type(setup, "inspect !")
+    await pressEnter(setup)
+
+    expect(dispatched).toEqual([])
+    expect(sentText(controller)).toBe("inspect !")
 
     await destroyMounted(setup.renderer)
   })

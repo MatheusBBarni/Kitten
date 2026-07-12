@@ -17,7 +17,7 @@ import { createRunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
 import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
-import { WELCOME_GREETING, WELCOME_MASCOT, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_WORDMARK, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted, settleMountedHighlights } from "./reactTui.ts"
 
@@ -120,16 +120,22 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       const resumed = await setup.waitForFrame(
-        (frame) => frame.includes("resumed · ^N new run") && frame.includes("restored codex from stored-codex"),
+        (frame) => frame.includes("resumed") && frame.includes("/help") && frame.includes("restored codex from stored-codex"),
       )
-      expect(resumed).toContain("resumed · ^N new run")
+      expect(resumed).toContain("resumed")
+      expect(resumed).toContain("/help")
+      expect(resumed).not.toContain("/new")
       expect(resumed).toContain("restored codex from stored-codex")
 
-      // Ctrl+N unmounts the restored Markdown leaf. Settle its async syntax work
+      // `/new` unmounts the restored Markdown leaf. Settle its async syntax work
       // while it is still reachable; renderer teardown alone can only see live nodes.
       await settleMountedHighlights(setup.renderer)
-      await actAsync(() => setup.mockInput.pressKey("n", { ctrl: true }))
-      const fresh = await setup.waitForFrame((frame) => !frame.includes("resumed · ^N new run"))
+      await actAsync(async () => {
+        await setup.mockInput.typeText("/new")
+      })
+      await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/new"))
+      await actAsync(() => setup.mockInput.pressEnter())
+      const fresh = await setup.waitForFrame((frame) => !frame.includes("resumed"))
       expect(fresh).not.toContain("restored codex from stored-codex")
       expect(freshStarts.filter((start) => start.generation === 2)).toHaveLength(2)
     } finally {
@@ -146,8 +152,8 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       height: 24,
     })
 
-    const frame = await waitForFrame((f) => f.includes("Claude Code"))
-    expect(frame).toContain("Claude Code")
+    const frame = await waitForFrame((f) => f.includes(WELCOME_GREETING))
+    expect(frame).toContain("Kitten")
     expect(renderer.isDestroyed).toBe(false)
 
     // Tearing down a mounted root triggers React unmount work, so flush it inside act.
@@ -183,7 +189,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
   })
 
   it("agent-focused Ctrl+C runs the existing renderer teardown path", async () => {
-    const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
+    const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false, kittyKeyboard: true })
     const controller = createFakeController()
     const exitOrder: string[] = []
     let booted: Awaited<ReturnType<typeof main>> | undefined
@@ -197,7 +203,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         wireNotifier: () => {},
       })
     })
-    await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+    await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING))
 
     await actAsync(() => {
       setup.mockInput.pressCtrlC()
@@ -210,7 +216,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
   })
 
   it("shell-focused Ctrl+C reaches the PTY path and leaves the app running", async () => {
-    const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
+    const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false, kittyKeyboard: true })
     const shell = createInMemoryShellRuntimeFactory()
     const runtime = shell.factory({ cwd: process.cwd() })
     const controller = createFakeController({ shell: { ready: true, runtime } })
@@ -226,10 +232,10 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
           wireNotifier: () => {},
         })
       })
-      await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+      await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING))
 
       await actAsync(() => {
-        setup.mockInput.pressKey("F2")
+        setup.mockInput.pressKey("`", { ctrl: true })
       })
       await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
       await actAsync(() => {
@@ -245,6 +251,56 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       await booted?.closed
       await runtime.dispose()
     }
+  })
+
+  it("mounts boot feedback before preparing the tree-sitter worker", async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 })
+    const controller = createFakeController()
+    const order: string[] = []
+    let releaseWorker: () => void = () => {}
+    const workerReleased = new Promise<void>((resolve) => {
+      releaseWorker = resolve
+    })
+    let signalWorkerStarted: () => void = () => {}
+    const workerStarted = new Promise<void>((resolve) => {
+      signalWorkerStarted = resolve
+    })
+    let bootPromise: ReturnType<typeof main> | undefined
+
+    await actAsync(async () => {
+      bootPromise = main({
+        createRenderer: async () => setup.renderer,
+        createController: async () => {
+          order.push("controller")
+          return controller
+        },
+        loadConfig: async () => defaultAppConfig(),
+        readFirstRunSeen: () => true,
+        configureTreeSitterWorker: async () => {
+          order.push("worker")
+          signalWorkerStarted()
+          await workerReleased
+          return null
+        },
+        onExit: () => {},
+        wireNotifier: () => {},
+      })
+      await workerStarted
+    })
+
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain(WELCOME_GREETING)
+    // The boot root is already visible while independent startup work overlaps.
+    expect(order).toEqual(["worker", "controller"])
+
+    let booted: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      releaseWorker()
+      booted = await bootPromise
+    })
+
+    await destroyMounted(setup.renderer)
+    await booted?.closed
   })
 
   it("paints connecting agents during a delayed handshake, then swaps to the cockpit", async () => {
@@ -282,7 +338,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     await setup.renderOnce()
     connectingFrame = setup.captureCharFrame()
 
-    expect(connectingFrame).toContain("Codex: connecting")
+    expect(connectingFrame).toContain("Agents: connecting · connecting")
     expect(connectingFrame).toContain(WELCOME_GREETING)
     expect(markCalls).toBe(0)
 
@@ -292,12 +348,9 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       booted = await bootPromise
     })
 
-    const cockpitFrame = await setup.waitForFrame(
-      (frame) => frame.includes("Claude Code") && !frame.includes("connecting"),
-    )
+    const cockpitFrame = await setup.waitForFrame((frame) => frame.includes("Agents: ready · ready"))
     expect(cockpitFrame).toContain(WELCOME_GREETING)
-    expect(cockpitFrame).toContain("Claude Code: ready")
-    expect(cockpitFrame).toContain("Codex: ready")
+    expect(cockpitFrame).toContain("Agents: ready · ready")
     expect(cockpitFrame).toContain(WELCOME_ON_RAMP)
     expect(markCalls).toBe(1)
 
@@ -305,7 +358,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     await booted!.closed
   })
 
-  it("keeps the idle cockpit quiet when the first-run marker already exists", async () => {
+  it("keeps the compact ASCII wordmark when the first-run marker already exists", async () => {
     const setup = await createTestRenderer({ width: 80, height: 24 })
     const controller = createFakeController()
     let markCalls = 0
@@ -326,8 +379,8 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     })
 
     const frame = await setup.waitForFrame((candidate) => candidate.includes(WELCOME_GREETING))
-    expect(frame).not.toContain(WELCOME_MASCOT[0])
-    expect(frame).not.toContain("Codex: ready")
+    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).not.toContain("Agents:")
     expect(frame).not.toContain(WELCOME_ON_RAMP)
     expect(markCalls).toBe(0)
 
@@ -352,7 +405,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
     })
 
-    const frame = await setup.waitForFrame((candidate) => candidate.includes("Claude Code"))
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("Kitten"))
     expect(frame).not.toContain(WELCOME_GREETING)
     expect(frame).not.toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)

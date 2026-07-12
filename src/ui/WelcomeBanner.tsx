@@ -3,8 +3,10 @@
  *
  * The banner owns no session state: callers provide the agent readiness summary and
  * working directory, while the live terminal supplies only palette and width. The
- * mascot is deliberately plain ASCII so every cell has deterministic width and no
- * image or extended-Unicode capability is required.
+ * wordmark is deliberately plain ASCII so every cell has deterministic width and no
+ * image or extended-Unicode capability is required. Returning launches retain a
+ * compact wordmark too, so the product is recognizably Kitten without bringing back
+ * the full connection and directory summary.
  */
 
 import { useTerminalDimensions } from "@opentui/react"
@@ -13,11 +15,15 @@ import type { ReactNode } from "react"
 import { usePalette, type CockpitPalette } from "./theme.ts"
 
 export const WELCOME_GREETING = "Welcome to Kitten."
-export const WELCOME_ON_RAMP = "Type to start. Press ^T to hand off."
-export const WELCOME_MASCOT_MIN_WIDTH = 52
+export const WELCOME_ON_RAMP = "Type to start. Use /help for commands."
+export const WELCOME_WORDMARK_MIN_WIDTH = 64
 
-/** Fixed-width, ASCII-only kitten cells. */
-export const WELCOME_MASCOT = [" /\\_/\\", "( o.o )", " > ^ <"] as const
+/** Fixed-width, ASCII-only Kitten wordmark cells. */
+export const WELCOME_WORDMARK = [
+  "K   K  III  TTTTT  TTTTT  EEEEE  N   N",
+  "KK KK   I     T      T    E      NN  N",
+  "K   K  III    T      T    EEEEE  N   N",
+] as const
 
 export type WelcomeAgentState = "connecting" | "ready" | "unavailable"
 
@@ -50,8 +56,17 @@ function WelcomeBannerContent({
 }: Omit<WelcomeBannerProps, "palette"> & { palette: CockpitPalette }): ReactNode {
   const { width } = useTerminalDimensions()
 
-  if (variant === "quiet" || width < WELCOME_MASCOT_MIN_WIDTH) {
+  if (width < WELCOME_WORDMARK_MIN_WIDTH) {
     return <Greeting palette={palette} />
+  }
+
+  if (variant === "quiet") {
+    return (
+      <box style={{ flexDirection: "column", flexShrink: 0 }}>
+        <Wordmark palette={palette} />
+        <Greeting palette={palette} />
+      </box>
+    )
   }
 
   return (
@@ -59,9 +74,8 @@ function WelcomeBannerContent({
       borderStyle="rounded"
       style={{
         width: "100%",
-        flexDirection: "row",
+        flexDirection: "column",
         flexShrink: 0,
-        gap: 2,
         border: true,
         borderColor: palette.border,
         backgroundColor: palette.surface,
@@ -71,23 +85,21 @@ function WelcomeBannerContent({
         paddingBottom: 1,
       }}
     >
-      <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        {WELCOME_MASCOT.map((line) => (
-          <text key={line} fg={palette.banner.mascot}>
-            {line}
-          </text>
-        ))}
-      </box>
+      <Wordmark palette={palette} />
 
       <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1 }}>
         <Greeting palette={palette} />
 
-        {agents.map((agent, index) => (
-          <text key={`${agent.displayName}-${index}`}>
-            <span fg={palette.banner.detail}>{`${agent.displayName}: `}</span>
-            <span fg={agentStateColor(palette, agent.state)}>{agent.state}</span>
+        {agents.length > 0 ? (
+          <text>
+            <span fg={palette.banner.detail}>Agents: </span>
+            {agents.map((agent, index) => (
+              <span key={`${agent.state}-${index}`} fg={agentStateColor(palette, agent.state)}>
+                {`${index === 0 ? "" : " · "}${agent.state}`}
+              </span>
+            ))}
           </text>
-        ))}
+        ) : null}
 
         <text>
           <span fg={palette.banner.detail}>Working directory: </span>
@@ -96,6 +108,19 @@ function WelcomeBannerContent({
 
         <text fg={palette.muted}>{WELCOME_ON_RAMP}</text>
       </box>
+    </box>
+  )
+}
+
+/** The same ANSI-safe wordmark in full and compact welcome variants. */
+function Wordmark({ palette }: { palette: CockpitPalette }): ReactNode {
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+      {WELCOME_WORDMARK.map((line) => (
+        <text key={line} fg={palette.banner.mascot}>
+          {line}
+        </text>
+      ))}
     </box>
   )
 }

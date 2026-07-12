@@ -86,6 +86,22 @@ describe("watchUserConfig", () => {
     }
   })
 
+  it("Should suppress a settled write that leaves the resolved config unchanged", async () => {
+    const path = await makeConfigPath()
+    const configs: AppConfig[] = []
+    const watcher = watchUserConfig((config) => configs.push(config), { path, debounceMs: DEBOUNCE_MS })
+
+    try {
+      await writeFile(path, '{"theme":"dark"}')
+      await waitUntil(() => configs.length === 1)
+
+      await writeFile(path, '{"theme":"dark"}')
+      await expectConditionToRemain(() => configs.length === 1)
+    } finally {
+      watcher.close()
+    }
+  })
+
   it("Should cancel queued reloads and ignore later changes after close", async () => {
     const path = await makeConfigPath()
     const configs: AppConfig[] = []

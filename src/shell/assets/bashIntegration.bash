@@ -68,5 +68,10 @@ __kitten_prompt_command() {
 }
 
 PROMPT_COMMAND=__kitten_prompt_command
-PS1="${PS1:-}\\[\033]133;B\007\\]"
+# Keep the bookkeeping delimiters textual for bash prompt expansion, but append
+# the OSC payload as real ESC/BEL bytes. Otherwise the prompt visibly prints
+# `\033]133;B\007` instead of emitting an OSC 133 marker.
+PS1+='\['
+PS1+=$'\e]133;B\a'
+PS1+='\]'
 trap '__kitten_preexec' DEBUG

@@ -174,7 +174,7 @@ export interface TelemetryRecorder {
   agentUnready(sessionId: SessionId): void
   /**
    * A developer moved keyboard focus to `sessionId`. `viaOverview` marks a switch made
-   * through the Ctrl+S overview (jump-into or jump-to-next) rather than a blind Ctrl+O
+   * through `/sessions` (jump-into or jump-to-next) rather than a direct `/switch`
    * cycle - the numerator and denominator behind the overview-reliance metric (task_09).
    */
   focusSwitch(sessionId: SessionId, viaOverview: boolean): void
@@ -372,7 +372,7 @@ class ActiveRecorder implements TelemetryRecorder {
   focusSwitch(sessionId: SessionId, viaOverview: boolean): void {
     // Every switch is the overview-reliance denominator; the ones made through the
     // overview are also the numerator, so their share measures how much the developer
-    // leans on the overview instead of blind-cycling with Ctrl+O.
+    // leans on the overview instead of switching directly with `/switch`.
     this.record({ type: "focus_switch", agent: sessionId })
     if (viaOverview) this.record({ type: "overview_switch", agent: sessionId })
   }

@@ -252,12 +252,12 @@ describe("createOfflineConnection", () => {
 })
 
 describe("runSelfCheck", () => {
-  it("loads config, mounts the cockpit headlessly, and paints an agent name", async () => {
+  it("loads config, mounts the cockpit headlessly, and paints the Kitten frame", async () => {
     const { frame, highlights } = await runSelfCheck({
       loadConfig: async () => defaultAppConfig(),
       configureWorker: async () => null,
     })
-    expect(frame).toContain("Claude Code")
+    expect(frame).toContain("Kitten")
     expect(highlights.markdownForeground).not.toBe(highlights.defaultForeground)
     expect(highlights.diffForeground).not.toBe(highlights.defaultForeground)
   })

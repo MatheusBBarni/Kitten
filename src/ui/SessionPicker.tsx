@@ -1,5 +1,5 @@
 /**
- * The Ctrl+R saved-run picker.
+ * The `/resume` saved-run picker.
  *
  * The gate is store-owned, while the rows come from the injected project RunStore.
  * Its focused input receives ordinary text; the modal listener intercepts only the
@@ -7,7 +7,7 @@
  * `selectHasOpenOverlay`, so no global chord can fire behind the picker.
  */
 
-import type { KeyEvent } from "@opentui/core"
+import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
@@ -26,6 +26,8 @@ export const NO_MATCHING_RUNS = "No saved runs match this filter."
 export const SESSION_HISTORY_UNAVAILABLE = "Saved-run history is unavailable."
 export const PREVIEW_HEADING = "Preview"
 export const RUN_MARKER = "▸"
+/** Stable hook for the keyboard-following run list. */
+export const SESSION_PICKER_SCROLLBOX_ID = "session-picker-runs"
 export const DELETE_RUN_CONFIRMATION = "Press Ctrl+D again to delete this saved run."
 export const DELETE_ALL_CONFIRMATION =
   "Press Ctrl+A again to delete all Kitten saved runs from every project."
@@ -33,6 +35,14 @@ export const DELETE_ALL_CONFIRMATION =
 type PendingDeletion =
   | { readonly kind: "run"; readonly runId: string }
   | { readonly kind: "all" }
+
+/** Give each row a stable descendant id so selection can scroll it into view. */
+function runRowId(runId: string): string {
+  return `session-picker-run-${runId}`
+}
+
+/** OpenTUI reserves a horizontal-scrollbar row even when horizontal scrolling is off. */
+const HIDDEN_HORIZONTAL_SCROLLBAR = { visible: false } as const
 
 /** The persistence boundary and project identity the boot path gives the picker. */
 export interface SessionPickerSource {
@@ -96,6 +106,7 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
   const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null)
   const [listVersion, setListVersion] = useState(0)
   const interactiveRecorded = useRef(false)
+  const runList = useRef<ScrollBoxRenderable | null>(null)
 
   useEffect(() => {
     if (!recorder || interactiveRecorded.current) return
@@ -120,6 +131,14 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
     [listing.runs, query],
   )
   const clampedSelected = Math.min(selected, Math.max(filteredRuns.length - 1, 0))
+
+  // The filter retains focus for text input, so the list cannot rely on its own
+  // keyboard handling. Keep the selected row visible whenever arrow navigation moves
+  // beyond the viewport instead.
+  useEffect(() => {
+    const selectedRun = filteredRuns[clampedSelected]
+    if (selectedRun) runList.current?.scrollChildIntoView(runRowId(selectedRun.runId))
+  }, [clampedSelected, filteredRuns])
 
   const changeQuery = useCallback((value: string): void => {
     selectedRef.current = 0
@@ -285,7 +304,9 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
         top: 1,
         left: 2,
         right: 2,
-        maxHeight: Math.max(height - 2, 1),
+        // A scrollbox needs a definite viewport. `maxHeight` lets the dialog collapse
+        // to its intrinsic rows, leaving no room for the list to scroll.
+        height: Math.max(height - 2, 1),
         flexDirection: "column",
         border: true,
         borderColor: palette.accent,
@@ -308,7 +329,13 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
         />
       </box>
 
-      <box style={{ flexDirection: "column", flexShrink: 1, overflow: "hidden", marginTop: 1 }}>
+      <scrollbox
+        id={SESSION_PICKER_SCROLLBOX_ID}
+        ref={runList}
+        style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, marginTop: 1 }}
+        scrollX={false}
+        horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
+      >
         {error ? (
           <text fg={palette.status.error}>{error}</text>
         ) : filteredRuns.length === 0 ? (
@@ -323,7 +350,7 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
             />
           ))
         )}
-      </box>
+      </scrollbox>
 
       {preview ? <RunPreview record={preview} /> : null}
 
@@ -355,7 +382,7 @@ function RunRow({
   const label = run.lastPrompt.trim() || "Untitled run"
 
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+    <box id={runRowId(run.runId)} style={{ flexDirection: "column", flexShrink: 0 }}>
       <text>
         <span fg={highlighted ? palette.accent : palette.muted}>{highlighted ? RUN_MARKER : " "}</span>
         <span fg={highlighted ? palette.text : palette.muted}>{` ${label}`}</span>

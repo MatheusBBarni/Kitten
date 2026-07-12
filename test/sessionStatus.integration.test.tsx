@@ -63,7 +63,7 @@ describe("session status integration (end_turn -> finished)", () => {
       </CockpitProvider>,
       { width: 80, height: 3 },
     )
-    await waitForFrame((frame) => frame.includes("Claude Code"))
+    await waitForFrame((frame) => frame.includes("claude:—") && frame.includes("codex:—"))
 
     await actAsync(async () => {
       await controller.actions.sendPrompt("do the thing")
@@ -72,11 +72,13 @@ describe("session status integration (end_turn -> finished)", () => {
     // The store reflects the terminal stop reason: the turn ended, your move.
     expect(controller.store.getState().sessions["claude-code"]!.status).toBe("finished")
 
-    // And the strip paints the finished label for the session that ran the turn.
+    // The strip keeps status provider-neutral; its compact upper row owns model names.
     const frame = await waitForFrame((f) => f.includes(STATUS_LABELS.finished))
-    expect(frame).toContain(`Claude Code: ${STATUS_LABELS.finished}`)
-    // The session that never ran a turn stays idle.
-    expect(frame).toContain(`Codex: ${STATUS_LABELS.idle}`)
+    expect(frame).toContain(STATUS_LABELS.finished)
+    // The session that never ran a turn stays idle, without a provider-labelled chip.
+    expect(frame).toContain(STATUS_LABELS.idle)
+    expect(frame).not.toContain("Claude Code:")
+    expect(frame).not.toContain("Codex:")
 
     await destroyMounted(renderer)
     await controller.dispose()

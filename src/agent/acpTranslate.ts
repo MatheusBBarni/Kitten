@@ -12,6 +12,7 @@
  */
 
 import type {
+  AvailableCommand as AcpAvailableCommand,
   ContentBlock,
   Diff,
   PlanEntry as AcpPlanEntry,
@@ -26,6 +27,7 @@ import type {
 } from "@agentclientprotocol/sdk"
 
 import type {
+  AvailableCommand,
   ConfigOption,
   ConfigSelectOption,
   DomainSessionEvent,
@@ -37,8 +39,9 @@ import type {
 
 /**
  * Translate one ACP `SessionUpdate` into a domain event, or `null` for variants
- * Kitten does not surface in V1 (thoughts, plan deltas, mode/command/usage/session
- * notifications). `config_option_update` is surfaced as a `config_options` event.
+ * Kitten does not surface in V1 (thoughts, plan deltas, mode/usage/session
+ * notifications). Config and available-command updates are surfaced as their
+ * protocol-free domain slices.
  * Returning `null` keeps the caller's dispatch loop trivial.
  */
 export function translateSessionUpdate(update: SessionUpdate): DomainSessionEvent | null {
@@ -62,11 +65,12 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
       // The agent advertises the full option set; translate the select options
       // and drop booleans (V1 renders select categories only, ADR-003/ADR-004).
       return { kind: "config_options", options: translateConfigOptions(update.configOptions) }
+    case "available_commands_update":
+      return { kind: "commands", commands: update.availableCommands.map(translateAvailableCommand) }
     // Deliberately not surfaced in V1 (documented in the module header).
     case "agent_thought_chunk":
     case "plan_update":
     case "plan_removed":
-    case "available_commands_update":
     case "current_mode_update":
     case "session_info_update":
     case "usage_update":
@@ -127,6 +131,18 @@ export function translateConfigOptions(options: SessionConfigOption[]): ConfigOp
     })
   }
   return translated
+}
+
+/**
+ * Flatten ACP's extensible slash-command shape into the domain's small command
+ * record. In particular, `_meta` never crosses the adapter boundary.
+ */
+export function translateAvailableCommand(command: AcpAvailableCommand): AvailableCommand {
+  return {
+    name: command.name,
+    description: command.description,
+    ...(command.input?.hint ? { hint: command.input.hint } : {}),
+  }
 }
 
 /**

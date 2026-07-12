@@ -19,7 +19,7 @@ import { SESSION_MARKER } from "./SessionsOverlay.tsx"
 
 /**
  * The target picker is exercised inside the real shell, because most of what it
- * promises is about the shell: the hand-off chord must reach it when the fleet gives a
+ * promises is about the shell: the `/handoff` command must reach it when the fleet gives a
  * choice of recipient, it must paint over the cockpit, it must take every key from the
  * composer, and choosing a target must open the redacted preview over the chosen
  * session. Hand-off and hand-back across three sessions run end-to-end through here.
@@ -73,15 +73,24 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     height: HEIGHT,
     kittyKeyboard: true,
   })
-  await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
   return setup
 }
 
-/** Press the hand-off chord and wait for the target picker to paint. */
-async function openPicker(setup: TestRendererSetup): Promise<string> {
-  await actAsync(() => {
-    setup.mockInput.pressKey("t", { ctrl: true })
+/** Run one cockpit slash command through the real prompt menu. */
+async function runSlashCommand(setup: TestRendererSetup, command: string): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText(`/${command}`)
   })
+  await setup.waitForFrame((frame) => frame.includes(`/${command}`))
+  await actAsync(() => {
+    setup.mockInput.pressEnter()
+  })
+}
+
+/** Run `/handoff` through the real prompt menu and wait for the target picker to paint. */
+async function openPicker(setup: TestRendererSetup): Promise<string> {
+  await runSlashCommand(setup, "handoff")
   return setup.waitForFrame((frame) => frame.includes(HANDOFF_TARGET_HINT))
 }
 
@@ -93,7 +102,7 @@ function sentText(controller: FakeController, index = 0): string {
 }
 
 describe("HandoffTargetPicker visibility", () => {
-  it("opens on the hand-off chord and lists every ready session but the source", async () => {
+  it("opens through /handoff and lists every ready session but the source", async () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)
 
@@ -121,9 +130,7 @@ describe("HandoffTargetPicker visibility", () => {
     seedWork(controller, "claude-code")
     const setup = await renderCockpit(controller)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("t", { ctrl: true })
-    })
+    await runSlashCommand(setup, "handoff")
     const frame = await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))
 
     expect(frame).not.toContain(HANDOFF_TARGET_HINT)
@@ -196,13 +203,13 @@ describe("HandoffTargetPicker modality", () => {
     await openPicker(setup)
 
     await actAsync(async () => {
-      setup.mockInput.pressKey("o", { ctrl: true })
-      setup.mockInput.pressKey("F1")
+      setup.mockInput.pressKey("`", { ctrl: true })
+      await setup.mockInput.typeText("/help")
       await setup.mockInput.typeText(DRAFT_MARKER)
     })
 
-    // The shell's focus chord never fired, and the help panel never opened over the picker.
-    expect(controller.calls.switchFocus).toHaveLength(0)
+    // The shell chord never fired, and the prompt command never opened help over the picker.
+    expect(controller.store.getState().focusedPane.kind).toBe("agent")
     expect(controller.store.getState().focusedSessionId).toBe("a")
     expect(await setup.waitForFrame((frame) => frame.includes(HANDOFF_TARGET_HINT))).not.toContain(HELP_TITLE)
 

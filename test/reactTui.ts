@@ -60,9 +60,12 @@ export async function settleMountedHighlights(renderer: CliRenderer): Promise<vo
 export async function destroyMounted(renderer: CliRenderer): Promise<void> {
   if (renderer.isDestroyed) return
   // OpenTUI tears down its shared Tree-sitter client before React unmounts the root.
-  // Await in-flight syntax work first so CodeRenderables never resume against that
-  // destroyed client during their deferred unmount.
+  // Let a just-committed React update reach the native tree, then await in-flight
+  // syntax work and its follow-up paint. Otherwise an overlay removed by the last
+  // input event can leave a Markdown leaf resuming against the destroyed client.
+  await renderer.idle()
   await settleMountedHighlights(renderer)
+  await renderer.idle()
   await actAsync(() => {
     renderer.destroy()
   })

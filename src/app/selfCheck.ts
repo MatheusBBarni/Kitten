@@ -20,7 +20,6 @@ import { CodeRenderable, getTreeSitterClient, type BaseRenderable, type Captured
 import { createAgentConnection, type AgentConnection } from "../agent/agentConnection.ts"
 import { loadAppConfig, resolveSessions } from "../config/configLoader.ts"
 import type { AgentConfig, AppConfig, DomainSessionEvent } from "../core/types.ts"
-import { PROVIDER_KINDS } from "../core/types.ts"
 import { selfCheckElement } from "../ui/main.tsx"
 import { createSessionController } from "./controller.ts"
 import { configureTreeSitterWorker } from "./treeSitterWorker.ts"
@@ -289,10 +288,9 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
   )
 
   try {
-    const marker = PROVIDER_KINDS.map((kind) => config.providers[kind]?.displayName).find(Boolean) ?? "Kitten"
     let result: SelfCheckResult | undefined
     await act(async () => {
-      await waitForFrame((candidate) => candidate.includes(marker) && candidate.includes(SELF_CHECK_DEFAULT_TOKEN))
+      await waitForFrame((candidate) => candidate.includes("Kitten") && candidate.includes(SELF_CHECK_DEFAULT_TOKEN))
       await Promise.all(collectCodeRenderables(renderer.root).map((code) => code.highlightingDone))
       await flush()
       const frame = await waitForFrame(

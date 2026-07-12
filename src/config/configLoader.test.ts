@@ -75,6 +75,12 @@ describe("defaults", () => {
     expect(CODEX_ACP_PACKAGE).toMatch(/@\d+\.\d+\.\d+$/)
   })
 
+  it("Should use the verified Codex ACP release that carries the current Codex runtime", () => {
+    // The selector must receive the runtime's advertised model and effort options;
+    // keep this exact pin intentional rather than silently falling back to 1.1.0.
+    expect(CODEX_ACP_PACKAGE).toBe("@agentclientprotocol/codex-acp@1.1.2")
+  })
+
   it("Should hand out an isolated copy so a mutated config cannot poison the next load", () => {
     const first = defaultAppConfig()
     first.providers["claude-code"].args.push("--rogue")

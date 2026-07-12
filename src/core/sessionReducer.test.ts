@@ -36,11 +36,16 @@ describe("createSessionState", () => {
       pendingDiffs: [],
       plan: [],
       configOptions: [],
+      commands: [],
     })
   })
 
   it("defaults configOptions to an empty array", () => {
     expect(initial().configOptions).toEqual([])
+  })
+
+  it("defaults commands to an empty array", () => {
+    expect(initial().commands).toEqual([])
   })
 })
 
@@ -332,6 +337,28 @@ describe("config_options events", () => {
     const before = initial()
     sessionReducer(before, { kind: "config_options", options: [modelOption] })
     expect(before.configOptions).toEqual([])
+  })
+})
+
+describe("commands events", () => {
+  const review = { name: "review", description: "Review the current diff", hint: "[scope]" }
+  const test = { name: "test", description: "Run the test suite" }
+
+  it("replaces the advertised list wholesale", () => {
+    const state = fold([
+      { kind: "commands", commands: [review, test] },
+      { kind: "commands", commands: [test] },
+    ])
+
+    expect(state.commands).toEqual([test])
+  })
+
+  it("leaves the command-list reference intact for unrelated events", () => {
+    const withCommands = fold([{ kind: "commands", commands: [review] }])
+    const next = sessionReducer(withCommands, { kind: "status", status: "working" })
+
+    expect(next.commands).toBe(withCommands.commands)
+    expect(next.turns).toBe(withCommands.turns)
   })
 })
 

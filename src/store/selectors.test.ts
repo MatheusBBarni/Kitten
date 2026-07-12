@@ -15,6 +15,7 @@ import {
   selectRestoration,
   selectSessionPendingDiffs,
   selectSessionPlan,
+  selectSessionCommands,
   selectSessionReferencedFiles,
   selectSessionState,
   selectSessionStatus,
@@ -154,6 +155,7 @@ describe("per-agent session selectors", () => {
     store.applyEvent("codex", { kind: "status", status: "working" })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m1", textDelta: "hi" })
     store.applyEvent("codex", { kind: "plan", entries: [{ content: "Step one" }] })
+    store.applyEvent("codex", { kind: "commands", commands: [{ name: "review", description: "Review changes" }] })
     store.applyEvent("codex", EDIT_CALL)
     const state = store.getState()
 
@@ -161,6 +163,7 @@ describe("per-agent session selectors", () => {
     expect(selectSessionStatus("codex")(state)).toBe("working")
     expect(selectSessionTurns("codex")(state)).toHaveLength(2)
     expect(selectSessionPlan("codex")(state)).toEqual([{ content: "Step one" }])
+    expect(selectSessionCommands("codex")(state)).toEqual([{ name: "review", description: "Review changes" }])
     expect(selectSessionPendingDiffs("codex")(state)).toEqual([
       { toolCallId: "c1", path: "src/parser.ts", unified: "@@ -1 +1 @@" },
     ])
@@ -229,6 +232,7 @@ describe("per-agent session selectors", () => {
 
     const after = store.getState()
     expect(selectSessionPlan("claude-code")(after)).toBe(selectSessionPlan("claude-code")(before))
+    expect(selectSessionCommands("claude-code")(after)).toBe(selectSessionCommands("claude-code")(before))
     expect(selectSessionStatus("claude-code")(after)).toBe(selectSessionStatus("claude-code")(before))
     expect(selectSessionTurns("claude-code")(after)).not.toBe(selectSessionTurns("claude-code")(before))
   })

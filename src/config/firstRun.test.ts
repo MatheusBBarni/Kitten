@@ -131,7 +131,7 @@ describe("formatFirstRunReport", () => {
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain("remembers sessions for this project")
     expect(lines[0]).toContain(sessionsPath)
-    expect(lines[0]).toContain("Ctrl+R")
+    expect(lines[0]).toContain("/resume")
     expect(lines[0]).toContain("Ctrl+D")
     expect(lines[0]).toContain("Ctrl+A")
     expect(report.blocked).toBe(false)

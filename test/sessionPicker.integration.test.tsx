@@ -1,9 +1,10 @@
-// Suite: Ctrl+R saved-run picker integration
+// Suite: slash-command saved-run picker integration
 // Invariant: the mounted cockpit restores only an explicit choice and deletes only after picker confirmation.
 // Boundary IN: OpenTUI input/tree, real AppStore/SessionController, fake agents, and real or injected RunStore.
 // Boundary OUT: real adapter subprocesses.
 
 import { describe, expect, it } from "bun:test"
+import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -95,7 +96,17 @@ function runStore(records: PersistedRunRecord[]): RunStore {
   }
 }
 
-describe("Ctrl+R saved-run restore", () => {
+/** Drive `/resume` through the prompt menu, matching the user-visible command flow. */
+async function openResumePicker(setup: TestRendererSetup): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText("/resume")
+  })
+  await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/resume"))
+  await actAsync(() => setup.mockInput.pressEnter())
+  await setup.waitForFrame((frame) => frame.includes(SESSION_PICKER_TITLE))
+}
+
+describe("slash-command saved-run restore", () => {
   it("emits content-free picker resume telemetry when one pane degrades", async () => {
     const saved = run("degraded", 8_000)
     const records: TelemetryRecord[] = []
@@ -124,8 +135,8 @@ describe("Ctrl+R saved-run restore", () => {
     )
 
     try {
-      await setup.waitForFrame((frame) => frame.includes("Claude Code"))
-      await actAsync(() => setup.mockInput.pressKey("r", { ctrl: true }))
+      await setup.waitForFrame((frame) => frame.includes("Kitten"))
+      await openResumePicker(setup)
       await setup.waitFor(() => records.some((record) => record.type === "resume_picker_interactive_ms"))
       now = 1300
       await actAsync(() => setup.mockInput.pressEnter())
@@ -168,11 +179,8 @@ describe("Ctrl+R saved-run restore", () => {
     )
 
     try {
-      await setup.waitForFrame((frame) => frame.includes("Claude Code"))
-      await actAsync(() => {
-        setup.mockInput.pressKey("r", { ctrl: true })
-      })
-      await setup.waitForFrame((frame) => frame.includes(SESSION_PICKER_TITLE))
+      await setup.waitForFrame((frame) => frame.includes("Kitten"))
+      await openResumePicker(setup)
       await actAsync(() => {
         setup.mockInput.pressArrow("down")
       })
@@ -223,10 +231,8 @@ describe("Ctrl+R saved-run restore", () => {
 
     try {
       expect(existsSync(persistedPath)).toBe(true)
-      await setup.waitForFrame((frame) => frame.includes("Claude Code"))
-      await actAsync(() => {
-        setup.mockInput.pressKey("r", { ctrl: true })
-      })
+      await setup.waitForFrame((frame) => frame.includes("Kitten"))
+      await openResumePicker(setup)
       await setup.waitForFrame((frame) => frame.includes("Codex delete-me"))
 
       await actAsync(() => {

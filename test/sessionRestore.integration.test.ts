@@ -216,7 +216,11 @@ describe("unavailable-pane fresh-start integration", () => {
     )
     expect(degraded).toContain(START_FRESH_LABEL)
 
-    await actAsync(() => setup.mockInput.pressKey("n", { ctrl: true }))
+    await actAsync(async () => {
+      await setup.mockInput.typeText("/new")
+    })
+    await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/new"))
+    await actAsync(() => setup.mockInput.pressEnter())
     await setup.waitFor(() => prompts.length === 1)
 
     expect(newSessions.filter((entry) => entry.id === "claude-code")).toHaveLength(1)

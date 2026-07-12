@@ -206,7 +206,7 @@ export interface AppStore {
   openSettings(overlay?: SettingsOverlay): void
   /** Clear the settings slot. Closing a closed slot is a no-op. */
   closeSettings(): void
-  /** Open the Ctrl+S sessions overview. Opening an open overview is a no-op. */
+  /** Open the `/sessions` overview. Opening an open overview is a no-op. */
   openSessions(): void
   /** Close the sessions overview. Closing a closed overview is a no-op. */
   closeSessions(): void

@@ -44,6 +44,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     pendingDiffs: [],
     plan: [],
     configOptions: [],
+    commands: [],
   }
 }
 
@@ -79,6 +80,11 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       // The agent always returns the complete option set, so replace wholesale
       // (ADR-003); config options never touch turns, status, or derived fields.
       return { ...state, configOptions: event.options }
+
+    case "commands":
+      // Agents advertise a complete command set. The newest update wins without
+      // changing transcript, status, or any derived fields.
+      return { ...state, commands: event.commands }
 
     default:
       return assertNever(event)

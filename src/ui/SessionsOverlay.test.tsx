@@ -14,11 +14,12 @@ import { SESSIONS_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { NEEDS_YOU_LABEL, SESSION_MARKER, SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
+import { WELCOME_GREETING } from "./WelcomeBanner.tsx"
 
 /**
  * The overview is exercised inside the real shell, because most of what it promises is
- * about the shell: the Ctrl+S chord must reach it, it must paint over the cockpit, it
- * must take every key from the composer, and Esc must return the keyboard to the prompt.
+ * about the shell: `/sessions` must reach it, it must paint over the cockpit, it must
+ * take every key from the composer, and Esc must return the keyboard to the prompt.
  *
  * The terminal speaks the Kitty keyboard protocol so a bare Escape arrives as a
  * complete sequence rather than a lone byte the parser holds for 20ms.
@@ -66,21 +67,29 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     height: HEIGHT,
     kittyKeyboard: true,
   })
-  // The focused pane titles itself with the focused session's provider name.
-  await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+  await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING))
   return setup
 }
 
-/** Press Ctrl+S and wait for the overview to paint. */
-async function openOverview(setup: TestRendererSetup): Promise<string> {
-  await actAsync(() => {
-    setup.mockInput.pressKey("s", { ctrl: true })
+/** Run a Kitten slash command through the real prompt menu. */
+async function runSlashCommand(setup: TestRendererSetup, command: string): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText(`/${command}`)
   })
+  await setup.waitForFrame((frame) => frame.includes(`/${command}`))
+  await actAsync(() => {
+    setup.mockInput.pressEnter()
+  })
+}
+
+/** Run `/sessions` and wait for the overview to paint. */
+async function openOverview(setup: TestRendererSetup): Promise<string> {
+  await runSlashCommand(setup, "sessions")
   return setup.waitForFrame((frame) => frame.includes(SESSIONS_HINT))
 }
 
 describe("SessionsOverlay visibility", () => {
-  it("renders nothing until Ctrl+S is pressed", async () => {
+  it("renders nothing until /sessions is run", async () => {
     const controller = fleetController()
     const { renderer, captureCharFrame } = await renderCockpit(controller)
 
@@ -92,7 +101,7 @@ describe("SessionsOverlay visibility", () => {
     await destroyMounted(renderer)
   })
 
-  it("opens on Ctrl+S, marking selectHasOpenOverlay open", async () => {
+  it("opens through /sessions, marking selectHasOpenOverlay open", async () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)
 
@@ -193,8 +202,8 @@ describe("SessionsOverlay routing", () => {
 
     expect(controller.store.getState().focusedSessionId).toBe("b")
     expect(controller.calls.switchFocus).toEqual(["b"])
-    // The pane retitled to the session that took focus, and the composer is back.
-    expect(closed.split("\n")[0]).toContain(PROVIDER_DISPLAY_NAMES.codex)
+    // The pane stays Kitten-branded after the focus change, and the composer is back.
+    expect(closed.split("\n")[0]).toContain("Kitten")
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(setup.renderer)
@@ -270,12 +279,12 @@ describe("SessionsOverlay modality", () => {
     await openOverview(setup)
 
     await actAsync(async () => {
-      setup.mockInput.pressKey("o", { ctrl: true })
-      setup.mockInput.pressKey("F1")
+      setup.mockInput.pressKey("`", { ctrl: true })
+      await setup.mockInput.typeText("/help")
       await setup.mockInput.typeText(DRAFT_MARKER)
     })
 
-    // The shell's focus chord never fired, and the help panel never opened over the overview.
+    // The shell's focus chord never fired, and `/help` never opened over the overview.
     expect(controller.calls.switchFocus).toHaveLength(0)
     expect(controller.store.getState().focusedSessionId).toBe("a")
     expect(await setup.waitForFrame((frame) => frame.includes(SESSIONS_HINT))).not.toContain(HELP_TITLE)
@@ -295,12 +304,13 @@ describe("SessionsOverlay modality", () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("F1")
-    })
+    await runSlashCommand(setup, "help")
     await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
 
-    const frame = await openOverview(setup)
+    await actAsync(() => {
+      controller.store.openSessions()
+    })
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(SESSIONS_HINT))
     expect(frame).not.toContain(HELP_TITLE)
 
     await destroyMounted(setup.renderer)

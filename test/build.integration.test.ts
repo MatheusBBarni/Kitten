@@ -34,7 +34,7 @@ describe("compiled artifact self-check (ADR-006)", () => {
       if (run.exitCode !== 0) throw new Error(`compiled self-check failed:\n${stderr}`)
       expect(run.exitCode).toBe(0)
       expect(stdout).toContain("SELF-CHECK OK")
-      expect(stdout).toContain("Claude Code")
+      expect(stdout).toContain("Kitten")
       expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
       expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
     } finally {

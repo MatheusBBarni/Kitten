@@ -56,7 +56,9 @@ __kitten_precmd_prompt() {
   printf '\033]133;A\007'
   printf '\033]7;file://localhost%s\007' "$(__kitten_percent_encode "$PWD")"
   if [[ $PS1 != *']133;B'* ]]; then
-    PS1="${PS1}%{\033]133;B\007%}"
+    # Build the marker with ANSI-C quoting so zsh receives real ESC/BEL bytes.
+    # A textual `\033`/`\007` inside PS1 is rendered by some prompts instead.
+    PS1+=$'%{\e]133;B\a%}'
   fi
 }
 

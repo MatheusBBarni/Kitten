@@ -4,7 +4,7 @@ import type { SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } fro
 
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import type { DomainSessionEvent } from "../core/types.ts"
-import { toUnifiedDiff, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import { toUnifiedDiff, translateAvailableCommand, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
 
 /**
  * Unit tests for the pure ACP → domain translator. These assert that every
@@ -118,7 +118,7 @@ describe("translateSessionUpdate: tool calls", () => {
   })
 })
 
-describe("translateSessionUpdate: plan and ignored variants", () => {
+describe("translateSessionUpdate: plan, commands, and ignored variants", () => {
   it("maps a plan update to plan entries", () => {
     const update: SessionUpdate = {
       sessionUpdate: "plan",
@@ -138,12 +138,59 @@ describe("translateSessionUpdate: plan and ignored variants", () => {
 
   it.each<SessionUpdate>([
     { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } },
-    { sessionUpdate: "available_commands_update", availableCommands: [] },
     { sessionUpdate: "current_mode_update", currentModeId: "code" },
     { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p1", content: "# plan" } },
     { sessionUpdate: "usage_update", used: 100, size: 200000 },
   ])("returns null for the unsurfaced variant %o", (update) => {
     expect(translateSessionUpdate(update)).toBeNull()
+  })
+})
+
+describe("translateSessionUpdate: available commands", () => {
+  it("maps advertised commands into protocol-free domain records", () => {
+    const event = translateSessionUpdate({
+      sessionUpdate: "available_commands_update",
+      availableCommands: [
+        {
+          name: "review",
+          description: "Review the current changes",
+          input: { hint: "[scope]", _meta: { ignored: true } },
+          _meta: { ignored: true },
+        },
+        { name: "test", description: "Run tests" },
+      ],
+      _meta: { ignored: true },
+    })
+
+    expect(event).toEqual({
+      kind: "commands",
+      commands: [
+        { name: "review", description: "Review the current changes", hint: "[scope]" },
+        { name: "test", description: "Run tests" },
+      ],
+    })
+  })
+
+  it("drops ACP metadata and an empty input hint", () => {
+    expect(
+      translateAvailableCommand({
+        name: "status",
+        description: "Show status",
+        input: { hint: "", _meta: { internal: true } },
+        _meta: { internal: true },
+      }),
+    ).toEqual({ name: "status", description: "Show status" })
+  })
+
+  it("flows an available-commands update through the reducer", () => {
+    const event = translateSessionUpdate({
+      sessionUpdate: "available_commands_update",
+      availableCommands: [{ name: "review", description: "Review the current changes" }],
+    })
+    if (event === null || event.kind !== "commands") throw new Error("expected a commands event")
+
+    const state = createSessionState({ id: "s1", providerKind: "claude-code", title: "t", cwd: "/repo" })
+    expect(sessionReducer(state, event).commands).toEqual([{ name: "review", description: "Review the current changes" }])
   })
 })
 

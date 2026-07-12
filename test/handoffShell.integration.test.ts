@@ -12,6 +12,7 @@ import { createSessionState, sessionReducer } from "../src/core/sessionReducer.t
 import { CockpitApp } from "../src/ui/CockpitApp.tsx"
 import { DROPPED_BOX, ITEM_MARKER, KEPT_BOX } from "../src/ui/HandoffPreview.tsx"
 import { HANDOFF_HINT } from "../src/ui/keymap.ts"
+import { PROMPT_PLACEHOLDER } from "../src/ui/PromptEditor.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted } from "./reactTui.ts"
 
@@ -87,9 +88,13 @@ function sentText(controller: FakeController): string {
 
 async function openPreview(controller: FakeController): Promise<TestRendererSetup> {
   const setup = await testRender(createElement(CockpitApp, { controller }), { width: 90, height: 32, kittyKeyboard: true })
-  await setup.waitForFrame((frame) => frame.includes("Claude Code"))
+  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
+  await actAsync(async () => {
+    await setup.mockInput.typeText("/handoff")
+  })
+  await setup.waitForFrame((frame) => frame.includes("/handoff"))
   await actAsync(() => {
-    setup.mockInput.pressKey("t", { ctrl: true })
+    setup.mockInput.pressEnter()
   })
   await setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT))
   return setup

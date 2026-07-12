@@ -8,7 +8,7 @@
  * opens this picker first and the developer chooses; only then does the preview open
  * over the bundle assembled for that target.
  *
- * It is deliberately thin, and modeled on the Ctrl+S sessions overview it reuses
+ * It is deliberately thin, and modeled on the `/sessions` overview it reuses
  * (`SessionCard`, `matchSessionsCommand`): a selectable list of the sessions that could
  * receive the hand-off - every ready session other than the source - with Enter to
  * choose and Escape to back out. It spawns nothing, sends nothing, and moves no focus;

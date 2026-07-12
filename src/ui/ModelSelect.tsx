@@ -41,9 +41,17 @@ import {
   MODEL_CATEGORY,
   visibleConfigOptions,
   type ConfigOption,
+  type SessionId,
 } from "../core/types.ts"
 import type { ModelSelectOverlay } from "../store/appStore.ts"
-import { selectAgentConfigOptions, selectIsApprovalOpen, selectModelSelectOverlay, selectSessionTurns } from "../store/selectors.ts"
+import {
+  selectAgentConfigOptions,
+  selectIsApprovalOpen,
+  selectModelSelectOverlay,
+  selectSessionList,
+  selectSessionTurns,
+  type SessionListItem,
+} from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { matchModelSelectCommand, MODEL_SELECT_CONFIRM_HINT, MODEL_SELECT_HINT } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -57,6 +65,9 @@ export const EFFORT_HEADING = "Reasoning effort"
 
 /** The marker on the highlighted row. Matches the approval and hand-off overlays. */
 export const ROW_MARKER = "▸"
+
+/** The marker that identifies the session tab currently shown in the selector. */
+export const TAB_MARKER = "▸"
 
 /** How the confirmed current value is set apart from the alternatives. */
 export const CURRENT_MARK = "●"
@@ -87,7 +98,9 @@ export function modelSelectTitleFor(displayName: string): string {
 export function ModelSelect(): ReactNode {
   const overlay = useAppSelector(selectModelSelectOverlay)
   if (!overlay) return null
-  return <ModelSelectDialog overlay={overlay} />
+  // A new open target starts with a fresh tab/row selection rather than preserving
+  // transient state from the last selector instance.
+  return <ModelSelectDialog key={overlay.sessionId} overlay={overlay} />
 }
 
 /** One choosable row: which config option it belongs to and the value it names. */
@@ -120,8 +133,16 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
-  const { sessionId } = overlay
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
+  const sessions = useAppSelector(selectSessionList)
+
+  // Tabs represent session instances, not provider kinds: several sessions can share
+  // a provider recipe, and each one can advertise a different live model/effort set.
+  const tabs = useMemo(() => modelSelectTabs(sessions), [sessions])
+  const [selectedTabId, setSelectedTabId] = useState<SessionId>(overlay.sessionId)
+  const sessionId = tabs.some((tab) => tab.sessionId === selectedTabId)
+    ? selectedTabId
+    : tabs.find((tab) => tab.sessionId === overlay.sessionId)?.sessionId ?? overlay.sessionId
 
   // The raw slice is referentially stable across unrelated updates; filter to the
   // allowlist here and memoize so a fresh array does not thrash the render.
@@ -138,7 +159,9 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   const [selected, setSelected] = useState(0)
   // What the developer last asked each config option to become. A section is
   // `unverified` while its requested value differs from the confirmed `currentValue`.
-  const [requested, setRequested] = useState<ReadonlyMap<string, string>>(() => new Map())
+  // Keep this by session so a pending Codex switch can never mark Claude's row.
+  const [requestedBySession, setRequestedBySession] = useState<ReadonlyMap<SessionId, ReadonlyMap<string, string>>>(() => new Map())
+  const requested = requestedBySession.get(sessionId)
   // The pending mid-conversation confirm, or null when the list is showing.
   const [confirming, setConfirming] = useState<ModelEffortValueRow | null>(null)
 
@@ -146,7 +169,13 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
 
   const apply = useCallback(
     (row: ModelEffortValueRow): void => {
-      setRequested((prev) => new Map(prev).set(row.option.id, row.value))
+      setRequestedBySession((prev) => {
+        const next = new Map(prev)
+        const nextRequested = new Map(next.get(sessionId))
+        nextRequested.set(row.option.id, row.value)
+        next.set(sessionId, nextRequested)
+        return next
+      })
       // The action never rejects (it routes a failed switch to `onError` and leaves the
       // last confirmed state in place), so a keypress can never reject into the tree.
       void controller.actions.setSessionConfigOption(row.option.id, row.value, sessionId)
@@ -166,6 +195,21 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
       apply(row)
     },
     [apply, established],
+  )
+
+  const switchTab = useCallback(
+    (direction: -1 | 1): void => {
+      if (tabs.length < 2) return
+      const currentIndex = Math.max(
+        tabs.findIndex((tab) => tab.sessionId === sessionId),
+        0,
+      )
+      const next = tabs[(currentIndex + direction + tabs.length) % tabs.length]
+      if (!next) return
+      setSelectedTabId(next.sessionId)
+      setSelected(0)
+    },
+    [sessionId, tabs],
   )
 
   const onKey = useCallback(
@@ -203,6 +247,12 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
           // walk the highlight to -1.
           setSelected((index) => Math.min(index + 1, Math.max(rows.length - 1, 0)))
           return
+        case "prev-tab":
+          switchTab(-1)
+          return
+        case "next-tab":
+          switchTab(1)
+          return
         case "confirm":
           choose(rows[clamped])
           return
@@ -213,11 +263,11 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
           return
       }
     },
-    [approvalOpen, apply, choose, clamped, confirming, controller, rows],
+    [approvalOpen, apply, choose, clamped, confirming, controller, rows, switchTab],
   )
   useKeyboard(onKey)
 
-  const displayName = controller.runtime(sessionId)?.displayName ?? sessionId
+  const displayName = tabs.find((tab) => tab.sessionId === sessionId)?.label ?? controller.runtime(sessionId)?.displayName ?? sessionId
   return (
     <box
       style={{
@@ -237,6 +287,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
       title={modelSelectTitleFor(displayName)}
       titleColor={palette.accent}
     >
+      {tabs.length > 1 ? <ModelSelectTabs tabs={tabs} selectedSessionId={sessionId} /> : null}
       {confirming ? (
         <ConfirmStep row={confirming} />
       ) : (
@@ -247,6 +298,52 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
         {confirming ? MODEL_SELECT_CONFIRM_HINT : MODEL_SELECT_HINT}
       </text>
     </box>
+  )
+}
+
+/** One tab maps exactly one live session to the model/effort values it advertises. */
+interface ModelSelectTab {
+  sessionId: SessionId
+  label: string
+}
+
+/**
+ * Build compact tab labels while preserving the session distinction when a fleet has
+ * repeated providers. The ordinary two-pane cockpit simply reads "Claude" and
+ * "Codex"; repeated provider sessions gain their configured title.
+ */
+function modelSelectTabs(
+  sessions: readonly SessionListItem[],
+): ModelSelectTab[] {
+  const baseLabels = sessions.map((session) => session.providerKind === "claude-code" ? "Claude" : "Codex")
+  const counts = new Map<string, number>()
+  for (const label of baseLabels) counts.set(label, (counts.get(label) ?? 0) + 1)
+
+  return sessions.map((session, index) => {
+    const label = baseLabels[index]!
+    return {
+      sessionId: session.id,
+      label: (counts.get(label) ?? 0) > 1 ? `${label}: ${session.title}` : label,
+    }
+  })
+}
+
+/** The compact, read-only tab strip. Keyboard handling stays in the modal above. */
+function ModelSelectTabs({ tabs, selectedSessionId }: { tabs: readonly ModelSelectTab[]; selectedSessionId: SessionId }): ReactNode {
+  const palette = usePalette()
+  return (
+    <text style={{ flexShrink: 0, marginBottom: 1 }}>
+      {tabs.map((tab, index) => {
+        const selected = tab.sessionId === selectedSessionId
+        return (
+          <span key={tab.sessionId}>
+            {index > 0 ? <span fg={palette.muted}>{"  "}</span> : null}
+            <span fg={selected ? palette.accent : palette.muted}>{selected ? `${TAB_MARKER} ` : "  "}</span>
+            <span fg={selected ? palette.text : palette.muted}>{tab.label}</span>
+          </span>
+        )
+      })}
+    </text>
   )
 }
 

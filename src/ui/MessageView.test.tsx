@@ -19,7 +19,7 @@ function paletteColor(hex: string): string {
 }
 
 describe("MessageView", () => {
-  it("keeps the agent role label and the user's distinct surface band", async () => {
+  it("capitalizes the agent role label and keeps the user's distinct surface band", async () => {
     const controller = createFakeController()
     const setup = await testRender(
       <CockpitProvider controller={controller}>
@@ -35,6 +35,7 @@ describe("MessageView", () => {
     )
 
     const rows = frame.split("\n")
+    expect(ROLE_LABELS.agent).toBe("Agent")
     const agentLabelRow = rows.findIndex((row) => row.includes(ROLE_LABELS.agent))
     const agentTextRow = rows.findIndex((row) => row.includes("AGENT_SENTINEL"))
     expect(agentTextRow).toBe(agentLabelRow + 1)

@@ -1,9 +1,10 @@
 /**
  * The cockpit's global keymap.
  *
- * These bindings are live wherever the user's cursor is, including inside the
- * prompt editor, so every one of them is either a control chord or a function key -
- * never a bare printable character that the composer would otherwise swallow.
+ * Global bindings are deliberately sparse: every cockpit operation is available as
+ * a slash command in the prompt, and only the terminal-level shell toggle remains
+ * a global chord. The prompt editor owns the printable `/` trigger, so composing
+ * normal agent input remains predictable.
  *
  * The table is the single source of truth for both dispatch and the help panel, so
  * a binding can never drift out of the documentation the user reads. The prompt
@@ -16,9 +17,6 @@
  * overlay is up it swallows every keypress, so plain arrows, Enter, Space, digits,
  * and even a bare letter are its to spend without ever reaching the composer.
  *
- * `Ctrl+,` follows the familiar settings convention, but a legacy terminal cannot
- * deliver that chord distinctly. It reaches Kitten only when the terminal speaks
- * the Kitty keyboard protocol; the help and status hint still document the binding.
  */
 
 import type { KeyBinding as TextareaKeyBinding } from "@opentui/core"
@@ -45,13 +43,17 @@ export type CockpitCommand =
   | "sessions"
   | "resume-session"
   | "start-new-run"
+  | "clear-run"
   | "model-select"
   | "open-settings"
   | "toggle-help"
   | "close-help"
 
 /** Every intent the model/effort selector handles while it is on screen. */
-export type ModelSelectCommand = "prev-option" | "next-option" | "confirm" | "cancel"
+export type ModelSelectCommand = "prev-option" | "next-option" | "prev-tab" | "next-tab" | "confirm" | "cancel"
+
+/** Every intent the non-modal prompt slash menu handles while it is armed. */
+export type MenuCommand = "prev-option" | "next-option" | "confirm" | "dismiss"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
@@ -69,10 +71,10 @@ export type HandoffCommand =
   | "confirm"
   | "cancel"
 
-/** Every intent the Ctrl+S sessions overview handles while it is on screen. */
+/** Every intent the `/sessions` overview handles while it is on screen. */
 export type SessionsCommand = "prev-session" | "next-session" | "jump-into" | "jump-next-needy" | "cancel"
 
-/** Every intent the Ctrl+R saved-run picker handles while it is on screen. */
+/** Every intent the `/resume` saved-run picker handles while it is on screen. */
 export type SessionPickerCommand =
   | "prev-run"
   | "next-run"
@@ -96,6 +98,15 @@ export interface KeyBinding<Command extends string = CockpitCommand> extends Hel
   readonly matches: (key: CockpitKey) => boolean
 }
 
+/** One visible, slash-first cockpit operation. */
+export interface CockpitCommandDefinition {
+  readonly command: Exclude<CockpitCommand, "close-help">
+  /** Command text without its leading slash. */
+  readonly name: string
+  /** One concise explanation rendered by `/help` and the menu. */
+  readonly description: string
+}
+
 /** A plain, unmodified press of any one of `names` - for a key a terminal may report under more than one name. */
 function plainAny(...names: string[]): (key: CockpitKey) => boolean {
   return (key) => names.includes(key.name) && !key.ctrl && !key.meta && !key.shift
@@ -104,6 +115,11 @@ function plainAny(...names: string[]): (key: CockpitKey) => boolean {
 /** A plain, unmodified press of `name`. */
 function plain(name: string): (key: CockpitKey) => boolean {
   return plainAny(name)
+}
+
+/** Shift plus `name`, with no other modifier. Used only by local overlays. */
+function shiftPlain(name: string): (key: CockpitKey) => boolean {
+  return (key) => key.name === name && key.shift && !key.ctrl && !key.meta
 }
 
 /** `Ctrl` plus `name`, with no other modifier. */
@@ -122,77 +138,30 @@ function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: Co
  * `close-help` is reported for Escape unconditionally; the shell acts on it only
  * while the help panel is open, leaving Escape free for the editor and overlays.
  */
+export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
+  { command: "toggle-shell", name: "shell", description: "Focus the integrated shell" },
+  { command: "run-externally", name: "copy", description: "Copy the latest shell command for an external terminal" },
+  { command: "switch-focus", name: "switch", description: "Switch focus to the other agent" },
+  { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
+  { command: "sessions", name: "sessions", description: "Show every session and jump to one that needs you" },
+  { command: "resume-session", name: "resume", description: "Find and resume a saved run for this project" },
+  { command: "start-new-run", name: "new", description: "Start a new run with fresh agent sessions" },
+  { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
+  { command: "model-select", name: "model", description: "Choose an agent model and reasoning effort" },
+  { command: "open-settings", name: "settings", description: "Open Kitten settings" },
+  { command: "toggle-help", name: "help", description: "Show every Kitten command" },
+]
+
+/**
+ * The only bindings that must remain global while a prompt is being composed.
+ * `/shell` is always available for terminals that cannot report Ctrl+`.
+ */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
   {
-    // Legacy terminals collapse Ctrl+` into the same NUL byte as Ctrl+Space/Ctrl+@,
-    // so F2 is the documented fallback when the Kitty keyboard protocol is absent.
     command: "toggle-shell",
-    keys: "Ctrl+` / F2",
+    keys: "Ctrl+`",
     description: "Focus the shell; its keys route there and Ctrl+C interrupts",
-    matches: any(ctrl("`"), ctrl("grave"), plain("f2")),
-  },
-  {
-    command: "run-externally",
-    keys: "F3",
-    description: "Copy the latest shell command for an external terminal",
-    matches: plain("f3"),
-  },
-  {
-    command: "switch-focus",
-    keys: "Ctrl+O",
-    description: "Switch focus to the other agent",
-    matches: ctrl("o"),
-  },
-  {
-    // Ctrl+T for "transfer". The obvious mnemonic, Ctrl+H, is the ASCII backspace a
-    // terminal sends for the Backspace key, so binding it would eat a correction in
-    // the composer on every terminal that does not speak the Kitty protocol.
-    command: "hand-off",
-    keys: "Ctrl+T",
-    description: "Curate shell cwd/commands in hand-off preview with Space",
-    matches: ctrl("t"),
-  },
-  {
-    command: "sessions",
-    keys: "Ctrl+S",
-    description: "Show every session and jump to the one that needs you",
-    matches: ctrl("s"),
-  },
-  {
-    command: "resume-session",
-    keys: "Ctrl+R",
-    description: "Find and resume a saved run for this project",
-    matches: ctrl("r"),
-  },
-  {
-    command: "start-new-run",
-    keys: "Ctrl+N",
-    description: "Start a new run with fresh agent sessions",
-    matches: ctrl("n"),
-  },
-  {
-    // Ctrl+E for "effort" - and the model that composes with it. Ctrl+M is unusable
-    // (a terminal sends it for carriage return, so it would fire on every Enter), and
-    // Ctrl+O/Ctrl+T/Ctrl+S are already spoken for; Ctrl+E is free of both the reserved
-    // ASCII control codes and the shell's other chords.
-    command: "model-select",
-    keys: "Ctrl+E",
-    description: "Choose the model and reasoning effort for the focused agent",
-    matches: ctrl("e"),
-  },
-  {
-    // Unlike alphabetic Ctrl chords, Ctrl+, has no legacy control-byte encoding.
-    // OpenTUI can deliver it only through the Kitty keyboard protocol.
-    command: "open-settings",
-    keys: "Ctrl+,",
-    description: "Open settings",
-    matches: ctrl(","),
-  },
-  {
-    command: "toggle-help",
-    keys: "F1",
-    description: "Show or hide this help panel",
-    matches: plain("f1"),
+    matches: any(ctrl("`"), ctrl("grave")),
   },
   {
     command: "close-help",
@@ -235,9 +204,38 @@ export const PROMPT_KEY_BINDINGS: TextareaKeyBinding[] = [
  * the editor claims Escape only while the focused agent is working.
  */
 export const EDITOR_KEYMAP: readonly HelpEntry[] = [
+  { keys: "/", description: "Open and filter the command menu" },
   { keys: "Enter", description: "Send the prompt to the focused agent" },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt" },
   { keys: "Esc", description: "Interrupt the agent while it is working" },
+]
+
+/** Navigation captured only while the prompt-local slash menu is visible. */
+export const MENU_KEYMAP: readonly KeyBinding<MenuCommand>[] = [
+  {
+    command: "prev-option",
+    keys: "↑ / Shift+Tab",
+    description: "Highlight the previous command",
+    matches: any(plain("up"), shiftPlain("tab")),
+  },
+  {
+    command: "next-option",
+    keys: "↓ / Tab",
+    description: "Highlight the next command",
+    matches: any(plain("down"), plain("tab")),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Run or insert the highlighted command",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "dismiss",
+    keys: "Esc",
+    description: "Close the command menu",
+    matches: plain("escape"),
+  },
 ]
 
 /**
@@ -339,7 +337,7 @@ export const HANDOFF_KEYMAP: readonly KeyBinding<HandoffCommand>[] = [
 ]
 
 /**
- * The sessions overview's keys, live only while the Ctrl+S overview is on screen.
+ * The sessions overview's keys, live only while the `/sessions` overview is on screen.
  *
  * Like the approval and hand-off overlays, the overview is modal, so plain keys are
  * safe: nothing reaches the composer while the fleet list is up. Enter jumps focus
@@ -453,6 +451,18 @@ export const MODEL_SELECT_KEYMAP: readonly KeyBinding<ModelSelectCommand>[] = [
     matches: plain("down"),
   },
   {
+    command: "next-tab",
+    keys: "Tab",
+    description: "Show the next agent session's model and effort choices",
+    matches: plain("tab"),
+  },
+  {
+    command: "prev-tab",
+    keys: "Shift+Tab",
+    description: "Show the previous agent session's model and effort choices",
+    matches: shiftPlain("tab"),
+  },
+  {
     command: "confirm",
     keys: "Enter",
     description: "Apply the highlighted model or effort to the focused agent",
@@ -509,13 +519,17 @@ export const SETTINGS_KEYMAP: readonly KeyBinding<SettingsCommand>[] = [
 /**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
- * Neither overlay's keys appear. Both are modal, so F1 cannot open this panel while
+ * Neither overlay's keys appear. Both are modal, so no global command can open this panel while
  * their keys are live, and they do nothing while the overlay is closed - a row here
  * would describe a binding that is never true when the reader can read it. Each
  * overlay prints its own hint instead (`APPROVAL_HINT`, `HANDOFF_HINT`), in the one
  * state where its keys work.
  */
-export const HELP_ENTRIES: readonly HelpEntry[] = [...COCKPIT_KEYMAP, ...EDITOR_KEYMAP]
+export const HELP_ENTRIES: readonly HelpEntry[] = [
+  ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
+  { keys: "Ctrl+`", description: "Focus or leave the integrated shell" },
+  ...EDITOR_KEYMAP,
+]
 
 /** Read a display label from the same binding row dispatch uses. */
 function bindingKeys<Command extends string>(keymap: readonly KeyBinding<Command>[], command: Command): string {
@@ -524,30 +538,23 @@ function bindingKeys<Command extends string>(keymap: readonly KeyBinding<Command
   return binding.keys
 }
 
-/** Use the status strip's compact caret notation for a Ctrl chord. */
-function compactChord(keys: string): string {
-  return keys.replace(/^Ctrl\+/, "^")
+/** Slash labels stay sourced from the same command registry as the menu and help. */
+function commandSlash(command: Exclude<CockpitCommand, "close-help">): string {
+  const definition = COCKPIT_COMMANDS.find((entry) => entry.command === command)
+  if (!definition) throw new Error(`Missing slash command for ${command}`)
+  return `/${definition.name}`
 }
 
-/** The primary chord only; documented fallbacks remain visible in the full help row. */
-function primaryChord(keys: string): string {
-  return keys.split(" / ", 1)[0]!
-}
+/** Start-fresh affordance shown for a restored run. */
+export const NEW_RUN_KEY_HINT = commandSlash("start-new-run")
 
-/** Compact chord shown by the status bar's always-visible hand-off affordance. */
-export const HANDOFF_KEY_HINT = compactChord(bindingKeys(COCKPIT_KEYMAP, "hand-off"))
+/** The one quiet, always-visible discovery affordance in the status strip. */
+export const KEYMAP_HINT = commandSlash("toggle-help")
 
-/** Start-fresh chord shown only while the status strip marks a resumed run. */
-export const NEW_RUN_KEY_HINT = compactChord(bindingKeys(COCKPIT_KEYMAP, "start-new-run"))
-
-/** Shell discovery hint kept compact enough to coexist with the hand-off affordance. */
-export const SHELL_HINT = `${compactChord(primaryChord(bindingKeys(COCKPIT_KEYMAP, "toggle-shell")))} shell`
-
-/** Saved-run discovery hint, derived from the same row dispatch and help consume. */
-export const RESUME_KEY_HINT = `${compactChord(bindingKeys(COCKPIT_KEYMAP, "resume-session"))} resume`
-
-/** The always-visible status hint keeps shell focus and saved-run resume discoverable. */
-export const KEYMAP_HINT = `${SHELL_HINT}  ${RESUME_KEY_HINT}`
+/** Slash-first labels retained for focused view copy while that view transitions. */
+export const HANDOFF_KEY_HINT = commandSlash("hand-off")
+export const SHELL_HINT = commandSlash("toggle-shell")
+export const RESUME_KEY_HINT = commandSlash("resume-session")
 
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
@@ -566,7 +573,7 @@ export const SESSION_PICKER_HINT =
   "Type filter  ↑↓ move  Space preview  Enter resume  Ctrl+D delete  Ctrl+A clear all  Esc cancel"
 
 /** The hint printed inside the model/effort selector, where those keys are the only live ones. */
-export const MODEL_SELECT_HINT = "↑↓ move  Enter apply  Esc close"
+export const MODEL_SELECT_HINT = "↑↓ move  Tab/Shift+Tab switch agent  Enter apply  Esc close"
 
 /** The hint printed inside settings, derived from the modal's binding table. */
 export const SETTINGS_HINT = `${bindingKeys(SETTINGS_KEYMAP, "prev-option")}${bindingKeys(
@@ -600,6 +607,9 @@ function makeMatcher<Command extends string>(
 
 /** The command a keypress maps to, or `null` when the shell does not claim it. */
 export const matchCommand = makeMatcher(COCKPIT_KEYMAP)
+
+/** The prompt-local menu command a keypress names, or null while normal typing continues. */
+export const matchMenuCommand = makeMatcher(MENU_KEYMAP)
 
 /** The overlay command a keypress maps to, or `null` when the overlay does not claim it. */
 export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)

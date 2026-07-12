@@ -1,5 +1,5 @@
-// Suite: Cockpit shell integration
-// Invariant: shell chords route to the owning surface while modal overlays retain precedence and focus.
+// Suite: Cockpit command and shell integration
+// Invariant: slash commands drive cockpit actions while the shell chord and modal overlays retain clear input precedence.
 // Boundary IN: real AppStore, OpenTUI renderer/input/focus, telemetry recorder, and the cockpit frame tree.
 // Boundary OUT: config persistence/watching and agent subprocess transport, owned by their integration suites.
 
@@ -35,7 +35,7 @@ import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
 import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
-import { WELCOME_GREETING, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_ON_RAMP, WELCOME_WORDMARK } from "./WelcomeBanner.tsx"
 
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
 function lines(frame: string): string[] {
@@ -68,11 +68,24 @@ async function renderCockpitApp(
     kittyKeyboard: true,
     exitOnCtrlC: false,
   })
-  await setup.waitForFrame((f) => f.includes("Claude Code"))
+  await setup.waitForFrame((f) => f.includes("Kitten"))
   return setup
 }
 
-/** A project run fixture plus its in-memory persistence boundary for Ctrl+R flows. */
+/** Drive a command exactly as a user does: type it in the focused prompt, then choose it. */
+async function runSlashCommand(
+  setup: Awaited<ReturnType<typeof renderCockpitApp>>,
+  command: string,
+): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.typeText(`/${command}`)
+  })
+  await actAsync(() => {
+    setup.mockInput.pressEnter()
+  })
+}
+
+/** A project run fixture plus its in-memory persistence boundary for `/resume` flows. */
 function pickerRun(runId: string, lastPrompt: string, updatedAt: number): PersistedRunRecord {
   return {
     version: 1,
@@ -163,29 +176,34 @@ describe("CockpitApp layout", () => {
     const frame = captureCharFrame()
     const rows = lines(frame)
 
-    // The focused agent titles the conversation region.
-    expect(rows[0]).toContain("Claude Code")
+    // The focused pane is product-branded; the banner names Kitten in ASCII.
+    expect(rows[0]).toContain("Kitten")
+    for (const line of WELCOME_WORDMARK) expect(frame).toContain(line)
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
+    expect(frame).not.toContain("Claude Code")
 
-    // The strip keeps shared hand-off context above the last-row agent lozenges.
+    // The strip keeps compact model summaries above provider-neutral status lozenges.
     const shared = rows.at(-2) ?? ""
     const strip = rows.at(-1) ?? ""
-    expect(strip).toContain(`Claude Code: ${STATUS_LABELS.idle}`)
-    expect(strip).toContain(`Codex: ${STATUS_LABELS.idle}`)
-    expect(shared).toContain("kitten")
-    expect(shared).toContain("^` shell")
-    expect(shared).toContain("^T hand off -> Codex")
+    expect(strip).toContain(`[▸ ○ ${STATUS_LABELS.idle}]`)
+    expect(strip).toContain(`[○ ${STATUS_LABELS.idle}]`)
+    expect(shared).toContain("claude:—")
+    expect(shared).toContain("codex:—")
+    expect(shared).toContain("/help")
 
     await destroyMounted(renderer)
   })
 
-  it("matches the expected frame at a fixed size", async () => {
+  it("keeps the ASCII welcome and command affordance in a fixed-size frame", async () => {
     const controller = createFakeController()
     const { renderer, captureCharFrame } = await renderCockpitApp(controller)
 
-    expect(captureCharFrame()).toMatchSnapshot()
+    const frame = captureCharFrame()
+    expectNoOverflow(frame, 80, 24)
+    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).toContain("/help")
 
     await destroyMounted(renderer)
   })
@@ -198,21 +216,21 @@ describe("CockpitApp layout", () => {
 
     const initial = await waitForFrame(
       (f) =>
-        f.includes("Claude Code: idle claude-fable-5[1m]/high") &&
-        f.includes("Codex: idle gpt-5.1-codex-max/medium"),
+        f.includes("claude:claude-fable-5[1m]/high") &&
+        f.includes("codex:gpt-5.1-codex-max/medium"),
     )
     expectNoOverflow(initial, 80, 24)
-    expect(initial).toContain("Claude Code: idle claude-fable-5[1m]/high")
-    expect(initial).toContain("Codex: idle gpt-5.1-codex-max/medium")
+    expect(initial).toContain("claude:claude-fable-5[1m]/high")
+    expect(initial).toContain("codex:gpt-5.1-codex-max/medium")
 
     await actAsync(() => {
       controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("sonnet", "low") })
     })
 
-    const updated = await waitForFrame((f) => f.includes("Claude Code: idle sonnet/low"))
+    const updated = await waitForFrame((f) => f.includes("claude:sonnet/low"))
     expectNoOverflow(updated, 80, 24)
-    expect(updated).toContain("Claude Code: idle sonnet/low")
-    expect(updated).toContain("Codex: idle gpt-5.1-codex-max/medium")
+    expect(updated).toContain("claude:sonnet/low")
+    expect(updated).toContain("codex:gpt-5.1-codex-max/medium")
 
     await destroyMounted(renderer)
   })
@@ -246,11 +264,11 @@ describe("CockpitApp resize", () => {
     await actAsync(() => {
       resize(64, 12)
     })
-    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(`Codex: ${STATUS_LABELS.idle}`))
+    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(`/help`))
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
-    expect(lines(shrunk).at(-1)).toContain(`Codex: ${STATUS_LABELS.idle}`)
+    expect(lines(shrunk).at(-1)).toContain(STATUS_LABELS.idle)
 
     await actAsync(() => {
       resize(120, 40)
@@ -258,7 +276,7 @@ describe("CockpitApp resize", () => {
     const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(WELCOME_GREETING))
 
     expectNoOverflow(grown, 120, 40)
-    expect(lines(grown).at(-1)).toContain(`Codex: ${STATUS_LABELS.idle}`)
+    expect(lines(grown).at(-1)).toContain(STATUS_LABELS.idle)
 
     await destroyMounted(renderer)
   })
@@ -270,13 +288,11 @@ describe("CockpitApp alternate-screen layout", () => {
     const setup = await renderCockpitApp(controller)
 
     try {
-      await actAsync(() => {
-        setup.mockInput.pressKey("F2")
-      })
+      await runSlashCommand(setup, "shell")
       const primary = await setup.waitForFrame(
         (frame) => frame.includes("Shell · focused") && frame.includes(PROMPT_PLACEHOLDER),
       )
-      expect(primary).toContain("hand off")
+      expect(primary).toContain("/help")
       await setup.waitFor(() => shell.resizes.length > 0)
       const primarySize = shell.resizes.at(-1)!
 
@@ -288,7 +304,7 @@ describe("CockpitApp alternate-screen layout", () => {
       const alternateSize = shell.resizes.at(-1)!
       expect(runtime.bufferType()).toBe("alternate")
       expect(alternate).not.toContain(PROMPT_PLACEHOLDER)
-      expect(alternate).not.toContain("hand off")
+      expect(alternate).not.toContain("/help")
       expect(alternateSize.rows).toBeGreaterThan(primarySize.rows)
 
       await actAsync(() => {
@@ -306,7 +322,7 @@ describe("CockpitApp alternate-screen layout", () => {
         await shell.scriptOutput("\u001b[?1049l")
       })
       const restored = await setup.waitForFrame(
-        (frame) => frame.includes(PROMPT_PLACEHOLDER) && frame.includes("hand off"),
+        (frame) => frame.includes(PROMPT_PLACEHOLDER) && frame.includes("/help"),
       )
       expect(runtime.bufferType()).toBe("normal")
       expect(restored).not.toContain("interactive-app")
@@ -324,9 +340,7 @@ describe("CockpitApp keymap", () => {
     const setup = await renderCockpitApp(controller)
 
     try {
-      await actAsync(() => {
-        setup.mockInput.pressKey("F2")
-      })
+      await runSlashCommand(setup, "shell")
       await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
       await actAsync(async () => {
         await shell.scriptOutput("\u001b[?1049h\u001b[Hinteractive-app")
@@ -350,7 +364,7 @@ describe("CockpitApp keymap", () => {
     }
   })
 
-  it("toggles into the shell, forwards input, and restores the intact agent draft", async () => {
+  it("keeps the shell chord for terminal-level focus while preserving an agent draft", async () => {
     const { controller, runtime, shell } = shellReadyController()
     const setup = await renderCockpitApp(controller)
 
@@ -374,7 +388,7 @@ describe("CockpitApp keymap", () => {
       expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x6c, 0x73])
 
       await actAsync(() => {
-        setup.mockInput.pressKey("F2")
+        setup.mockInput.pressKey("`", { ctrl: true })
       })
       await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING) && !frame.includes("Shell · focused"))
       expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
@@ -391,14 +405,12 @@ describe("CockpitApp keymap", () => {
     }
   })
 
-  it("stands cockpit chords down while shell focus forwards their terminal bytes", async () => {
+  it("stands slash commands down while shell focus forwards terminal bytes", async () => {
     const { controller, runtime, shell } = shellReadyController()
     const setup = await renderCockpitApp(controller)
 
     try {
-      await actAsync(() => {
-        setup.mockInput.pressKey("F2")
-      })
+      await runSlashCommand(setup, "shell")
       await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
 
       await actAsync(() => {
@@ -423,9 +435,7 @@ describe("CockpitApp keymap", () => {
     const setup = await renderCockpitApp(controller)
 
     try {
-      await actAsync(() => {
-        setup.mockInput.pressKey("F2")
-      })
+      await runSlashCommand(setup, "shell")
       await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
 
       await actAsync(() => {
@@ -452,9 +462,7 @@ describe("CockpitApp keymap", () => {
     const setup = await renderCockpitApp(controller, 80, 24, recorder)
 
     try {
-      await actAsync(() => {
-        setup.mockInput.pressKey("F2")
-      })
+      await runSlashCommand(setup, "shell")
       await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
       await actAsync(async () => {
         await setup.mockInput.typeText("ls")
@@ -476,7 +484,7 @@ describe("CockpitApp keymap", () => {
     }
   })
 
-  it("copies the latest shell command and records external_run exactly once per use", async () => {
+  it("runs /copy from the agent pane and records external_run exactly once per use", async () => {
     const { controller, runtime } = shellReadyController()
     const records: TelemetryRecord[] = []
     const recorder = createTelemetryRecorder({
@@ -491,13 +499,8 @@ describe("CockpitApp keymap", () => {
     try {
       await actAsync(() => {
         controller.store.applyShellEvent({ kind: "command_started", id: "command-1", command: "bun test" })
-        setup.mockInput.pressKey("F2")
       })
-      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
-
-      await actAsync(() => {
-        setup.mockInput.pressKey("F3")
-      })
+      await runSlashCommand(setup, "copy")
 
       const frame = await setup.waitForFrame((value) => value.includes(EXTERNAL_RUN_COPIED_PREFIX))
       expect(frame).toContain(`${EXTERNAL_RUN_COPIED_PREFIX} bun test`)
@@ -513,7 +516,7 @@ describe("CockpitApp keymap", () => {
     }
   })
 
-  it("does not copy or record external_run when the shell has no command", async () => {
+  it("shows /copy's empty state without copying or recording telemetry", async () => {
     const { controller, runtime } = shellReadyController()
     const records: TelemetryRecord[] = []
     const recorder = createTelemetryRecorder({
@@ -526,14 +529,7 @@ describe("CockpitApp keymap", () => {
     const copy = spyOn(setup.renderer, "copyToClipboardOSC52").mockReturnValue(true)
 
     try {
-      await actAsync(() => {
-        setup.mockInput.pressKey("F2")
-      })
-      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
-
-      await actAsync(() => {
-        setup.mockInput.pressKey("F3")
-      })
+      await runSlashCommand(setup, "copy")
 
       expect(await setup.waitForFrame((frame) => frame.includes(EXTERNAL_RUN_EMPTY))).toContain(EXTERNAL_RUN_EMPTY)
       expect(copy).not.toHaveBeenCalled()
@@ -545,20 +541,61 @@ describe("CockpitApp keymap", () => {
     }
   })
 
-  it("switches the focused agent through the controller action", async () => {
+  it("switches the focused agent through /switch", async () => {
     const controller = createFakeController()
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
 
-    await actAsync(() => {
-      mockInput.pressKey("o", { ctrl: true })
-    })
+    await runSlashCommand(setup, "switch")
 
     expect(controller.calls.switchFocus).toEqual([undefined])
-    // The action really moved focus, so the region retitles to the other agent.
-    const frame = await waitForFrame((f) => lines(f)[0]?.includes("Codex") === true)
-    expect(lines(frame)[0]).not.toContain("Claude Code")
+    // The action really moved focus, reflected by the provider-neutral focused marker.
+    const frame = await setup.waitForFrame((f) => f.includes("[○ idle] [▸ ○ idle]"))
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(frame).toContain("Kitten")
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("leaves an unrecognized slash token for the focused agent instead of switching focus", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await actAsync(async () => {
+      await setup.mockInput.typeText("/switcheroo")
+    })
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => controller.calls.sendPrompt.length === 1)
+
+    expect(controller.calls.switchFocus).toEqual([])
+    expect(controller.calls.sendPrompt[0]).toEqual({ input: "/switcheroo", sessionId: undefined })
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("starts fresh agent sessions through /new", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "new")
+    await setup.waitFor(() => controller.calls.startNewRun === 1)
+
+    expect(controller.calls.startNewRun).toBe(1)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("clears the current run through /clear", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "clear")
+    await setup.waitFor(() => controller.calls.startNewRun === 1)
+
+    expect(controller.calls.startNewRun).toBe(1)
+
+    await destroyMounted(setup.renderer)
   })
 
   it("leaves printable keys to the prompt editor", async () => {
@@ -574,14 +611,12 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(renderer)
   })
 
-  it("dispatches Ctrl+R to the project saved-run picker", async () => {
+  it("opens the project saved-run picker through /resume", async () => {
     const controller = createFakeController()
     const source = pickerSource([pickerRun("auth", "refactor the auth guard", 9_000)])
     const setup = await renderCockpitApp(controller, 80, 24, undefined, source)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("r", { ctrl: true })
-    })
+    await runSlashCommand(setup, "resume")
 
     const frame = await setup.waitForFrame((value) => value.includes(SESSION_PICKER_TITLE))
     expect(frame).toContain("refactor the auth guard")
@@ -599,9 +634,7 @@ describe("CockpitApp keymap", () => {
     ])
     const setup = await renderCockpitApp(controller, 80, 24, undefined, source)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey("r", { ctrl: true })
-    })
+    await runSlashCommand(setup, "resume")
     await setup.waitForFrame((value) => value.includes(SESSION_PICKER_TITLE))
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
@@ -618,84 +651,75 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("shows and hides the help panel on the help key", async () => {
+  it("shows the full command list through /help", async () => {
     const controller = createFakeController()
-    const { renderer, mockInput, captureCharFrame, waitForFrame } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
 
-    expect(captureCharFrame()).not.toContain(HELP_TITLE)
+    expect(setup.captureCharFrame()).not.toContain(HELP_TITLE)
 
-    await actAsync(() => {
-      mockInput.pressKey("F1")
-    })
-    const opened = await waitForFrame((f) => f.includes(HELP_TITLE))
-    // The panel documents the shell's chords and the editor's alike.
+    await runSlashCommand(setup, "help")
+    const opened = await setup.waitForFrame((f) => f.includes(HELP_TITLE))
+    // The panel documents the slash commands, its one global chord, and editor keys.
     for (const entry of HELP_ENTRIES) {
       expect(opened).toContain(entry.keys)
       expect(opened).toContain(entry.description)
     }
+    expect(opened).toContain("/model")
+    expect(opened).toContain("/settings")
+    expect(opened).not.toContain("Ctrl+O")
 
-    await actAsync(() => {
-      mockInput.pressKey("F1")
-    })
-    const closed = await waitForFrame((f) => !f.includes(HELP_TITLE))
-    expect(closed).toContain(WELCOME_GREETING)
-
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
   it("closes the open help panel on Escape", async () => {
     const controller = createFakeController()
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
 
-    await actAsync(() => {
-      mockInput.pressKey("F1")
-    })
-    await waitForFrame((f) => f.includes(HELP_TITLE))
+    await runSlashCommand(setup, "help")
+    await setup.waitForFrame((f) => f.includes(HELP_TITLE))
 
     await actAsync(async () => {
-      mockInput.pressEscape()
+      setup.mockInput.pressEscape()
       // A lone ESC is held briefly in case it prefixes a longer escape sequence.
       await sleep(ESCAPE_DISAMBIGUATION_MS)
     })
-    expect(await waitForFrame((f) => !f.includes(HELP_TITLE))).toContain(WELCOME_GREETING)
+    expect(await setup.waitForFrame((f) => !f.includes(HELP_TITLE))).toContain(WELCOME_GREETING)
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
-  it("shows shell attach guidance and restores editor focus without interrupting the working agent", async () => {
+  it("closes /help before the editor can interrupt a working agent", async () => {
     const controller = createFakeController()
     controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
-    const editorBeforeHelp = renderer.currentFocusedEditor
+    const setup = await renderCockpitApp(controller)
+    const editorBeforeHelp = setup.renderer.currentFocusedEditor
 
-    await actAsync(() => {
-      mockInput.pressKey("F1")
-    })
-    const opened = await waitForFrame((f) => f.includes(HELP_TITLE))
-    expect(opened).toContain("Ctrl+` / F2")
-    expect(opened).toContain("Ctrl+C interrupts")
-    expect(opened).toContain("shell cwd/commands")
+    await runSlashCommand(setup, "help")
+    const opened = await setup.waitForFrame((f) => f.includes(HELP_TITLE))
+    expect(opened).toContain("/shell")
+    expect(opened).toContain("Focus or leave the integrated shell")
+    expect(opened).toContain("/resume")
 
     await actAsync(async () => {
-      mockInput.pressEscape()
+      setup.mockInput.pressEscape()
       await sleep(ESCAPE_DISAMBIGUATION_MS)
     })
-    await waitForFrame((f) => !f.includes(HELP_TITLE))
-    // The shell consumed the key, so the editor never saw it and the turn survives.
+    await setup.waitForFrame((f) => !f.includes(HELP_TITLE))
+    // The help overlay consumed the key, so the editor never saw it and the turn survives.
     expect(controller.calls.cancel).toEqual([])
-    expect(renderer.currentFocusedEditor).toBe(editorBeforeHelp)
+    expect(setup.renderer.currentFocusedEditor).toBe(editorBeforeHelp)
 
     // With help gone, the same key now reaches the editor.
     await actAsync(async () => {
-      mockInput.pressEscape()
+      setup.mockInput.pressEscape()
       await sleep(ESCAPE_DISAMBIGUATION_MS)
     })
     expect(controller.calls.cancel).toEqual([undefined])
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
-  it("opens settings through Ctrl+, and records the content-free reach event", async () => {
+  it("opens settings through /settings and records the content-free reach event", async () => {
     const controller = createFakeController()
     const records: TelemetryRecord[] = []
     const recorder = createTelemetryRecorder({
@@ -704,87 +728,76 @@ describe("CockpitApp keymap", () => {
       now: () => 42,
       sessionRef: "shell-test",
     })
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller, 80, 24, recorder)
+    const setup = await renderCockpitApp(controller, 80, 24, recorder)
 
-    await actAsync(() => {
-      mockInput.pressKey(",", { ctrl: true })
-    })
+    await runSlashCommand(setup, "settings")
 
     expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
-    expect(await waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain("^T hand off -> Codex")
+    expect(await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain("Applies immediately")
     expect(records).toEqual([{ type: "settings_opened", at: 42, sessionRef: "shell-test" }])
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
   it("closes the help panel before settings takes keyboard ownership", async () => {
     const controller = createFakeController()
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
 
-    await actAsync(() => {
-      mockInput.pressKey("F1")
-    })
-    await waitForFrame((frame) => frame.includes(HELP_TITLE))
+    await runSlashCommand(setup, "help")
+    await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
 
-    await actAsync(() => {
-      mockInput.pressKey(",", { ctrl: true })
-    })
+    await runSlashCommand(setup, "settings")
 
-    const settings = await waitForFrame((frame) => frame.includes(SETTINGS_TITLE) && !frame.includes(HELP_TITLE))
+    const settings = await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE) && !frame.includes(HELP_TITLE))
     expect(settings).not.toContain(HELP_TITLE)
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
   it("keeps approval above the immediately preceding settings overlay", async () => {
     const controller = createFakeController()
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
 
-    await actAsync(() => {
-      mockInput.pressKey(",", { ctrl: true })
-    })
-    await waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+    await runSlashCommand(setup, "settings")
+    await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
 
     await actAsync(() => {
       openApproval(controller)
     })
 
-    const approval = await waitForFrame((frame) => frame.includes(APPROVAL_TITLE) && !frame.includes(SETTINGS_TITLE))
+    const approval = await setup.waitForFrame((frame) => frame.includes(APPROVAL_TITLE) && !frame.includes(SETTINGS_TITLE))
     expect(approval).toContain("Approve action")
     expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
-  it("stands shell chords down while settings owns the keyboard", async () => {
+  it("stands the terminal shell chord down while settings owns the keyboard", async () => {
     const controller = createFakeController()
-    const { renderer, mockInput, waitForFrame } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "settings")
+    await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
 
     await actAsync(() => {
-      mockInput.pressKey(",", { ctrl: true })
-    })
-    await waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
-
-    await actAsync(() => {
-      mockInput.pressKey("o", { ctrl: true })
-      mockInput.pressKey("t", { ctrl: true })
+      setup.mockInput.pressKey("`", { ctrl: true })
     })
 
     expect(controller.calls.switchFocus).toEqual([])
+    expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
   it("stands shell chords down while the session picker slot is open", async () => {
     const controller = createFakeController()
     controller.store.openSessionPicker()
-    const { renderer, mockInput } = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller)
 
     await actAsync(() => {
-      mockInput.pressKey("o", { ctrl: true })
-      mockInput.pressKey("t", { ctrl: true })
+      setup.mockInput.pressKey("`", { ctrl: true })
     })
 
     expect(selectHasOpenOverlay(controller.store.getState())).toBe(true)
@@ -792,7 +805,7 @@ describe("CockpitApp keymap", () => {
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
   it("releases composer focus for settings and restores it after Escape", async () => {
@@ -800,9 +813,7 @@ describe("CockpitApp keymap", () => {
     const setup = await renderCockpitApp(controller)
     expect(setup.renderer.currentFocusedEditor).not.toBeNull()
 
-    await actAsync(() => {
-      setup.mockInput.pressKey(",", { ctrl: true })
-    })
+    await runSlashCommand(setup, "settings")
     await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
     await setup.waitFor(() => setup.renderer.currentFocusedEditor === null)
 
@@ -821,16 +832,17 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("matches the cockpit frame with settings open", async () => {
+  it("keeps settings above the branded cockpit frame", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
 
-    await actAsync(() => {
-      setup.mockInput.pressKey(",", { ctrl: true })
-    })
+    await runSlashCommand(setup, "settings")
     await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
 
-    expect(setup.captureCharFrame()).toMatchSnapshot("settings-open")
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(SETTINGS_TITLE)
+    expect(frame).toContain("[Theme]")
+    expect(frame).not.toContain(HELP_TITLE)
 
     await destroyMounted(setup.renderer)
   })
@@ -847,7 +859,9 @@ describe("renderCockpit", () => {
     })
 
     expect(root).toBeDefined()
-    expect(await waitForFrame((f) => f.includes(WELCOME_GREETING))).toContain("Claude Code")
+    const frame = await waitForFrame((f) => f.includes(WELCOME_GREETING))
+    expect(frame).toContain("Kitten")
+    expect(frame).toContain(WELCOME_WORDMARK[0])
 
     await destroyMounted(renderer)
   })

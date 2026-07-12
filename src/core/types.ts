@@ -49,7 +49,7 @@ export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished
 /**
  * Whether a session's status is one the developer must act on: an approval to
  * answer, a crash to look at, or a finished turn awaiting their next move (ADR-006).
- * A pure predicate every attention surface reads - the status strip, the Ctrl+S
+ * A pure predicate every attention surface reads - the status strip, the `/sessions`
  * overview, the jump-to-next action, and the notifier - so they can never disagree
  * about which sessions need you.
  */
@@ -131,6 +131,22 @@ export interface ConfigOption {
   label: string
   currentValue: string
   options: ConfigSelectOption[]
+}
+
+/**
+ * A protocol-free slash command advertised by an agent for one live session.
+ *
+ * ACP owns the wire representation (including its extensibility metadata and
+ * input wrapper); the adapter flattens that shape before it reaches this core
+ * model.
+ */
+export interface AvailableCommand {
+  /** The command token without a leading slash (for example, `review`). */
+  name: string
+  /** Human-readable explanation shown in Kitten's command menu. */
+  description: string
+  /** Optional free-form argument hint supplied by the agent. */
+  hint?: string
 }
 
 /** Context-window usage reported by an agent; `percent` is normalized to [0, 1]. */
@@ -249,6 +265,8 @@ export interface SessionState {
    * agent always returns the complete set. Empty when nothing is advertised.
    */
   configOptions: ConfigOption[]
+  /** The latest complete slash-command list advertised for this session. */
+  commands: AvailableCommand[]
 }
 
 /** One semantically bounded shell command and its captured raw output. */
@@ -296,6 +314,7 @@ export type DomainSessionEvent =
   | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
+  | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic

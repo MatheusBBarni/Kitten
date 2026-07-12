@@ -1,5 +1,5 @@
 /**
- * The Ctrl+S sessions overview: the fleet at a glance, and one key to the session
+ * The `/sessions` overview: the fleet at a glance, and one key to the session
  * that needs you.
  *
  * The overview is deliberately thin (ADR-001): it is a router, not a fleet manager.
@@ -77,7 +77,7 @@ function SessionsDialog(): ReactNode {
   const jumpInto = useCallback((): void => {
     const target = sessions[clamped]
     controller.store.closeSessions()
-    // A jump made through the overview, not a blind Ctrl+O cycle (task_09).
+    // A jump made through the overview, not a direct `/switch` cycle (task_09).
     if (target) controller.actions.switchFocus(target.id, { viaOverview: true })
   }, [clamped, controller, sessions])
 

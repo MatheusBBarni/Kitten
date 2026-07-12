@@ -36,7 +36,7 @@ export type MessageRole = "user" | "agent"
  * without reshaping callers.
  */
 export const ROLE_LABELS: Readonly<Record<"agent", string>> = {
-  agent: "agent",
+  agent: "Agent",
 }
 
 /** Props for {@link MessageView}. */

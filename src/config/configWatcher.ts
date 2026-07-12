@@ -20,7 +20,7 @@ export interface WatchUserConfigOptions {
 }
 
 /**
- * Watch the user config and report each successfully reloaded configuration.
+ * Watch the user config and report each successfully changed configuration.
  *
  * The target file catches in-place writes while its parent directory keeps atomic
  * rename replacements observable after the original inode is detached. Events are
@@ -42,6 +42,7 @@ export function watchUserConfig(
   let closed = false
   let eventGeneration = 0
   let reloadTimer: ReturnType<typeof setTimeout> | undefined
+  let lastDeliveredSignature: string | undefined
 
   const reload = async (generation: number): Promise<void> => {
     let config: AppConfig
@@ -51,7 +52,11 @@ export function watchUserConfig(
       return
     }
 
-    if (!closed && generation === eventGeneration) onConfig(config)
+    const signature = JSON.stringify(config)
+    if (!closed && generation === eventGeneration && signature !== lastDeliveredSignature) {
+      lastDeliveredSignature = signature
+      onConfig(config)
+    }
   }
 
   const scheduleReload = (): void => {

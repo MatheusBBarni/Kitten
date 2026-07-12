@@ -10,6 +10,7 @@ import {
   APPROVAL_HINT,
   APPROVAL_KEYMAP,
   approvalOptionIndex,
+  COCKPIT_COMMANDS,
   COCKPIT_KEYMAP,
   EDITOR_KEYMAP,
   HANDOFF_CONFIG_HINT,
@@ -21,6 +22,7 @@ import {
   matchApprovalCommand,
   matchCommand,
   matchHandoffCommand,
+  matchMenuCommand,
   matchModelSelectCommand,
   matchSessionPickerCommand,
   matchSessionsCommand,
@@ -28,8 +30,8 @@ import {
   MODEL_SELECT_CONFIRM_HINT,
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
+  MENU_KEYMAP,
   PROMPT_KEY_BINDINGS,
-  RESUME_KEY_HINT,
   SESSION_PICKER_HINT,
   SESSION_PICKER_KEYMAP,
   SESSIONS_HINT,
@@ -46,143 +48,82 @@ function key(name: string, modifiers: Partial<CockpitKey> = {}): CockpitKey {
 }
 
 describe("matchCommand", () => {
-  it("maps Ctrl+` and the documented F2 fallback to toggle-shell", () => {
+  it("maps Ctrl+` to the shell and Escape to the help-panel close action", () => {
     expect(matchCommand(key("`", { ctrl: true }))).toBe("toggle-shell")
     expect(matchCommand(key("grave", { ctrl: true }))).toBe("toggle-shell")
-    expect(matchCommand(key("f2"))).toBe("toggle-shell")
-  })
-
-  it("maps F3 to the shell-only run-externally action", () => {
-    expect(matchCommand(key("f3"))).toBe("run-externally")
-  })
-
-  it("maps Ctrl+O to switch-focus", () => {
-    expect(matchCommand(key("o", { ctrl: true }))).toBe("switch-focus")
-  })
-
-  it("maps Ctrl+T to hand-off", () => {
-    expect(matchCommand(key("t", { ctrl: true }))).toBe("hand-off")
-  })
-
-  it("maps Ctrl+S to sessions", () => {
-    expect(matchCommand(key("s", { ctrl: true }))).toBe("sessions")
-  })
-
-  it("maps Ctrl+R to resume-session", () => {
-    expect(matchCommand(key("r", { ctrl: true }))).toBe("resume-session")
-  })
-
-  it("maps Ctrl+N to start-new-run", () => {
-    expect(matchCommand(key("n", { ctrl: true }))).toBe("start-new-run")
-  })
-
-  it("maps Ctrl+E to model-select, the selector's safe chord", () => {
-    expect(matchCommand(key("e", { ctrl: true }))).toBe("model-select")
-  })
-
-  it("maps Ctrl+, to open-settings", () => {
-    expect(matchCommand(key(",", { ctrl: true }))).toBe("open-settings")
-  })
-
-  it("leaves a plain comma to the prompt editor", () => {
-    expect(matchCommand(key(","))).toBeNull()
-  })
-
-  it("does not bind the selector to Ctrl+M, which a terminal sends for carriage return", () => {
-    // Ctrl+M arrives as an ordinary Enter, so binding it would open the selector on every
-    // prompt submission. The chord must be anything but that.
-    expect(matchCommand(key("m", { ctrl: true }))).not.toBe("model-select")
-  })
-
-  it("maps F1 to toggle-help and Escape to close-help", () => {
-    expect(matchCommand(key("f1"))).toBe("toggle-help")
     expect(matchCommand(key("escape"))).toBe("close-help")
   })
 
-  it("ignores a bare letter so the prompt editor keeps every printable key", () => {
-    expect(matchCommand(key("o"))).toBeNull()
-    expect(matchCommand(key("f"))).toBeNull()
-    expect(matchCommand(key("t"))).toBeNull()
+  it("leaves every retired cockpit action chord to the prompt", () => {
+    for (const name of ["o", "t", "s", "r", "n", "e", ","]) {
+      expect(matchCommand(key(name, { ctrl: true }))).toBeNull()
+    }
+    for (const name of ["f1", "f2", "f3"]) {
+      expect(matchCommand(key(name))).toBeNull()
+    }
   })
 
-  it("ignores a chord with extra modifiers held", () => {
-    expect(matchCommand(key("o", { ctrl: true, shift: true }))).toBeNull()
-    expect(matchCommand(key("o", { ctrl: true, meta: true }))).toBeNull()
-    expect(matchCommand(key("t", { ctrl: true, shift: true }))).toBeNull()
-    expect(matchCommand(key("r", { ctrl: true, shift: true }))).toBeNull()
-    expect(matchCommand(key(",", { ctrl: true, shift: true }))).toBeNull()
-    expect(matchCommand(key(",", { ctrl: true, meta: true }))).toBeNull()
-    expect(matchCommand(key("f1", { ctrl: true }))).toBeNull()
-    expect(matchCommand(key("f2", { shift: true }))).toBeNull()
+  it("does not steal printable prompt input or modified shell chords", () => {
+    for (const name of ["/", "o", "t", ",", "return", "tab"]) {
+      expect(matchCommand(key(name))).toBeNull()
+    }
+    expect(matchCommand(key("`", { ctrl: true, shift: true }))).toBeNull()
+    expect(matchCommand(key("`", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("escape", { meta: true }))).toBeNull()
-  })
-
-  it("ignores keys the shell does not claim", () => {
-    expect(matchCommand(key("return"))).toBeNull()
-    expect(matchCommand(key("tab"))).toBeNull()
   })
 })
 
 describe("COCKPIT_KEYMAP", () => {
-  it("binds each command exactly once", () => {
+  it("retains only the terminal-level shell chord and help dismissal", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["toggle-shell", "close-help"])
     expect(new Set(commands).size).toBe(commands.length)
-    expect(commands).toEqual([
-      "toggle-shell",
-      "run-externally",
-      "switch-focus",
-      "hand-off",
-      "sessions",
-      "resume-session",
-      "start-new-run",
-      "model-select",
-      "open-settings",
-      "toggle-help",
-      "close-help",
-    ])
   })
 
-  it("keeps the selector chord clear of the other shell chords it must not collide with", () => {
-    const selector = COCKPIT_KEYMAP.find((binding) => binding.command === "model-select")!
-    // Ctrl+O (switch), Ctrl+T (hand-off), and Ctrl+S (sessions) are already spoken for.
-    for (const name of ["o", "t", "s", "m"]) {
-      expect(selector.matches({ name, ctrl: true, shift: false, meta: false })).toBe(false)
-    }
-  })
-
-  it("keeps the hand-off chord clear of the ASCII control codes a terminal already sends", () => {
-    // Backspace is Ctrl+H, Tab is Ctrl+I, Enter is Ctrl+M. A chord bound to one of them
-    // would fire on an ordinary keystroke in the composer.
-    const reserved = new Set(["h", "i", "j", "m", "c", "d", "z"])
-    const handoff = COCKPIT_KEYMAP.find((binding) => binding.command === "hand-off")!
-    for (const name of reserved) {
-      expect(handoff.matches({ name, ctrl: true, shift: false, meta: false })).toBe(false)
-    }
-  })
-
-  it("documents every binding for the help panel", () => {
+  it("documents each retained global binding", () => {
     for (const binding of COCKPIT_KEYMAP) {
       expect(binding.keys.length).toBeGreaterThan(0)
       expect(binding.description.length).toBeGreaterThan(0)
     }
   })
 
-  it("keeps the always-visible hint short enough for a narrow terminal", () => {
-    expect(KEYMAP_HINT).toContain("^`")
-    expect(KEYMAP_HINT).toContain("^R resume")
-    expect(KEYMAP_HINT.length).toBeLessThanOrEqual(20)
+  it("keeps slash-first compact affordances derived from the command registry", () => {
+    expect(KEYMAP_HINT).toBe("/help")
+    expect(SHELL_HINT).toBe("/shell")
+    expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+`")
+  })
+})
+
+describe("COCKPIT_COMMANDS", () => {
+  it("gives each user-facing cockpit action one unique slash name", () => {
+    expect(COCKPIT_COMMANDS.map(({ command, name }) => [command, name])).toEqual([
+      ["toggle-shell", "shell"],
+      ["run-externally", "copy"],
+      ["switch-focus", "switch"],
+      ["hand-off", "handoff"],
+      ["sessions", "sessions"],
+      ["resume-session", "resume"],
+      ["start-new-run", "new"],
+      ["clear-run", "clear"],
+      ["model-select", "model"],
+      ["open-settings", "settings"],
+      ["toggle-help", "help"],
+    ])
+    expect(new Set(COCKPIT_COMMANDS.map(({ name }) => name)).size).toBe(COCKPIT_COMMANDS.length)
   })
 
-  it("keeps the status hint compact while the help row retains the F2 fallback", () => {
-    expect(SHELL_HINT).toBe("^` shell")
-    expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+` / F2")
+  it("keeps every command discoverable with concise explanatory copy", () => {
+    for (const command of COCKPIT_COMMANDS) {
+      expect(command.name).not.toContain("/")
+      expect(command.description.length).toBeGreaterThan(0)
+    }
   })
 })
 
 describe("integration - OpenTUI KeyEvent dispatch", () => {
-  it("dispatches a synthesized Kitty Ctrl+, only to open-settings", () => {
+  it("dispatches a synthesized Ctrl+` only to the shell", () => {
     const event = new KeyEvent({
-      name: ",",
+      name: "grave",
       ctrl: true,
       shift: false,
       meta: false,
@@ -194,10 +135,39 @@ describe("integration - OpenTUI KeyEvent dispatch", () => {
       source: "kitty",
     })
 
-    expect(matchCommand(event)).toBe("open-settings")
+    expect(matchCommand(event)).toBe("toggle-shell")
     expect(COCKPIT_KEYMAP.filter((binding) => binding.matches(event)).map((binding) => binding.command)).toEqual([
-      "open-settings",
+      "toggle-shell",
     ])
+  })
+})
+
+describe("matchMenuCommand", () => {
+  it("maps arrows and Tab variants to slash-menu navigation", () => {
+    expect(matchMenuCommand(key("up"))).toBe("prev-option")
+    expect(matchMenuCommand(key("down"))).toBe("next-option")
+    expect(matchMenuCommand(key("tab"))).toBe("next-option")
+    expect(matchMenuCommand(key("tab", { shift: true }))).toBe("prev-option")
+  })
+
+  it("maps either Enter variant to run or insert the highlighted command", () => {
+    expect(matchMenuCommand(key("return"))).toBe("confirm")
+    expect(matchMenuCommand(key("kpenter"))).toBe("confirm")
+    expect(matchMenuCommand(key("escape"))).toBe("dismiss")
+  })
+
+  it("does not consume prompt text or modified navigation keys", () => {
+    expect(matchMenuCommand(key("m"))).toBeNull()
+    expect(matchMenuCommand(key("tab", { ctrl: true }))).toBeNull()
+    expect(matchMenuCommand(key("return", { shift: true }))).toBeNull()
+  })
+})
+
+describe("MENU_KEYMAP", () => {
+  it("binds each prompt-menu outcome exactly once", () => {
+    const commands = MENU_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual(["prev-option", "next-option", "confirm", "dismiss"])
+    expect(new Set(commands).size).toBe(commands.length)
   })
 })
 
@@ -223,8 +193,12 @@ describe("PROMPT_KEY_BINDINGS", () => {
 })
 
 describe("HELP_ENTRIES", () => {
-  it("lists the shell's chords first, then the editor's", () => {
-    expect(HELP_ENTRIES).toEqual([...COCKPIT_KEYMAP, ...EDITOR_KEYMAP])
+  it("lists slash commands, the retained shell chord, then editor input", () => {
+    expect(HELP_ENTRIES).toEqual([
+      ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
+      { keys: "Ctrl+`", description: "Focus or leave the integrated shell" },
+      ...EDITOR_KEYMAP,
+    ])
   })
 
   it("documents every entry with a chord and a description", () => {
@@ -239,34 +213,14 @@ describe("HELP_ENTRIES", () => {
     expect(new Set(descriptions).size).toBe(descriptions.length)
   })
 
-  it("names Escape twice, in the order the shell resolves it", () => {
-    const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
-    // Help first: while the panel is open it consumes Escape, and only then does the
-    // editor's interrupt become reachable.
-    expect(escapes.map((e) => e.index)).toEqual([10, 13])
-  })
-
-  it("documents the model selector, whose chord opens the model and effort picker", () => {
-    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+E")
-  })
-
-  it("documents the hand-off, since its chord is the one the product turns on", () => {
-    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+T")
-  })
-
-  it("documents shell focus, external running, and curated attach behavior", () => {
-    const shell = COCKPIT_KEYMAP.find((entry) => entry.command === "toggle-shell")
-    const external = COCKPIT_KEYMAP.find((entry) => entry.command === "run-externally")
-    const handoff = COCKPIT_KEYMAP.find((entry) => entry.command === "hand-off")
-
-    expect(shell?.description).toContain("Ctrl+C interrupts")
-    expect(external).toMatchObject({ keys: "F3" })
-    expect(external?.description).toContain("external terminal")
-    expect(handoff?.description).toContain("shell cwd/commands")
-  })
-
-  it("documents settings through the cockpit keymap", () => {
-    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+,")
+  it("uses slash names for every cockpit action and leaves legacy chords absent", () => {
+    const keys = HELP_ENTRIES.map((entry) => entry.keys)
+    for (const command of COCKPIT_COMMANDS) {
+      expect(keys).toContain(`/${command.name}`)
+    }
+    for (const legacy of ["Ctrl+O", "Ctrl+T", "Ctrl+S", "Ctrl+R", "Ctrl+N", "Ctrl+E", "Ctrl+,", "F1", "F2", "F3"]) {
+      expect(keys).not.toContain(legacy)
+    }
   })
 
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {
@@ -280,15 +234,6 @@ describe("HELP_ENTRIES", () => {
     ]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
-  })
-
-  it("documents the sessions overview, whose chord opens the fleet router", () => {
-    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+S")
-  })
-
-  it("documents saved-run resume in both the help panel and compact hint", () => {
-    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+R")
-    expect(RESUME_KEY_HINT).toBe("^R resume")
   })
 })
 
@@ -487,6 +432,11 @@ describe("matchModelSelectCommand", () => {
     expect(matchModelSelectCommand(key("down"))).toBe("next-option")
   })
 
+  it("maps Tab and Shift+Tab between agent model-and-effort tabs", () => {
+    expect(matchModelSelectCommand(key("tab"))).toBe("next-tab")
+    expect(matchModelSelectCommand(key("tab", { shift: true }))).toBe("prev-tab")
+  })
+
   it("maps both Enter variants to confirm, since a terminal may report either", () => {
     expect(matchModelSelectCommand(key("return"))).toBe("confirm")
     expect(matchModelSelectCommand(key("kpenter"))).toBe("confirm")
@@ -499,6 +449,7 @@ describe("matchModelSelectCommand", () => {
   it("ignores a chord with modifiers held, so Shift+Enter cannot apply a switch", () => {
     expect(matchModelSelectCommand(key("return", { shift: true }))).toBeNull()
     expect(matchModelSelectCommand(key("up", { ctrl: true }))).toBeNull()
+    expect(matchModelSelectCommand(key("tab", { ctrl: true }))).toBeNull()
     expect(matchModelSelectCommand(key("escape", { meta: true }))).toBeNull()
   })
 
@@ -512,7 +463,7 @@ describe("matchModelSelectCommand", () => {
 describe("MODEL_SELECT_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = MODEL_SELECT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-option", "next-option", "confirm", "cancel"])
+    expect(commands).toEqual(["prev-option", "next-option", "next-tab", "prev-tab", "confirm", "cancel"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
