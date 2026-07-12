@@ -25,7 +25,7 @@ import type {
   SessionId,
   ShellEvent,
 } from "../core/types.ts"
-import type { PersistedRunRecord } from "../persistence/runRecord.ts"
+import type { PersistedRunRecordV1 } from "../persistence/runRecord.ts"
 import {
   createInMemoryShellRuntimeFactory,
   type ShellRuntime,
@@ -328,7 +328,7 @@ async function controllerOverFleet(
   return { controller, created }
 }
 
-function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecord {
+function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecordV1 {
   return {
     version: 1,
     runId: "run-07",

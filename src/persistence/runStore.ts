@@ -11,11 +11,27 @@ import { createHash, randomUUID } from "node:crypto"
 import { dirname, join, resolve } from "node:path"
 
 import { createSecretRedactor } from "../core/secretRedactor.ts"
-import type { HandoffBundle, SessionId, SessionStatus } from "../core/types.ts"
 import { resolveTelemetryPath } from "../telemetry/recorder.ts"
-import type { PersistedAgent, PersistedRunRecord, PersistedRunSummary } from "./runRecord.ts"
+import {
+  PERSISTED_RUN_RECORD_SCHEMA,
+  migratePersistedRunV1,
+  type PersistedAgent,
+  type PersistedConversationV2,
+  type PersistedRunRecord,
+  type PersistedRunRecordV1,
+  type PersistedRunRecordV2,
+  type PersistedRunSummary,
+  type PersistedWorkspaceConversationV2,
+} from "./runRecord.ts"
 
-export type { PersistedAgent, PersistedRunRecord, PersistedRunSummary } from "./runRecord.ts"
+export {
+  migratePersistedRunV1,
+  type PersistedAgent,
+  type PersistedRunRecord,
+  type PersistedRunRecordV1,
+  type PersistedRunRecordV2,
+  type PersistedRunSummary,
+} from "./runRecord.ts"
 
 /** Environment override for the Kitten state base that contains `sessions/`. */
 export const SESSIONS_PATH_ENV_VAR = "KITTEN_SESSIONS_PATH"
@@ -34,8 +50,6 @@ export interface RunStoreOptions {
   /** Kitten state base. Run files live beneath its `sessions/` child. */
   path?: string
 }
-
-const SESSION_STATUSES = new Set<SessionStatus>(["idle", "working", "awaiting_approval", "finished", "error"])
 
 const NOOP_RUN_STORE: RunStore = {
   save() {},
@@ -77,7 +91,10 @@ class FileRunStore implements RunStore {
 
   save(record: PersistedRunRecord): void {
     assertSafeRunId(record.runId)
-    const persisted = sanitizeRecord(record)
+    const sanitized = sanitizeRecord(record)
+    const decoded = PERSISTED_RUN_RECORD_SCHEMA.safeParse(sanitized)
+    if (!decoded.success) throw new Error(`Invalid persisted run record: ${decoded.error.message}`)
+    const persisted = decoded.data
     const projectDirectory = this.projectDirectory(persisted.cwd)
     mkdirSync(projectDirectory, { recursive: true, mode: 0o700 })
 
@@ -141,7 +158,8 @@ class FileRunStore implements RunStore {
   private readRecord(path: string): PersistedRunRecord | null {
     try {
       const value: unknown = JSON.parse(readFileSync(path, "utf8"))
-      return isPersistedRunRecord(value) ? value : null
+      const result = PERSISTED_RUN_RECORD_SCHEMA.safeParse(value)
+      return result.success ? result.data : null
     } catch (error) {
       if (error instanceof SyntaxError || isMissing(error)) return null
       throw error
@@ -151,126 +169,96 @@ class FileRunStore implements RunStore {
 
 function sanitizeRecord(record: PersistedRunRecord): PersistedRunRecord {
   const redactor = createSecretRedactor()
-  const agents: Record<SessionId, PersistedAgent> = {}
-  for (const [agentId, agent] of Object.entries(record.agents)) {
-    agents[agentId] = {
-      sessionId: agent.sessionId,
-      lastPrompt: redactor.redact(agent.lastPrompt).text,
-      messageCount: agent.messageCount,
-      status: agent.status,
+  if (record.version === 1) {
+    const agents: Record<string, PersistedAgent> = {}
+    for (const [agentId, agent] of Object.entries(record.agents)) {
+      agents[agentId] = {
+        sessionId: agent.sessionId,
+        lastPrompt: redactor.redact(agent.lastPrompt).text,
+        messageCount: agent.messageCount,
+        status: agent.status,
+      }
+    }
+
+    return {
+      version: 1,
+      runId: record.runId,
+      cwd: resolve(record.cwd),
+      gitBranch: record.gitBranch === null ? null : redactor.redact(record.gitBranch).text,
+      focusedAgentId: record.focusedAgentId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      agents,
+      handoffBundle: record.handoffBundle,
+    }
+  }
+
+  const conversations: Record<string, PersistedConversationV2> = {}
+  for (const [sessionId, conversation] of Object.entries(record.conversations)) {
+    conversations[sessionId] = {
+      sessionId: conversation.sessionId,
+      providerKind: conversation.providerKind,
+      cwd: resolve(conversation.cwd),
+      initialTitle: redactor.redact(conversation.initialTitle).text,
+      acpSessionId: conversation.acpSessionId,
+      lastPrompt: redactor.redact(conversation.lastPrompt).text,
+      messageCount: conversation.messageCount,
+      status: conversation.status,
+    }
+  }
+  const workspaceConversations: Record<string, PersistedWorkspaceConversationV2> = {}
+  for (const [sessionId, conversation] of Object.entries(record.workspace.conversations)) {
+    workspaceConversations[sessionId] = {
+      sessionId: conversation.sessionId,
+      displayName: redactor.redact(conversation.displayName).text,
+      lifecycle: conversation.lifecycle,
+      createdOrdinal: conversation.createdOrdinal,
+      attention: { ...conversation.attention },
     }
   }
 
   return {
-    version: 1,
+    version: 2,
     runId: record.runId,
     cwd: resolve(record.cwd),
     gitBranch: record.gitBranch === null ? null : redactor.redact(record.gitBranch).text,
-    focusedAgentId: record.focusedAgentId,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
-    agents,
+    conversations,
+    workspace: {
+      conversations: workspaceConversations,
+      order: [...record.workspace.order],
+      selectedVisibleId: record.workspace.selectedVisibleId,
+    },
     handoffBundle: record.handoffBundle,
   }
 }
 
 function toSummary(record: PersistedRunRecord): PersistedRunSummary | null {
-  const focusedAgent = record.agents[record.focusedAgentId]
-  if (!focusedAgent) return null
+  if (record.version === 1) {
+    const focusedAgent = record.agents[record.focusedAgentId]
+    if (!focusedAgent) return null
+    return {
+      runId: record.runId,
+      updatedAt: record.updatedAt,
+      gitBranch: record.gitBranch,
+      focusedAgentId: record.focusedAgentId,
+      lastPrompt: focusedAgent.lastPrompt,
+      messageCount: focusedAgent.messageCount,
+    }
+  }
+
+  const selectedId = record.workspace.selectedVisibleId
+  const summaryId = selectedId ?? record.workspace.order[0]
+  const conversation = summaryId === undefined ? undefined : record.conversations[summaryId]
   return {
     runId: record.runId,
     updatedAt: record.updatedAt,
     gitBranch: record.gitBranch,
-    focusedAgentId: record.focusedAgentId,
-    lastPrompt: focusedAgent.lastPrompt,
-    messageCount: focusedAgent.messageCount,
+    focusedAgentId: selectedId,
+    lastPrompt: conversation?.lastPrompt ?? "",
+    messageCount: conversation?.messageCount ?? 0,
   }
-}
-
-function isPersistedRunRecord(value: unknown): value is PersistedRunRecord {
-  if (!isObject(value) || value.version !== 1) return false
-  if (
-    typeof value.runId !== "string" ||
-    typeof value.cwd !== "string" ||
-    !(value.gitBranch === null || typeof value.gitBranch === "string") ||
-    typeof value.focusedAgentId !== "string" ||
-    typeof value.createdAt !== "number" ||
-    !Number.isFinite(value.createdAt) ||
-    typeof value.updatedAt !== "number" ||
-    !Number.isFinite(value.updatedAt) ||
-    !isObject(value.agents) ||
-    !(value.handoffBundle === null || isHandoffBundle(value.handoffBundle))
-  ) {
-    return false
-  }
-
-  return Object.values(value.agents).every(isPersistedAgent)
-}
-
-function isPersistedAgent(value: unknown): value is PersistedAgent {
-  return (
-    isObject(value) &&
-    typeof value.sessionId === "string" &&
-    typeof value.lastPrompt === "string" &&
-    typeof value.messageCount === "number" &&
-    Number.isFinite(value.messageCount) &&
-    typeof value.status === "string" &&
-    SESSION_STATUSES.has(value.status as SessionStatus)
-  )
-}
-
-/** Validate the full restoration payload before UI code composes it into a prompt. */
-function isHandoffBundle(value: unknown): value is HandoffBundle {
-  if (
-    !isObject(value) ||
-    value.intent !== "continue" ||
-    typeof value.summary !== "string" ||
-    !Array.isArray(value.files) ||
-    !Array.isArray(value.pendingDiffs) ||
-    typeof value.redactionCount !== "number" ||
-    !Number.isFinite(value.redactionCount)
-  ) {
-    return false
-  }
-
-  if (!value.files.every(isHandoffFile) || !value.pendingDiffs.every(isPendingDiff)) return false
-  return value.shell === undefined || isShellSnapshot(value.shell)
-}
-
-function isHandoffFile(value: unknown): boolean {
-  return (
-    isObject(value) &&
-    typeof value.path === "string" &&
-    (value.reason === "read" || value.reason === "edited")
-  )
-}
-
-function isPendingDiff(value: unknown): boolean {
-  return (
-    isObject(value) &&
-    typeof value.toolCallId === "string" &&
-    typeof value.path === "string" &&
-    typeof value.unified === "string"
-  )
-}
-
-function isShellSnapshot(value: unknown): boolean {
-  return (
-    isObject(value) &&
-    typeof value.cwd === "string" &&
-    Array.isArray(value.commands) &&
-    value.commands.every(isShellCommand)
-  )
-}
-
-function isShellCommand(value: unknown): boolean {
-  return (
-    isObject(value) &&
-    typeof value.id === "string" &&
-    typeof value.command === "string" &&
-    typeof value.output === "string" &&
-    (value.exitCode === null || (typeof value.exitCode === "number" && Number.isFinite(value.exitCode)))
-  )
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

@@ -12,7 +12,7 @@ import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
 import { createCockpitRenderer, createCockpitSession, main } from "../src/index.ts"
-import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
+import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
@@ -58,7 +58,7 @@ function resumableFakeConnection(
   }
 }
 
-function bootRun(cwd: string): PersistedRunRecord {
+function bootRun(cwd: string): PersistedRunRecordV1 {
   return {
     version: 1,
     runId: "boot-resume",

@@ -19,7 +19,11 @@ import type {
 import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
-import type { PersistedRunRecord, PersistedRunSummary } from "../src/persistence/runRecord.ts"
+import type {
+  PersistedRunRecord,
+  PersistedRunRecordV1,
+  PersistedRunSummary,
+} from "../src/persistence/runRecord.ts"
 import { createRunStore, encodeProjectDirectory, type RunStore } from "../src/persistence/runStore.ts"
 import { CockpitApp } from "../src/ui/CockpitApp.tsx"
 import { createTelemetryRecorder, type TelemetryRecord } from "../src/telemetry/recorder.ts"
@@ -56,7 +60,7 @@ function fakeConnection(id: ProviderKind, loadUnavailable = false): AgentConnect
   }
 }
 
-function run(runId: string, updatedAt: number): PersistedRunRecord {
+function run(runId: string, updatedAt: number): PersistedRunRecordV1 {
   return {
     version: 1,
     runId,
@@ -73,7 +77,7 @@ function run(runId: string, updatedAt: number): PersistedRunRecord {
   }
 }
 
-function summary(record: PersistedRunRecord): PersistedRunSummary {
+function summary(record: PersistedRunRecordV1): PersistedRunSummary {
   const focused = record.agents[record.focusedAgentId]!
   return {
     runId: record.runId,
@@ -85,7 +89,7 @@ function summary(record: PersistedRunRecord): PersistedRunSummary {
   }
 }
 
-function runStore(records: PersistedRunRecord[]): RunStore {
+function runStore(records: PersistedRunRecordV1[]): RunStore {
   return {
     save() {},
     list: (cwd) => records.filter((record) => record.cwd === cwd).map(summary).sort((a, b) => b.updatedAt - a.updatedAt),

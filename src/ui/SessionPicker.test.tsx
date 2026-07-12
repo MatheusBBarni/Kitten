@@ -9,7 +9,14 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
-import type { PersistedRunRecord, PersistedRunSummary } from "../persistence/runRecord.ts"
+import {
+  persistedResumeAgent,
+  persistedSelectedConversationId,
+  type PersistedRunRecord,
+  type PersistedRunRecordV1,
+  type PersistedRunRecordV2,
+  type PersistedRunSummary,
+} from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { createTelemetryRecorder, type TelemetryRecord, type TelemetryRecorder } from "../telemetry/recorder.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
@@ -38,7 +45,7 @@ function savedRun(
   gitBranch: string | null,
   messageCount: number,
   summary: string,
-): PersistedRunRecord {
+): PersistedRunRecordV1 {
   return {
     version: 1,
     runId,
@@ -72,14 +79,16 @@ function savedRun(
 }
 
 function summary(record: PersistedRunRecord): PersistedRunSummary {
-  const focused = record.agents[record.focusedAgentId]!
+  const focusedAgentId = persistedSelectedConversationId(record)
+  const summaryId = focusedAgentId ?? (record.version === 2 ? record.workspace.order[0] : null)
+  const focused = summaryId === null || summaryId === undefined ? undefined : persistedResumeAgent(record, summaryId)
   return {
     runId: record.runId,
     updatedAt: record.updatedAt,
     gitBranch: record.gitBranch,
-    focusedAgentId: record.focusedAgentId,
-    lastPrompt: focused.lastPrompt,
-    messageCount: focused.messageCount,
+    focusedAgentId,
+    lastPrompt: focused?.lastPrompt ?? "",
+    messageCount: focused?.messageCount ?? 0,
   }
 }
 
@@ -115,6 +124,43 @@ const RUNS = [
   savedRun("parser", "repair parser recovery", NOW - 3 * DAY, "fix/parser", 12, "Repair malformed-input recovery."),
   savedRun("dashboard", "polish usage dashboard", NOW - 8 * DAY, null, 1, "Polish the usage dashboard."),
 ]
+
+function backgroundOnlyV2Run(): PersistedRunRecordV2 {
+  return {
+    version: 2,
+    runId: "background-v2",
+    cwd: CWD,
+    gitBranch: null,
+    createdAt: NOW - DAY,
+    updatedAt: NOW,
+    conversations: {
+      review: {
+        sessionId: "review",
+        providerKind: "codex",
+        cwd: CWD,
+        initialTitle: "Codex",
+        acpSessionId: "review-acp",
+        lastPrompt: "review the V2 record",
+        messageCount: 6,
+        status: "finished",
+      },
+    },
+    workspace: {
+      conversations: {
+        review: {
+          sessionId: "review",
+          displayName: "Background review",
+          lifecycle: "background",
+          createdOrdinal: 3,
+          attention: { seen: false, sequence: 4 },
+        },
+      },
+      order: ["review"],
+      selectedVisibleId: null,
+    },
+    handoffBundle: null,
+  }
+}
 
 async function renderPicker(
   source: SessionPickerSource,
@@ -166,6 +212,20 @@ describe("SessionPicker visibility and listing", () => {
     expect(frame).toContain("repair parser recovery")
     expect(frame).toContain("no branch")
 
+    await destroyMounted(setup.renderer)
+  })
+
+  it("lists and previews a V2 run with null visible selection", async () => {
+    const setup = await renderPicker(pickerSource([backgroundOnlyV2Run()]))
+    await setup.waitForFrame((value) => value.includes("review the V2 record"))
+
+    await actAsync(async () => {
+      await setup.mockInput.typeText(" ")
+    })
+    const frame = await setup.waitForFrame((value) => value.includes("Focused: none"))
+
+    expect(frame).toContain("1 agent")
+    expect(frame).toContain("No run summary.")
     await destroyMounted(setup.renderer)
   })
 

@@ -23,7 +23,12 @@ import { createAgentConnection } from "../agent/agentConnection.ts"
 import { resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
-import type { PersistedAgent, PersistedRunRecord } from "../persistence/runRecord.ts"
+import {
+  persistedResumeAgent,
+  persistedSelectedConversationId,
+  type PersistedAgent,
+  type PersistedRunRecord,
+} from "../persistence/runRecord.ts"
 import {
   createShellRuntime as createRealShellRuntime,
   type ShellRuntime,
@@ -472,9 +477,10 @@ export async function createSessionController(options: SessionControllerOptions)
       options.recorder?.resumeLoadStarted?.()
       store.setRestorationBundle(record.handoffBundle)
       await Promise.all(
-        plan.map((entry) => restoreSession(entry.seed, entry.config, record.agents[entry.seed.id])),
+        plan.map((entry) => restoreSession(entry.seed, entry.config, persistedResumeAgent(record, entry.seed.id))),
       )
-      store.setFocus(record.focusedAgentId)
+      const selectedConversationId = persistedSelectedConversationId(record)
+      if (selectedConversationId !== null) store.setFocus(selectedConversationId)
       const restoration = store.getState().restoration
       let live = 0
       for (const entry of plan) {

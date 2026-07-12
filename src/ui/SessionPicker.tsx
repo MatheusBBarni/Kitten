@@ -11,7 +11,13 @@ import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { PersistedRunRecord, PersistedRunSummary } from "../persistence/runRecord.ts"
+import {
+  persistedConversationCount,
+  persistedResumeAgent,
+  persistedSelectedConversationId,
+  type PersistedRunRecord,
+  type PersistedRunSummary,
+} from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { selectIsApprovalOpen, selectSessionPicker } from "../store/selectors.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
@@ -394,15 +400,17 @@ function RunRow({
 
 function RunPreview({ record }: { record: PersistedRunRecord }): ReactNode {
   const palette = usePalette()
-  const focused = record.agents[record.focusedAgentId]
+  const focusedAgentId = persistedSelectedConversationId(record)
+  const focused = focusedAgentId === null ? undefined : persistedResumeAgent(record, focusedAgentId)
   const summary = record.handoffBundle?.summary.trim() || focused?.lastPrompt.trim() || "No run summary."
-  const agentCount = Object.keys(record.agents).length
+  const agentCount = persistedConversationCount(record)
+  const focusedLabel = focusedAgentId ?? "none"
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginTop: 1 }}>
       <text fg={palette.accent}>{PREVIEW_HEADING}</text>
       <text fg={palette.text}>{summary}</text>
-      <text fg={palette.muted}>{`Focused: ${record.focusedAgentId}  ·  ${agentCount} ${agentCount === 1 ? "agent" : "agents"}`}</text>
+      <text fg={palette.muted}>{`Focused: ${focusedLabel}  ·  ${agentCount} ${agentCount === 1 ? "agent" : "agents"}`}</text>
     </box>
   )
 }

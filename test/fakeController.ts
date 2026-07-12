@@ -14,7 +14,10 @@ import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnecti
 import { nextSessionId, type PromptInput } from "../src/app/actions.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
-import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
+import {
+  persistedSelectedConversationId,
+  type PersistedRunRecord,
+} from "../src/persistence/runRecord.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
 import { selectNextNeedy } from "../src/store/selectors.ts"
 import type { ResumeMode } from "../src/telemetry/recorder.ts"
@@ -154,7 +157,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     async restore(record, mode = "last-run"): Promise<void> {
       calls.restore.push(record)
       calls.restoreModes.push(mode)
-      store.setFocus(record.focusedAgentId)
+      const selectedConversationId = persistedSelectedConversationId(record)
+      if (selectedConversationId !== null) store.setFocus(selectedConversationId)
     },
     async dispose(): Promise<void> {
       calls.dispose++

@@ -12,7 +12,11 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
-import type { PersistedRunRecord, PersistedRunSummary } from "../persistence/runRecord.ts"
+import type {
+  PersistedRunRecord,
+  PersistedRunRecordV1,
+  PersistedRunSummary,
+} from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../shell/shellRuntime.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
@@ -86,7 +90,7 @@ async function runSlashCommand(
 }
 
 /** A project run fixture plus its in-memory persistence boundary for `/resume` flows. */
-function pickerRun(runId: string, lastPrompt: string, updatedAt: number): PersistedRunRecord {
+function pickerRun(runId: string, lastPrompt: string, updatedAt: number): PersistedRunRecordV1 {
   return {
     version: 1,
     runId,
@@ -103,8 +107,8 @@ function pickerRun(runId: string, lastPrompt: string, updatedAt: number): Persis
   }
 }
 
-function pickerSource(records: PersistedRunRecord[]): SessionPickerSource {
-  const toSummary = (record: PersistedRunRecord): PersistedRunSummary => {
+function pickerSource(records: PersistedRunRecordV1[]): SessionPickerSource {
+  const toSummary = (record: PersistedRunRecordV1): PersistedRunSummary => {
     const focused = record.agents[record.focusedAgentId]!
     return {
       runId: record.runId,
