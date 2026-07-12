@@ -1,6 +1,6 @@
 ---
 status: pending
-title: "Task 05: Pure file-completion parsing, formatting, and edit tracking"
+title: "Pure file-completion parsing, formatting, and edit tracking"
 type: frontend
 complexity: medium
 ---

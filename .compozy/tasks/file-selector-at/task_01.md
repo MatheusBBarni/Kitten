@@ -1,6 +1,6 @@
 ---
 status: pending
-title: "Task 01: Repository file discovery source and safety policy"
+title: "Repository file discovery source and safety policy"
 type: backend
 complexity: high
 ---

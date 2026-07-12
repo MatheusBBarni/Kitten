@@ -1,6 +1,6 @@
 ---
 status: pending
-title: "Task 03: Opt-in file-selector telemetry through controller actions"
+title: "Opt-in file-selector telemetry through controller actions"
 type: backend
 complexity: high
 ---

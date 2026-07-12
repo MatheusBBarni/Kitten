@@ -1,6 +1,6 @@
 ---
 status: pending
-title: "Task 02: Explicit-session discovery action and controller wiring"
+title: "Explicit-session discovery action and controller wiring"
 type: backend
 complexity: medium
 ---

@@ -1,6 +1,6 @@
 ---
 status: pending
-title: "Task 06: PromptEditor async @ selector integration and regressions"
+title: "PromptEditor async @ selector integration and regressions"
 type: frontend
 complexity: high
 ---

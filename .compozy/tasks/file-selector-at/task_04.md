@@ -1,6 +1,6 @@
 ---
 status: pending
-title: "Task 04: Stateless file selector presentation and @ help entry"
+title: "Stateless file selector presentation and @ help entry"
 type: frontend
 complexity: medium
 ---
