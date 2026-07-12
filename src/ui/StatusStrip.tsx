@@ -1,29 +1,28 @@
 /**
  * Kitten's focused-agent status bar.
  *
- * The first row keeps shared workspace and hand-off state visible. The second row
- * names only the active provider and its chosen model. The lower lozenges still
- * expose every agent's independent run state, so an unavailable peer remains
- * visible without making the current-model readout ambiguous.
+ * The first row keeps shared workspace and hand-off state visible. Its focused-agent
+ * readout combines the provider, model, optional reasoning effort, and current run
+ * state so the strip stays compact without a second status-only row.
  */
 
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
 import type { Selector } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
+  selectAgentEffort,
   selectAgentModel,
   selectFocusedSessionId,
-  selectIsFocused,
   selectIsShellFocused,
   selectSessionModel,
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
-import { usePalette, type CockpitPalette, type StatusTone } from "./theme.ts"
+import { usePalette, type StatusTone } from "./theme.ts"
 
 /** User-facing run-state vocabulary; awaiting approval is explicitly the user's turn. */
 export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
@@ -35,19 +34,6 @@ export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
   not_ready: "not ready",
 }
 
-/** Run-state is recognizable without color. */
-export const RUN_STATE_GLYPHS: Readonly<Record<StatusTone, string>> = {
-  idle: "○",
-  working: "●",
-  awaiting_approval: "!",
-  finished: "✓",
-  error: "×",
-  not_ready: "×",
-}
-
-/** The focused agent's independent marker; the unfocused lozenge renders no placeholder. */
-export const FOCUS_MARKER = "▸"
-
 /** Textual boot-state marker; color is deliberately not its only signal. */
 export const RESUMED_RUN_LABEL = "resumed"
 
@@ -57,6 +43,7 @@ const selectIsResumedRun: Selector<boolean> = (state) =>
 /** Selector factories consumed by the bar; injectable so delegated model slots can be exercised in isolation. */
 export interface StatusSlotSelectors {
   model: typeof selectSessionModel
+  effort: typeof selectAgentEffort
 }
 
 function selectAvailableModel(sessionId: string): Selector<string | null> {
@@ -69,6 +56,7 @@ const DEFAULT_SLOT_SELECTORS: StatusSlotSelectors = {
   // The task_08 contract remains nullable; the already-landed model seam is
   // the production source until that delegated selector owns the same value.
   model: selectAvailableModel,
+  effort: selectAgentEffort,
 }
 
 export interface StatusStripProps {
@@ -76,7 +64,7 @@ export interface StatusStripProps {
   selectors?: StatusSlotSelectors
 }
 
-/** Focused provider/model, followed by the multi-agent run-state row. */
+/** Focused provider, model, effort, and run state. */
 export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripProps): ReactNode {
   const controller = useController()
   const palette = usePalette()
@@ -110,16 +98,6 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
           <text fg={palette.accent}>{shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT}</text>
         </box>
       </box>
-
-      <box style={{ flexDirection: "row", flexShrink: 0, flexWrap: "wrap", gap: 1, overflow: "hidden" }}>
-        {runtimes.map((runtime) => (
-          <AgentStatusLozenge
-            key={runtime.sessionId}
-            runtime={runtime}
-            palette={palette}
-          />
-        ))}
-      </box>
     </box>
   )
 }
@@ -129,20 +107,29 @@ interface AgentModelSummaryProps {
   selectors: StatusSlotSelectors
 }
 
-/** The focused model names live in the compact upper row, not inside status chips. */
+/** The focused model, effort, and status live together in the compact upper row. */
 function AgentModelSummary({ runtime, selectors }: AgentModelSummaryProps): ReactNode {
   const palette = usePalette()
   const modelSelector = useMemo(() => selectors.model(runtime.sessionId), [selectors.model, runtime.sessionId])
+  const effortSelector = useMemo(() => selectors.effort(runtime.sessionId), [selectors.effort, runtime.sessionId])
   const configOptionsSelector = useMemo(() => selectAgentConfigOptions(runtime.sessionId), [runtime.sessionId])
+  const statusSelector = useMemo(() => selectSessionStatus(runtime.sessionId), [runtime.sessionId])
   const model = useAppSelector(modelSelector)
+  const effort = useAppSelector(effortSelector)
   const configOptions = useAppSelector(configOptionsSelector)
+  const status = useAppSelector(statusSelector)
   const displayModel = displayModelName(configOptions, model)
+  const displayEffort = displayEffortName(configOptions, effort)
   const provider = runtime.providerKind === "claude-code" ? "claude" : "codex"
+  const tone: StatusTone = runtime.ready ? status : "not_ready"
 
   return (
     <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none">
       <span fg={palette.accent}>{`${provider}:`}</span>
       <span fg={displayModel === null ? palette.muted : palette.text}>{displayModel ?? "—"}</span>
+      {displayEffort === null ? null : <span fg={palette.muted}>{`:${displayEffort}`}</span>}
+      <span fg={palette.muted}> - </span>
+      <span fg={palette.status[tone]}>{STATUS_LABELS[tone]}</span>
     </text>
   )
 }
@@ -154,30 +141,9 @@ function displayModelName(configOptions: readonly ConfigOption[], value: string 
   return model?.options.find((option) => option.value === value)?.name ?? value
 }
 
-interface AgentStatusLozengeProps {
-  runtime: AgentRuntimeState
-  palette: CockpitPalette
-}
-
-/** Focus, state, and every nullable session slot for one agent. */
-function AgentStatusLozenge({
-  runtime,
-  palette,
-}: AgentStatusLozengeProps): ReactNode {
-  const { sessionId } = runtime
-  const statusSelector = useMemo(() => selectSessionStatus(sessionId), [sessionId])
-  const focusSelector = useMemo(() => selectIsFocused(sessionId), [sessionId])
-  const status = useAppSelector(statusSelector)
-  const focused = useAppSelector(focusSelector)
-  const tone: StatusTone = runtime.ready ? status : "not_ready"
-
-  return (
-    <text style={{ flexShrink: 0 }}>
-      <span fg={focused ? palette.accent : palette.muted}>[</span>
-      {focused ? <span fg={palette.accent}>{`${FOCUS_MARKER} `}</span> : null}
-      <span fg={palette.status[tone]}>{`${RUN_STATE_GLYPHS[tone]} `}</span>
-      <span fg={palette.status[tone]}>{STATUS_LABELS[tone]}</span>
-      <span fg={focused ? palette.accent : palette.muted}>]</span>
-    </text>
-  )
+/** Render the agent's advertised effort label while preserving its opaque ACP value for writes. */
+function displayEffortName(configOptions: readonly ConfigOption[], value: string | undefined): string | null {
+  if (value === undefined) return null
+  const effort = configOptions.find((option) => option.category === EFFORT_CATEGORY && option.currentValue === value)
+  return effort?.options.find((option) => option.value === value)?.name ?? value
 }

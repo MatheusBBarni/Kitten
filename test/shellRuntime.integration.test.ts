@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -207,10 +207,13 @@ test("real vi edit and quit restores the shell with cwd and env continuity", asy
 
   const cwd = mkdtempSync(join(tmpdir(), "kitten-interactive-editor-"))
   const shellCwd = realpathSync(cwd)
+  const home = join(cwd, "home")
+  mkdirSync(home)
   const file = join(cwd, "note.txt")
   const runtime = createShellRuntime({
     cwd,
     command: "/bin/sh",
+    env: { HOME: home },
     cols: 200,
     rows: 20,
     shellIntegration: false,

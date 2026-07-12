@@ -14,8 +14,6 @@ import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import {
-  FOCUS_MARKER,
-  RUN_STATE_GLYPHS,
   RESUMED_RUN_LABEL,
   STATUS_LABELS,
   StatusStrip,
@@ -23,18 +21,21 @@ import {
 } from "./StatusStrip.tsx"
 import { DARK_PALETTE, type StatusTone } from "./theme.ts"
 
-const HEIGHT = 3
+const HEIGHT = 1
 
 const HIDDEN_SELECTORS: StatusSlotSelectors = {
   model: () => () => null,
+  effort: () => () => undefined,
 }
 
 function slotSelectors(values: {
   model?: Partial<Record<SessionId, string>>
+  effort?: Partial<Record<SessionId, string>>
 }): StatusSlotSelectors {
   return {
     ...HIDDEN_SELECTORS,
     model: (sessionId) => () => values.model?.[sessionId] ?? null,
+    effort: (sessionId) => () => values.effort?.[sessionId],
   }
 }
 
@@ -66,17 +67,16 @@ function paletteColor(hex: string): string {
 }
 
 describe("StatusStrip agent state", () => {
-  it("keeps only the focused status marker in the lower row", async () => {
+  it("renders only the focused status beside the provider and model", async () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller)
 
-    expect(setup.captureCharFrame()).toContain(`${FOCUS_MARKER} ${RUN_STATE_GLYPHS.idle} ${STATUS_LABELS.idle}`)
-    expect(setup.captureCharFrame().split(FOCUS_MARKER)).toHaveLength(2)
+    expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS.idle}`)
+    expect(setup.captureCharFrame()).not.toContain("codex:—")
 
     await actAsync(() => controller.actions.switchFocus())
-    expect(await setup.waitForFrame((frame) => frame.split(FOCUS_MARKER).length === 2)).toContain(
-      `${FOCUS_MARKER} ${RUN_STATE_GLYPHS.idle} ${STATUS_LABELS.idle}`,
-    )
+    const codex = await setup.waitForFrame((frame) => frame.includes(`codex:— - ${STATUS_LABELS.idle}`))
+    expect(codex).not.toContain("claude:—")
 
     await destroyMounted(setup.renderer)
   })
@@ -86,12 +86,12 @@ describe("StatusStrip agent state", () => {
     { status: "working", tone: "working" },
     { status: "awaiting_approval", tone: "awaiting_approval" },
   ] as const satisfies readonly { status: SessionStatus; tone: StatusTone }[]) {
-    it(`renders ${status} with a glyph, label, and semantic color`, async () => {
+    it(`renders ${status} with an inline label and semantic color`, async () => {
       const controller = createFakeController()
       controller.store.applyEvent("claude-code", { kind: "status", status })
       const setup = await renderStrip(controller)
 
-      expect(setup.captureCharFrame()).toContain(`${RUN_STATE_GLYPHS[tone]} ${STATUS_LABELS[tone]}`)
+      expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS[tone]}`)
       expect(foregroundOf(setup, STATUS_LABELS[tone])).toBe(paletteColor(DARK_PALETTE.status[tone]))
 
       await destroyMounted(setup.renderer)
@@ -99,21 +99,11 @@ describe("StatusStrip agent state", () => {
   }
 
   it("renders an unavailable runtime as not ready", async () => {
-    const runtimes: AgentRuntimeState[] = [
-      readyRuntimes()[0]!,
-      {
-        sessionId: "codex",
-        providerKind: "codex",
-        displayName: "Codex",
-        title: "Codex",
-        cwd: "/workspace/kitten",
-        ready: false,
-        error: "codex-acp: command not found",
-      },
-    ]
+    const [claude, codex] = readyRuntimes()
+    const runtimes: AgentRuntimeState[] = [{ ...claude!, ready: false, error: "claude-acp: command not found" }, codex!]
     const setup = await renderStrip(createFakeController({ runtimes }))
 
-    expect(setup.captureCharFrame()).toContain(`${RUN_STATE_GLYPHS.not_ready} ${STATUS_LABELS.not_ready}`)
+    expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS.not_ready}`)
     expect(foregroundOf(setup, STATUS_LABELS.not_ready)).toBe(paletteColor(DARK_PALETTE.status.not_ready))
 
     await destroyMounted(setup.renderer)
@@ -123,16 +113,16 @@ describe("StatusStrip agent state", () => {
 describe("StatusStrip model identity and discovery", () => {
   const models = slotSelectors({
     model: { "claude-code": "opus", codex: "gpt-5.6-terra" },
+    effort: { "claude-code": "high", codex: "ultra" },
   })
 
-  it("puts only the focused provider and model in the compact upper row", async () => {
+  it("puts the focused provider, model, effort, and status in the compact row", async () => {
     const setup = await renderStrip(createFakeController(), 100, models)
     const claude = setup.captureCharFrame()
 
-    expect(claude).toContain("claude:opus")
+    expect(claude).toContain("claude:opus:high - idle")
     expect(claude).not.toContain("codex:gpt-5.6-terra")
-    expect(claude).not.toContain("/high")
-    expect(claude).not.toContain("/ultra")
+    expect(claude).not.toContain("codex:gpt-5.6-terra:ultra")
     expect(claude).toContain(KEYMAP_HINT)
     expect(claude).not.toContain("^T hand off")
     expect(claude).not.toContain("^R resume")
@@ -145,10 +135,10 @@ describe("StatusStrip model identity and discovery", () => {
     const setup = await renderStrip(controller, 100, models)
 
     await actAsync(() => controller.actions.switchFocus("codex"))
-    const codex = await setup.waitForFrame((frame) => frame.includes("codex:gpt-5.6-terra"))
+    const codex = await setup.waitForFrame((frame) => frame.includes("codex:gpt-5.6-terra:ultra - idle"))
 
     expect(codex).not.toContain("claude:opus")
-    expect(codex).not.toContain("/ultra")
+    expect(codex).not.toContain("claude:opus:high")
 
     await destroyMounted(setup.renderer)
   })

@@ -184,14 +184,11 @@ describe("CockpitApp layout", () => {
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
     expect(frame).not.toContain("Claude Code")
 
-    // The strip keeps compact model summaries above provider-neutral status lozenges.
-    const shared = rows.at(-2) ?? ""
+    // The strip keeps the focused provider, model, and status in one bottom row.
     const strip = rows.at(-1) ?? ""
-    expect(strip).toContain(`[▸ ○ ${STATUS_LABELS.idle}]`)
-    expect(strip).toContain(`[○ ${STATUS_LABELS.idle}]`)
-    expect(shared).toContain("claude:—")
-    expect(shared).not.toContain("codex:—")
-    expect(shared).toContain("/help")
+    expect(strip).toContain(`claude:— - ${STATUS_LABELS.idle}`)
+    expect(strip).not.toContain("codex:—")
+    expect(strip).toContain("/help")
 
     await destroyMounted(renderer)
   })
@@ -552,8 +549,8 @@ describe("CockpitApp keymap", () => {
     await runSlashCommand(setup, "switch")
 
     expect(controller.calls.switchFocus).toEqual([undefined])
-    // The action really moved focus, reflected by the provider-neutral focused marker.
-    const frame = await setup.waitForFrame((f) => f.includes("[○ idle] [▸ ○ idle]"))
+    // The action really moved focus, reflected by the compact inline summary.
+    const frame = await setup.waitForFrame((f) => f.includes(`codex:— - ${STATUS_LABELS.idle}`))
     expect(controller.store.getState().focusedSessionId).toBe("codex")
     expect(frame).toContain("Kitten")
 

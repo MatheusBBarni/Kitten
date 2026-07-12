@@ -1,4 +1,4 @@
-import { mkdirSync, watch, type FSWatcher } from "node:fs"
+import { mkdirSync, unwatchFile, watch, watchFile, type FSWatcher, type Stats } from "node:fs"
 import { basename, dirname } from "node:path"
 
 import type { AppConfig } from "../core/types.ts"
@@ -68,6 +68,18 @@ export function watchUserConfig(
     }, debounceMs)
   }
 
+  // `fs.watch()` is the efficient primary signal, but the target can be absent
+  // at startup and Bun does not reliably report its later creation through a
+  // directory watch. Polling only this small optional config file closes that
+  // gap and also covers platforms where a file watch follows a replaced inode.
+  const pollListener = (current: Stats, previous: Stats): void => {
+    if (closed) return
+    if (current.mtimeMs === previous.mtimeMs && current.size === previous.size && current.ino === previous.ino) return
+    attachTargetWatcher()
+    scheduleReload()
+  }
+  watchFile(path, { persistent: false, interval: Math.max(50, debounceMs) }, pollListener)
+
   let targetWatcher: FSWatcher | undefined
   const attachTargetWatcher = (): void => {
     targetWatcher?.close()
@@ -84,6 +96,11 @@ export function watchUserConfig(
         if (eventType === "rename" && targetWatcher === watcher) {
           watcher.close()
           targetWatcher = undefined
+          // File watches follow an inode on macOS and Linux. Reattach immediately
+          // when that inode is replaced; the directory watcher remains the fallback
+          // if the replacement has not appeared yet.
+          attachTargetWatcher()
+          scheduleReload()
         }
       })
       targetWatcher = watcher
@@ -96,10 +113,11 @@ export function watchUserConfig(
     if (closed || (eventType !== "change" && eventType !== "rename")) return
     if (filename !== null && filename.toString() !== targetName) return
 
-    if (eventType === "rename" || targetWatcher === undefined) {
-      attachTargetWatcher()
-      scheduleReload()
-    }
+    // A directory watch observes the pathname rather than one inode, so it is the
+    // durable source of reload signals for writes and replacements alike. Both
+    // watchers may signal one change; scheduleReload's debounce coalesces them.
+    if (eventType === "rename" || targetWatcher === undefined) attachTargetWatcher()
+    scheduleReload()
   })
   attachTargetWatcher()
 
@@ -115,6 +133,7 @@ export function watchUserConfig(
       targetWatcher?.close()
       targetWatcher = undefined
       directoryWatcher.close()
+      unwatchFile(path, pollListener)
     },
   }
 }
