@@ -286,7 +286,12 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       // Only reachable from an open picker; the source is the session it was opened for.
       if (!picker) return false
       const sourceSessionId = picker.sourceSessionId
-      if (targetSessionId === sourceSessionId || !controller.isReady(targetSessionId)) return false
+      if (
+        targetSessionId === sourceSessionId ||
+        !state.workspace.conversations[sourceSessionId] ||
+        !state.workspace.conversations[targetSessionId] ||
+        !controller.isReady(targetSessionId)
+      ) return false
 
       const session = state.sessions[sourceSessionId]
       if (!session || session.turns.length === 0) return false
@@ -299,8 +304,14 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
     },
 
     async confirm(edits: HandoffEdits): Promise<PromptResult | null> {
-      const overlay = store.getState().overlays.handoffPreview
+      const state = store.getState()
+      const overlay = state.overlays.handoffPreview
       if (!overlay) return null
+      if (
+        !state.workspace.conversations[overlay.sourceSessionId] ||
+        !state.workspace.conversations[overlay.targetSessionId] ||
+        !controller.isReady(overlay.targetSessionId)
+      ) return null
 
       const blocks = composeHandoffBlocks(overlay.bundle, edits)
       // Nothing left to carry. Leave the preview up rather than sending an empty

@@ -350,6 +350,24 @@ describe("HandoffFlow.begin", () => {
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
+  it("returns empty-source without assembling or opening an overlay when selection is null", () => {
+    const controller = controllerWithWork()
+    controller.store.backgroundConversation("claude-code")
+    controller.store.backgroundConversation("codex")
+    let assemblies = 0
+    const assembler = {
+      assemble(): never {
+        assemblies += 1
+        throw new Error("assembler must not run without a selected source")
+      },
+    }
+
+    expect(createHandoffFlow({ controller, assembler }).begin()).toEqual({ ok: false, reason: "empty-source" })
+    expect(assemblies).toBe(0)
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+    expect(controller.store.getState().overlays.handoffTarget).toBeNull()
+  })
+
   it("returns no-target when the agent that would receive the bundle never came up", () => {
     const runtimes: AgentRuntimeState[] = [
       readyRuntimes()[0]!,
@@ -644,6 +662,40 @@ describe("HandoffFlow.confirm", () => {
     ).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
+  })
+
+  it("keeps preview-first safety when the source is removed before confirmation", async () => {
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    const bundle = openBundle(controller)
+    controller.store.removeSession("claude-code")
+
+    expect(await flow.confirm(createHandoffEdits(bundle))).toBeNull()
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.switchFocus).toEqual([])
+  })
+
+  it("declines an unavailable target without sending or moving focus", async () => {
+    const runtimes = readyRuntimes()
+    const controller = controllerWithWork({ runtimes })
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    const bundle = openBundle(controller)
+    runtimes[1] = {
+      sessionId: "codex",
+      providerKind: "codex",
+      displayName: "Codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      ready: false,
+      error: "connection lost",
+    }
+
+    expect(await flow.confirm(createHandoffEdits(bundle))).toBeNull()
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.switchFocus).toEqual([])
+    expect(controller.store.getState().overlays.handoffPreview).not.toBeNull()
   })
 })
 

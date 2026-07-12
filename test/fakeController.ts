@@ -11,7 +11,7 @@
  */
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
-import { nextSessionId, type PromptInput } from "../src/app/actions.ts"
+import { nextSessionId, type CloseChoice, type CloseConversationResult, type PromptInput } from "../src/app/actions.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
 import {
@@ -24,11 +24,18 @@ import type { ResumeMode } from "../src/telemetry/recorder.ts"
 
 /** Every action call the cockpit made, in order. */
 export interface RecordedCalls {
+  createConversation: number
+  renameConversation: { sessionId: SessionId; displayName: string }[]
+  selectConversation: SessionId[]
+  backgroundConversation: SessionId[]
+  reopenConversation: SessionId[]
+  closeConversation: { sessionId: SessionId; choice: CloseChoice }[]
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
   setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
   switchFocus: (SessionId | undefined)[]
   jumpToNextNeedy: number
+  jumpToNextAttention: number
   startNewRun: number
   startFreshFromContext: { input: PromptInput; sessionId: SessionId | undefined }[]
   restore: PersistedRunRecord[]
@@ -88,11 +95,18 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   const store = options.store ?? createAppStore({ selectedVisibleId: "claude-code" })
   const runtimes = options.runtimes ?? readyRuntimes()
   const calls: RecordedCalls = {
+    createConversation: 0,
+    renameConversation: [],
+    selectConversation: [],
+    backgroundConversation: [],
+    reopenConversation: [],
+    closeConversation: [],
     sendPrompt: [],
     cancel: [],
     setSessionConfigOption: [],
     switchFocus: [],
     jumpToNextNeedy: 0,
+    jumpToNextAttention: 0,
     startNewRun: 0,
     startFreshFromContext: [],
     restore: [],
@@ -102,12 +116,71 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   }
 
   const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
+  let created = 0
+
+  async function closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult> {
+    calls.closeConversation.push({ sessionId, choice })
+    const conversation = store.getState().workspace.conversations[sessionId]
+    if (!conversation) return { outcome: "ignored" }
+    if (choice === "background") {
+      store.backgroundConversation(sessionId)
+      return { outcome: "backgrounded" }
+    }
+    if (choice === "keep-open") return { outcome: "kept-open" }
+    store.removeSession(sessionId)
+    const runtimeIndex = runtimes.findIndex((runtime) => runtime.sessionId === sessionId)
+    if (runtimeIndex >= 0) runtimes.splice(runtimeIndex, 1)
+    return { outcome: "closed" }
+  }
 
   return {
     store,
     shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {
+      async createConversation(): Promise<SessionId | null> {
+        calls.createConversation++
+        const selected = store.getState().workspace.selectedVisibleId
+        const source = selected
+          ? store.getState().sessions[selected]
+          : store.getState().sessions[runtimes[0]?.sessionId ?? ""]
+        if (!source) return null
+        created += 1
+        const sessionId = `fake-created-${created}`
+        store.addSession({
+          id: sessionId,
+          providerKind: source.providerKind,
+          title: `Conversation ${created}`,
+          cwd: source.cwd,
+        }, { availability: { kind: "ready" } })
+        runtimes.push({
+          sessionId,
+          providerKind: source.providerKind,
+          displayName: `Conversation ${created}`,
+          title: `Conversation ${created}`,
+          cwd: source.cwd,
+          ready: true,
+          acpSessionId: `fake-acp-${created}`,
+        })
+        return sessionId
+      },
+      renameConversation(sessionId, displayName): void {
+        calls.renameConversation.push({ sessionId, displayName })
+        store.renameConversation(sessionId, displayName)
+      },
+      selectConversation(sessionId): void {
+        calls.selectConversation.push(sessionId)
+        store.selectConversation(sessionId)
+      },
+      backgroundConversation(sessionId): void {
+        calls.backgroundConversation.push(sessionId)
+        store.backgroundConversation(sessionId)
+      },
+      reopenConversation(sessionId): void {
+        calls.reopenConversation.push(sessionId)
+        store.reopenConversation(sessionId)
+      },
+      closeConversation,
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.sendPrompt.push({ input, sessionId })
         return null
@@ -132,7 +205,20 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       jumpToNextNeedy(): void {
         calls.jumpToNextNeedy++
         const target = selectNextNeedy(store.getState().workspace.selectedVisibleId)(store.getState())
-        if (target) store.setFocus(target)
+        if (target) {
+          const conversation = store.getState().workspace.conversations[target]
+          if (conversation?.lifecycle === "background") store.reopenConversation(target)
+          else store.selectConversation(target)
+        }
+      },
+      jumpToNextAttention(): void {
+        calls.jumpToNextAttention++
+        const target = selectNextNeedy(store.getState().workspace.selectedVisibleId)(store.getState())
+        if (target) {
+          const conversation = store.getState().workspace.conversations[target]
+          if (conversation?.lifecycle === "background") store.reopenConversation(target)
+          else store.selectConversation(target)
+        }
       },
       async startNewRun(): Promise<void> {
         calls.startNewRun++
@@ -154,9 +240,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
-    async closeConversation(): Promise<{ outcome: "ignored" }> {
-      return { outcome: "ignored" }
-    },
+    closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {
       calls.restore.push(record)
       calls.restoreModes.push(mode)

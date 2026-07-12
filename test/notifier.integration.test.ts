@@ -45,4 +45,26 @@ describe("attention notifier (integration)", () => {
     expect(rendered).toContain("error") // state
     expect(rendered).not.toContain("Alpha") // the untouched session is not mentioned
   })
+
+  it("routes one content-free alert from background work with an empty Visible workspace", () => {
+    const store = createAppStore({
+      seeds: [{ id: "a", providerKind: "codex", title: "Background", cwd: "/work/background" }],
+      selectedVisibleId: "a",
+    })
+    store.backgroundConversation("a")
+    const commands: OsCommand[] = []
+    let bells = 0
+    createNotifier({
+      channel: createOsNotificationChannel({ platform: "linux", run: (command) => commands.push(command) }),
+      focus: { current: () => "unfocused" },
+      ringBell: () => bells++,
+    }).watch(store)
+
+    store.applyEvent("a", { kind: "status", status: "awaiting_approval" })
+
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(bells).toBe(1)
+    expect(commands).toHaveLength(1)
+    expect(commands[0]?.args.join(" ")).not.toContain("prompt")
+  })
 })

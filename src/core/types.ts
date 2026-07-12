@@ -111,6 +111,9 @@ export interface WorkspaceState {
   selectedVisibleId: SessionId | null
 }
 
+/** Ephemeral workspace feedback; never persisted or sent to telemetry. */
+export type WorkspaceNotice = { code: "no-provider-available" }
+
 /** Seed accepted by the pure workspace factory for boot and restore. */
 export interface WorkspaceConversationSeed {
   sessionId: SessionId

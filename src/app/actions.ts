@@ -15,6 +15,7 @@
 
 import type { AgentConnection, PermissionOutcome, PromptBlock, PromptResult } from "../agent/agentConnection.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } from "../core/types.ts"
+import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
 
@@ -59,6 +60,17 @@ export interface SwitchFocusOptions {
   viaOverview?: boolean
 }
 
+/** The explicit lifecycle outcome selected by tab-management UI. */
+export type CloseChoice = "close" | "background" | "cancel" | "keep-open"
+
+/** Finite close results keep UI callers fail-soft without hiding teardown uncertainty. */
+export type CloseConversationResult =
+  | { outcome: "closed" }
+  | { outcome: "backgrounded" }
+  | { outcome: "kept-open" }
+  | { outcome: "teardown-failed" }
+  | { outcome: "ignored" }
+
 /** The seams the actions need. The controller supplies all of them. */
 export interface ActionDeps {
   store: AppStore
@@ -78,10 +90,26 @@ export interface ActionDeps {
   startNewRun?: () => Promise<void>
   /** Replace one unavailable restored session with a fresh promptable session. */
   startFreshSession?: (sessionId: SessionId) => Promise<boolean>
+  /** Create and start one controller-owned conversation runtime. */
+  createConversation?: () => Promise<SessionId | null>
+  /** Apply an explicit close outcome through the controller-owned teardown path. */
+  closeConversation?: (sessionId: SessionId, choice: CloseChoice) => Promise<CloseConversationResult>
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
 export interface ControllerActions {
+  /** Create a fresh visible conversation, or return `null` when none can be created. */
+  createConversation(): Promise<SessionId | null>
+  /** Rename an existing non-Closed conversation after whitespace normalization. */
+  renameConversation(sessionId: SessionId, displayName: string): void
+  /** Select one Visible conversation. Unknown, Background, and Closed ids are no-ops. */
+  selectConversation(sessionId: SessionId, options?: SwitchFocusOptions): void
+  /** Move one Visible conversation to background without touching its runtime. */
+  backgroundConversation(sessionId: SessionId): void
+  /** Reopen and select one Background conversation. */
+  reopenConversation(sessionId: SessionId, options?: SwitchFocusOptions): void
+  /** Apply an explicit, fail-soft close-policy outcome. */
+  closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult>
   /**
    * Send a prompt to `sessionId` (default: the focused session), recording the user's
    * turn in the transcript first. Resolves with the agent's stop reason, or `null`
@@ -112,6 +140,8 @@ export interface ControllerActions {
    * from the focused session. A no-op when no other session needs attention.
    */
   jumpToNextNeedy(): void
+  /** Reopen/select the next eligible attention conversation, including background work. */
+  jumpToNextAttention(): void
   /** Leave a restored run by replacing every agent session with a fresh one. */
   startNewRun(): Promise<void>
   /** Start one fresh agent session and seed it with persisted context. */
@@ -139,6 +169,8 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const recorder = deps.recorder ?? NOOP_ACTION_TELEMETRY
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
+  const createConversation = deps.createConversation ?? (async () => null)
+  const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
 
   const focused = (): SessionId | undefined =>
     store.getState().workspace.selectedVisibleId ?? undefined
@@ -173,7 +205,64 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     }
   }
 
+  function selectConversation(sessionId: SessionId, options?: SwitchFocusOptions): void {
+    const before = store.getState().workspace.selectedVisibleId
+    store.selectConversation(sessionId)
+    const after = store.getState().workspace.selectedVisibleId
+    if (after !== before && after !== null) {
+      recorder.focusSwitch(after, options?.viaOverview === true)
+      refreshBranch(after)
+    }
+  }
+
+  function reopenConversation(sessionId: SessionId, options?: SwitchFocusOptions): void {
+    const before = store.getState().workspace.selectedVisibleId
+    store.reopenConversation(sessionId)
+    const after = store.getState().workspace.selectedVisibleId
+    if (after !== before && after === sessionId) {
+      recorder.focusSwitch(after, options?.viaOverview === true)
+      refreshBranch(after)
+    }
+  }
+
+  function jumpToNextAttention(): void {
+    const target = selectNextNeedy(focused() ?? null)(store.getState())
+    if (!target) return
+    const lifecycle = store.getState().workspace.conversations[target]?.lifecycle
+    if (lifecycle === "background") reopenConversation(target, { viaOverview: true })
+    else selectConversation(target, { viaOverview: true })
+  }
+
   return {
+    async createConversation(): Promise<SessionId | null> {
+      try {
+        return await createConversation()
+      } catch {
+        return null
+      }
+    },
+
+    renameConversation(sessionId, displayName): void {
+      store.renameConversation(sessionId, displayName)
+    },
+
+    selectConversation,
+
+    backgroundConversation(sessionId): void {
+      store.backgroundConversation(sessionId)
+    },
+
+    reopenConversation,
+
+    async closeConversation(sessionId, choice): Promise<CloseConversationResult> {
+      try {
+        return await closeConversation(sessionId, choice)
+      } catch (error) {
+        onError(sessionId, error)
+        return { outcome: "teardown-failed" }
+      }
+    },
+
     sendPrompt,
 
     async cancel(requestedSessionId?: SessionId): Promise<void> {
@@ -229,30 +318,21 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     switchFocus(sessionId, options?: SwitchFocusOptions): void {
       const currentState = store.getState()
       const current = currentState.workspace.selectedVisibleId
+      const visible = visibleConversationIds(currentState.workspace)
       const target =
         sessionId ??
         (current
-          ? nextSessionId(currentState.workspace.order, current)
-          : currentState.workspace.order[0])
+          ? nextSessionId(visible, current)
+          : visible[0])
       if (!target) return
-      const before = store.getState().workspace.selectedVisibleId
-      store.setFocus(target)
-      const after = store.getState().workspace.selectedVisibleId
-      // Only a switch that actually moved focus is a real navigation to count.
-      if (after !== before && after !== null) {
-        recorder.focusSwitch(after, options?.viaOverview === true)
-        refreshBranch(after)
-      }
+      selectConversation(target, options)
     },
 
     jumpToNextNeedy(): void {
-      const target = selectNextNeedy(focused() ?? null)(store.getState())
-      if (!target) return
-      store.setFocus(target)
-      // Jump-to-next is reachable only from the overview, so it is always overview-driven.
-      recorder.focusSwitch(target, true)
-      refreshBranch(target)
+      jumpToNextAttention()
     },
+
+    jumpToNextAttention,
 
     async startNewRun(): Promise<void> {
       try {

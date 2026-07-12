@@ -22,7 +22,7 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
-import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed, WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type DomainSessionEvent, type ProviderKind, type SessionId, type SessionSeed, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
   type PersistedAgent,
@@ -37,7 +37,16 @@ import {
 } from "../shell/shellRuntime.ts"
 import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
 import type { ResumeLiveCount, ResumeMode, SessionResumedInput } from "../telemetry/recorder.ts"
-import { createControllerActions, type ActionTelemetry, type AgentSession, type ControllerActions } from "./actions.ts"
+import {
+  createControllerActions,
+  type ActionTelemetry,
+  type AgentSession,
+  type CloseChoice,
+  type CloseConversationResult,
+  type ControllerActions,
+} from "./actions.ts"
+
+export type { CloseChoice, CloseConversationResult } from "./actions.ts"
 
 /** The additional content-free telemetry emitted by resume orchestration. */
 export interface ControllerTelemetry extends ActionTelemetry {
@@ -60,17 +69,6 @@ export type ShellRuntimeState =
   | { readonly ready: true; readonly runtime: ShellRuntime }
   | { readonly ready: false; readonly error: string }
 
-/** The explicit user outcome supplied after applying the close policy. */
-export type CloseChoice = "close" | "background" | "cancel" | "keep-open"
-
-/** Finite close results keep UI callers fail-soft without hiding teardown uncertainty. */
-export type CloseConversationResult =
-  | { outcome: "closed" }
-  | { outcome: "backgrounded" }
-  | { outcome: "kept-open" }
-  | { outcome: "teardown-failed" }
-  | { outcome: "ignored" }
-
 /** Injectable seams so the controller can be driven against mock connections. */
 export interface SessionControllerOptions {
   config: AppConfig
@@ -84,6 +82,8 @@ export interface SessionControllerOptions {
   createShellRuntime?: ShellRuntimeFactory
   /** Ids for recorded user turns. Defaults to a random UUID. */
   newMessageId?: () => string
+  /** Ids for dynamically created conversations. Defaults to a random UUID. */
+  newSessionId?: () => SessionId
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
   /** Off-render-path git branch reader. Defaults to the fail-soft production reader. */
@@ -147,6 +147,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
+  const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
 
   // The resolved fleet, in declared order (ADR-005): one session per configured
   // provider in the launch directory when the config declares none, else each
@@ -611,6 +612,39 @@ export async function createSessionController(options: SessionControllerOptions)
     }
   }
 
+  async function createConversation(): Promise<SessionId | null> {
+    if (disposed) return null
+    const state = store.getState()
+    const selectedId = state.workspace.selectedVisibleId
+    const selected = selectedId ? state.sessions[selectedId] : undefined
+    const providerKind = selected?.providerKind ?? DEFAULT_PROVIDER_ORDER.find(
+      (kind) => findAgentConfig(options.config, kind) !== undefined,
+    )
+    const config = providerKind ? findAgentConfig(options.config, providerKind) : undefined
+    if (!providerKind || !config) {
+      store.setWorkspaceNotice({ code: "no-provider-available" })
+      return null
+    }
+
+    const sessionId = newSessionId()
+    if (state.workspace.conversations[sessionId] || runtimes.has(sessionId)) {
+      onError(sessionId, new Error(`Conversation id already exists: ${sessionId}`))
+      return null
+    }
+    const seed: SessionSeed = {
+      id: sessionId,
+      providerKind,
+      title: config.displayName,
+      cwd: selected?.cwd ?? cwd,
+    }
+    store.setWorkspaceNotice(null)
+    store.addSession(seed, { displayName: seed.title, availability: { kind: "starting" } })
+    registerRuntime(seed, config)
+    await startSession(seed, config)
+    refreshBranch(sessionId)
+    return sessionId
+  }
+
   const actions = createControllerActions({
     store,
     getSession,
@@ -619,6 +653,8 @@ export async function createSessionController(options: SessionControllerOptions)
     onError,
     refreshBranch,
     recorder: options.recorder,
+    createConversation,
+    closeConversation,
     startNewRun: async () => {
       if (disposed) return
       store.setRestorationBundle(null)

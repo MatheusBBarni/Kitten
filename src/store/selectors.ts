@@ -34,6 +34,7 @@ import type {
   TeardownState,
   WorkspaceConversation,
   WorkspaceState,
+  WorkspaceNotice,
 } from "../core/types.ts"
 import type {
   AppState,
@@ -66,6 +67,10 @@ const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
 /** The active conversation, retained while the shell owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
   state.workspace.selectedVisibleId
+
+/** Ephemeral empty-workspace action feedback. */
+export const selectWorkspaceNotice: Selector<WorkspaceNotice | null> = (state) =>
+  state.workspaceNotice
 
 /** The pane that currently owns keyboard input. */
 export const selectFocusedPane: Selector<FocusedPane> = (state) => state.focusedPane

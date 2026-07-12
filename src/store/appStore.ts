@@ -44,6 +44,7 @@ import {
   type WorkspaceState,
   type WorkspaceEvent,
   type WorkspaceConversationSeed,
+  type WorkspaceNotice,
 } from "../core/types.ts"
 
 /** Every provider kind Kitten seeds a default session for, in cockpit order (ADR-001). */
@@ -159,6 +160,8 @@ export interface AppState {
   sessions: Record<SessionId, SessionState>
   /** User-owned conversation metadata, order, lifecycle, selection, and attention acknowledgement. */
   workspace: WorkspaceState
+  /** Ephemeral action feedback for valid empty-workspace states. */
+  workspaceNotice: WorkspaceNotice | null
   focusedPane: FocusedPane
   shell: ShellState
   preferences: Preferences
@@ -214,6 +217,7 @@ export interface AppStore {
   reopenConversation(sessionId: SessionId): void
   setConversationAvailability(sessionId: SessionId, availability: ConversationAvailability): void
   setConversationTeardown(sessionId: SessionId, teardownState: TeardownState): void
+  setWorkspaceNotice(notice: WorkspaceNotice | null): void
   /** Move keyboard focus to a session. Focusing the focused session is a no-op. */
   setFocus(sessionId: SessionId): void
   /** Move keyboard focus to an agent or the shell. Reapplying the same pane is a no-op. */
@@ -299,6 +303,7 @@ class AppStoreImpl implements AppStore {
     this.state = {
       sessions,
       workspace,
+      workspaceNotice: null,
       focusedPane: workspace.selectedVisibleId
         ? { kind: "agent", sessionId: workspace.selectedVisibleId }
         : { kind: "workspace" },
@@ -442,6 +447,7 @@ class AppStoreImpl implements AppStore {
       ...this.state,
       sessions,
       workspace,
+      workspaceNotice: null,
       restoration,
       focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
@@ -510,6 +516,11 @@ class AppStoreImpl implements AppStore {
 
   setConversationTeardown(sessionId: SessionId, teardownState: TeardownState): void {
     this.commitWorkspace({ kind: "set_teardown_state", sessionId, teardownState })
+  }
+
+  setWorkspaceNotice(notice: WorkspaceNotice | null): void {
+    if (this.state.workspaceNotice?.code === notice?.code) return
+    this.commit({ ...this.state, workspaceNotice: notice })
   }
 
   setFocus(sessionId: SessionId): void {

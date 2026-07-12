@@ -21,6 +21,24 @@ describe("createFakeController", () => {
     expect(controller.calls.dispose).toBe(1)
   })
 
+  it("models the expanded lifecycle action boundary for UI tests", async () => {
+    const controller = createFakeController()
+    const created = await controller.actions.createConversation()
+    expect(created).toBe("fake-created-1")
+    expect(controller.isReady(created!)).toBe(true)
+
+    controller.actions.renameConversation(created!, "  Fresh tab  ")
+    controller.actions.backgroundConversation(created!)
+    controller.actions.reopenConversation(created!)
+    expect(controller.store.getState().workspace.conversations[created!]?.displayName).toBe("Fresh tab")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(created)
+
+    expect(await controller.actions.closeConversation(created!, "close")).toEqual({ outcome: "closed" })
+    expect(controller.runtime(created!)).toBeUndefined()
+    expect(controller.calls.createConversation).toBe(1)
+    expect(controller.calls.closeConversation).toEqual([{ sessionId: created!, choice: "close" }])
+  })
+
   it("closes the approval slot on an answer, like the real controller does", () => {
     const controller = createFakeController()
     controller.store.openApproval({

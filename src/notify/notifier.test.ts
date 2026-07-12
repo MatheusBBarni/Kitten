@@ -119,4 +119,38 @@ describe("attention notifier", () => {
     expect(h.bells()).toBe(0)
     expect(h.channel.calls).toHaveLength(0)
   })
+
+  it("notifies a background transition once even when no Visible conversation is selected", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "Alpha", cwd: "/work/alpha" },
+        { id: "b", providerKind: "codex", title: "Bravo", cwd: "/work/bravo" },
+      ],
+      selectedVisibleId: "a",
+    })
+    store.backgroundConversation("a")
+    store.backgroundConversation("b")
+    const h = harness(store, "unfocused")
+
+    store.applyEvent("b", { kind: "status", status: "working" })
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    store.applyEvent("b", { kind: "status", status: "finished" })
+
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(h.bells()).toBe(1)
+    expect(h.channel.calls).toEqual([
+      { title: "Bravo", provider: "codex", cwd: "/work/bravo", state: "finished" },
+    ])
+  })
+
+  it("never notifies a Closed conversation", () => {
+    const store = soloStore()
+    const h = harness(store, "unfocused")
+
+    store.removeSession("a")
+    store.applyEvent("a", { kind: "status", status: "error" })
+
+    expect(h.bells()).toBe(0)
+    expect(h.channel.calls).toHaveLength(0)
+  })
 })

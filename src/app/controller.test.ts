@@ -1936,6 +1936,132 @@ describe("createSessionController - per-conversation close", () => {
   })
 })
 
+describe("createSessionController - dynamic conversation actions", () => {
+  it("inherits the selected provider and cwd into an independent runtime", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `${config.id}-${created.length + 1}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "fresh-conversation",
+      sendInitialTasks: false,
+    })
+    const selected = controller.store.getState().workspace.selectedVisibleId!
+    const source = controller.store.getState().sessions[selected]!
+
+    const sessionId = await controller.actions.createConversation()
+
+    expect(sessionId).toBe("fresh-conversation")
+    expect(controller.store.getState().sessions[sessionId!]).toMatchObject({
+      providerKind: source.providerKind,
+      cwd: source.cwd,
+      turns: [],
+    })
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(sessionId)
+    expect(created.at(-1)?.newSessionCwds).toEqual([source.cwd])
+    expect(created.at(-1)).not.toBe(created.find((connection) => connection !== created.at(-1) && connection.id === source.providerKind))
+  })
+
+  it("uses the configured default from an empty workspace and reports no-provider without throwing", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "default-conversation",
+      sendInitialTasks: false,
+    })
+    for (const id of [...controller.store.getState().workspace.order]) {
+      controller.actions.backgroundConversation(id)
+    }
+
+    const sessionId = await controller.actions.createConversation()
+
+    expect(sessionId).toBe("default-conversation")
+    expect(controller.store.getState().sessions[sessionId!]).toMatchObject({
+      providerKind: "codex",
+      cwd: CWD,
+    })
+    expect(created.at(-1)?.id).toBe("codex")
+    expect(controller.store.getState().workspaceNotice).toBeNull()
+
+    const noProviderConfig = {
+      ...APP_CONFIG,
+      providers: {} as AppConfig["providers"],
+      sessions: [],
+    }
+    const empty = await createSessionController({
+      config: noProviderConfig,
+      cwd: CWD,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "never-created",
+      sendInitialTasks: false,
+    })
+    expect(await empty.actions.createConversation()).toBeNull()
+    expect(empty.store.getState().workspaceNotice).toEqual({ code: "no-provider-available" })
+    expect(empty.store.getState().workspace.order).toEqual([])
+  })
+
+  it("retains a failed creation as unavailable while a sibling remains promptable", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const dynamic = created.length >= 2
+        const connection = createStubConnection(config.id, dynamic ? { newSessionThrows: new Error("fresh failed") } : {})
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "failed-conversation",
+      sendInitialTasks: false,
+    })
+    const sibling = controller.store.getState().workspace.selectedVisibleId!
+
+    expect(await controller.actions.createConversation()).toBe("failed-conversation")
+    expect(controller.store.getState().workspace.conversations["failed-conversation"]?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+    })
+    expect(await controller.actions.sendPrompt("sibling still works", sibling)).toEqual({ stopReason: "end_turn" })
+  })
+
+  it("normalizes names and treats unknown lifecycle targets as no-ops without ACP effects", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    const before = controller.store.getState()
+
+    controller.actions.renameConversation("claude-code", "   ")
+    expect(controller.store.getState()).toBe(before)
+    controller.actions.renameConversation("claude-code", "  Primary task  ")
+    expect(controller.store.getState().workspace.conversations["claude-code"]?.displayName).toBe("Primary task")
+    controller.actions.selectConversation("missing")
+    controller.actions.backgroundConversation("missing")
+    controller.actions.reopenConversation("missing")
+    expect(await controller.actions.closeConversation("missing", "close")).toEqual({ outcome: "ignored" })
+
+    controller.actions.backgroundConversation("claude-code")
+    expect(connections["claude-code"].cancels).toEqual([])
+    expect(connections["claude-code"].disposeCalls()).toBe(0)
+    expect(connections["claude-code"].subscriberCount()).toBe(1)
+  })
+})
+
 describe("createSessionController - dispose", () => {
   it("Should unsubscribe and dispose the owned shell before late events can reach the store", async () => {
     const shell = createStubShellRuntime()
@@ -2001,6 +2127,84 @@ describe("createSessionController - dispose", () => {
 })
 
 describe("createControllerActions", () => {
+  it("exposes fail-soft conversation lifecycle actions", async () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      createConversation: async () => "fresh",
+      closeConversation: async () => ({ outcome: "ignored" }),
+    })
+
+    expect(await actions.createConversation()).toBe("fresh")
+    actions.renameConversation("claude-code", "  Renamed  ")
+    expect(store.getState().workspace.conversations["claude-code"]?.displayName).toBe("Renamed")
+    actions.backgroundConversation("claude-code")
+    expect(store.getState().workspace.conversations["claude-code"]?.lifecycle).toBe("background")
+    actions.reopenConversation("claude-code")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(await actions.closeConversation("missing", "close")).toEqual({ outcome: "ignored" })
+  })
+
+  it("contains creation and close seam failures instead of rejecting into UI", async () => {
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const actions = createControllerActions({
+      store: createAppStore({ selectedVisibleId: "claude-code" }),
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      createConversation: async () => {
+        throw new Error("create exploded")
+      },
+      closeConversation: async () => {
+        throw new Error("close exploded")
+      },
+      onError: (sessionId, error) => errors.push({ sessionId, error }),
+    })
+
+    expect(await actions.createConversation()).toBeNull()
+    expect(await actions.closeConversation("claude-code", "close")).toEqual({ outcome: "teardown-failed" })
+    expect(errors).toEqual([{ sessionId: "claude-code", error: expect.any(Error) }])
+  })
+
+  it("keeps focused actions inert when no Visible conversation is selected", async () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.backgroundConversation("claude-code")
+    store.backgroundConversation("codex")
+    let lookups = 0
+    const actions = createControllerActions({
+      store,
+      getSession: () => {
+        lookups += 1
+        return undefined
+      },
+      resolvePermission: () => {},
+    })
+
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(await actions.sendPrompt("ignored")).toBeNull()
+    await actions.cancel()
+    expect(await actions.setSessionConfigOption("model", "opus")).toBe(false)
+    actions.switchFocus()
+    expect(lookups).toBe(0)
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+  })
+
+  it("reopens and selects background attention even from an empty Visible workspace", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.backgroundConversation("claude-code")
+    store.backgroundConversation("codex")
+    store.applyEvent("codex", { kind: "status", status: "error" })
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+
+    actions.jumpToNextAttention()
+
+    expect(store.getState().workspace.conversations.codex?.lifecycle).toBe("visible")
+    expect(store.getState().workspace.selectedVisibleId).toBe("codex")
+    actions.jumpToNextAttention()
+    expect(store.getState().workspace.selectedVisibleId).toBe("codex")
+  })
+
   it("Should start a fresh session before sending persisted context to that session", async () => {
     const store = createAppStore()
     const connection = createStubConnection("codex")
