@@ -47,6 +47,13 @@ import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "
 export const CLAUDE_CODE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.57.0"
 export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@1.1.2"
 
+/**
+ * Codex ACP's unrestricted preset. It runs Codex with no approval prompts and
+ * full filesystem/network access -- the yolo policy Kitten uses by default.
+ * A user `providers.codex.env.INITIAL_AGENT_MODE` override remains authoritative.
+ */
+export const CODEX_YOLO_MODE = "agent-full-access"
+
 /** The default spawn recipe for each provider kind, pinned to the known-good adapter. */
 const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
   "claude-code": {
@@ -59,7 +66,7 @@ const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
     displayName: "Codex",
     command: "npx",
     args: ["-y", CODEX_ACP_PACKAGE],
-    env: {},
+    env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
   },
 }
 

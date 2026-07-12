@@ -6,6 +6,7 @@ import { basename, join } from "node:path"
 import {
   CLAUDE_CODE_ACP_PACKAGE,
   CODEX_ACP_PACKAGE,
+  CODEX_YOLO_MODE,
   CONFIG_PATH_ENV_VAR,
   ConfigError,
   DEFAULT_SESSION_PERSISTENCE_ENABLED,
@@ -65,7 +66,7 @@ describe("defaults", () => {
       displayName: "Codex",
       command: "npx",
       args: ["-y", CODEX_ACP_PACKAGE],
-      env: {},
+      env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
     })
   })
 
@@ -85,10 +86,12 @@ describe("defaults", () => {
     const first = defaultAppConfig()
     first.providers["claude-code"].args.push("--rogue")
     first.providers["claude-code"].env.ROGUE = "1"
+    first.providers.codex.env.INITIAL_AGENT_MODE = "agent"
 
     const second = defaultAppConfig()
     expect(second.providers["claude-code"].args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
     expect(second.providers["claude-code"].env).toEqual({})
+    expect(second.providers.codex.env).toEqual({ INITIAL_AGENT_MODE: CODEX_YOLO_MODE })
   })
 })
 
@@ -117,7 +120,7 @@ describe("user overrides", () => {
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {
-    // The default codex env is empty, so add a second key to prove the merge keeps both.
+    // The Codex yolo default stays in place when a user adds a provider variable.
     const config = parseAppConfig(
       JSON.stringify({
         providers: {
@@ -131,7 +134,10 @@ describe("user overrides", () => {
       JSON.stringify({ providers: { "claude-code": { env: { CLAUDE_B: "2" } } } }),
     )
 
-    expect(findAgentConfig(config, "codex")?.env).toEqual({ CODEX_PATH: "/usr/bin/codex" })
+    expect(findAgentConfig(config, "codex")?.env).toEqual({
+      INITIAL_AGENT_MODE: CODEX_YOLO_MODE,
+      CODEX_PATH: "/usr/bin/codex",
+    })
     expect(findAgentConfig(config, "claude-code")?.env).toEqual({ CLAUDE_A: "1" })
     expect(findAgentConfig(merged, "claude-code")?.env).toEqual({ CLAUDE_B: "2" })
   })
