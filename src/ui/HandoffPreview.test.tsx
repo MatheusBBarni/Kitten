@@ -610,11 +610,10 @@ describe("HandoffPreview curation", () => {
     await actAsync(() => {
       setup.mockInput.pressEscape()
     })
-    const readMode = await setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT) && frame.includes("EDITED_PLAN"))
-    expect(readMode).toContain("EDITED_PLAN")
-    await setup.waitFor(
-      () => spanContaining(setup, "EDITED_PLAN")?.fg.toString() === paletteColor(DARK_PALETTE.accent),
+    const readMode = await setup.waitForFrame(
+      (frame) => frame.includes(HANDOFF_HINT) && frame.includes("EDITED_PLAN") && !frame.includes("## EDITED_PLAN"),
     )
+    expect(readMode).toContain("EDITED_PLAN")
 
     await actAsync(() => {
       setup.mockInput.pressEnter()
