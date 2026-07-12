@@ -10,11 +10,10 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
-import type { SessionId, SessionStatus } from "../core/types.ts"
+import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { KEYMAP_HINT } from "./keymap.ts"
+import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import {
-  COLLAPSE_WIDTHS,
   FOCUS_MARKER,
   RUN_STATE_GLYPHS,
   RESUMED_RUN_LABEL,
@@ -27,20 +26,15 @@ import { DARK_PALETTE, type StatusTone } from "./theme.ts"
 const HEIGHT = 3
 
 const HIDDEN_SELECTORS: StatusSlotSelectors = {
-  branch: () => () => null,
   model: () => () => null,
-  context: () => () => null,
-  effort: () => () => null,
 }
 
 function slotSelectors(values: {
   model?: Partial<Record<SessionId, string>>
-  effort?: Partial<Record<SessionId, string>>
 }): StatusSlotSelectors {
   return {
     ...HIDDEN_SELECTORS,
     model: (sessionId) => () => values.model?.[sessionId] ?? null,
-    effort: (sessionId) => () => values.effort?.[sessionId] ?? null,
   }
 }
 
@@ -129,29 +123,51 @@ describe("StatusStrip agent state", () => {
 describe("StatusStrip model identity and discovery", () => {
   const models = slotSelectors({
     model: { "claude-code": "opus", codex: "gpt-5.6-terra" },
-    effort: { "claude-code": "high", codex: "ultra" },
   })
 
-  it("puts provider-prefixed model and effort names in the compact upper row", async () => {
+  it("puts only the focused provider and model in the compact upper row", async () => {
     const setup = await renderStrip(createFakeController(), 100, models)
-    const frame = setup.captureCharFrame()
+    const claude = setup.captureCharFrame()
 
-    expect(frame).toContain("claude:opus/high")
-    expect(frame).toContain("codex:gpt-5.6-terra/ultra")
-    expect(frame).toContain(KEYMAP_HINT)
-    expect(frame).not.toContain("^T hand off")
-    expect(frame).not.toContain("^R resume")
+    expect(claude).toContain("claude:opus")
+    expect(claude).not.toContain("codex:gpt-5.6-terra")
+    expect(claude).not.toContain("/high")
+    expect(claude).not.toContain("/ultra")
+    expect(claude).toContain(KEYMAP_HINT)
+    expect(claude).not.toContain("^T hand off")
+    expect(claude).not.toContain("^R resume")
 
     await destroyMounted(setup.renderer)
   })
 
-  it("keeps the model but sheds the secondary effort at the declared width", async () => {
-    const setup = await renderStrip(createFakeController(), 100, models)
-    expect(setup.captureCharFrame()).toContain("/high")
+  it("changes the compact model readout with focus", async () => {
+    const controller = createFakeController()
+    const setup = await renderStrip(controller, 100, models)
 
-    await actAsync(() => setup.resize(COLLAPSE_WIDTHS.effort - 1, HEIGHT))
-    const compact = await setup.waitForFrame((frame) => frame.includes("claude:opus") && !frame.includes("/high"))
-    expect(compact).toContain("codex:gpt-5.6-terra")
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    const codex = await setup.waitForFrame((frame) => frame.includes("codex:gpt-5.6-terra"))
+
+    expect(codex).not.toContain("claude:opus")
+    expect(codex).not.toContain("/ultra")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses the advertised label instead of a provider's opaque model value", async () => {
+    const controller = createFakeController()
+    const rawModel: ConfigOption = {
+      id: "model",
+      category: "model",
+      label: "Model",
+      currentValue: "opus[1m]",
+      options: [{ value: "opus[1m]", name: "Opus" }],
+    }
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: [rawModel] })
+    const setup = await renderStrip(controller, 100, slotSelectors({ model: { "claude-code": "opus[1m]" } }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("claude:Opus")
+    expect(frame).not.toContain("opus[1m]")
 
     await destroyMounted(setup.renderer)
   })
@@ -164,6 +180,17 @@ describe("StatusStrip model identity and discovery", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(RESUMED_RUN_LABEL)
     expect(frame).not.toContain("/new")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows the shell exit chord instead of the generic help hint while the shell owns focus", async () => {
+    const controller = createFakeController()
+    controller.store.setFocusedPane({ kind: "shell" })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain(SHELL_EXIT_HINT)
+    expect(setup.captureCharFrame()).not.toContain(KEYMAP_HINT)
+
     await destroyMounted(setup.renderer)
   })
 })

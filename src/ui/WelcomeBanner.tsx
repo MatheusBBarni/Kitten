@@ -3,9 +3,9 @@
  *
  * The banner owns no session state: callers provide the agent readiness summary and
  * working directory, while the live terminal supplies only palette and width. The
- * wordmark is deliberately plain ASCII so every cell has deterministic width and no
+ * kitten mascot is deliberately plain ASCII so every cell has deterministic width and no
  * image or extended-Unicode capability is required. Returning launches retain a
- * compact wordmark too, so the product is recognizably Kitten without bringing back
+ * compact mascot too, so the product is recognizably Kitten without bringing back
  * the full connection and directory summary.
  */
 
@@ -16,13 +16,13 @@ import { usePalette, type CockpitPalette } from "./theme.ts"
 
 export const WELCOME_GREETING = "Welcome to Kitten."
 export const WELCOME_ON_RAMP = "Type to start. Use /help for commands."
-export const WELCOME_WORDMARK_MIN_WIDTH = 64
+export const WELCOME_KITTEN_MIN_WIDTH = 64
 
-/** Fixed-width, ASCII-only Kitten wordmark cells. */
-export const WELCOME_WORDMARK = [
-  "K   K  III  TTTTT  TTTTT  EEEEE  N   N",
-  "KK KK   I     T      T    E      NN  N",
-  "K   K  III    T      T    EEEEE  N   N",
+/** Fixed-width, ASCII-only Kitten mascot cells. */
+export const WELCOME_KITTEN = [
+  " /\\_/\\",
+  "( o.o )",
+  " > ^ <",
 ] as const
 
 export type WelcomeAgentState = "connecting" | "ready" | "unavailable"
@@ -56,14 +56,14 @@ function WelcomeBannerContent({
 }: Omit<WelcomeBannerProps, "palette"> & { palette: CockpitPalette }): ReactNode {
   const { width } = useTerminalDimensions()
 
-  if (width < WELCOME_WORDMARK_MIN_WIDTH) {
+  if (width < WELCOME_KITTEN_MIN_WIDTH) {
     return <Greeting palette={palette} />
   }
 
   if (variant === "quiet") {
     return (
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        <Wordmark palette={palette} />
+        <KittenMascot palette={palette} />
         <Greeting palette={palette} />
       </box>
     )
@@ -85,7 +85,7 @@ function WelcomeBannerContent({
         paddingBottom: 1,
       }}
     >
-      <Wordmark palette={palette} />
+      <KittenMascot palette={palette} />
 
       <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1 }}>
         <Greeting palette={palette} />
@@ -112,11 +112,11 @@ function WelcomeBannerContent({
   )
 }
 
-/** The same ANSI-safe wordmark in full and compact welcome variants. */
-function Wordmark({ palette }: { palette: CockpitPalette }): ReactNode {
+/** The same ANSI-safe kitten mascot in full and compact welcome variants. */
+function KittenMascot({ palette }: { palette: CockpitPalette }): ReactNode {
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
-      {WELCOME_WORDMARK.map((line) => (
+      {WELCOME_KITTEN.map((line) => (
         <text key={line} fg={palette.banner.mascot}>
           {line}
         </text>

@@ -196,13 +196,13 @@ describe("resolveSessions", () => {
 
     const resolved = resolveSessions(config, { launchCwd: "/launch/dir" })
 
-    expect(resolved.map((session) => session.seed.id)).toEqual(["claude-code", "codex"])
-    expect(resolved.map((session) => session.seed.providerKind)).toEqual(["claude-code", "codex"])
+    expect(resolved.map((session) => session.seed.id)).toEqual(["codex", "claude-code"])
+    expect(resolved.map((session) => session.seed.providerKind)).toEqual(["codex", "claude-code"])
     expect(resolved.every((session) => session.seed.cwd === "/launch/dir")).toBe(true)
     // Preserve today's titles: the provider display name, not the launch-dir basename.
-    expect(resolved.map((session) => session.seed.title)).toEqual(["Claude Code", "Codex"])
+    expect(resolved.map((session) => session.seed.title)).toEqual(["Codex", "Claude Code"])
     // The resolved spawn recipe carries the provider's id for the connection factory.
-    expect(resolved[0]!.spawn).toEqual(findAgentConfig(config, "claude-code")!)
+    expect(resolved[0]!.spawn).toEqual(findAgentConfig(config, "codex")!)
   })
 
   it("Should resolve two sessions of the same provider into distinct ids, titles, and directories", () => {

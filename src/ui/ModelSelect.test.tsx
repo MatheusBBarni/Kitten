@@ -548,6 +548,7 @@ describe("integration - a confirmed switch across a mock agent", () => {
       cwd: "/workspace/kitten",
       createConnection: (config) => connections[config.id],
     })
+    controller.actions.switchFocus("claude-code")
 
     const setup = await testRender(<CockpitApp controller={controller} />, {
       width: WIDTH,

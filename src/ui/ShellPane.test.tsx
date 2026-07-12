@@ -162,6 +162,22 @@ describe("ShellPane styled rendering", () => {
     )
     await destroyMounted(setup.renderer)
   })
+
+  it("maps the terminal cursor cell to an inverted visible span", async () => {
+    const runtime = new StubShellRuntime([
+      { runs: [styledRun({ text: "prompt>" }), styledRun({ text: " ", inverse: true })], isWrapped: false },
+    ])
+    const setup = await renderPane(runtime)
+    const cursor = setup
+      .captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((span) => span.text === " ")
+
+    expect(cursor).toBeDefined()
+    expect(cursor!.attributes & TextAttributes.INVERSE).toBe(TextAttributes.INVERSE)
+
+    await destroyMounted(setup.renderer)
+  })
 })
 
 describe("ShellPane render isolation", () => {

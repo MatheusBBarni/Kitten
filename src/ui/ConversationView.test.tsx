@@ -4,7 +4,7 @@ import { destroyTreeSitterClient, RGBA } from "@opentui/core"
 import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
-import { createFakeController, type FakeController } from "../../test/fakeController.ts"
+import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { composeHandoffBlocks, createHandoffEdits } from "../app/handoff.ts"
 import { bannerVariant, type BannerVariant } from "../config/appState.ts"
@@ -14,6 +14,7 @@ import {
   ConversationView,
   EMPTY_TRANSCRIPT_HINT,
   RESTORATION_CONTEXT_LABEL,
+  RESTORATION_FRESH_LABEL,
   RESTORATION_LIVE_LABEL,
   RESTORATION_UNAVAILABLE_LABEL,
   START_FRESH_LABEL,
@@ -21,7 +22,7 @@ import {
 import { ROLE_LABELS } from "./MessageView.tsx"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
-import { WELCOME_GREETING, WELCOME_WORDMARK, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 /** The `rgba(...)` string OpenTUI stores for a palette hex, for comparing to a captured cell. */
 function paletteColor(hex: string): string {
@@ -122,9 +123,9 @@ describe("ConversationView turns", () => {
 
     const frame = captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
-    expect(frame).toContain(WELCOME_WORDMARK[0])
-    expect(frame).toContain(WELCOME_WORDMARK[1])
-    expect(frame).toContain(WELCOME_WORDMARK[2])
+    expect(frame).toContain(WELCOME_KITTEN[0])
+    expect(frame).toContain(WELCOME_KITTEN[1])
+    expect(frame).toContain(WELCOME_KITTEN[2])
     expect(frame).toContain("Agents: ready · ready")
     expect(frame).toContain(`Working directory: ${process.cwd()}`)
     expect(frame).toContain(WELCOME_ON_RAMP)
@@ -135,7 +136,7 @@ describe("ConversationView turns", () => {
     await destroyMounted(renderer)
   })
 
-  it("keeps the ASCII Kitten wordmark in the quiet first-run variant", async () => {
+  it("keeps the ASCII kitten mascot in the quiet first-run variant", async () => {
     const controller = createFakeController()
     const variant = bannerVariant("auto", true)
     expect(variant).toBe("quiet")
@@ -143,7 +144,7 @@ describe("ConversationView turns", () => {
 
     const frame = captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
-    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).toContain(WELCOME_KITTEN[0])
     expect(frame).not.toContain("Agents:")
     expect(frame).not.toContain(WELCOME_ON_RAMP)
 
@@ -156,7 +157,7 @@ describe("ConversationView turns", () => {
 
     const frame = captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
-    expect(frame).not.toContain(WELCOME_WORDMARK[0])
+    expect(frame).not.toContain(WELCOME_KITTEN[0])
     expect(frame).not.toContain("Agents:")
     expect(frame).not.toContain(WELCOME_ON_RAMP)
 
@@ -268,7 +269,11 @@ describe("ConversationView turns", () => {
       captureSpans()
         .lines.flatMap((line) => line.spans)
         .find((span) => span.text.includes("STRUCTURED_HEADING"))
-    await waitFor(() => headingSpan()?.fg?.toString() === paletteColor(DARK_PALETTE.accent))
+    await waitFor(() => {
+      const styled = headingSpan()?.fg?.toString() === paletteColor(DARK_PALETTE.accent)
+      if (!styled) renderer.requestRender()
+      return styled
+    })
 
     expect(headingSpan()?.fg?.toString()).toBe(paletteColor(DARK_PALETTE.accent))
     expect(headingSpan()?.fg?.toString()).not.toBe(paletteColor(DARK_PALETTE.text))
@@ -308,6 +313,20 @@ describe("ConversationView restoration degradation", () => {
     await destroyMounted(renderer)
   })
 
+  it("keeps a fresh replacement session usable when its previous history is unavailable", async () => {
+    const controller = createFakeController()
+    controller.store.setRestoration("claude-code", "unavailable")
+
+    const { renderer, captureCharFrame } = await renderConversation(controller)
+    const frame = captureCharFrame()
+
+    expect(frame).toContain(RESTORATION_FRESH_LABEL)
+    expect(frame).toContain(WELCOME_GREETING)
+    expect(frame).not.toContain(RESTORATION_CONTEXT_LABEL)
+
+    await destroyMounted(renderer)
+  })
+
   it("starts one fresh agent session from the canonical persisted bundle blocks", async () => {
     const controller = createFakeController()
     controller.store.setRestorationBundle(RESTORED_BUNDLE)
@@ -340,7 +359,20 @@ describe("ConversationView restoration degradation", () => {
   })
 
   it("shows no fabricated transcript or seed action when unavailable without a bundle", async () => {
-    const controller = createFakeController()
+    const controller = createFakeController({
+      runtimes: [
+        {
+          sessionId: "claude-code",
+          providerKind: "claude-code",
+          displayName: "Claude Code",
+          title: "Claude Code",
+          cwd: process.cwd(),
+          ready: false,
+          error: "restoration failed",
+        },
+        readyRuntimes()[1]!,
+      ],
+    })
     userMessage(controller, "claude-code", "stale", "TRANSCRIPT_MUST_STAY_HIDDEN")
     controller.store.setRestoration("claude-code", "unavailable")
 

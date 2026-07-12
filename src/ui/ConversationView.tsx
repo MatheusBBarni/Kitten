@@ -39,6 +39,7 @@ export const EMPTY_TRANSCRIPT_HINT = "No messages yet. Type a prompt to start th
 /** Text contracts for the honest degraded-restore state. */
 export const RESTORATION_LIVE_LABEL = "history restored"
 export const RESTORATION_UNAVAILABLE_LABEL = "history unavailable"
+export const RESTORATION_FRESH_LABEL = "Previous history was unavailable — started a fresh session"
 export const RESTORATION_CONTEXT_LABEL = "Persisted hand-off context"
 export const START_FRESH_LABEL = "start fresh from this context"
 
@@ -73,17 +74,28 @@ export function ConversationView({
   const turns = useAppSelector(turnsSelector)
   const restoration = useAppSelector(restorationSelector)
   const bundle = useAppSelector(selectRestorationBundle)
-
-  if (restoration === "unavailable") {
-    return <UnavailableRestoration bundle={bundle} />
-  }
-
   const content = renderConversationContent(
     controller,
     focusedSessionId,
     turns,
     welcomeBannerVariant,
   )
+
+  if (restoration === "unavailable") {
+    // A provider that cannot restore at all stays on the explicit degraded pane.
+    // But when we successfully opened a replacement ACP session (for example a
+    // stale Codex rollout), keep the cockpit usable and surface that truth as a
+    // compact notice above the normal fresh-session view.
+    if (controller.isReady(focusedSessionId) && bundle === null) {
+      return (
+        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
+          <FreshRestorationBadge />
+          {content}
+        </box>
+      )
+    }
+    return <UnavailableRestoration bundle={bundle} />
+  }
 
   if (restoration === null) return content
 
@@ -139,6 +151,16 @@ function LiveRestorationBadge(): ReactNode {
   return (
     <text style={{ flexShrink: 0 }} fg={palette.muted}>
       {RESTORATION_LIVE_LABEL}
+    </text>
+  )
+}
+
+/** A successful fresh fallback is informative, not a terminal pane error. */
+function FreshRestorationBadge(): ReactNode {
+  const palette = usePalette()
+  return (
+    <text style={{ flexShrink: 0 }} fg={palette.muted}>
+      {RESTORATION_FRESH_LABEL}
     </text>
   )
 }

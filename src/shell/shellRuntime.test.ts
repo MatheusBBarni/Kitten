@@ -60,7 +60,7 @@ describe("ShellRuntime in-memory factory", () => {
     const view = runtime.view()
     expect(view).toHaveLength(4)
     expect(lineText(view[0]!)).toBe("plain")
-    expect(lineText(view[1]!)).toBe("red")
+    expect(lineText(view[1]!)).toBe("red ")
     expect(view[1]!.runs).toEqual([
       {
         text: "red",
@@ -75,7 +75,31 @@ describe("ShellRuntime in-memory factory", () => {
         strikethrough: false,
         overline: false,
       },
+      {
+        text: " ",
+        bold: false,
+        italic: false,
+        dim: false,
+        underline: false,
+        blink: false,
+        inverse: true,
+        invisible: false,
+        strikethrough: false,
+        overline: false,
+      },
     ])
+
+    await runtime.dispose()
+  })
+
+  test("view preserves the live terminal cursor as an inverted cell", async () => {
+    const { runtime, harness } = setup()
+
+    await harness.scriptOutput("prompt> ")
+
+    const prompt = runtime.view()[0]!
+    expect(lineText(prompt)).toBe("prompt>  ")
+    expect(prompt.runs.at(-1)).toMatchObject({ text: " ", inverse: true })
 
     await runtime.dispose()
   })

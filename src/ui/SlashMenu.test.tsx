@@ -13,7 +13,7 @@ const rows: MenuRow[] = [
 ]
 
 describe("SlashMenu", () => {
-  it("renders named groups, the selected marker, and agent argument hints", async () => {
+  it("renders named groups, the selected marker, and only agent argument hints", async () => {
     const controller = createFakeController()
     const setup = await testRender(
       <CockpitProvider controller={controller}>
@@ -33,6 +33,8 @@ describe("SlashMenu", () => {
     expect(frame).toContain("/review")
     expect(frame).toContain("[scope]")
     expect(frame).toContain("▸")
+    expect(frame).not.toContain(rows[0]!.description)
+    expect(frame).not.toContain(rows[1]!.description)
 
     await destroyMounted(setup.renderer)
   })

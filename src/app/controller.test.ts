@@ -32,7 +32,7 @@ import {
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
 import { selectAgentModel } from "../store/selectors.ts"
-import { createAppStore } from "../store/appStore.ts"
+import { createAppStore, type AppStore } from "../store/appStore.ts"
 import { createTelemetryRecorder, type TelemetryRecord, type TelemetryRecorder } from "../telemetry/recorder.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
 import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
@@ -248,6 +248,9 @@ async function controllerWithStubs(
     recorder?: ActionTelemetry
     readBranch?: (cwd: string) => Promise<string | null>
     createShellRuntime?: ShellRuntimeFactory
+    store?: AppStore
+    /** Exercise the controller's real default-store construction. */
+    useProductionStore?: boolean
   } = {},
 ): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection> }> {
   const connections = {
@@ -258,6 +261,7 @@ async function controllerWithStubs(
   const controller = await createSessionController({
     config: APP_CONFIG,
     cwd: CWD,
+    store: overrides.useProductionStore ? undefined : overrides.store ?? createAppStore({ focusedSessionId: "claude-code" }),
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
     onError: overrides.onError,
@@ -370,6 +374,7 @@ async function controllerForRestore(
   const controller = await createSessionController({
     config: APP_CONFIG,
     cwd: CWD,
+    store: createAppStore({ focusedSessionId: "claude-code" }),
     createConnection: (config) => queues[config.id].shift()!,
     onError,
     recorder,
@@ -436,15 +441,6 @@ describe("createSessionController - startup", () => {
     expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-session")
     expect(controller.runtimes()).toEqual([
       {
-        sessionId: "claude-code",
-        providerKind: "claude-code",
-        displayName: "Claude Code",
-        title: "Claude Code",
-        cwd: CWD,
-        ready: true,
-        acpSessionId: "claude-code-session",
-      },
-      {
         sessionId: "codex",
         providerKind: "codex",
         displayName: "Codex",
@@ -453,15 +449,33 @@ describe("createSessionController - startup", () => {
         ready: true,
         acpSessionId: "codex-session",
       },
+      {
+        sessionId: "claude-code",
+        providerKind: "claude-code",
+        displayName: "Claude Code",
+        title: "Claude Code",
+        cwd: CWD,
+        ready: true,
+        acpSessionId: "claude-code-session",
+      },
     ])
     expect(controller.isReady("claude-code")).toBe(true)
 
     await controller.dispose()
   })
 
-  it("Should focus the first configured agent when it is ready", async () => {
+  it("Should retain an initial focus supplied by the caller's store", async () => {
     const { controller } = await controllerWithStubs()
     expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    await controller.dispose()
+  })
+
+  it("Should default the built-in zero-config cockpit to Codex", async () => {
+    const { controller } = await controllerWithStubs({}, { useProductionStore: true })
+
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().order).toEqual(["codex", "claude-code"])
+
     await controller.dispose()
   })
 
@@ -644,6 +658,21 @@ describe("createSessionController - persisted restore", () => {
     await controller.dispose()
   })
 
+  it("Should retain config options emitted while restoring a stored session", async () => {
+    const { controller } = await controllerForRestore({
+      "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      codex: {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "config_options", options: [modelOption("gpt-5.6-terra")] }],
+      },
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([modelOption("gpt-5.6-terra")])
+    await controller.dispose()
+  })
+
   it("Should bind and subscribe before loadSession emits its first replay update", async () => {
     const { controller } = await controllerForRestore({
       "claude-code": {
@@ -688,6 +717,37 @@ describe("createSessionController - persisted restore", () => {
     await controller.dispose()
   })
 
+  it("Should recover a stale Codex rollout into a fresh usable session", async () => {
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const missingRollout = Object.assign(new Error("Internal error"), {
+      data: { details: "no rollout found for thread id codex-stored" },
+    })
+    const { controller, restored } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          sessionId: "codex-fresh",
+          newSessionConfig: [modelOption("sonnet")],
+          loadSessionThrows: missingRollout,
+        },
+      },
+      (sessionId, error) => errors.push({ sessionId, error }),
+    )
+
+    await controller.restore(persistedRun())
+
+    expect(restored.codex.loadSessionCalls).toEqual([{ sessionId: "codex-stored", cwd: CWD }])
+    expect(restored.codex.newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh")
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([modelOption("sonnet")])
+    expect(controller.store.getState().restoration.codex).toBe("unavailable")
+    expect(controller.isReady("codex")).toBe(true)
+    expect(errors).toEqual([])
+    await controller.dispose()
+  })
+
   it("Should start fresh and mark unavailable when loadSession is not advertised", async () => {
     const { controller, restored } = await controllerForRestore({
       "claude-code": {
@@ -704,6 +764,27 @@ describe("createSessionController - persisted restore", () => {
     expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-fresh")
     expect(controller.store.getState().restoration["claude-code"]).toBe("unavailable")
     expect(controller.isReady("claude-code")).toBe(true)
+    await controller.dispose()
+  })
+
+  it("Should start fresh for an empty stored session that has no history to restore", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      codex: {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        sessionId: "codex-fresh",
+      },
+    })
+    const record = persistedRun()
+    record.agents.codex = { ...record.agents.codex!, lastPrompt: "", messageCount: 0 }
+
+    await controller.restore(record)
+
+    expect(restored.codex.loadSessionCalls).toEqual([])
+    expect(restored.codex.newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh")
+    expect(controller.store.getState().restoration.codex).toBe("unavailable")
+    expect(controller.isReady("codex")).toBe(true)
     await controller.dispose()
   })
 
@@ -1650,7 +1731,7 @@ describe("integration - two mock ACP agents", () => {
       createShellRuntime: createTestShellFactory(),
     })
 
-    const result = await controller.actions.sendPrompt("do the thing")
+    const result = await controller.actions.sendPrompt("do the thing", "claude-code")
     expect(result).toEqual({ stopReason: "end_turn" })
 
     const state = controller.store.getState()
@@ -1695,7 +1776,7 @@ describe("integration - two mock ACP agents", () => {
       createShellRuntime: createTestShellFactory(),
     })
 
-    const prompt = controller.actions.sendPrompt("edit the readme")
+    const prompt = controller.actions.sendPrompt("edit the readme", "claude-code")
     await waitFor(() => controller.store.getState().overlays.approval !== null, "the approval overlay to open")
 
     const approval = controller.store.getState().overlays.approval!

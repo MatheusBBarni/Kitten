@@ -263,7 +263,8 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
 
     await type(setup, "/model")
-    await frameWith(setup, "Commands", "/model", "Choose an agent model")
+    const menu = await frameWith(setup, "Commands", "/model")
+    expect(menu).not.toContain("Choose an agent model")
     await pressEnter(setup)
 
     expect(dispatched).toEqual(["model-select"])

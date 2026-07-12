@@ -80,7 +80,9 @@ export function readyRuntimes(): AgentRuntimeState[] {
 
 /** Build a `SessionController` that records what the UI asked it to do. */
 export function createFakeController(options: FakeControllerOptions = {}): FakeController {
-  const store = options.store ?? createAppStore()
+  // Most view tests intentionally exercise Claude turns. Keep that fixture focus
+  // explicit so production's Codex-first default is covered by real-store tests.
+  const store = options.store ?? createAppStore({ focusedSessionId: "claude-code" })
   const runtimes = options.runtimes ?? readyRuntimes()
   const calls: RecordedCalls = {
     sendPrompt: [],

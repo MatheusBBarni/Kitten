@@ -154,14 +154,14 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
 
 /**
  * The only bindings that must remain global while a prompt is being composed.
- * `/shell` is always available for terminals that cannot report Ctrl+`.
+ * F2 is the terminal-level fallback for keyboards that cannot report Ctrl+`.
  */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
   {
     command: "toggle-shell",
-    keys: "Ctrl+`",
-    description: "Focus the shell; its keys route there and Ctrl+C interrupts",
-    matches: any(ctrl("`"), ctrl("grave")),
+    keys: "Ctrl+` / F2",
+    description: "Focus or leave the shell; its keys route there and Ctrl+C interrupts",
+    matches: any(ctrl("`"), ctrl("grave"), plain("f2")),
   },
   {
     command: "close-help",
@@ -527,7 +527,7 @@ export const SETTINGS_KEYMAP: readonly KeyBinding<SettingsCommand>[] = [
  */
 export const HELP_ENTRIES: readonly HelpEntry[] = [
   ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
-  { keys: "Ctrl+`", description: "Focus or leave the integrated shell" },
+  { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
   ...EDITOR_KEYMAP,
 ]
 
@@ -550,6 +550,9 @@ export const NEW_RUN_KEY_HINT = commandSlash("start-new-run")
 
 /** The one quiet, always-visible discovery affordance in the status strip. */
 export const KEYMAP_HINT = commandSlash("toggle-help")
+
+/** The always-available way back from terminal ownership, shown while the shell has focus. */
+export const SHELL_EXIT_HINT = `${bindingKeys(COCKPIT_KEYMAP, "toggle-shell")} exit shell`
 
 /** Slash-first labels retained for focused view copy while that view transitions. */
 export const HANDOFF_KEY_HINT = commandSlash("hand-off")

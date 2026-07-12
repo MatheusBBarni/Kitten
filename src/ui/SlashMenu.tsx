@@ -89,7 +89,7 @@ function SlashMenuGroupView({
 }): ReactNode {
   const palette = usePalette()
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0, marginTop: offset === 0 ? 0 : 1 }}>
+    <box style={{ flexDirection: "column", flexShrink: 0 }}>
       <text fg={palette.accent}>{group.source}</text>
       {group.rows.map((row, index) => (
         <SlashMenuRow key={`${row.source}:${row.name}`} row={row} highlighted={offset + index === highlightedIndex} />
@@ -100,13 +100,16 @@ function SlashMenuGroupView({
 
 function SlashMenuRow({ row, highlighted }: { row: MenuRow; highlighted: boolean }): ReactNode {
   const palette = usePalette()
-  const trailing = row.source === "kitten" ? row.description : row.hint ?? row.description
+  // The slash picker is a compact launcher, not a second help panel. Descriptions
+  // still drive filtering and remain available through `/help`; only an agent's
+  // input hint earns space here because it changes what the user must type next.
+  const trailing = row.source === "agent" ? row.hint : undefined
 
   return (
     <text style={{ flexShrink: 0 }}>
       <span fg={palette.accent}>{highlighted ? "▸" : " "}</span>
       <span fg={highlighted ? palette.text : palette.muted}>{` /${row.name}`}</span>
-      <span fg={palette.muted}>{`  ${trailing}`}</span>
+      {trailing ? <span fg={palette.muted}>{`  ${trailing}`}</span> : null}
     </text>
   )
 }

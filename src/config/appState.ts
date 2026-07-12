@@ -69,7 +69,7 @@ export function markFirstRunSeen(options: AppStateOptions = {}): void {
   }
 }
 
-/** Apply the complete preference-by-first-run truth table (full versus compact wordmark). */
+/** Apply the complete preference-by-first-run truth table (full versus compact mascot). */
 export function bannerVariant(pref: WelcomeBannerPreference, seen: boolean): BannerVariant {
   if (pref === "off") return "none"
   if (pref === "always") return "full"

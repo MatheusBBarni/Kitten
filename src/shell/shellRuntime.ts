@@ -191,10 +191,12 @@ class ShellRuntimeImpl implements ShellRuntime {
   view(): readonly StyledLine[] {
     if (this.disposed) return []
     const buffer = this.emulator.buffer.active
+    const cursorRow = buffer.baseY + buffer.cursorY
     const lines: StyledLine[] = []
     for (let row = 0; row < buffer.length; row += 1) {
       const line = buffer.getLine(row)
-      lines.push(line ? styledLine(line, this.emulator.cols) : { runs: [], isWrapped: false })
+      const cursorColumn = line && row === cursorRow ? cursorColumnFor(line, buffer.cursorX, this.emulator.cols) : null
+      lines.push(line ? styledLine(line, this.emulator.cols, cursorColumn) : { runs: [], isWrapped: false })
     }
     return lines
   }
@@ -404,8 +406,8 @@ export function createInMemoryShellRuntimeFactory(): InMemoryShellRuntimeFactory
 type XtermLine = NonNullable<ReturnType<Terminal["buffer"]["active"]["getLine"]>>
 type XtermCell = NonNullable<ReturnType<XtermLine["getCell"]>>
 
-function styledLine(line: XtermLine, cols: number): StyledLine {
-  const cells: { text: string; style: Omit<StyledRun, "text"> }[] = []
+function styledLine(line: XtermLine, cols: number, cursorColumn: number | null = null): StyledLine {
+  const cells: { column: number; text: string; style: Omit<StyledRun, "text"> }[] = []
   let lastSignificant = -1
 
   for (let col = 0; col < cols; col += 1) {
@@ -413,12 +415,17 @@ function styledLine(line: XtermLine, cols: number): StyledLine {
     if (!cell || cell.getWidth() === 0) continue
     const text = cell.getChars() || " "
     const style = cellStyle(cell)
-    cells.push({ text, style })
-    if (text !== " " || !cell.isAttributeDefault()) lastSignificant = cells.length - 1
+    // The headless terminal has no renderer to draw its cursor. Invert its live
+    // cell (including a default blank cell) so the OpenTUI bridge paints a stable
+    // block cursor without taking ownership of global renderer cursor state.
+    const cursorStyle = col === cursorColumn ? { ...style, inverse: !style.inverse } : style
+    cells.push({ column: col, text, style: cursorStyle })
+    if (text !== " " || !cell.isAttributeDefault() || col === cursorColumn) lastSignificant = col
   }
 
   const runs: StyledRun[] = []
-  for (const cell of cells.slice(0, lastSignificant + 1)) {
+  for (const cell of cells) {
+    if (cell.column > lastSignificant) break
     const previous = runs[runs.length - 1]
     if (previous && sameStyle(previous, cell.style)) {
       runs[runs.length - 1] = { ...previous, text: previous.text + cell.text }
@@ -427,6 +434,13 @@ function styledLine(line: XtermLine, cols: number): StyledLine {
     }
   }
   return { runs, isWrapped: line.isWrapped }
+}
+
+/** Clamp xterm's post-line cursor position and avoid a wide glyph's continuation cell. */
+function cursorColumnFor(line: XtermLine, cursorX: number, cols: number): number {
+  let column = Math.min(Math.max(0, cursorX), Math.max(0, cols - 1))
+  while (column > 0 && line.getCell(column)?.getWidth() === 0) column -= 1
+  return column
 }
 
 function cellStyle(cell: XtermCell): Omit<StyledRun, "text"> {

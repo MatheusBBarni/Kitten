@@ -100,6 +100,22 @@ describe("connect / session lifecycle", () => {
     await conn.dispose()
   })
 
+  it("advertises select config-option support during initialize", async () => {
+    const { conn } = setup({
+      onInitialize(request) {
+        expect(request.clientCapabilities?.session?.configOptions).toEqual({})
+        return {
+          protocolVersion: 1,
+          agentCapabilities: {},
+          agentInfo: { name: "mock-agent", version: "0.0.0" },
+        }
+      },
+    })
+
+    expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
+    await conn.dispose()
+  })
+
   it("reports not-ready with a legible error when the transport fails to start", async () => {
     const conn = createAgentConnection({
       config: CONFIG,
@@ -423,6 +439,22 @@ describe("config options (task_03)", () => {
   it("captures newSession's config options and emits them as an initial config_options event", async () => {
     const { conn, events } = await connected({ configOptions: [MODEL, EFFORT] })
     await conn.newSession("/tmp/project")
+
+    expect(configEvents(events)).toEqual([
+      {
+        kind: "config_options",
+        options: [
+          { id: "model", category: "model", label: "model", currentValue: "sonnet", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] },
+          { id: "thought_level", category: "thought_level", label: "thought_level", currentValue: "medium", options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+        ],
+      },
+    ])
+    await conn.dispose()
+  })
+
+  it("captures loadSession's config options and emits them as an initial config_options event", async () => {
+    const { conn, events } = await connected({ canLoadSession: true, configOptions: [MODEL, EFFORT] })
+    await conn.loadSession("sess-7", "/tmp/project")
 
     expect(configEvents(events)).toEqual([
       {

@@ -24,8 +24,15 @@ export type ProviderKind = "claude-code" | "codex"
  */
 export type SessionId = string
 
-/** Every provider kind Kitten drives, in default cockpit seed order (ADR-001). */
+/** Every provider kind Kitten understands, kept stable for config validation. */
 export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex"]
+
+/**
+ * The launch order for Kitten's built-in two-provider cockpit. Codex is the
+ * default focused agent, while explicitly configured session arrays retain the
+ * order the user declared.
+ */
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude-code"]
 
 /** The human-facing name for each provider kind; the default session title. */
 export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {

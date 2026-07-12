@@ -67,10 +67,10 @@ export interface MockAgentOptions {
   onLoadSession?: MockLoadSessionScript
   onPrompt?: MockPromptScript
   /**
-   * The config options the agent advertises. When set, `newSession` returns them and
-   * `setSessionConfigOption` mutates the matching option's `currentValue` in place and
-   * echoes back the full refreshed set. When absent, the agent advertises no config
-   * surface (`newSession` omits `configOptions`) and rejects `setSessionConfigOption`.
+   * The config options the agent advertises. When set, `newSession` and `loadSession`
+   * return them, while `setSessionConfigOption` mutates the matching option's
+   * `currentValue` in place and echoes back the full refreshed set. When absent, the
+   * agent advertises no config surface and rejects `setSessionConfigOption`.
    */
   configOptions?: SessionConfigOption[]
   /** Reject a config-option change with this error, to exercise the adapter's error path. */
@@ -130,7 +130,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
       await options.onLoadSession?.(request, {
         update: (update) => connection.sessionUpdate({ sessionId: request.sessionId, update }),
       })
-      return {}
+      return advertisesConfig ? { configOptions } : {}
     },
     setSessionConfigOption: (request: SetSessionConfigOptionRequest) => {
       configOptionRequests.push(request)

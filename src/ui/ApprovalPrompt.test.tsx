@@ -520,7 +520,7 @@ describe("integration - a mock agent's permission request", () => {
     // The agent blocks inside its prompt turn until the user answers.
     let prompt: Promise<unknown> = Promise.resolve()
     await actAsync(() => {
-      prompt = controller.actions.sendPrompt("bump b")
+      prompt = controller.actions.sendPrompt("bump b", "claude-code")
     })
     const opened = await setup.waitForFrame((frame) => frame.includes(approvalTitleFor("Claude Code")))
     expect(opened).toContain("Bump b")

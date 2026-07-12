@@ -63,14 +63,14 @@ describe("session status integration (end_turn -> finished)", () => {
       </CockpitProvider>,
       { width: 80, height: 3 },
     )
-    await waitForFrame((frame) => frame.includes("claude:—") && frame.includes("codex:—"))
+    await waitForFrame((frame) => frame.includes("codex:—"))
 
     await actAsync(async () => {
       await controller.actions.sendPrompt("do the thing")
     })
 
     // The store reflects the terminal stop reason: the turn ended, your move.
-    expect(controller.store.getState().sessions["claude-code"]!.status).toBe("finished")
+    expect(controller.store.getState().sessions.codex!.status).toBe("finished")
 
     // The strip keeps status provider-neutral; its compact upper row owns model names.
     const frame = await waitForFrame((f) => f.includes(STATUS_LABELS.finished))

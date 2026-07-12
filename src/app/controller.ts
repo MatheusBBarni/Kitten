@@ -302,6 +302,32 @@ export async function createSessionController(options: SessionControllerOptions)
   }
 
   /**
+   * Open a clean ACP session while preserving the config snapshot the agent emits
+   * during `session/new`. Restore fallbacks share this path so a rejected resume
+   * cannot leave a partly replayed transcript or an empty model picker behind.
+   */
+  async function startFreshRestoredSession(
+    connection: AgentConnection,
+    seed: SessionSeed,
+  ): Promise<{ acpSessionId: string; unsubscribe: Unsubscribe }> {
+    let seededConfig: DomainSessionEvent | null = null
+    const captureSeed = connection.onUpdate((event) => {
+      if (event.kind === "config_options") seededConfig = event
+    })
+    let acpSessionId: string
+    try {
+      acpSessionId = await connection.newSession(seed.cwd)
+    } finally {
+      captureSeed()
+    }
+    store.startSession(seed.id, acpSessionId!)
+    if (seededConfig) store.applyEvent(seed.id, seededConfig)
+    const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
+    connection.onPermission((request) => enqueuePermission(seed.id, request))
+    return { acpSessionId: acpSessionId!, unsubscribe }
+  }
+
+  /**
    * Replace one live runtime from a persisted pointer without coupling its outcome
    * to any peer. The store slice is reset and subscribed before `loadSession`, so
    * replay emitted synchronously by the adapter cannot arrive before its owner is
@@ -329,27 +355,35 @@ export async function createSessionController(options: SessionControllerOptions)
       }
 
       let acpSessionId: string
-      if (ready.canLoadSession && stored?.sessionId) {
+      // A zero-turn record has no history to restore. Some ACP adapters (including
+      // Codex) do not make that just-created session durable until its first turn,
+      // so asking them to load it later only turns an otherwise usable pane into an
+      // avoidable error. Start a fresh session in that case.
+      if (ready.canLoadSession && stored?.sessionId && stored.messageCount > 0) {
         acpSessionId = stored.sessionId
         store.startSession(seed.id, acpSessionId)
         unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
         connection.onPermission((request) => enqueuePermission(seed.id, request))
-        await connection.loadSession(acpSessionId, seed.cwd)
-        store.setRestoration(seed.id, "live")
-      } else {
-        let seededConfig: DomainSessionEvent | null = null
-        const captureSeed = connection.onUpdate((event) => {
-          if (event.kind === "config_options") seededConfig = event
-        })
         try {
-          acpSessionId = await connection.newSession(seed.cwd)
-        } finally {
-          captureSeed()
+          await connection.loadSession(acpSessionId, seed.cwd)
+          store.setRestoration(seed.id, "live")
+        } catch (error) {
+          unsubscribe()
+          unsubscribe = undefined
+          if (!isMissingCodexRollout(seed.providerKind, error)) throw error
+
+          // Codex reports stale local threads as a generic internal error with a
+          // nested "no rollout found" detail. The agent remains healthy, so recover
+          // into a fresh live session rather than turning the whole pane into error.
+          const fresh = await startFreshRestoredSession(connection, seed)
+          acpSessionId = fresh.acpSessionId
+          unsubscribe = fresh.unsubscribe
+          store.setRestoration(seed.id, "unavailable")
         }
-        store.startSession(seed.id, acpSessionId)
-        if (seededConfig) store.applyEvent(seed.id, seededConfig)
-        unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
-        connection.onPermission((request) => enqueuePermission(seed.id, request))
+      } else {
+        const fresh = await startFreshRestoredSession(connection, seed)
+        acpSessionId = fresh.acpSessionId
+        unsubscribe = fresh.unsubscribe
         store.setRestoration(seed.id, "unavailable")
       }
 
@@ -503,4 +537,20 @@ async function disposeQuietly(runtime: { dispose(): Promise<void> } | undefined)
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Recover only Codex's known stale-rollout response; all other load failures remain visible. */
+function isMissingCodexRollout(provider: ProviderKind, error: unknown): boolean {
+  if (provider !== "codex") return false
+  const details = errorDetails(error)
+  return `${errorMessage(error)} ${details ?? ""}`.toLowerCase().includes("no rollout found")
+}
+
+/** Pull the JSON-RPC wrapper's actionable nested detail without importing its SDK type. */
+function errorDetails(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("data" in error)) return null
+  const data = (error as { data: unknown }).data
+  if (typeof data !== "object" || data === null || !("details" in data)) return null
+  const details = (data as { details: unknown }).details
+  return typeof details === "string" && details.length > 0 ? details : null
 }

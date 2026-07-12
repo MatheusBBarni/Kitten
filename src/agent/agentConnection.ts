@@ -188,7 +188,13 @@ class AgentConnectionImpl implements AgentConnection {
       this.connection = new ClientSideConnection(() => this.buildClient(), this.transport.stream)
       const result = await this.connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+          // Select config options are part of Kitten's confirmed session state. Advertise
+          // that surface so ACP agents can safely return model and reasoning controls.
+          // Boolean options remain intentionally unsupported by the V1 UI.
+          session: { configOptions: {} },
+        },
         clientInfo: { name: "kitten", version: "0.0.0" },
       })
       return {
@@ -217,7 +223,12 @@ class AgentConnectionImpl implements AgentConnection {
 
   async loadSession(sessionId: string, cwd: string): Promise<void> {
     const connection = this.requireConnection()
-    await connection.loadSession({ sessionId, cwd, mcpServers: [] })
+    const result = await connection.loadSession({ sessionId, cwd, mcpServers: [] })
+    // A resumed session returns the same initial config snapshot as a fresh one.
+    // Preserve it so model and reasoning selectors retain their confirmed state.
+    if (result.configOptions != null) {
+      this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
+    }
   }
 
   async prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult> {

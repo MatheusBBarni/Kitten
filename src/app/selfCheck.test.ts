@@ -203,10 +203,10 @@ describe("reload confirmation probe", () => {
       createConnection: (agent) => fakeConnection({ canLoadSession: false, sessionId: `${agent.id}-probe` }),
     })
 
-    expect(reports.map((report) => report.configuredSessionId)).toEqual(["claude-code", "codex"])
+    expect(reports.map((report) => report.configuredSessionId)).toEqual(["codex", "claude-code"])
     expect(reports.map(formatReloadProbeLine)).toEqual([
-      "[FAIL] Claude Code (claude-code): loadSession=false — capability absent",
       "[FAIL] Codex (codex): loadSession=false — capability absent",
+      "[FAIL] Claude Code (claude-code): loadSession=false — capability absent",
     ])
   })
 })

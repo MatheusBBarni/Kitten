@@ -8,7 +8,7 @@ import { describe, expect, it } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 
 import { actAsync } from "../../test/reactTui.ts"
-import { WELCOME_GREETING, WELCOME_WORDMARK } from "./WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_KITTEN } from "./WelcomeBanner.tsx"
 import { renderBootBanner } from "./bootBanner.tsx"
 
 const CONNECTING_AGENTS = [
@@ -18,9 +18,9 @@ const CONNECTING_AGENTS = [
 
 describe("renderBootBanner", () => {
   it.each([
-    { name: "full on first run", firstRunSeen: false, expectedState: true, expectedWordmark: true },
-    { name: "compact after first run", firstRunSeen: true, expectedState: false, expectedWordmark: true },
-  ])("renders $name", async ({ firstRunSeen, expectedState, expectedWordmark }) => {
+    { name: "full on first run", firstRunSeen: false, expectedState: true, expectedMascot: true },
+    { name: "compact after first run", firstRunSeen: true, expectedState: false, expectedMascot: true },
+  ])("renders $name", async ({ firstRunSeen, expectedState, expectedMascot }) => {
     const setup = await createTestRenderer({ width: 80, height: 24 })
     let dispose = () => {}
 
@@ -38,7 +38,7 @@ describe("renderBootBanner", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame.includes("Agents: connecting · connecting")).toBe(expectedState)
-    expect(frame.includes(WELCOME_WORDMARK[0])).toBe(expectedWordmark)
+    expect(frame.includes(WELCOME_KITTEN[0])).toBe(expectedMascot)
 
     await actAsync(dispose)
     await setup.renderOnce()

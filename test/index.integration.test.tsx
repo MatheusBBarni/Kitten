@@ -17,7 +17,7 @@ import { createRunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
 import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
-import { WELCOME_GREETING, WELCOME_WORDMARK, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted, settleMountedHighlights } from "./reactTui.ts"
 
@@ -358,7 +358,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     await booted!.closed
   })
 
-  it("keeps the compact ASCII wordmark when the first-run marker already exists", async () => {
+  it("keeps the compact ASCII kitten mascot when the first-run marker already exists", async () => {
     const setup = await createTestRenderer({ width: 80, height: 24 })
     const controller = createFakeController()
     let markCalls = 0
@@ -379,7 +379,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     })
 
     const frame = await setup.waitForFrame((candidate) => candidate.includes(WELCOME_GREETING))
-    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).toContain(WELCOME_KITTEN[0])
     expect(frame).not.toContain("Agents:")
     expect(frame).not.toContain(WELCOME_ON_RAMP)
     expect(markCalls).toBe(0)

@@ -924,6 +924,7 @@ describe("integration - hand-off across two mock agents", () => {
     })
     await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
 
+    await actAsync(() => controller.actions.switchFocus("claude-code"))
     await actAsync(async () => {
       await controller.actions.sendPrompt("bump b")
     })

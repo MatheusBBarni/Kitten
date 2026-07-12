@@ -29,13 +29,13 @@ import {
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
-import { HELP_ENTRIES } from "./keymap.ts"
+import { HELP_ENTRIES, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
 import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
-import { WELCOME_GREETING, WELCOME_ON_RAMP, WELCOME_WORDMARK } from "./WelcomeBanner.tsx"
+import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
 function lines(frame: string): string[] {
@@ -176,9 +176,9 @@ describe("CockpitApp layout", () => {
     const frame = captureCharFrame()
     const rows = lines(frame)
 
-    // The focused pane is product-branded; the banner names Kitten in ASCII.
+    // The focused pane is product-branded; the banner shows Kitten in ASCII.
     expect(rows[0]).toContain("Kitten")
-    for (const line of WELCOME_WORDMARK) expect(frame).toContain(line)
+    for (const line of WELCOME_KITTEN) expect(frame).toContain(line)
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
@@ -190,7 +190,7 @@ describe("CockpitApp layout", () => {
     expect(strip).toContain(`[▸ ○ ${STATUS_LABELS.idle}]`)
     expect(strip).toContain(`[○ ${STATUS_LABELS.idle}]`)
     expect(shared).toContain("claude:—")
-    expect(shared).toContain("codex:—")
+    expect(shared).not.toContain("codex:—")
     expect(shared).toContain("/help")
 
     await destroyMounted(renderer)
@@ -202,35 +202,37 @@ describe("CockpitApp layout", () => {
 
     const frame = captureCharFrame()
     expectNoOverflow(frame, 80, 24)
-    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).toContain(WELCOME_KITTEN[0])
     expect(frame).toContain("/help")
 
     await destroyMounted(renderer)
   })
 
-  it("shows each pane's confirmed model and effort and refreshes them from config updates", async () => {
+  it("shows only the focused pane's chosen model and refreshes it from config updates", async () => {
     const controller = createFakeController()
     controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("claude-fable-5[1m]", "high") })
     controller.store.applyEvent("codex", { kind: "config_options", options: configOptions("gpt-5.1-codex-max", "medium") })
     const { renderer, waitForFrame } = await renderCockpitApp(controller)
 
-    const initial = await waitForFrame(
-      (f) =>
-        f.includes("claude:claude-fable-5[1m]/high") &&
-        f.includes("codex:gpt-5.1-codex-max/medium"),
-    )
+    const initial = await waitForFrame((f) => f.includes("claude:claude-fable-5[1m]"))
     expectNoOverflow(initial, 80, 24)
-    expect(initial).toContain("claude:claude-fable-5[1m]/high")
-    expect(initial).toContain("codex:gpt-5.1-codex-max/medium")
+    expect(initial).toContain("claude:claude-fable-5[1m]")
+    expect(initial).not.toContain("/high")
+    expect(initial).not.toContain("codex:gpt-5.1-codex-max")
 
     await actAsync(() => {
       controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("sonnet", "low") })
     })
 
-    const updated = await waitForFrame((f) => f.includes("claude:sonnet/low"))
+    const updated = await waitForFrame((f) => f.includes("claude:sonnet"))
     expectNoOverflow(updated, 80, 24)
-    expect(updated).toContain("claude:sonnet/low")
-    expect(updated).toContain("codex:gpt-5.1-codex-max/medium")
+    expect(updated).toContain("claude:sonnet")
+    expect(updated).not.toContain("/low")
+    expect(updated).not.toContain("codex:gpt-5.1-codex-max")
+
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    const codex = await waitForFrame((f) => f.includes("codex:gpt-5.1-codex-max"))
+    expect(codex).not.toContain("claude:sonnet")
 
     await destroyMounted(renderer)
   })
@@ -292,7 +294,7 @@ describe("CockpitApp alternate-screen layout", () => {
       const primary = await setup.waitForFrame(
         (frame) => frame.includes("Shell · focused") && frame.includes(PROMPT_PLACEHOLDER),
       )
-      expect(primary).toContain("/help")
+      expect(primary).toContain(SHELL_EXIT_HINT)
       await setup.waitFor(() => shell.resizes.length > 0)
       const primarySize = shell.resizes.at(-1)!
 
@@ -305,6 +307,7 @@ describe("CockpitApp alternate-screen layout", () => {
       expect(runtime.bufferType()).toBe("alternate")
       expect(alternate).not.toContain(PROMPT_PLACEHOLDER)
       expect(alternate).not.toContain("/help")
+      expect(alternate).not.toContain(SHELL_EXIT_HINT)
       expect(alternateSize.rows).toBeGreaterThan(primarySize.rows)
 
       await actAsync(() => {
@@ -322,7 +325,7 @@ describe("CockpitApp alternate-screen layout", () => {
         await shell.scriptOutput("\u001b[?1049l")
       })
       const restored = await setup.waitForFrame(
-        (frame) => frame.includes(PROMPT_PLACEHOLDER) && frame.includes("/help"),
+        (frame) => frame.includes(PROMPT_PLACEHOLDER) && frame.includes(SHELL_EXIT_HINT),
       )
       expect(runtime.bufferType()).toBe("normal")
       expect(restored).not.toContain("interactive-app")
@@ -379,6 +382,7 @@ describe("CockpitApp keymap", () => {
       })
       const shellFrame = await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
       expect(controller.store.getState().focusedPane).toEqual({ kind: "shell" })
+      expect(shellFrame).toContain(SHELL_EXIT_HINT)
       expect(shellFrame).not.toContain(WELCOME_GREETING)
       expect(setup.renderer.currentFocusedEditor).toBeNull()
 
@@ -388,7 +392,7 @@ describe("CockpitApp keymap", () => {
       expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x6c, 0x73])
 
       await actAsync(() => {
-        setup.mockInput.pressKey("`", { ctrl: true })
+        setup.mockInput.pressKey("F2")
       })
       await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING) && !frame.includes("Shell · focused"))
       expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
@@ -861,7 +865,7 @@ describe("renderCockpit", () => {
     expect(root).toBeDefined()
     const frame = await waitForFrame((f) => f.includes(WELCOME_GREETING))
     expect(frame).toContain("Kitten")
-    expect(frame).toContain(WELCOME_WORDMARK[0])
+    expect(frame).toContain(WELCOME_KITTEN[0])
 
     await destroyMounted(renderer)
   })

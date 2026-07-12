@@ -36,6 +36,7 @@ import {
   SESSION_PICKER_KEYMAP,
   SESSIONS_HINT,
   SESSIONS_KEYMAP,
+  SHELL_EXIT_HINT,
   SHELL_HINT,
   SETTINGS_HINT,
   SETTINGS_KEYMAP,
@@ -48,9 +49,10 @@ function key(name: string, modifiers: Partial<CockpitKey> = {}): CockpitKey {
 }
 
 describe("matchCommand", () => {
-  it("maps Ctrl+` to the shell and Escape to the help-panel close action", () => {
+  it("maps Ctrl+` or F2 to the shell and Escape to the help-panel close action", () => {
     expect(matchCommand(key("`", { ctrl: true }))).toBe("toggle-shell")
     expect(matchCommand(key("grave", { ctrl: true }))).toBe("toggle-shell")
+    expect(matchCommand(key("f2"))).toBe("toggle-shell")
     expect(matchCommand(key("escape"))).toBe("close-help")
   })
 
@@ -58,7 +60,7 @@ describe("matchCommand", () => {
     for (const name of ["o", "t", "s", "r", "n", "e", ","]) {
       expect(matchCommand(key(name, { ctrl: true }))).toBeNull()
     }
-    for (const name of ["f1", "f2", "f3"]) {
+    for (const name of ["f1", "f3"]) {
       expect(matchCommand(key(name))).toBeNull()
     }
   })
@@ -90,7 +92,8 @@ describe("COCKPIT_KEYMAP", () => {
   it("keeps slash-first compact affordances derived from the command registry", () => {
     expect(KEYMAP_HINT).toBe("/help")
     expect(SHELL_HINT).toBe("/shell")
-    expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+`")
+    expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+` / F2")
+    expect(SHELL_EXIT_HINT).toBe("Ctrl+` / F2 exit shell")
   })
 })
 
@@ -196,7 +199,7 @@ describe("HELP_ENTRIES", () => {
   it("lists slash commands, the retained shell chord, then editor input", () => {
     expect(HELP_ENTRIES).toEqual([
       ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
-      { keys: "Ctrl+`", description: "Focus or leave the integrated shell" },
+      { keys: "Ctrl+` / F2", description: "Focus or leave the integrated shell" },
       ...EDITOR_KEYMAP,
     ])
   })

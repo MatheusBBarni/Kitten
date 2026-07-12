@@ -35,7 +35,7 @@ import type {
   ThemePreference,
   WelcomeBannerPreference,
 } from "../core/types.ts"
-import { PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
 
 /**
  * The pinned ACP adapter packages the default config launches through `npx`.
@@ -333,7 +333,7 @@ export function resolveSessions(config: AppConfig, options: ResolveSessionsOptio
   const declared = config.sessions.length > 0
   const descriptors: SessionDescriptor[] = declared
     ? config.sessions
-    : PROVIDER_KINDS.filter((kind) => config.providers[kind]).map((kind) => ({
+    : DEFAULT_PROVIDER_ORDER.filter((kind) => config.providers[kind]).map((kind) => ({
         provider: kind,
         cwd: launchCwd,
         title: config.providers[kind].displayName,
