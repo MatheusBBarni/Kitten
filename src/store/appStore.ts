@@ -43,6 +43,7 @@ import {
   type TeardownState,
   type WorkspaceState,
   type WorkspaceEvent,
+  type WorkspaceConversationSeed,
 } from "../core/types.ts"
 
 /** Every provider kind Kitten seeds a default session for, in cockpit order (ADR-001). */
@@ -192,9 +193,18 @@ export interface AppStore {
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
-  startSession(sessionId: SessionId, acpSessionId: string): void
+  startSession(
+    sessionId: SessionId,
+    acpSessionId: string,
+    options?: { preserveWorkspaceAttention?: boolean },
+  ): void
   /** Atomically insert a normalized execution slice and its visible workspace entry. */
   addSession(seed: SessionSeed, options?: { displayName?: string; availability?: ConversationAvailability }): void
+  /** Atomically replace execution/workspace membership from validated restore descriptors. */
+  replaceSessions(
+    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    selectedVisibleId: SessionId | null,
+  ): void
   /** Atomically remove an execution slice after successful teardown and close its workspace entry. */
   removeSession(sessionId: SessionId): void
   renameConversation(sessionId: SessionId, displayName: string): void
@@ -361,7 +371,11 @@ class AppStoreImpl implements AppStore {
     this.commit({ ...this.state, shell: next })
   }
 
-  startSession(sessionId: SessionId, acpSessionId: string): void {
+  startSession(
+    sessionId: SessionId,
+    acpSessionId: string,
+    options: { preserveWorkspaceAttention?: boolean } = {},
+  ): void {
     const existing = this.state.sessions[sessionId]
     if (!existing) return
     // Reset the transcript and bind the ACP id, but keep the session's identity
@@ -374,11 +388,13 @@ class AppStoreImpl implements AppStore {
       task: existing.task,
       acpSessionId,
     })
-    const workspace = workspaceReducer(this.state.workspace, {
-      kind: "execution_status",
-      sessionId,
-      status: fresh.status,
-    })
+    const workspace = options.preserveWorkspaceAttention
+      ? this.state.workspace
+      : workspaceReducer(this.state.workspace, {
+          kind: "execution_status",
+          sessionId,
+          status: fresh.status,
+        })
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [sessionId]: fresh },
@@ -405,6 +421,29 @@ class AppStoreImpl implements AppStore {
       workspace,
       restoration: { ...this.state.restoration, [seed.id]: null },
       focusedPane: { kind: "agent", sessionId: seed.id },
+    })
+  }
+
+  replaceSessions(
+    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    selectedVisibleId: SessionId | null,
+  ): void {
+    const sessions: Record<SessionId, SessionState> = {}
+    const restoration: Record<SessionId, RestorationMode | null> = {}
+    for (const entry of entries) {
+      sessions[entry.seed.id] = createSessionState(entry.seed)
+      restoration[entry.seed.id] = null
+    }
+    const workspace = createWorkspaceState({
+      conversations: entries.map((entry) => entry.workspace),
+      selectedVisibleId,
+    })
+    this.commit({
+      ...this.state,
+      sessions,
+      workspace,
+      restoration,
+      focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
   }
 

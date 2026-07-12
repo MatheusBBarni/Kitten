@@ -20,14 +20,15 @@
 
 import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
-import { resolveSessions } from "../config/configLoader.ts"
+import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
-import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed } from "../core/types.ts"
+import type { AgentConfig, AppConfig, DomainSessionEvent, ProviderKind, SessionId, SessionSeed, WorkspaceConversationSeed } from "../core/types.ts"
 import {
-  persistedResumeAgent,
-  persistedSelectedConversationId,
+  migratePersistedRunV1,
   type PersistedAgent,
+  type PersistedConversationV2,
   type PersistedRunRecord,
+  type PersistedRunRecordV2,
 } from "../persistence/runRecord.ts"
 import {
   createShellRuntime as createRealShellRuntime,
@@ -112,7 +113,7 @@ interface PendingPermission {
 /** Everything the controller owns for one session. */
 interface AgentRuntime {
   seed: SessionSeed
-  config: AgentConfig
+  config: AgentConfig | null
   state: AgentRuntimeState
   connection: AgentConnection | null
   acpSessionId: string | null
@@ -134,14 +135,13 @@ export async function createSessionController(options: SessionControllerOptions)
   // The resolved fleet, in declared order (ADR-005): one session per configured
   // provider in the launch directory when the config declares none, else each
   // declared session with its own `cwd`/`title`/`task` and a distinct session id.
-  const plan: { seed: SessionSeed; config: AgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
+  const initialPlan: { seed: SessionSeed; config: AgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
     (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
   )
 
-  const store = options.store ?? createAppStore({ seeds: plan.map((entry) => entry.seed) })
+  const store = options.store ?? createAppStore({ seeds: initialPlan.map((entry) => entry.seed) })
 
   const runtimes = new Map<SessionId, AgentRuntime>()
-  const seeds = new Map(plan.map((entry) => [entry.seed.id, entry.seed]))
   const branchReadGenerations = new Map<SessionId, number>()
   const pending: PendingPermission[] = []
   let disposed = false
@@ -175,7 +175,7 @@ export async function createSessionController(options: SessionControllerOptions)
    * boundary result. Null emits a blank event that clears the optional field.
    */
   function refreshBranch(sessionId: SessionId): void {
-    const seed = seeds.get(sessionId)
+    const seed = runtimes.get(sessionId)?.seed
     if (!seed || disposed) return
     const generation = (branchReadGenerations.get(sessionId) ?? 0) + 1
     branchReadGenerations.set(sessionId, generation)
@@ -233,14 +233,39 @@ export async function createSessionController(options: SessionControllerOptions)
     return { sessionId, acpSessionId: runtime.acpSessionId, connection: runtime.connection }
   }
 
+  function registerRuntime(seed: SessionSeed, config: AgentConfig | null): AgentRuntime {
+    const runtime: AgentRuntime = {
+      seed,
+      config,
+      state: {
+        sessionId: seed.id,
+        providerKind: seed.providerKind,
+        displayName: config?.displayName ?? seed.title,
+        title: seed.title,
+        cwd: seed.cwd,
+        ready: false,
+        error: config ? "Starting" : "Provider unavailable",
+      },
+      connection: null,
+      acpSessionId: null,
+      unsubscribe: null,
+    }
+    runtimes.set(seed.id, runtime)
+    return runtime
+  }
+
   /** Bring one session up, or record precisely why it did not come up. */
   async function startSession(seed: SessionSeed, config: AgentConfig): Promise<void> {
     let connection: AgentConnection | undefined
+    const runtime = runtimes.get(seed.id) ?? registerRuntime(seed, config)
+    runtime.config = config
+    store.setConversationAvailability(seed.id, { kind: "starting" })
     try {
       connection = create(config)
+      runtime.connection = connection
       const ready = await connection.connect()
       if (!ready.ready) {
-        await failSession(seed, config, connection, ready.error)
+        await failSession(runtime, connection, ready.error, "connection-failed")
         return
       }
       // The agent may advertise its current model/effort in the `session/new` response,
@@ -260,50 +285,48 @@ export async function createSessionController(options: SessionControllerOptions)
       if (seededConfig) store.applyEvent(seed.id, seededConfig)
       const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
       connection.onPermission((request) => enqueuePermission(seed.id, request))
-      runtimes.set(seed.id, {
-        seed,
-        config,
-        state: {
-          sessionId: seed.id,
-          providerKind: seed.providerKind,
-          displayName: config.displayName,
-          title: seed.title,
-          cwd: seed.cwd,
-          ready: true,
-          acpSessionId,
-        },
-        connection,
-        acpSessionId,
-        unsubscribe,
-      })
-    } catch (error) {
-      onError(seed.id, error)
-      await failSession(seed, config, connection, errorMessage(error))
-    }
-  }
-
-  /** Record a session as not-ready and release the connection it never got to use. */
-  async function failSession(
-    seed: SessionSeed,
-    config: AgentConfig,
-    connection: AgentConnection | undefined,
-    error: string,
-  ): Promise<void> {
-    runtimes.set(seed.id, {
-      seed,
-      config,
-      state: {
+      runtime.state = {
         sessionId: seed.id,
         providerKind: seed.providerKind,
         displayName: config.displayName,
         title: seed.title,
         cwd: seed.cwd,
-        ready: false,
-        error,
-      },
-      connection: null,
-      acpSessionId: null,
-      unsubscribe: null,
+        ready: true,
+        acpSessionId,
+      }
+      runtime.connection = connection
+      runtime.acpSessionId = acpSessionId
+      runtime.unsubscribe = unsubscribe
+      store.setConversationAvailability(seed.id, { kind: "ready" })
+    } catch (error) {
+      onError(seed.id, error)
+      await failSession(runtime, connection, errorMessage(error), "connection-failed")
+    }
+  }
+
+  /** Record a session as not-ready and release the connection it never got to use. */
+  async function failSession(
+    runtime: AgentRuntime,
+    connection: AgentConnection | undefined,
+    error: string,
+    reasonCode: "connection-failed" | "restore-unavailable" | "provider-unavailable",
+  ): Promise<void> {
+    runtime.state = {
+      sessionId: runtime.seed.id,
+      providerKind: runtime.seed.providerKind,
+      displayName: runtime.config?.displayName ?? runtime.seed.title,
+      title: runtime.seed.title,
+      cwd: runtime.seed.cwd,
+      ready: false,
+      error,
+    }
+    runtime.connection = null
+    runtime.acpSessionId = null
+    runtime.unsubscribe = null
+    store.setConversationAvailability(runtime.seed.id, {
+      kind: "unavailable",
+      reasonCode,
+      retryable: runtime.config !== null,
     })
     await disposeQuietly(connection)
   }
@@ -341,23 +364,25 @@ export async function createSessionController(options: SessionControllerOptions)
    * bound (ADR-004).
    */
   async function restoreSession(seed: SessionSeed, config: AgentConfig, stored: PersistedAgent | undefined): Promise<void> {
-    const previous = runtimes.get(seed.id)
+    const previous = runtimes.get(seed.id) ?? registerRuntime(seed, config)
     previous?.unsubscribe?.()
-    if (previous) {
-      previous.unsubscribe = null
-      const previousConnection = previous.connection
-      previous.connection = null
-      await disposeQuietly(previousConnection ?? undefined)
-    }
+    previous.unsubscribe = null
+    const previousConnection = previous.connection
+    previous.connection = null
+    previous.acpSessionId = null
+    await disposeQuietly(previousConnection ?? undefined)
+    previous.config = config
+    store.setConversationAvailability(seed.id, { kind: "starting" })
 
     let connection: AgentConnection | undefined
     let unsubscribe: Unsubscribe | undefined
     try {
       connection = create(config)
+      previous.connection = connection
       const ready = await connection.connect()
       if (!ready.ready) {
         store.setRestoration(seed.id, "unavailable")
-        await failSession(seed, config, connection, ready.error)
+        await failSession(previous, connection, ready.error, "restore-unavailable")
         return
       }
 
@@ -368,7 +393,7 @@ export async function createSessionController(options: SessionControllerOptions)
       // avoidable error. Start a fresh session in that case.
       if (ready.canLoadSession && stored?.sessionId && stored.messageCount > 0) {
         acpSessionId = stored.sessionId
-        store.startSession(seed.id, acpSessionId)
+        store.startSession(seed.id, acpSessionId, { preserveWorkspaceAttention: true })
         unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
         connection.onPermission((request) => enqueuePermission(seed.id, request))
         try {
@@ -394,36 +419,46 @@ export async function createSessionController(options: SessionControllerOptions)
         store.setRestoration(seed.id, "unavailable")
       }
 
-      runtimes.set(seed.id, {
-        seed,
-        config,
-        state: {
-          sessionId: seed.id,
-          providerKind: seed.providerKind,
-          displayName: config.displayName,
-          title: seed.title,
-          cwd: seed.cwd,
-          ready: true,
-          acpSessionId,
-        },
-        connection,
+      previous.state = {
+        sessionId: seed.id,
+        providerKind: seed.providerKind,
+        displayName: config.displayName,
+        title: seed.title,
+        cwd: seed.cwd,
+        ready: true,
         acpSessionId,
-        unsubscribe,
-      })
+      }
+      previous.connection = connection
+      previous.acpSessionId = acpSessionId
+      previous.unsubscribe = unsubscribe
+      store.setConversationAvailability(seed.id, { kind: "ready" })
     } catch (error) {
       unsubscribe?.()
       store.setRestoration(seed.id, "unavailable")
       onError(seed.id, error)
-      await failSession(seed, config, connection, errorMessage(error))
+      await failSession(previous, connection, errorMessage(error), "restore-unavailable")
     }
   }
 
-  await Promise.all(plan.map((entry) => startSession(entry.seed, entry.config)))
-  focusReadySession(store, plan, runtimes)
+  const requestedStartupSelection = store.getState().workspace.selectedVisibleId
+  store.replaceSessions(
+    initialPlan.map((entry) => ({
+      seed: entry.seed,
+      workspace: {
+        sessionId: entry.seed.id,
+        displayName: entry.seed.title,
+        availability: { kind: "starting" },
+      },
+    })),
+    requestedStartupSelection,
+  )
+  for (const entry of initialPlan) registerRuntime(entry.seed, entry.config)
+  await Promise.all(initialPlan.map((entry) => startSession(entry.seed, entry.config)))
+  focusReadySession(store, runtimes)
 
   // Start one read per session after startup has bound/reset every store slice.
   // Do not await these: branch discovery must never extend boot or block the UI.
-  for (const entry of plan) refreshBranch(entry.seed.id)
+  for (const entry of initialPlan) refreshBranch(entry.seed.id)
 
   const actions = createControllerActions({
     store,
@@ -436,17 +471,26 @@ export async function createSessionController(options: SessionControllerOptions)
     startNewRun: async () => {
       if (disposed) return
       store.setRestorationBundle(null)
-      await Promise.all(plan.map((entry) => restoreSession(entry.seed, entry.config, undefined)))
-      for (const entry of plan) store.setRestoration(entry.seed.id, null)
-      focusReadySession(store, plan, runtimes)
+      const entries = orderedRuntimes(store, runtimes).filter(
+        (runtime): runtime is AgentRuntime & { config: AgentConfig } => runtime.config !== null,
+      )
+      await Promise.all(entries.map((entry) => restoreSession(entry.seed, entry.config, undefined)))
+      for (const entry of entries) {
+        store.setRestoration(entry.seed.id, null)
+        refreshBranch(entry.seed.id)
+      }
+      focusReadySession(store, runtimes)
     },
     startFreshSession: async (sessionId) => {
       if (disposed) return false
-      const entry = plan.find((candidate) => candidate.seed.id === sessionId)
-      if (!entry) return false
+      const entry = runtimes.get(sessionId)
+      if (!entry?.config) return false
       await restoreSession(entry.seed, entry.config, undefined)
       const ready = getSession(sessionId) !== undefined
-      if (ready) store.setRestoration(sessionId, null)
+      if (ready) {
+        store.setRestoration(sessionId, null)
+        refreshBranch(sessionId)
+      }
       return ready
     },
   })
@@ -457,7 +501,7 @@ export async function createSessionController(options: SessionControllerOptions)
   // Fire-and-forget: the opening turn must not block boot on the agent's full reply,
   // and `sendPrompt` already records the user turn and routes failures to `onError`.
   if (options.sendInitialTasks !== false) {
-    for (const entry of plan) {
+    for (const entry of initialPlan) {
       const task = entry.seed.task
       if (task && runtimes.get(entry.seed.id)?.state.ready) {
         void actions.sendPrompt(task, entry.seed.id)
@@ -469,21 +513,46 @@ export async function createSessionController(options: SessionControllerOptions)
     store,
     actions,
     shell,
-    runtimes: () => plan.map((entry) => runtimes.get(entry.seed.id)!.state),
+    runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),
     runtime: (sessionId) => runtimes.get(sessionId)?.state,
     isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
     async restore(record, mode = "last-run"): Promise<void> {
       if (disposed) return
       options.recorder?.resumeLoadStarted?.()
       store.setRestorationBundle(record.handoffBundle)
-      await Promise.all(
-        plan.map((entry) => restoreSession(entry.seed, entry.config, persistedResumeAgent(record, entry.seed.id))),
+      const restoredRecord = record.version === 1
+        ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
+        : record
+      await disposeAgentRuntimes(runtimes)
+      runtimes.clear()
+      branchReadGenerations.clear()
+      for (const request of pending.splice(0)) request.resolve({ outcome: "cancelled" })
+      store.closeApproval()
+
+      const entries = restoreEntries(restoredRecord)
+      store.replaceSessions(
+        entries.map((entry) => ({ seed: entry.seed, workspace: entry.workspace })),
+        restoredRecord.workspace.selectedVisibleId,
       )
-      const selectedConversationId = persistedSelectedConversationId(record)
-      if (selectedConversationId !== null) store.setFocus(selectedConversationId)
+      for (const entry of entries) {
+        const config = findAgentConfig(options.config, entry.seed.providerKind) ?? null
+        const runtime = registerRuntime(entry.seed, config)
+        if (!config) {
+          store.setRestoration(entry.seed.id, "unavailable")
+          await failSession(runtime, undefined, "Provider unavailable", "provider-unavailable")
+        }
+      }
+      await Promise.all(
+        entries.map(async (entry) => {
+          const runtime = runtimes.get(entry.seed.id)!
+          if (!runtime.config) return
+          await restoreSession(entry.seed, runtime.config, entry.stored)
+        }),
+      )
+      for (const entry of entries) refreshBranch(entry.seed.id)
       const restoration = store.getState().restoration
       let live = 0
-      for (const entry of plan) {
+      for (const entry of entries) {
         const outcome = restoration[entry.seed.id]
         if (outcome === "live") live += 1
         else if (outcome === "unavailable") options.recorder?.resumePaneUnavailable?.(entry.seed.id)
@@ -504,13 +573,7 @@ export async function createSessionController(options: SessionControllerOptions)
       await Promise.all(
         [
           disposeQuietly(shellRuntime ?? undefined),
-          ...[...runtimes.values()].map(async (runtime) => {
-            runtime.unsubscribe?.()
-            runtime.unsubscribe = null
-            const connection = runtime.connection
-            runtime.connection = null
-            await disposeQuietly(connection ?? undefined)
-          }),
+          disposeAgentRuntimes(runtimes),
         ],
       )
     },
@@ -522,15 +585,75 @@ export async function createSessionController(options: SessionControllerOptions)
  * to come up, focus the first one that did. When none is ready, focus is left where
  * it was so the status strip still names a session to explain.
  */
-function focusReadySession(
-  store: AppStore,
-  plan: { seed: SessionSeed }[],
-  runtimes: Map<SessionId, AgentRuntime>,
-): void {
+function focusReadySession(store: AppStore, runtimes: Map<SessionId, AgentRuntime>): void {
   const focused = store.getState().workspace.selectedVisibleId
   if (focused !== null && runtimes.get(focused)?.state.ready) return
-  const firstReady = plan.find((entry) => runtimes.get(entry.seed.id)?.state.ready)
+  const firstReady = orderedRuntimes(store, runtimes).find((runtime) => runtime.state.ready)
   if (firstReady) store.setFocus(firstReady.seed.id)
+}
+
+interface RestoreEntry {
+  seed: SessionSeed
+  workspace: WorkspaceConversationSeed
+  stored: PersistedAgent
+}
+
+function restoreEntries(record: PersistedRunRecordV2): RestoreEntry[] {
+  const entries: RestoreEntry[] = []
+  for (const sessionId of record.workspace.order) {
+    const descriptor: PersistedConversationV2 | undefined = record.conversations[sessionId]
+    const workspace = record.workspace.conversations[sessionId]
+    if (!descriptor || !workspace) continue
+    entries.push({
+      seed: {
+        id: descriptor.sessionId,
+        providerKind: descriptor.providerKind,
+        title: descriptor.initialTitle,
+        cwd: descriptor.cwd,
+        acpSessionId: descriptor.acpSessionId,
+      },
+      workspace: {
+        sessionId,
+        displayName: workspace.displayName,
+        lifecycle: workspace.lifecycle,
+        createdOrdinal: workspace.createdOrdinal,
+        availability: { kind: "starting" },
+        teardownState: "open",
+        attention: {
+          status: descriptor.status,
+          seen: workspace.attention.seen,
+          sequence: workspace.attention.sequence,
+        },
+      },
+      stored: {
+        sessionId: descriptor.acpSessionId,
+        lastPrompt: descriptor.lastPrompt,
+        messageCount: descriptor.messageCount,
+        status: descriptor.status,
+      },
+    })
+  }
+  return entries
+}
+
+function orderedRuntimes(store: AppStore, runtimes: Map<SessionId, AgentRuntime>): AgentRuntime[] {
+  return store.getState().workspace.order.flatMap((sessionId) => {
+    const runtime = runtimes.get(sessionId)
+    return runtime ? [runtime] : []
+  })
+}
+
+async function disposeAgentRuntimes(runtimes: Map<SessionId, AgentRuntime>): Promise<void> {
+  await Promise.all(
+    [...runtimes.values()].map(async (runtime) => {
+      runtime.unsubscribe?.()
+      runtime.unsubscribe = null
+      const connection = runtime.connection
+      runtime.connection = null
+      runtime.acpSessionId = null
+      await disposeQuietly(connection ?? undefined)
+    }),
+  )
 }
 
 function defaultCreateConnection(config: AgentConfig): AgentConnection {

@@ -25,7 +25,7 @@ import type {
   SessionId,
   ShellEvent,
 } from "../core/types.ts"
-import type { PersistedRunRecordV1 } from "../persistence/runRecord.ts"
+import type { PersistedRunRecordV1, PersistedRunRecordV2 } from "../persistence/runRecord.ts"
 import {
   createInMemoryShellRuntimeFactory,
   type ShellRuntime,
@@ -355,6 +355,60 @@ function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecordV1
   }
 }
 
+function dynamicPersistedRun(): PersistedRunRecordV2 {
+  return {
+    version: 2,
+    runId: "dynamic-run",
+    cwd: CWD,
+    gitBranch: "feat/dynamic-restore",
+    createdAt: 1_000,
+    updatedAt: 2_000,
+    conversations: {
+      "codex-review": {
+        sessionId: "codex-review",
+        providerKind: "codex",
+        cwd: FLEET_DIRS.alpha,
+        initialTitle: "Review",
+        acpSessionId: "acp-review",
+        lastPrompt: "review",
+        messageCount: 1,
+        status: "finished",
+      },
+      "codex-build": {
+        sessionId: "codex-build",
+        providerKind: "codex",
+        cwd: FLEET_DIRS.beta,
+        initialTitle: "Build",
+        acpSessionId: "acp-build",
+        lastPrompt: "build",
+        messageCount: 1,
+        status: "idle",
+      },
+    },
+    workspace: {
+      conversations: {
+        "codex-review": {
+          sessionId: "codex-review",
+          displayName: "Review API",
+          lifecycle: "background",
+          createdOrdinal: 4,
+          attention: { seen: false, sequence: 3 },
+        },
+        "codex-build": {
+          sessionId: "codex-build",
+          displayName: "Build CLI",
+          lifecycle: "visible",
+          createdOrdinal: 8,
+          attention: { seen: true, sequence: 2 },
+        },
+      },
+      order: ["codex-review", "codex-build"],
+      selectedVisibleId: "codex-build",
+    },
+    handoffBundle: null,
+  }
+}
+
 async function controllerForRestore(
   restoreOptions: Partial<Record<ProviderKind, StubOptions>> = {},
   onError?: (sessionId: SessionId, error: unknown) => void,
@@ -554,6 +608,187 @@ describe("createSessionController - startup", () => {
 })
 
 describe("createSessionController - persisted restore", () => {
+  it("Should restore record-only conversations in persisted order with isolated same-provider runtimes", async () => {
+    const created: StubConnection[] = []
+    const branchReads: string[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const index = created.length
+        const connection = createStubConnection(config.id, {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          sessionId: `fresh-${index}`,
+          loadSessionEvents:
+            index < 2
+              ? []
+              : [{ kind: "agent_message", messageId: `replay-${index}`, textDelta: `restored-${index}` }],
+        })
+        created.push(connection)
+        return connection
+      },
+      readBranch: async (sessionCwd) => {
+        branchReads.push(sessionCwd)
+        return `branch-${sessionCwd.split("/").at(-1)}`
+      },
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    await controller.restore(dynamicPersistedRun())
+    await waitFor(() => branchReads.includes(FLEET_DIRS.beta), "dynamic restore branch refresh")
+
+    const state = controller.store.getState()
+    expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["codex-review", "codex-build"])
+    expect(controller.runtime("codex-review")).toMatchObject({
+      providerKind: "codex",
+      cwd: FLEET_DIRS.alpha,
+      ready: true,
+      acpSessionId: "acp-review",
+    })
+    expect(controller.runtime("codex-build")).toMatchObject({
+      providerKind: "codex",
+      cwd: FLEET_DIRS.beta,
+      ready: true,
+      acpSessionId: "acp-build",
+    })
+    expect(created[2]!.loadSessionCalls).toEqual([{ sessionId: "acp-review", cwd: FLEET_DIRS.alpha }])
+    expect(created[3]!.loadSessionCalls).toEqual([{ sessionId: "acp-build", cwd: FLEET_DIRS.beta }])
+    expect(state.workspace.order).toEqual(["codex-review", "codex-build"])
+    expect(state.workspace.selectedVisibleId).toBe("codex-build")
+    expect(state.workspace.conversations["codex-review"]).toMatchObject({
+      displayName: "Review API",
+      lifecycle: "background",
+      createdOrdinal: 4,
+      attention: { seen: false, sequence: 3 },
+      availability: { kind: "ready" },
+    })
+    expect(state.sessions["codex-review"]!.turns).toEqual([
+      { kind: "agent", messageId: "replay-2", text: "restored-2" },
+    ])
+    expect(state.sessions["codex-build"]!.turns).toEqual([
+      { kind: "agent", messageId: "replay-3", text: "restored-3" },
+    ])
+
+    await controller.dispose()
+    expect(created[2]!.isDisposed()).toBe(true)
+    expect(created[3]!.isDisposed()).toBe(true)
+  })
+
+  it("Should retain one failed dynamic restore as retryable while its sibling remains usable", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const index = created.length
+        const connection = createStubConnection(config.id, {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          sessionId: `fresh-${index}`,
+          ...(index === 2 ? { loadSessionThrows: new Error("review history missing") } : {}),
+        })
+        created.push(connection)
+        return connection
+      },
+      readBranch: async () => null,
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    await controller.restore(dynamicPersistedRun())
+
+    expect(controller.isReady("codex-review")).toBe(false)
+    expect(controller.isReady("codex-build")).toBe(true)
+    expect(controller.store.getState().workspace.conversations["codex-review"]?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "restore-unavailable",
+      retryable: true,
+    })
+    expect(await controller.actions.sendPrompt("continue", "codex-build")).toEqual({ stopReason: "end_turn" })
+    expect(created[3]!.prompts).toHaveLength(1)
+
+    const recovered = await controller.actions.startFreshFromContext("recover", "codex-review")
+    expect(recovered).toEqual({ stopReason: "end_turn" })
+    expect(controller.isReady("codex-review")).toBe(true)
+    expect(controller.store.getState().workspace.conversations["codex-review"]?.availability).toEqual({ kind: "ready" })
+    expect(created[4]!.newSessionCwds).toEqual([FLEET_DIRS.alpha])
+
+    await controller.dispose()
+  })
+
+  it("Should retain a record-only conversation when its provider recipe is unavailable", async () => {
+    const config: AppConfig = {
+      ...APP_CONFIG,
+      providers: { codex: PROVIDERS.codex } as AppConfig["providers"],
+    }
+    const record = dynamicPersistedRun()
+    record.conversations["codex-review"] = {
+      ...record.conversations["codex-review"]!,
+      providerKind: "claude-code",
+    }
+    const controller = await createSessionController({
+      config,
+      cwd: CWD,
+      createConnection: (agentConfig) =>
+        createStubConnection(agentConfig.id, {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        }),
+      readBranch: async () => null,
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    await controller.restore(record)
+
+    expect(controller.runtime("codex-review")).toMatchObject({
+      providerKind: "claude-code",
+      ready: false,
+      error: "Provider unavailable",
+    })
+    expect(controller.store.getState().workspace.conversations["codex-review"]?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "provider-unavailable",
+      retryable: false,
+    })
+    expect(controller.isReady("codex-build")).toBe(true)
+
+    await controller.dispose()
+  })
+
+  it("Should constrain V1 restore to matching resolved descriptors and ignore unmatched pointers", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (agentConfig) => {
+        const connection = createStubConnection(agentConfig.id, {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        })
+        created.push(connection)
+        return connection
+      },
+      readBranch: async () => null,
+      createShellRuntime: createTestShellFactory(),
+    })
+    const record = persistedRun("unmatched")
+    record.agents = {
+      codex: record.agents.codex!,
+      unmatched: {
+        sessionId: "acp-unmatched",
+        lastPrompt: "must not fabricate a descriptor",
+        messageCount: 1,
+        status: "idle",
+      },
+    }
+
+    await controller.restore(record)
+
+    expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["codex"])
+    expect(controller.runtime("unmatched")).toBeUndefined()
+    expect(controller.store.getState().workspace.order).toEqual(["codex"])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(created.at(-1)!.loadSessionCalls).toEqual([{ sessionId: "codex-stored", cwd: CWD }])
+
+    await controller.dispose()
+  })
+
   it("Should record a picker resume with both panes live", async () => {
     const records: TelemetryRecord[] = []
     const recorder = createTelemetryRecorder({
@@ -790,7 +1025,7 @@ describe("createSessionController - persisted restore", () => {
     await controller.dispose()
   })
 
-  it("Should apply persisted focus only after both restore attempts settle", async () => {
+  it("Should commit persisted selection before replay and retain it after restore settles", async () => {
     let releaseClaude!: () => void
     const claudeLoad = new Promise<void>((resolve) => {
       releaseClaude = resolve
@@ -805,7 +1040,7 @@ describe("createSessionController - persisted restore", () => {
 
     const restoring = controller.restore(persistedRun("codex"))
     await waitFor(() => restored["claude-code"].loadSessionCalls.length === 1, "claude restore to begin")
-    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     releaseClaude()
     await restoring

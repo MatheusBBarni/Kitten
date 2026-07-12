@@ -845,6 +845,91 @@ describe("workspace lifecycle integration", () => {
     expect(removed.focusedPane).toEqual({ kind: "workspace" })
   })
 
+  it("atomically replaces runtime placeholders with persisted workspace identity and order", () => {
+    const store = createAppStore()
+    const background: SessionSeed = {
+      id: "background",
+      providerKind: "codex",
+      title: "Background",
+      cwd: "/work/background",
+    }
+    const visible: SessionSeed = {
+      id: "visible",
+      providerKind: "claude-code",
+      title: "Visible",
+      cwd: "/work/visible",
+    }
+
+    store.replaceSessions(
+      [
+        {
+          seed: background,
+          workspace: {
+            sessionId: "background",
+            displayName: "Review API",
+            lifecycle: "background",
+            createdOrdinal: 7,
+            availability: { kind: "starting" },
+            attention: { status: "finished", seen: false, sequence: 4 },
+          },
+        },
+        {
+          seed: visible,
+          workspace: {
+            sessionId: "visible",
+            displayName: "Build CLI",
+            createdOrdinal: 9,
+            availability: { kind: "starting" },
+          },
+        },
+      ],
+      "visible",
+    )
+
+    const state = store.getState()
+    expect(Object.keys(state.sessions)).toEqual(["background", "visible"])
+    expect(state.workspace.order).toEqual(["background", "visible"])
+    expect(state.workspace.selectedVisibleId).toBe("visible")
+    expect(state.workspace.conversations.background).toMatchObject({
+      displayName: "Review API",
+      lifecycle: "background",
+      createdOrdinal: 7,
+      attention: { status: "finished", seen: false, sequence: 4 },
+    })
+  })
+
+  it("can bind a restored ACP id without resetting persisted attention", () => {
+    const store = createAppStore({ seeds: [] })
+    const restored: SessionSeed = {
+      id: "restored",
+      providerKind: "codex",
+      title: "Restored",
+      cwd: "/work/restored",
+    }
+    store.replaceSessions(
+      [
+        {
+          seed: restored,
+          workspace: {
+            sessionId: "restored",
+            displayName: "Restored",
+            attention: { status: "finished", seen: false, sequence: 3 },
+          },
+        },
+      ],
+      "restored",
+    )
+
+    store.startSession("restored", "acp-restored", { preserveWorkspaceAttention: true })
+
+    expect(store.getState().sessions.restored?.acpSessionId).toBe("acp-restored")
+    expect(store.getState().workspace.conversations.restored?.attention).toEqual({
+      status: "finished",
+      seen: false,
+      sequence: 3,
+    })
+  })
+
   it("preserves SessionState through rename, background, reopen, teardown, and availability", () => {
     const store = createAppStore()
     const session = store.getState().sessions["claude-code"]!
