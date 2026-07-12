@@ -70,6 +70,7 @@ function realController(
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId)?.ready === true,
+    closeConversation: async () => ({ outcome: "ignored" }),
     restore: async () => {},
     dispose: async () => {},
   }

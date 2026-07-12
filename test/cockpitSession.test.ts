@@ -79,6 +79,7 @@ function controllerOver(
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
+    closeConversation: async () => ({ outcome: "ignored" }),
     restore: async (record) => onRestore(record),
     dispose: async () => {},
   }

@@ -154,6 +154,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
+    async closeConversation(): Promise<{ outcome: "ignored" }> {
+      return { outcome: "ignored" }
+    },
     async restore(record, mode = "last-run"): Promise<void> {
       calls.restore.push(record)
       calls.restoreModes.push(mode)

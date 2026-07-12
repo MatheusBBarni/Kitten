@@ -60,6 +60,17 @@ export type ShellRuntimeState =
   | { readonly ready: true; readonly runtime: ShellRuntime }
   | { readonly ready: false; readonly error: string }
 
+/** The explicit user outcome supplied after applying the close policy. */
+export type CloseChoice = "close" | "background" | "cancel" | "keep-open"
+
+/** Finite close results keep UI callers fail-soft without hiding teardown uncertainty. */
+export type CloseConversationResult =
+  | { outcome: "closed" }
+  | { outcome: "backgrounded" }
+  | { outcome: "kept-open" }
+  | { outcome: "teardown-failed" }
+  | { outcome: "ignored" }
+
 /** Injectable seams so the controller can be driven against mock connections. */
 export interface SessionControllerOptions {
   config: AppConfig
@@ -99,6 +110,8 @@ export interface SessionController {
   isReady(sessionId: SessionId): boolean
   /** Replace the current sessions with the independently restored sides of one persisted run. */
   restore(record: PersistedRunRecord, mode?: ResumeMode): Promise<void>
+  /** Apply one explicit close outcome without affecting any sibling conversation. */
+  closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult>
   /** Cancel pending approvals and tear every connection down. Never throws. */
   dispose(): Promise<void>
 }
@@ -118,6 +131,9 @@ interface AgentRuntime {
   connection: AgentConnection | null
   acpSessionId: string | null
   unsubscribe: Unsubscribe | null
+  closing: boolean
+  acceptEvents: boolean
+  cancelCompleted: boolean
 }
 
 /**
@@ -144,6 +160,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const runtimes = new Map<SessionId, AgentRuntime>()
   const branchReadGenerations = new Map<SessionId, number>()
   const pending: PendingPermission[] = []
+  const closePromises = new Map<SessionId, Promise<CloseConversationResult>>()
   let disposed = false
   let ownedShell: ShellRuntime | null = null
   let unsubscribeShell: Unsubscribe | null = null
@@ -199,12 +216,26 @@ export async function createSessionController(options: SessionControllerOptions)
    * surface in arrival order. The agent stays blocked on this promise meanwhile,
    * which is exactly the back-pressure ACP expects.
    */
-  function enqueuePermission(sessionId: SessionId, request: PermissionRequest): Promise<PermissionOutcome> {
-    if (disposed) return Promise.resolve({ outcome: "cancelled" })
+  function acceptsRuntimeEvents(runtime: AgentRuntime): boolean {
+    return !disposed && runtimes.get(runtime.seed.id) === runtime && runtime.acceptEvents && !runtime.closing
+  }
+
+  function applyRuntimeEvent(runtime: AgentRuntime, event: DomainSessionEvent): void {
+    if (acceptsRuntimeEvents(runtime)) store.applyEvent(runtime.seed.id, event)
+  }
+
+  function enqueuePermission(runtime: AgentRuntime, request: PermissionRequest): Promise<PermissionOutcome> {
+    if (!acceptsRuntimeEvents(runtime)) return Promise.resolve({ outcome: "cancelled" })
     return new Promise<PermissionOutcome>((resolve) => {
-      pending.push({ sessionId, request, resolve })
-      if (pending.length === 1) store.openApproval(approvalOverlay(sessionId, request))
+      pending.push({ sessionId: runtime.seed.id, request, resolve })
+      if (pending.length === 1) store.openApproval(approvalOverlay(runtime.seed.id, request))
     })
+  }
+
+  function showPendingPermission(): void {
+    const next = pending[0]
+    if (next) store.openApproval(approvalOverlay(next.sessionId, next.request))
+    else store.closeApproval()
   }
 
   /** Settle the on-screen request, then show the next queued one (or close the slot). */
@@ -212,9 +243,19 @@ export async function createSessionController(options: SessionControllerOptions)
     const current = pending.shift()
     if (!current) return
     current.resolve(outcome)
-    const next = pending[0]
-    if (next) store.openApproval(approvalOverlay(next.sessionId, next.request))
-    else store.closeApproval()
+    showPendingPermission()
+  }
+
+  /** Cancel every parked request owned by one conversation while preserving sibling FIFO order. */
+  function settlePermissionsForSession(sessionId: SessionId): void {
+    const remaining: PendingPermission[] = []
+    for (const request of pending) {
+      if (request.sessionId === sessionId) request.resolve({ outcome: "cancelled" })
+      else remaining.push(request)
+    }
+    if (remaining.length === pending.length) return
+    pending.splice(0, pending.length, ...remaining)
+    showPendingPermission()
   }
 
   /**
@@ -229,7 +270,15 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function getSession(sessionId: SessionId): AgentSession | undefined {
     const runtime = runtimes.get(sessionId)
-    if (!runtime?.connection || runtime.acpSessionId === null) return undefined
+    if (
+      !runtime?.state.ready ||
+      !runtime.acceptEvents ||
+      runtime.closing ||
+      !runtime.connection ||
+      runtime.acpSessionId === null
+    ) {
+      return undefined
+    }
     return { sessionId, acpSessionId: runtime.acpSessionId, connection: runtime.connection }
   }
 
@@ -249,6 +298,9 @@ export async function createSessionController(options: SessionControllerOptions)
       connection: null,
       acpSessionId: null,
       unsubscribe: null,
+      closing: false,
+      acceptEvents: true,
+      cancelCompleted: false,
     }
     runtimes.set(seed.id, runtime)
     return runtime
@@ -283,8 +335,8 @@ export async function createSessionController(options: SessionControllerOptions)
       // an event that arrived first would be thrown away.
       store.startSession(seed.id, acpSessionId)
       if (seededConfig) store.applyEvent(seed.id, seededConfig)
-      const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
-      connection.onPermission((request) => enqueuePermission(seed.id, request))
+      const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
+      connection.onPermission((request) => enqueuePermission(runtime, request))
       runtime.state = {
         sessionId: seed.id,
         providerKind: seed.providerKind,
@@ -323,6 +375,7 @@ export async function createSessionController(options: SessionControllerOptions)
     runtime.connection = null
     runtime.acpSessionId = null
     runtime.unsubscribe = null
+    runtime.acceptEvents = false
     store.setConversationAvailability(runtime.seed.id, {
       kind: "unavailable",
       reasonCode,
@@ -339,6 +392,7 @@ export async function createSessionController(options: SessionControllerOptions)
   async function startFreshRestoredSession(
     connection: AgentConnection,
     seed: SessionSeed,
+    runtime: AgentRuntime,
   ): Promise<{ acpSessionId: string; unsubscribe: Unsubscribe }> {
     let seededConfig: DomainSessionEvent | null = null
     const captureSeed = connection.onUpdate((event) => {
@@ -352,8 +406,8 @@ export async function createSessionController(options: SessionControllerOptions)
     }
     store.startSession(seed.id, acpSessionId!)
     if (seededConfig) store.applyEvent(seed.id, seededConfig)
-    const unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
-    connection.onPermission((request) => enqueuePermission(seed.id, request))
+    const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
+    connection.onPermission((request) => enqueuePermission(runtime, request))
     return { acpSessionId: acpSessionId!, unsubscribe }
   }
 
@@ -365,6 +419,8 @@ export async function createSessionController(options: SessionControllerOptions)
    */
   async function restoreSession(seed: SessionSeed, config: AgentConfig, stored: PersistedAgent | undefined): Promise<void> {
     const previous = runtimes.get(seed.id) ?? registerRuntime(seed, config)
+    previous.closing = true
+    previous.acceptEvents = false
     previous?.unsubscribe?.()
     previous.unsubscribe = null
     const previousConnection = previous.connection
@@ -372,6 +428,9 @@ export async function createSessionController(options: SessionControllerOptions)
     previous.acpSessionId = null
     await disposeQuietly(previousConnection ?? undefined)
     previous.config = config
+    previous.closing = false
+    previous.acceptEvents = true
+    previous.cancelCompleted = false
     store.setConversationAvailability(seed.id, { kind: "starting" })
 
     let connection: AgentConnection | undefined
@@ -394,8 +453,8 @@ export async function createSessionController(options: SessionControllerOptions)
       if (ready.canLoadSession && stored?.sessionId && stored.messageCount > 0) {
         acpSessionId = stored.sessionId
         store.startSession(seed.id, acpSessionId, { preserveWorkspaceAttention: true })
-        unsubscribe = connection.onUpdate((event) => store.applyEvent(seed.id, event))
-        connection.onPermission((request) => enqueuePermission(seed.id, request))
+        unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(previous, event))
+        connection.onPermission((request) => enqueuePermission(previous, request))
         try {
           await connection.loadSession(acpSessionId, seed.cwd)
           store.setRestoration(seed.id, "live")
@@ -407,13 +466,13 @@ export async function createSessionController(options: SessionControllerOptions)
           // Codex reports stale local threads as a generic internal error with a
           // nested "no rollout found" detail. The agent remains healthy, so recover
           // into a fresh live session rather than turning the whole pane into error.
-          const fresh = await startFreshRestoredSession(connection, seed)
+          const fresh = await startFreshRestoredSession(connection, seed, previous)
           acpSessionId = fresh.acpSessionId
           unsubscribe = fresh.unsubscribe
           store.setRestoration(seed.id, "unavailable")
         }
       } else {
-        const fresh = await startFreshRestoredSession(connection, seed)
+        const fresh = await startFreshRestoredSession(connection, seed, previous)
         acpSessionId = fresh.acpSessionId
         unsubscribe = fresh.unsubscribe
         store.setRestoration(seed.id, "unavailable")
@@ -459,6 +518,98 @@ export async function createSessionController(options: SessionControllerOptions)
   // Start one read per session after startup has bound/reset every store slice.
   // Do not await these: branch discovery must never extend boot or block the UI.
   for (const entry of initialPlan) refreshBranch(entry.seed.id)
+
+  function closeConversation(
+    sessionId: SessionId,
+    choice: CloseChoice,
+  ): Promise<CloseConversationResult> {
+    const existing = closePromises.get(sessionId)
+    if (existing) return existing
+
+    const state = store.getState()
+    const conversation = state.workspace.conversations[sessionId]
+    const session = state.sessions[sessionId]
+    const runtime = runtimes.get(sessionId)
+    if (!conversation || !session || !runtime || conversation.teardownState === "closing") {
+      return Promise.resolve({ outcome: "ignored" })
+    }
+
+    const active = session.status !== "idle"
+    if (choice === "keep-open") {
+      return Promise.resolve(active ? { outcome: "kept-open" } : { outcome: "ignored" })
+    }
+    if (choice === "background") {
+      if (!active) return Promise.resolve({ outcome: "ignored" })
+      store.backgroundConversation(sessionId)
+      return Promise.resolve({ outcome: "backgrounded" })
+    }
+    if ((choice === "close") !== (session.status === "idle")) {
+      return Promise.resolve({ outcome: "ignored" })
+    }
+
+    const promise = teardownConversation(runtime, session.status)
+    closePromises.set(sessionId, promise)
+    void promise.then(
+      () => {
+        if (closePromises.get(sessionId) === promise) closePromises.delete(sessionId)
+      },
+      () => {
+        if (closePromises.get(sessionId) === promise) closePromises.delete(sessionId)
+      },
+    )
+    return promise
+  }
+
+  async function teardownConversation(
+    runtime: AgentRuntime,
+    status: "idle" | "working" | "awaiting_approval" | "finished" | "error",
+  ): Promise<CloseConversationResult> {
+    const sessionId = runtime.seed.id
+    runtime.closing = true
+    runtime.acceptEvents = false
+    store.setConversationTeardown(sessionId, "closing")
+    settlePermissionsForSession(sessionId)
+
+    try {
+      if ((status === "working" || status === "awaiting_approval") && !runtime.cancelCompleted) {
+        if (!runtime.connection || runtime.acpSessionId === null) {
+          throw new Error("Targeted cancellation is unavailable")
+        }
+        await runtime.connection.cancel(runtime.acpSessionId)
+        runtime.cancelCompleted = true
+      }
+
+      runtime.unsubscribe?.()
+      runtime.unsubscribe = null
+      if (runtime.connection) await runtime.connection.dispose()
+      runtime.connection = null
+      runtime.acpSessionId = null
+      runtimes.delete(sessionId)
+      branchReadGenerations.delete(sessionId)
+      store.removeSession(sessionId)
+      return { outcome: "closed" }
+    } catch (error) {
+      onError(sessionId, error)
+      runtime.closing = false
+      runtime.acceptEvents = false
+      runtime.state = {
+        sessionId,
+        providerKind: runtime.seed.providerKind,
+        displayName: runtime.config?.displayName ?? runtime.seed.title,
+        title: runtime.seed.title,
+        cwd: runtime.seed.cwd,
+        ready: false,
+        error: errorMessage(error),
+      }
+      store.setConversationTeardown(sessionId, "open")
+      store.setConversationAvailability(sessionId, {
+        kind: "unavailable",
+        reasonCode: "teardown-failed",
+        retryable: runtime.config !== null,
+      })
+      return { outcome: "teardown-failed" }
+    }
+  }
 
   const actions = createControllerActions({
     store,
@@ -516,6 +667,7 @@ export async function createSessionController(options: SessionControllerOptions)
     runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),
     runtime: (sessionId) => runtimes.get(sessionId)?.state,
     isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
+    closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {
       if (disposed) return
       options.recorder?.resumeLoadStarted?.()
@@ -646,6 +798,8 @@ function orderedRuntimes(store: AppStore, runtimes: Map<SessionId, AgentRuntime>
 async function disposeAgentRuntimes(runtimes: Map<SessionId, AgentRuntime>): Promise<void> {
   await Promise.all(
     [...runtimes.values()].map(async (runtime) => {
+      runtime.closing = true
+      runtime.acceptEvents = false
       runtime.unsubscribe?.()
       runtime.unsubscribe = null
       const connection = runtime.connection

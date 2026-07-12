@@ -105,6 +105,8 @@ interface StubConnection extends AgentConnection {
   /** Every `setSessionConfigOption` call the controller made, in order. */
   readonly configCalls: Array<{ sessionId: string; configId: string; value: string }>
   readonly isDisposed: () => boolean
+  readonly disposeCalls: () => number
+  readonly subscriberCount: () => number
 }
 
 interface StubOptions {
@@ -117,6 +119,9 @@ interface StubOptions {
   loadSessionWait?: Promise<void>
   promptThrows?: unknown
   cancelThrows?: unknown
+  cancelWait?: Promise<void>
+  disposeThrows?: unknown
+  disposeWait?: Promise<void>
   /** The full option set `setSessionConfigOption` echoes back (the confirmed state). */
   configResponse?: ConfigOption[]
   /** Make `setSessionConfigOption` reject, to exercise the action's error path. */
@@ -165,6 +170,14 @@ function createTestShellFactory(): ShellRuntimeFactory {
   return createInMemoryShellRuntimeFactory().factory
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
@@ -174,6 +187,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
   const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   let disposed = false
+  let disposals = 0
 
   const emit = (event: DomainSessionEvent): void => {
     for (const subscriber of subscribers) subscriber(event)
@@ -187,6 +201,8 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     loadSessionCalls,
     configCalls,
     isDisposed: () => disposed,
+    disposeCalls: () => disposals,
+    subscriberCount: () => subscribers.size,
     async connect() {
       if (options.connectThrows !== undefined) throw options.connectThrows
       return options.ready ?? { ready: true, protocolVersion: 1, canLoadSession: false }
@@ -213,6 +229,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     },
     async cancel(sessionId) {
       cancels.push(sessionId)
+      await options.cancelWait
       if (options.cancelThrows !== undefined) throw options.cancelThrows
     },
     async setSessionConfigOption(sessionId, configId, value) {
@@ -230,6 +247,9 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
       permissionHandler = handler
     },
     async dispose() {
+      disposals += 1
+      await options.disposeWait
+      if (options.disposeThrows !== undefined) throw options.disposeThrows
       disposed = true
     },
     emit,
@@ -1725,6 +1745,197 @@ describe("actions - respondPermission", () => {
   })
 })
 
+describe("createSessionController - per-conversation close", () => {
+  it("closes one idle conversation only after its runtime is disposed and selects the next visible sibling", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    const siblingBefore = controller.store.getState().sessions.codex
+
+    const result = await controller.closeConversation("claude-code", "close")
+
+    expect(result).toEqual({ outcome: "closed" })
+    expect(connections["claude-code"].isDisposed()).toBe(true)
+    expect(connections.codex.isDisposed()).toBe(false)
+    expect(controller.store.getState().sessions["claude-code"]).toBeUndefined()
+    expect(controller.store.getState().sessions.codex).toBe(siblingBefore)
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+
+    await controller.dispose()
+  })
+
+  it("backgrounds or keeps active work open without touching ACP or subscriptions", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    const target = connections["claude-code"]
+    target.emit({ kind: "status", status: "working" })
+
+    expect(await controller.closeConversation("claude-code", "background")).toEqual({
+      outcome: "backgrounded",
+    })
+    expect(controller.store.getState().workspace.conversations["claude-code"]?.lifecycle).toBe("background")
+    expect(target.cancels).toEqual([])
+    expect(target.disposeCalls()).toBe(0)
+    expect(target.subscriberCount()).toBe(1)
+
+    controller.store.reopenConversation("claude-code")
+    expect(await controller.closeConversation("claude-code", "keep-open")).toEqual({
+      outcome: "kept-open",
+    })
+    expect(controller.store.getState().workspace.conversations["claude-code"]?.lifecycle).toBe("visible")
+    expect(target.cancels).toEqual([])
+    expect(target.disposeCalls()).toBe(0)
+    expect(target.subscriberCount()).toBe(1)
+
+    await controller.dispose()
+  })
+
+  it("rejects a direct active close and an idle deliberate-cancel outcome without side effects", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    const target = connections["claude-code"]
+    target.emit({ kind: "status", status: "working" })
+
+    expect(await controller.closeConversation("claude-code", "close")).toEqual({ outcome: "ignored" })
+    target.emit({ kind: "status", status: "idle" })
+    expect(await controller.closeConversation("claude-code", "cancel")).toEqual({ outcome: "ignored" })
+
+    expect(controller.store.getState().sessions["claude-code"]).toBeDefined()
+    expect(controller.store.getState().workspace.conversations["claude-code"]).toMatchObject({
+      lifecycle: "visible",
+      teardownState: "open",
+    })
+    expect(target.cancels).toEqual([])
+    expect(target.disposeCalls()).toBe(0)
+
+    await controller.dispose()
+  })
+
+  it.each([
+    ["working", "working", true],
+    ["awaiting approval", "awaiting_approval", true],
+    ["error", "error", false],
+    ["finished", "finished", false],
+  ] as const)("deliberately closes %s work with only the required targeted cancellation", async (_name, status, shouldCancel) => {
+    const { controller, connections } = await controllerWithStubs()
+    const target = connections["claude-code"]
+    target.emit({ kind: "status", status })
+
+    expect(await controller.closeConversation("claude-code", "cancel")).toEqual({ outcome: "closed" })
+    expect(target.cancels).toEqual(shouldCancel ? ["claude-code-session"] : [])
+    expect(target.disposeCalls()).toBe(1)
+    expect(connections.codex.disposeCalls()).toBe(0)
+
+    await controller.dispose()
+  })
+
+  it("shares one in-flight close promise and performs cancellation and disposal at most once", async () => {
+    const disposal = deferred()
+    const { controller, connections } = await controllerWithStubs({
+      "claude-code": { disposeWait: disposal.promise },
+    })
+    const target = connections["claude-code"]
+    target.emit({ kind: "status", status: "working" })
+
+    const first = controller.closeConversation("claude-code", "cancel")
+    const second = controller.closeConversation("claude-code", "cancel")
+
+    expect(second).toBe(first)
+    expect(controller.store.getState().workspace.conversations["claude-code"]).toMatchObject({
+      lifecycle: "visible",
+      teardownState: "closing",
+    })
+    expect(controller.store.getState().sessions["claude-code"]).toBeDefined()
+    expect(target.cancels).toEqual(["claude-code-session"])
+    await waitFor(() => target.disposeCalls() === 1, "the targeted runtime disposal to begin")
+    expect(target.disposeCalls()).toBe(1)
+
+    disposal.resolve()
+    expect(await first).toEqual({ outcome: "closed" })
+    expect(target.cancels).toHaveLength(1)
+    expect(target.disposeCalls()).toBe(1)
+
+    await controller.dispose()
+  })
+
+  it("retains a visible conversation as retryable unavailable when targeted cancellation fails", async () => {
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { cancelThrows: new Error("cancel failed") } },
+      { onError: (sessionId, error) => errors.push({ sessionId, error }) },
+    )
+    const target = connections["claude-code"]
+    const siblingBefore = controller.store.getState().sessions.codex
+    target.emit({ kind: "status", status: "working" })
+
+    expect(await controller.closeConversation("claude-code", "cancel")).toEqual({
+      outcome: "teardown-failed",
+    })
+    expect(controller.store.getState().workspace.conversations["claude-code"]).toMatchObject({
+      lifecycle: "visible",
+      teardownState: "open",
+      availability: { kind: "unavailable", reasonCode: "teardown-failed", retryable: true },
+    })
+    expect(controller.store.getState().sessions["claude-code"]?.status).toBe("working")
+    expect(controller.store.getState().sessions.codex).toBe(siblingBefore)
+    expect(target.disposeCalls()).toBe(0)
+    expect(errors.map(({ sessionId }) => sessionId)).toEqual(["claude-code"])
+
+    target.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(controller.store.getState().sessions["claude-code"]?.turns).toEqual([])
+    await controller.actions.sendPrompt("sibling remains usable", "codex")
+    expect(connections.codex.prompts).toHaveLength(1)
+
+    await controller.dispose()
+  })
+
+  it("retains a background conversation and ignores late events when disposal fails", async () => {
+    const { controller, connections } = await controllerWithStubs({
+      "claude-code": { disposeThrows: new Error("dispose failed") },
+    })
+    const target = connections["claude-code"]
+    controller.store.backgroundConversation("claude-code")
+
+    expect(await controller.closeConversation("claude-code", "close")).toEqual({
+      outcome: "teardown-failed",
+    })
+    expect(controller.store.getState().workspace.conversations["claude-code"]).toMatchObject({
+      lifecycle: "background",
+      teardownState: "open",
+      availability: { kind: "unavailable", reasonCode: "teardown-failed", retryable: true },
+    })
+    expect(controller.store.getState().sessions["claude-code"]).toBeDefined()
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(target.subscriberCount()).toBe(0)
+
+    target.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(controller.store.getState().sessions["claude-code"]?.turns).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("settles only owned queued permissions and advances sibling requests in FIFO order", async () => {
+    const { controller, created } = await controllerOverFleet(THREE_SESSION_CONFIG)
+    created[0]!.emit({ kind: "status", status: "awaiting_approval" })
+    const alphaVisible = created[0]!.ask({ ...PERMISSION_REQUEST, sessionId: "alpha-visible" })
+    const betaQueued = created[1]!.ask({ ...PERMISSION_REQUEST, sessionId: "beta-queued" })
+    const alphaQueued = created[0]!.ask({ ...PERMISSION_REQUEST, sessionId: "alpha-queued" })
+
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("claude-code")
+    expect(await controller.closeConversation("claude-code", "cancel")).toEqual({ outcome: "closed" })
+    expect(await alphaVisible).toEqual({ outcome: "cancelled" })
+    expect(await alphaQueued).toEqual({ outcome: "cancelled" })
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("claude-code-2")
+    expect(created[1]!.isDisposed()).toBe(false)
+
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    expect(await betaQueued).toEqual({ outcome: "selected", optionId: "allow" })
+    expect(controller.store.getState().overlays.approval).toBeNull()
+
+    expect(await created[0]!.ask(PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+    created[0]!.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(controller.store.getState().sessions["claude-code-2"]?.turns).toEqual([])
+
+    await controller.dispose()
+  })
+})
+
 describe("createSessionController - dispose", () => {
   it("Should unsubscribe and dispose the owned shell before late events can reach the store", async () => {
     const shell = createStubShellRuntime()
@@ -2047,6 +2258,50 @@ describe("integration - two mock ACP agents", () => {
     expect(controller.store.getState().overlays.approval).toBeNull()
     // After the approval the turn ran to `end_turn`, so the session is `finished`.
     expect(controller.store.getState().sessions["claude-code"]!.status).toBe("finished")
+
+    await controller.dispose()
+  })
+
+  it("closes an approval-blocked ACP conversation without leaking its permission or late stream into a sibling", async () => {
+    const claude = connectionToMockAgent(CLAUDE, {
+      sessionId: "claude-session",
+      onPrompt: async (_request, ctx) => {
+        await ctx.requestPermission({ toolCallId: "call-close", kind: "edit", title: "Edit close.ts" }, [
+          { optionId: "allow", name: "Allow once", kind: "allow_once" },
+        ])
+        await ctx.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late" } })
+      },
+    })
+    const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
+    const connections: Record<ProviderKind, AgentConnection> = {
+      "claude-code": claude.connection,
+      codex: codex.connection,
+    }
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    const blockedPrompt = controller.actions.sendPrompt("edit then stream", "claude-code")
+    await waitFor(
+      () => controller.store.getState().overlays.approval?.sessionId === "claude-code",
+      "the closing conversation approval to become visible",
+    )
+
+    expect(await controller.closeConversation("claude-code", "cancel")).toEqual({ outcome: "closed" })
+    await blockedPrompt
+
+    expect(claude.agent.permissionOutcomes).toEqual([{ outcome: "cancelled" }])
+    expect(controller.store.getState().sessions["claude-code"]).toBeUndefined()
+    expect(controller.store.getState().overlays.approval).toBeNull()
+
+    expect(await controller.actions.sendPrompt("sibling turn", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(codex.agent.prompts).toHaveLength(1)
+    expect(controller.store.getState().sessions.codex?.turns).toEqual([
+      { kind: "user", messageId: expect.any(String), text: "sibling turn" },
+    ])
 
     await controller.dispose()
   })
