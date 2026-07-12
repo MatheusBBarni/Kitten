@@ -32,7 +32,12 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useState, type ReactNode } from "react"
 
 import { PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
-import { selectIsSessionsOpen, selectSessionList, type SessionListItem } from "../store/selectors.ts"
+import {
+  selectIsApprovalOpen,
+  selectIsSessionsOpen,
+  selectSessionList,
+  type SessionListItem,
+} from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { matchSessionsCommand, SESSIONS_HINT } from "./keymap.ts"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
@@ -57,7 +62,10 @@ export const NO_SESSIONS = "No sessions."
  */
 export function SessionsOverlay(): ReactNode {
   const open = useAppSelector(selectIsSessionsOpen)
-  if (!open) return null
+  const approvalOpen = useAppSelector(selectIsApprovalOpen)
+  // Approval is the top-most modal. Returning here unmounts this earlier listener
+  // before it can consume Enter or arrows intended for the permission prompt.
+  if (!open || approvalOpen) return null
   return <SessionsDialog />
 }
 

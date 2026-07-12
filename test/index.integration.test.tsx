@@ -7,13 +7,13 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { CockpitApp } from "../src/ui/CockpitApp.tsx"
-import type { AgentConnection } from "../src/agent/agentConnection.ts"
+import type { AgentConnection, PromptBlock } from "../src/agent/agentConnection.ts"
 import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
 import { createCockpitRenderer, createCockpitSession, main } from "../src/index.ts"
 import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
-import { createRunStore } from "../src/persistence/runStore.ts"
+import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
 import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
@@ -25,6 +25,7 @@ function resumableFakeConnection(
   id: ProviderKind,
   generation: number,
   freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }>,
+  prompts: Array<{ id: ProviderKind; sessionId: string; blocks: PromptBlock[] }> = [],
 ): AgentConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   return {
@@ -42,7 +43,10 @@ function resumableFakeConnection(
       }
       for (const subscriber of subscribers) subscriber(event)
     },
-    prompt: async () => ({ stopReason: "end_turn" }),
+    async prompt(sessionId, blocks) {
+      prompts.push({ id, sessionId, blocks })
+      return { stopReason: "end_turn" }
+    },
     cancel: async () => {},
     setSessionConfigOption: async () => [],
     onUpdate(callback) {
@@ -77,6 +81,103 @@ function bootRun(cwd: string): PersistedRunRecord {
  * tears down cleanly - renderer destroyed, agents disposed, exit handler run.
  */
 describe("cockpit entry integration (non-TTY test renderer)", () => {
+  it("suppresses configured opening tasks when a saved run will be restored", async () => {
+    const base = mkdtempSync(join(tmpdir(), "kitten-index-opening-task-"))
+    const cwd = process.cwd()
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [{ provider: "codex" as const, cwd, title: "Worker", task: "start the build" }],
+      persistenceEnabled: true,
+      shell: { ...defaultAppConfig().shell, enabled: false },
+    }
+    const runStore = createRunStore({ enabled: true, path: base })
+    const record = bootRun(cwd)
+    record.agents = {
+      codex: { sessionId: "stored-codex", lastPrompt: "continue", messageCount: 1, status: "finished" },
+    }
+    runStore.save(record)
+    const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
+    const prompts: Array<{ id: ProviderKind; sessionId: string; blocks: PromptBlock[] }> = []
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    let session: Awaited<ReturnType<typeof createCockpitSession>> | undefined
+
+    try {
+      session = await createCockpitSession({
+        config,
+        cwd,
+        createRunStore: () => runStore,
+        buildController: (options) => createSessionController({
+          ...options,
+          createConnection: (agentConfig) => resumableFakeConnection(
+            agentConfig.id,
+            generations[agentConfig.id]++,
+            freshStarts,
+            prompts,
+          ),
+          readBranch: async () => null,
+        }),
+        persistConfig: async () => {},
+        watchConfig: () => ({ close() {} }),
+      })
+
+      expect(prompts).toEqual([])
+      expect(session.controller.store.getState().sessions.codex!.turns).toEqual([
+        { kind: "agent", messageId: "codex-restored", text: "restored codex from stored-codex" },
+      ])
+    } finally {
+      await session?.controller.dispose()
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it("starts a fresh cockpit when persisted-run storage is unavailable", async () => {
+    const cwd = process.cwd()
+    const config = {
+      ...defaultAppConfig(),
+      persistenceEnabled: true,
+      shell: { ...defaultAppConfig().shell, enabled: false },
+    }
+    const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const unavailableStore: RunStore = {
+      save() {},
+      list() {
+        throw new Error("state directory is unreadable")
+      },
+      load() {
+        throw new Error("state directory is unreadable")
+      },
+      delete() {},
+      deleteAll() {},
+      flush() {},
+    }
+    let session: Awaited<ReturnType<typeof createCockpitSession>> | undefined
+
+    try {
+      session = await createCockpitSession({
+        config,
+        cwd,
+        createRunStore: () => unavailableStore,
+        buildController: (options) => createSessionController({
+          ...options,
+          createConnection: (agentConfig) => resumableFakeConnection(
+            agentConfig.id,
+            generations[agentConfig.id]++,
+            freshStarts,
+          ),
+          readBranch: async () => null,
+        }),
+        persistConfig: async () => {},
+        watchConfig: () => ({ close() {} }),
+      })
+
+      expect(session.controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
+      expect(freshStarts).toHaveLength(2)
+    } finally {
+      await session?.controller.dispose()
+    }
+  })
+
   it("boots fake agents from the newest persisted run and exposes the start-new-run escape hatch", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-resume-"))
     const setup = await createTestRenderer({ width: 100, height: 24 })

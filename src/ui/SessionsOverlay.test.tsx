@@ -315,4 +315,40 @@ describe("SessionsOverlay modality", () => {
 
     await destroyMounted(setup.renderer)
   })
+
+  it("leaves Enter to an approval that opens over the sessions overview", async () => {
+    const controller = fleetController()
+    const setup = await renderCockpit(controller)
+    await openOverview(setup)
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes("Beta") && line.includes(SESSION_MARKER)),
+    )
+
+    await actAsync(() => {
+      controller.store.openApproval({
+        sessionId: "b",
+        title: "Beta",
+        cwd: "/work/beta",
+        request: {
+          sessionId: "session-b",
+          toolCall: { toolCallId: "call-approval", kind: "edit", title: "Apply the change" },
+          options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+        },
+      })
+    })
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => controller.calls.respondPermission.length === 1)
+
+    expect(controller.calls.respondPermission).toEqual([{ outcome: "selected", optionId: "allow" }])
+    expect(controller.store.getState().overlays.sessions).toBe(true)
+    expect(controller.store.getState().focusedSessionId).toBe("a")
+
+    await destroyMounted(setup.renderer)
+  })
 })

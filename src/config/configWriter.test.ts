@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test"
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -94,6 +94,18 @@ describe("persistUserConfig", () => {
 
     const config = await loadAppConfig({ path })
     expect(config.theme).toBe("dark")
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+  })
+
+  it("replaces an existing config with an owner-only file", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({ theme: "light" }))
+    await chmod(path, 0o644)
+
+    await persistUserConfig({ theme: "dark" }, { path })
+
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
   })
 
   it("leaves no temp or partial file after a successful replacement", async () => {

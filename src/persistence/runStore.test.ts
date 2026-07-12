@@ -237,6 +237,20 @@ describe("createRunStore", () => {
     })
   })
 
+  it("rejects records whose hand-off bundle is incomplete", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "project")
+      const store = createRunStore({ enabled: true, path: base })
+      store.save(makeRecord(cwd, { runId: "valid" }))
+      const projectDirectory = join(base, "sessions", encodeProjectDirectory(cwd))
+      const incomplete = { ...makeRecord(cwd, { runId: "incomplete" }), handoffBundle: {} }
+      writeFileSync(join(projectDirectory, "incomplete.json"), JSON.stringify(incomplete), "utf8")
+
+      expect(store.list(cwd).map((summary) => summary.runId)).toEqual(["valid"])
+      expect(store.load(cwd, "incomplete")).toBeNull()
+    })
+  })
+
   it("rejects run ids that could escape the project directory", () => {
     withTempStore((base) => {
       const cwd = join(base, "project")

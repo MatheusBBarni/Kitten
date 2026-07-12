@@ -11,7 +11,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { dirname, join, resolve } from "node:path"
 
 import { createSecretRedactor } from "../core/secretRedactor.ts"
-import type { SessionId, SessionStatus } from "../core/types.ts"
+import type { HandoffBundle, SessionId, SessionStatus } from "../core/types.ts"
 import { resolveTelemetryPath } from "../telemetry/recorder.ts"
 import type { PersistedAgent, PersistedRunRecord, PersistedRunSummary } from "./runRecord.ts"
 
@@ -199,7 +199,7 @@ function isPersistedRunRecord(value: unknown): value is PersistedRunRecord {
     typeof value.updatedAt !== "number" ||
     !Number.isFinite(value.updatedAt) ||
     !isObject(value.agents) ||
-    !(value.handoffBundle === null || isObject(value.handoffBundle))
+    !(value.handoffBundle === null || isHandoffBundle(value.handoffBundle))
   ) {
     return false
   }
@@ -216,6 +216,60 @@ function isPersistedAgent(value: unknown): value is PersistedAgent {
     Number.isFinite(value.messageCount) &&
     typeof value.status === "string" &&
     SESSION_STATUSES.has(value.status as SessionStatus)
+  )
+}
+
+/** Validate the full restoration payload before UI code composes it into a prompt. */
+function isHandoffBundle(value: unknown): value is HandoffBundle {
+  if (
+    !isObject(value) ||
+    value.intent !== "continue" ||
+    typeof value.summary !== "string" ||
+    !Array.isArray(value.files) ||
+    !Array.isArray(value.pendingDiffs) ||
+    typeof value.redactionCount !== "number" ||
+    !Number.isFinite(value.redactionCount)
+  ) {
+    return false
+  }
+
+  if (!value.files.every(isHandoffFile) || !value.pendingDiffs.every(isPendingDiff)) return false
+  return value.shell === undefined || isShellSnapshot(value.shell)
+}
+
+function isHandoffFile(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.path === "string" &&
+    (value.reason === "read" || value.reason === "edited")
+  )
+}
+
+function isPendingDiff(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.toolCallId === "string" &&
+    typeof value.path === "string" &&
+    typeof value.unified === "string"
+  )
+}
+
+function isShellSnapshot(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.cwd === "string" &&
+    Array.isArray(value.commands) &&
+    value.commands.every(isShellCommand)
+  )
+}
+
+function isShellCommand(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value.id === "string" &&
+    typeof value.command === "string" &&
+    typeof value.output === "string" &&
+    (value.exitCode === null || (typeof value.exitCode === "number" && Number.isFinite(value.exitCode)))
   )
 }
 

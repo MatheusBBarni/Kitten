@@ -308,6 +308,7 @@ async function controllerOverFleet(
   overrides: {
     readBranch?: (cwd: string) => Promise<string | null>
     createShellRuntime?: ShellRuntimeFactory
+    sendInitialTasks?: boolean
   } = {},
 ): Promise<{ controller: SessionController; created: StubConnection[] }> {
   const created: StubConnection[] = []
@@ -322,6 +323,7 @@ async function controllerOverFleet(
     newMessageId: () => "msg-1",
     readBranch: overrides.readBranch ?? (async () => null),
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
+    sendInitialTasks: overrides.sendInitialTasks,
   })
   return { controller, created }
 }
@@ -1037,6 +1039,24 @@ describe("createSessionController - multi-session fleet", () => {
 
     await controller.dispose()
   })
+
+  it("does not send an initial task when boot has a persisted run to restore", async () => {
+    const config: AppConfig = {
+      providers: PROVIDERS,
+      sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      shell: APP_CONFIG.shell,
+      persistenceEnabled: true,
+      telemetryEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+    }
+    const { controller, created } = await controllerOverFleet(config, undefined, { sendInitialTasks: false })
+
+    expect(created[0]!.prompts).toEqual([])
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([])
+
+    await controller.dispose()
+  })
 })
 
 describe("actions - sendPrompt", () => {
@@ -1178,7 +1198,7 @@ describe("actions - setSessionConfigOption", () => {
       codex: { configResponse: [modelOption("opus")] },
     })
 
-    await controller.actions.setSessionConfigOption("model", "opus", "codex")
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "codex")).toBe(true)
 
     expect(connections.codex.configCalls).toEqual([{ sessionId: "codex-session", configId: "model", value: "opus" }])
     expect(connections["claude-code"].configCalls).toEqual([])
@@ -1199,7 +1219,7 @@ describe("actions - setSessionConfigOption", () => {
       { recorder },
     )
 
-    await controller.actions.setSessionConfigOption("model", "opus", "codex")
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "codex")).toBe(true)
 
     expect(switches).toEqual([{ sessionId: "codex", kind: "model", confirmed: true, effortChanged: false }])
     await controller.dispose()
@@ -1216,7 +1236,7 @@ describe("actions - setSessionConfigOption", () => {
       { recorder },
     )
 
-    await controller.actions.setSessionConfigOption("model", "opus", "codex")
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "codex")).toBe(false)
 
     expect(switches).toEqual([{ sessionId: "codex", kind: "model", confirmed: false, effortChanged: false }])
     await controller.dispose()
@@ -1243,7 +1263,7 @@ describe("actions - setSessionConfigOption", () => {
     })
 
     // The not-ready claude-code session resolves to no live session, so this is inert.
-    await controller.actions.setSessionConfigOption("model", "opus", "claude-code")
+    expect(await controller.actions.setSessionConfigOption("model", "opus", "claude-code")).toBe(false)
     expect(controller.store.getState().sessions["claude-code"]!.configOptions).toEqual([])
 
     await controller.dispose()
@@ -1261,7 +1281,7 @@ describe("actions - setSessionConfigOption", () => {
       { onError: (sessionId, error) => errors.push([sessionId, error]), recorder },
     )
 
-    await controller.actions.setSessionConfigOption("model", "sonnet", "claude-code")
+    expect(await controller.actions.setSessionConfigOption("model", "sonnet", "claude-code")).toBe(false)
 
     // The adapter was called, but its failure never reached the store.
     expect(connections["claude-code"].configCalls).toHaveLength(1)

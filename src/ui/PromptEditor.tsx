@@ -33,6 +33,8 @@ import {
   selectFocusedSessionId,
   selectHasOpenOverlay,
   selectIsShellFocused,
+  selectRestoration,
+  selectRestorationBundle,
   selectSessionCommands,
   selectSessionStatus,
 } from "../store/selectors.ts"
@@ -160,6 +162,13 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
   const ready = controller.isReady(focusedSessionId)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
+  const restorationSelector = useMemo(() => selectRestoration(focusedSessionId), [focusedSessionId])
+  const restoration = useAppSelector(restorationSelector)
+  const restorationBundle = useAppSelector(selectRestorationBundle)
+  // A persisted bundle is still the only visible conversation context until `/new`
+  // recreates the unavailable pane. Let the editor keep handling that command, but
+  // never let an ordinary prompt create turns hidden behind the context pane.
+  const restorationContextOpen = restoration === "unavailable" && restorationBundle !== null
 
   const textarea = useRef<TextareaRenderable | null>(null)
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
@@ -180,7 +189,7 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
 
   const submit = useCallback((): void => {
     const editor = textarea.current
-    if (!editor || !ready) return
+    if (!editor || !ready || restorationContextOpen) return
 
     const text = editor.plainText
     // A stray Enter on an empty or whitespace-only buffer must not start a turn.
@@ -191,7 +200,7 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
     editor.clear()
     setRows(MIN_EDITOR_ROWS)
     void controller.actions.sendPrompt(text)
-  }, [controller, ready])
+  }, [controller, ready, restorationContextOpen])
 
   const selectMenuRow = useCallback((): void => {
     const editor = textarea.current

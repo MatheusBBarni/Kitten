@@ -471,7 +471,7 @@ describe("HandoffFlow.confirm", () => {
     const sendPrompt = controller.actions.sendPrompt
     controller.actions.setSessionConfigOption = async (configId, value, sessionId) => {
       order.push(`config:${configId}:${value}`)
-      await setSessionConfigOption(configId, value, sessionId)
+      return setSessionConfigOption(configId, value, sessionId)
     }
     controller.actions.sendPrompt = async (input, sessionId) => {
       order.push("send")
@@ -492,6 +492,27 @@ describe("HandoffFlow.confirm", () => {
     ])
     expect(order).toEqual(["config:model:opus", "config:effort:high", "send"])
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
+  })
+
+  it("keeps the preview open and does not send when a target setting is unconfirmed", async () => {
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    const bundle = openBundle(controller)
+    controller.actions.setSessionConfigOption = async (configId, value, sessionId) => {
+      controller.calls.setSessionConfigOption.push({ configId, value, sessionId })
+      return false
+    }
+
+    const result = await flow.confirm({
+      ...createHandoffEdits(bundle),
+      targetConfig: [{ configId: "effort", value: "high" }],
+    })
+
+    expect(result).toBeNull()
+    expect(controller.store.getState().overlays.handoffPreview?.bundle).toBe(bundle)
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.switchFocus).toEqual([])
   })
 
   it("records an effort-linked hand-off only when it carries target configuration", async () => {

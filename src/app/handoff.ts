@@ -306,13 +306,16 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       // hand-off the developer would have to undo by hand.
       if (blocks.length === 0) return null
 
-      store.closeHandoffPreview()
       // A target receives a fresh prompt, so there is no mid-conversation degrade
       // warning here. Apply each requested setting first, in the order the preview
       // supplied, so the target observes its chosen configuration before its hand-off.
+      // Keep the preview open when the agent rejects or changes a requested value:
+      // sending then would make the preview's target setting a false promise.
       for (const config of edits.targetConfig) {
-        await actions.setSessionConfigOption(config.configId, config.value, overlay.targetSessionId)
+        const confirmed = await actions.setSessionConfigOption(config.configId, config.value, overlay.targetSessionId)
+        if (!confirmed) return null
       }
+      store.closeHandoffPreview()
       // Address the target explicitly: focus has not moved yet, and it must not have -
       // `sendPrompt` writes the user's turn into whichever session it is given.
       const sent = actions.sendPrompt(blocks, overlay.targetSessionId)

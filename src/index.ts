@@ -39,6 +39,7 @@ import { createNotifier } from "./notify/notifier.ts"
 import {
   createRunStore,
   resolveSessionsBasePath,
+  type PersistedRunRecord,
   type PersistedRunSummary,
   type RunStore,
 } from "./persistence/runStore.ts"
@@ -152,18 +153,18 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     seeds: resolveSessions(config, { launchCwd: cwd }).map((entry) => entry.seed),
     preferences: { theme: config.theme },
   })
-  const baseController = await (deps.buildController ?? createSessionController)({ config, recorder, store, cwd })
+  const resumeRecord = loadLatestRun(runStore, cwd)
+  const baseController = await (deps.buildController ?? createSessionController)({
+    config,
+    recorder,
+    store,
+    cwd,
+    // Initial tasks belong only to a genuinely new run. Suppress them before ACP
+    // startup when a valid persisted run will immediately replace those sessions.
+    sendInitialTasks: resumeRecord === null,
+  })
 
-  // The file store sorts newest-first, but choose by value here as well so every
-  // injected RunStore honors the boot contract independently of implementation order.
-  const newest = runStore.list(cwd).reduce<PersistedRunSummary | null>(
-    (candidate, summary) => candidate === null || summary.updatedAt > candidate.updatedAt ? summary : candidate,
-    null,
-  )
-  if (newest !== null) {
-    const record = runStore.load(cwd, newest.runId)
-    if (record !== null) await baseController.restore(record, "last-run")
-  }
+  if (resumeRecord !== null) await baseController.restore(resumeRecord, "last-run")
 
   recordReadiness(recorder, baseController.runtimes())
   const stopRecorder = recorder.watch(baseController.store)
@@ -253,6 +254,24 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   }
 
   return { controller, recorder, runStore, cwd }
+}
+
+/**
+ * Persistence is an optional enhancement. An unreadable or otherwise unavailable
+ * state directory must behave like no saved run, not prevent a fresh cockpit boot.
+ */
+function loadLatestRun(runStore: RunStore, cwd: string): PersistedRunRecord | null {
+  try {
+    // The file store sorts newest-first, but choose by value here as well so every
+    // injected RunStore honors the boot contract independently of implementation order.
+    const newest = runStore.list(cwd).reduce<PersistedRunSummary | null>(
+      (candidate, summary) => candidate === null || summary.updatedAt > candidate.updatedAt ? summary : candidate,
+      null,
+    )
+    return newest === null ? null : runStore.load(cwd, newest.runId)
+  } catch {
+    return null
+  }
 }
 
 /** Default exit handler: exit the process cleanly once teardown has finished. */

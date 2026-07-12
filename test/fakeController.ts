@@ -112,8 +112,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       async cancel(sessionId?: SessionId): Promise<void> {
         calls.cancel.push(sessionId)
       },
-      async setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<void> {
+      async setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<boolean> {
         calls.setSessionConfigOption.push({ configId, value, sessionId })
+        return true
       },
       switchFocus(sessionId?: SessionId): void {
         calls.switchFocus.push(sessionId)

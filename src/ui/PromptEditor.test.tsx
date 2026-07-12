@@ -12,6 +12,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import type { HandoffBundle } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
@@ -382,6 +383,28 @@ describe("PromptEditor readiness gate", () => {
 
     await pressEnter(setup)
     expect(sentText(controller)).toBe("ping")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not send an ordinary prompt while a restored context must be started fresh", async () => {
+    const controller = createFakeController()
+    const bundle: HandoffBundle = {
+      intent: "continue",
+      summary: "Continue from the persisted hand-off.",
+      files: [],
+      pendingDiffs: [],
+      redactionCount: 0,
+    }
+    controller.store.setRestorationBundle(bundle)
+    controller.store.setRestoration("claude-code", "unavailable")
+    const setup = await renderEditor(controller)
+
+    await type(setup, "do not hide this turn")
+    await pressEnter(setup)
+
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(await frameWith(setup, "do not hide this turn")).toContain("do not hide this turn")
 
     await destroyMounted(setup.renderer)
   })

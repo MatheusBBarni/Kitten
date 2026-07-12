@@ -96,9 +96,10 @@ export interface ControllerActions {
    * store is updated only from what the adapter reports back, never optimistically:
    * on a live session it applies the returned set; a no-live-session call is a no-op
    * and a failed switch routes through `onError`, leaving the last confirmed state in
-   * place so the overlay can mark the option `unverified`.
+   * place so the overlay can mark the option `unverified`. Resolves `true` only when
+   * the agent reports the requested value back.
    */
-  setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<void>
+  setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<boolean>
   /**
    * Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live.
    * `options.viaOverview` records the switch as one made through the `/sessions` overview
@@ -182,9 +183,9 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    async setSessionConfigOption(configId, value, sessionId = focused()): Promise<void> {
+    async setSessionConfigOption(configId, value, sessionId = focused()): Promise<boolean> {
       const session = getSession(sessionId)
-      if (!session) return
+      if (!session) return false
       // Keep the pre-call option only long enough to identify the allowlisted category
       // and whether an effort value actually changed. Neither value reaches telemetry.
       const previous = store.getState().sessions[sessionId]?.configOptions.find((option) => option.id === configId)
@@ -205,13 +206,16 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
             confirmed,
             kind === "effort" && confirmed && reported?.currentValue !== previous?.currentValue,
           )
+          return confirmed
         }
+        return reported?.currentValue === value
       } catch (error) {
         // A failed request has no adapter-confirmed value. It is therefore unverified,
         // never counted as confirmed from the developer's requested value alone.
         const kind = switchKind(previous)
         if (kind) recorder.recordSwitch?.(sessionId, kind, false, false)
         onError(sessionId, error)
+        return false
       }
     },
 

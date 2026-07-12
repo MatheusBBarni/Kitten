@@ -50,8 +50,11 @@ export async function persistUserConfig(
   const tempPath = join(directory, `.${basename(path)}.${process.pid}.${crypto.randomUUID()}.tmp`)
 
   try {
-    mkdirSync(directory, { recursive: true })
-    await writeFile(tempPath, serialized, { encoding: "utf8", flag: "wx" })
+    // Config deltas can contain provider environment variables, including access
+    // tokens. Both a newly-created parent and the replacement file must therefore
+    // be private regardless of the process umask or the prior target's mode.
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    await writeFile(tempPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 })
     await rename(tempPath, path)
   } catch (error) {
     await removeTempFile(tempPath)

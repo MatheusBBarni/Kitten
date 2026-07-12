@@ -73,6 +73,8 @@ export interface SessionControllerOptions {
   readBranch?: (cwd: string) => Promise<string | null>
   /** The telemetry recorder actions report navigation and switch outcomes to. */
   recorder?: ControllerTelemetry
+  /** Whether configured first tasks should be sent after startup. Defaults to true. */
+  sendInitialTasks?: boolean
 }
 
 /** The orchestrator the UI is handed at boot. */
@@ -444,13 +446,17 @@ export async function createSessionController(options: SessionControllerOptions)
     },
   })
 
-  // Send each ready session its optional first task as the opening prompt (ADR-005).
+  // Send each ready session its optional first task as the opening prompt (ADR-005),
+  // unless boot already found a persisted run that it will restore. A restore replaces
+  // these fresh ACP sessions, so sending first would duplicate configured work.
   // Fire-and-forget: the opening turn must not block boot on the agent's full reply,
   // and `sendPrompt` already records the user turn and routes failures to `onError`.
-  for (const entry of plan) {
-    const task = entry.seed.task
-    if (task && runtimes.get(entry.seed.id)?.state.ready) {
-      void actions.sendPrompt(task, entry.seed.id)
+  if (options.sendInitialTasks !== false) {
+    for (const entry of plan) {
+      const task = entry.seed.task
+      if (task && runtimes.get(entry.seed.id)?.state.ready) {
+        void actions.sendPrompt(task, entry.seed.id)
+      }
     }
   }
 
