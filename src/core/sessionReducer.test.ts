@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
 import type { ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
 
 /**
  * Fixture-driven tests for the pure `SessionState` reducer. The core has no I/O,
@@ -369,6 +370,44 @@ describe("purity", () => {
     sessionReducer(before, { kind: "agent_message", messageId: "m1", textDelta: "x" })
     expect(before.turns).toEqual([])
     expect([...before.referencedFiles]).toEqual(snapshot.referencedFiles)
+  })
+})
+
+describe("integration: workspace ownership boundary", () => {
+  it("keeps execution state and status unchanged across workspace-only transitions", () => {
+    const sessionBefore = sessionReducer(initial(), { kind: "status", status: "working" })
+    const workspaceBefore = createWorkspaceState({
+      conversations: [{ sessionId: sessionBefore.id, displayName: "Task", availability: { kind: "ready" } }],
+      selectedVisibleId: sessionBefore.id,
+    })
+
+    const workspaceAfter = [
+      { kind: "rename", sessionId: sessionBefore.id, displayName: "Renamed task" } as const,
+      { kind: "background", sessionId: sessionBefore.id } as const,
+      { kind: "reopen", sessionId: sessionBefore.id } as const,
+    ].reduce(workspaceReducer, workspaceBefore)
+
+    expect(sessionBefore.status).toBe("working")
+    expect(sessionBefore.turns).toEqual([])
+    expect(workspaceAfter.conversations[sessionBefore.id]?.displayName).toBe("Renamed task")
+    expect(workspaceAfter.selectedVisibleId).toBe(sessionBefore.id)
+  })
+
+  it("records attention acknowledgement without clearing the session reducer status", () => {
+    const sessionBefore = sessionReducer(initial(), { kind: "status", status: "awaiting_approval" })
+    const workspaceBefore = createWorkspaceState({
+      conversations: [{ sessionId: sessionBefore.id, displayName: "Approval", availability: { kind: "ready" } }],
+      selectedVisibleId: sessionBefore.id,
+    })
+    const withAttention = workspaceReducer(workspaceBefore, {
+      kind: "execution_status",
+      sessionId: sessionBefore.id,
+      status: sessionBefore.status,
+    })
+    const acknowledged = workspaceReducer(withAttention, { kind: "select", sessionId: sessionBefore.id })
+
+    expect(acknowledged.conversations[sessionBefore.id]?.attention.seen).toBe(true)
+    expect(sessionBefore.status).toBe("awaiting_approval")
   })
 })
 

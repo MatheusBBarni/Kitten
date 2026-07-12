@@ -63,6 +63,84 @@ export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished
 export const needsAttention = (status: SessionStatus): boolean =>
   status === "awaiting_approval" || status === "error" || status === "finished"
 
+/** User-owned lifecycle for one conversation in the workspace. */
+export type ConversationLifecycle = "visible" | "background" | "closed"
+
+/** Finite, protocol-free reasons why a conversation runtime is unavailable. */
+export type ConversationUnavailableReason =
+  | "provider-unavailable"
+  | "connection-failed"
+  | "restore-unavailable"
+  | "teardown-failed"
+
+/** Runtime standing exposed to the workspace without carrying raw ACP errors. */
+export type ConversationAvailability =
+  | { kind: "starting" }
+  | { kind: "ready" }
+  | {
+      kind: "unavailable"
+      reasonCode: ConversationUnavailableReason
+      retryable: boolean
+    }
+
+/** Prevents duplicate teardown while lifecycle remains unchanged until success. */
+export type TeardownState = "open" | "closing"
+
+/** Workspace acknowledgement for the current execution-status epoch. */
+export interface AttentionRecord {
+  status: SessionStatus
+  seen: boolean
+  sequence: number
+}
+
+/** User-owned metadata for one non-Closed conversation. */
+export interface WorkspaceConversation {
+  sessionId: SessionId
+  displayName: string
+  lifecycle: Exclude<ConversationLifecycle, "closed">
+  createdOrdinal: number
+  availability: ConversationAvailability
+  teardownState: TeardownState
+  attention: AttentionRecord
+}
+
+/** Protocol-free workspace state; selection is nullable for a valid empty view. */
+export interface WorkspaceState {
+  conversations: Record<SessionId, WorkspaceConversation>
+  order: SessionId[]
+  selectedVisibleId: SessionId | null
+}
+
+/** Seed accepted by the pure workspace factory for boot and restore. */
+export interface WorkspaceConversationSeed {
+  sessionId: SessionId
+  displayName: string
+  lifecycle?: Exclude<ConversationLifecycle, "closed">
+  createdOrdinal?: number
+  availability?: ConversationAvailability
+  teardownState?: TeardownState
+  attention?: AttentionRecord
+}
+
+/** Pure workspace transitions. Runtime and I/O effects stay in the controller. */
+export type WorkspaceEvent =
+  | {
+      kind: "create"
+      sessionId: SessionId
+      displayName: string
+      availability?: ConversationAvailability
+      initialStatus?: SessionStatus
+    }
+  | { kind: "rename"; sessionId: SessionId; displayName: string }
+  | { kind: "select"; sessionId: SessionId }
+  | { kind: "select_adjacent"; direction: "previous" | "next" }
+  | { kind: "background"; sessionId: SessionId }
+  | { kind: "reopen"; sessionId: SessionId }
+  | { kind: "set_availability"; sessionId: SessionId; availability: ConversationAvailability }
+  | { kind: "set_teardown_state"; sessionId: SessionId; teardownState: TeardownState }
+  | { kind: "execution_status"; sessionId: SessionId; status: SessionStatus }
+  | { kind: "close_succeeded"; sessionId: SessionId }
+
 /** Normalized classification of a tool call, translated from the agent's own kinds. */
 export type ToolCallKind =
   | "read"
