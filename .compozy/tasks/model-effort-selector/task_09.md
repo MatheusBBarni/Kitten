@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Switch telemetry and kept-change heuristic"
 type: backend
 complexity: medium
@@ -32,11 +32,11 @@ These reuse the existing telemetry recorder and heuristics and record no prompt 
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Add the new event types and recorder methods, plus their `NOOP_RECORDER` no-ops
-- [ ] 9.2 Record confirmed vs unverified from the switch result
-- [ ] 9.3 Implement the pure `effort_change_kept` predicate in the heuristics module
-- [ ] 9.4 Record `effort_linked_handoff` from the hand-off flow
-- [ ] 9.5 Cover the counters and heuristic with an in-memory sink
+- [x] 9.1 Add the new event types and recorder methods, plus their `NOOP_RECORDER` no-ops
+- [x] 9.2 Record confirmed vs unverified from the switch result
+- [x] 9.3 Implement the pure `effort_change_kept` predicate in the heuristics module
+- [x] 9.4 Record `effort_linked_handoff` from the hand-off flow
+- [x] 9.5 Cover the counters and heuristic with an in-memory sink
 
 ## Implementation Details
 Modify the recorder and heuristics. See TechSpec "Monitoring and Observability" and PRD "Success Metrics". Follow the content-free `record` pattern (`recorder.ts:159-173`, `239-241`), the `TelemetryEventType` union (`35-43`), and reuse `bucketChars`/predicate style in `telemetryHeuristics.ts`.
@@ -62,13 +62,13 @@ Modify the recorder and heuristics. See TechSpec "Monitoring and Observability" 
 
 ## Tests
 - Unit tests:
-  - [ ] A confirmed model switch records `model_switched` and `switch_confirmed` with the agent id and no text field
-  - [ ] An unverified switch records `switch_unverified`, not `switch_confirmed`
-  - [ ] `effort_change_kept` fires when an effort change is followed by a next turn with no revert, and does not fire when the effort is reverted first
-  - [ ] `effort_linked_handoff` records only when the hand-off `targetConfig` is non-empty
-  - [ ] With telemetry disabled (`NOOP_RECORDER`), no records are written
+  - [x] A confirmed model switch records `model_switched` and `switch_confirmed` with the agent id and no text field
+  - [x] An unverified switch records `switch_unverified`, not `switch_confirmed`
+  - [x] `effort_change_kept` fires when an effort change is followed by a next turn with no revert, and does not fire when the effort is reverted first
+  - [x] `effort_linked_handoff` records only when the hand-off `targetConfig` is non-empty
+  - [x] With telemetry disabled (`NOOP_RECORDER`), no records are written
 - Integration tests:
-  - [ ] Driving a switch and an effort-tagged hand-off with an injected in-memory sink produces the expected sequence of content-free records
+  - [x] Driving a switch and an effort-tagged hand-off with an injected in-memory sink produces the expected sequence of content-free records
 - Test coverage target: >=80%
 - All tests must pass
 

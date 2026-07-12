@@ -70,8 +70,14 @@ export interface ActionDeps {
   newMessageId?: () => string
   /** Where a failing connection is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
+  /** Schedule an off-render-path branch refresh at focus and turn boundaries. */
+  refreshBranch?: (sessionId: SessionId) => void
   /** The telemetry recorder to report navigation and adapter-confirmed switches to. */
   recorder?: ActionTelemetry
+  /** Replace every live agent session with a fresh one. */
+  startNewRun?: () => Promise<void>
+  /** Replace one unavailable restored session with a fresh promptable session. */
+  startFreshSession?: (sessionId: SessionId) => Promise<boolean>
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
@@ -105,6 +111,10 @@ export interface ControllerActions {
    * from the focused session. A no-op when no other session needs attention.
    */
   jumpToNextNeedy(): void
+  /** Leave a restored run by replacing every agent session with a fresh one. */
+  startNewRun(): Promise<void>
+  /** Start one fresh agent session and seed it with persisted context. */
+  startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
   /** Answer the pending permission request with the user's decision. */
   respondPermission(outcome: PermissionOutcome): void
 }
@@ -124,27 +134,43 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const { store, getSession } = deps
   const newMessageId = deps.newMessageId ?? (() => crypto.randomUUID())
   const onError = deps.onError ?? (() => {})
+  const refreshBranch = deps.refreshBranch ?? (() => {})
   const recorder = deps.recorder ?? NOOP_ACTION_TELEMETRY
+  const startNewRun = deps.startNewRun ?? (async () => {})
+  const startFreshSession = deps.startFreshSession ?? (async () => false)
 
   const focused = (): SessionId => store.getState().focusedSessionId
 
-  return {
-    async sendPrompt(input, sessionId = focused()): Promise<PromptResult | null> {
-      const session = getSession(sessionId)
-      if (!session) return null
-      const blocks = composePromptBlocks(input)
-      if (blocks.length === 0) return null
+  async function sendPrompt(
+    input: PromptInput,
+    sessionId: SessionId = focused(),
+  ): Promise<PromptResult | null> {
+    const session = getSession(sessionId)
+    if (!session) return null
+    const blocks = composePromptBlocks(input)
+    if (blocks.length === 0) return null
 
-      // ACP never echoes the user's prompt back as a session update, so the
-      // transcript only shows this turn if the controller records it.
-      store.applyEvent(sessionId, { kind: "user_message", messageId: newMessageId(), text: joinBlocks(blocks) })
-      try {
-        return await session.connection.prompt(session.acpSessionId, blocks)
-      } catch (error) {
-        onError(sessionId, error)
-        return null
-      }
-    },
+    // ACP never echoes the user's prompt back as a session update, so the
+    // transcript only shows this turn if the controller records it.
+    store.applyEvent(sessionId, {
+      kind: "user_message",
+      messageId: newMessageId(),
+      text: joinBlocks(blocks),
+    })
+    try {
+      return await session.connection.prompt(session.acpSessionId, blocks)
+    } catch (error) {
+      onError(sessionId, error)
+      return null
+    } finally {
+      // A settled prompt is the turn boundary. The injected refresh schedules its
+      // own async work, so the prompt result never waits on git.
+      refreshBranch(sessionId)
+    }
+  }
+
+  return {
+    sendPrompt,
 
     async cancel(sessionId = focused()): Promise<void> {
       const session = getSession(sessionId)
@@ -194,7 +220,10 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       store.setFocus(sessionId)
       const after = store.getState().focusedSessionId
       // Only a switch that actually moved focus is a real navigation to count.
-      if (after !== before) recorder.focusSwitch(after, options?.viaOverview === true)
+      if (after !== before) {
+        recorder.focusSwitch(after, options?.viaOverview === true)
+        refreshBranch(after)
+      }
     },
 
     jumpToNextNeedy(): void {
@@ -203,6 +232,27 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       store.setFocus(target)
       // Jump-to-next is reachable only from the overview, so it is always overview-driven.
       recorder.focusSwitch(target, true)
+      refreshBranch(target)
+    },
+
+    async startNewRun(): Promise<void> {
+      try {
+        await startNewRun()
+      } catch (error) {
+        onError(focused(), error)
+      }
+    },
+
+    async startFreshFromContext(input, sessionId = focused()): Promise<PromptResult | null> {
+      const blocks = composePromptBlocks(input)
+      if (blocks.length === 0) return null
+      try {
+        if (!(await startFreshSession(sessionId))) return null
+      } catch (error) {
+        onError(sessionId, error)
+        return null
+      }
+      return sendPrompt(blocks, sessionId)
     },
 
     respondPermission(outcome: PermissionOutcome): void {

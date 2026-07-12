@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Shell integration for the settings modal"
 type: frontend
 complexity: medium
@@ -32,11 +32,11 @@ This is the final wiring that makes the settings modal reachable and discoverabl
 </requirements>
 
 ## Subtasks
-- [ ] 10.1 Add an `open-settings` case to the `CockpitFrame` `onKey` switch that closes help and opens settings
-- [ ] 10.2 Record `settings_opened` when the modal opens
-- [ ] 10.3 Mount `<SettingsView />` directly below `<ApprovalPrompt />`
-- [ ] 10.4 Confirm the status hint and help panel show the settings chord
-- [ ] 10.5 Cover dispatch, mount order, and focus stand-down in tests
+- [x] 10.1 Add an `open-settings` case to the `CockpitFrame` `onKey` switch that closes help and opens settings
+- [x] 10.2 Record `settings_opened` when the modal opens
+- [x] 10.3 Mount `<SettingsView />` directly below `<ApprovalPrompt />`
+- [x] 10.4 Confirm the status hint and help panel show the settings chord
+- [x] 10.5 Cover dispatch, mount order, and focus stand-down in tests
 
 ## Implementation Details
 Modify `src/ui/CockpitApp.tsx` (add the `matchCommand` case and mount `<SettingsView />`) and `src/ui/StatusStrip.tsx` if the hint is not already fully derived from the keymap table.
@@ -64,13 +64,13 @@ See the TechSpec "System Architecture" (shell wiring) section and ADR-002.
 
 ## Tests
 - Unit tests:
-  - [ ] dispatching `Ctrl+,` opens the settings slot (`openSettings` called) and records `settings_opened`
-  - [ ] opening settings closes an open help panel
-  - [ ] `SettingsView` is mounted below `ApprovalPrompt` in the frame tree (order assertion)
-  - [ ] while settings is open, the shell's other chords (switch-focus, hand-off) do not fire
+  - [x] dispatching `Ctrl+,` opens the settings slot (`openSettings` called) and records `settings_opened`
+  - [x] opening settings closes an open help panel
+  - [x] `SettingsView` is mounted below `ApprovalPrompt` in the frame tree (order assertion)
+  - [x] while settings is open, the shell's other chords (switch-focus, hand-off) do not fire
 - Integration tests:
-  - [ ] `Ctrl+,` opens the modal, the composer loses focus (`selectHasOpenOverlay` true), and Escape closes it and restores focus
-  - [ ] a `CockpitApp` snapshot with the settings modal open matches
+  - [x] `Ctrl+,` opens the modal, the composer loses focus (`selectHasOpenOverlay` true), and Escape closes it and restores focus
+  - [x] a `CockpitApp` snapshot with the settings modal open matches
 - Test coverage target: >=80%
 - All tests must pass
 

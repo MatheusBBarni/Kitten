@@ -101,6 +101,9 @@ export interface Preferences {
   theme: ThemePreference
 }
 
+/** Whether a restored session is promptable or only its saved context remains. */
+export type RestorationMode = "live" | "unavailable"
+
 /** The pane that currently owns keyboard input (ADR-005). */
 export type FocusedPane = { kind: "agent"; agentId: SessionId } | { kind: "shell" }
 
@@ -108,9 +111,9 @@ export type FocusedPane = { kind: "agent"; agentId: SessionId } | { kind: "shell
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
  *
- * `sessions` is a plain boolean rather than a payload slot: the Ctrl+S overview
- * (task_05) carries no state of its own, it draws itself from `selectSessionList`,
- * so the slot need only say whether it is open.
+ * `sessions` and `sessionPicker` are plain booleans rather than payload slots: each
+ * overlay draws its data from a separate source, so its slot need only say whether
+ * it is open.
  */
 export interface OverlayState {
   approval: ApprovalOverlay | null
@@ -122,6 +125,8 @@ export interface OverlayState {
   /** The settings modal, open on its active settings tab. */
   settings: SettingsOverlay | null
   sessions: boolean
+  /** The resumable-session picker carries no payload; it reads runs from the run store. */
+  sessionPicker: boolean
 }
 
 /**
@@ -145,6 +150,9 @@ export interface AppState {
   shell: ShellState
   preferences: Preferences
   overlays: OverlayState
+  restoration: Record<SessionId, RestorationMode | null>
+  /** The persisted hand-off context for the currently restored cockpit run. */
+  restorationBundle: HandoffBundle | null
 }
 
 /** A function projecting a narrow slice out of the state, for `subscribeSelector`. */
@@ -202,6 +210,14 @@ export interface AppStore {
   openSessions(): void
   /** Close the sessions overview. Closing a closed overview is a no-op. */
   closeSessions(): void
+  /** Open the resumable-session picker. Opening an open picker is a no-op. */
+  openSessionPicker(): void
+  /** Close the resumable-session picker. Closing a closed picker is a no-op. */
+  closeSessionPicker(): void
+  /** Set one session's restoration status without changing its transcript. */
+  setRestoration(sessionId: SessionId, mode: RestorationMode | null): void
+  /** Replace the persisted context exposed by degraded restored panes. */
+  setRestorationBundle(bundle: HandoffBundle | null): void
   /** Change the reactive theme preference. Reapplying the current value is a no-op. */
   setThemePreference(theme: ThemePreference): void
 }
@@ -231,9 +247,11 @@ class AppStoreImpl implements AppStore {
   constructor(options: AppStoreOptions) {
     const seeds = options.seeds ?? defaultSessionSeeds()
     const sessions = {} as Record<SessionId, SessionState>
+    const restoration = {} as Record<SessionId, RestorationMode | null>
     const order: SessionId[] = []
     for (const seed of seeds) {
       sessions[seed.id] = createSessionState(seed)
+      restoration[seed.id] = null
       order.push(seed.id)
     }
     this.state = {
@@ -243,7 +261,17 @@ class AppStoreImpl implements AppStore {
       focusedPane: { kind: "agent", agentId: options.focusedSessionId ?? order[0]! },
       shell: createShellState(),
       preferences: { theme: options.preferences?.theme ?? "auto" },
-      overlays: { approval: null, handoffPreview: null, handoffTarget: null, modelSelect: null, settings: null, sessions: false },
+      overlays: {
+        approval: null,
+        handoffPreview: null,
+        handoffTarget: null,
+        modelSelect: null,
+        settings: null,
+        sessions: false,
+        sessionPicker: false,
+      },
+      restoration,
+      restorationBundle: null,
     }
   }
 
@@ -372,6 +400,29 @@ class AppStoreImpl implements AppStore {
   closeSessions(): void {
     if (!this.state.overlays.sessions) return
     this.setOverlays({ sessions: false })
+  }
+
+  openSessionPicker(): void {
+    if (this.state.overlays.sessionPicker) return
+    this.setOverlays({ sessionPicker: true })
+  }
+
+  closeSessionPicker(): void {
+    if (!this.state.overlays.sessionPicker) return
+    this.setOverlays({ sessionPicker: false })
+  }
+
+  setRestoration(sessionId: SessionId, mode: RestorationMode | null): void {
+    if (!this.state.sessions[sessionId] || this.state.restoration[sessionId] === mode) return
+    this.commit({
+      ...this.state,
+      restoration: { ...this.state.restoration, [sessionId]: mode },
+    })
+  }
+
+  setRestorationBundle(bundle: HandoffBundle | null): void {
+    if (this.state.restorationBundle === bundle) return
+    this.commit({ ...this.state, restorationBundle: bundle })
   }
 
   setThemePreference(theme: ThemePreference): void {

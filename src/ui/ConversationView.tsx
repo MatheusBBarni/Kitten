@@ -4,9 +4,10 @@
  * ADR-004 asks the UI to subscribe narrowly, and this is the view that makes it
  * matter: a token arriving for the unfocused agent must not repaint anything here.
  * So the view reads the focused agent's id, then subscribes to that agent's `turns`
- * array alone. The store shares structure across reductions, meaning `turns` keeps
- * its identity whenever an unrelated slice changes, and `useSyncExternalStore` skips
- * the render. Switching focus swaps the selector and the whole transcript with it.
+ * and restoration status plus the persisted bundle used only by a degraded pane.
+ * The store shares structure across reductions, meaning those slices keep their
+ * identity whenever unrelated state changes and `useSyncExternalStore` skips the
+ * render. Switching focus swaps the selectors and the whole transcript with them.
  *
  * Within a render, each turn is keyed by its own stable identity - `messageId` for
  * messages, `toolCallId` for tool calls - so a streamed delta updates a message in
@@ -16,15 +17,30 @@
 
 import { useMemo, type ReactNode } from "react"
 
-import type { Turn } from "../core/types.ts"
-import { selectFocusedSessionId, selectSessionTurns } from "../store/selectors.ts"
-import { useAppSelector } from "./cockpitContext.tsx"
+import type { SessionController } from "../app/controller.ts"
+import type { BannerVariant } from "../config/appState.ts"
+import type { HandoffBundle, SessionId, Turn } from "../core/types.ts"
+import {
+  selectFocusedSessionId,
+  selectRestoration,
+  selectRestorationBundle,
+  selectSessionTurns,
+} from "../store/selectors.ts"
+import { useAppSelector, useController } from "./cockpitContext.tsx"
+import { NEW_RUN_KEY_HINT } from "./keymap.ts"
 import { MessageView } from "./MessageView.tsx"
-import { ToolCallRow } from "./ToolCallRow.tsx"
 import { usePalette } from "./theme.ts"
+import { ToolCallRow } from "./ToolCallRow.tsx"
+import { WelcomeBanner } from "./WelcomeBanner.tsx"
 
 /** Shown while the focused agent's transcript is still empty. */
 export const EMPTY_TRANSCRIPT_HINT = "No messages yet. Type a prompt to start the conversation."
+
+/** Text contracts for the honest degraded-restore state. */
+export const RESTORATION_LIVE_LABEL = "history restored"
+export const RESTORATION_UNAVAILABLE_LABEL = "history unavailable"
+export const RESTORATION_CONTEXT_LABEL = "Persisted hand-off context"
+export const START_FRESH_LABEL = "start fresh from this context"
 
 /**
  * Hide the horizontal scrollbar outright rather than relying on `scrollX: false`.
@@ -39,17 +55,68 @@ export const EMPTY_TRANSCRIPT_HINT = "No messages yet. Type a prompt to start th
 const HIDDEN_SCROLLBAR = { visible: false } as const
 
 /** The scrollable transcript of whichever agent currently has focus. */
-export function ConversationView(): ReactNode {
-  const palette = usePalette()
+export function ConversationView({
+  welcomeBannerVariant = "full",
+}: {
+  welcomeBannerVariant?: BannerVariant
+}): ReactNode {
+  const controller = useController()
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
   const turnsSelector = useMemo(() => selectSessionTurns(focusedSessionId), [focusedSessionId])
+  const restorationSelector = useMemo(
+    () => selectRestoration(focusedSessionId),
+    [focusedSessionId],
+  )
   const turns = useAppSelector(turnsSelector)
+  const restoration = useAppSelector(restorationSelector)
+  const bundle = useAppSelector(selectRestorationBundle)
 
+  if (restoration === "unavailable") {
+    return <UnavailableRestoration bundle={bundle} />
+  }
+
+  const content = renderConversationContent(
+    controller,
+    focusedSessionId,
+    turns,
+    welcomeBannerVariant,
+  )
+
+  if (restoration === null) return content
+
+  return (
+    <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
+      <LiveRestorationBadge />
+      {content}
+    </box>
+  )
+}
+
+function renderConversationContent(
+  controller: SessionController,
+  focusedSessionId: SessionId,
+  turns: Turn[],
+  welcomeBannerVariant: BannerVariant,
+): ReactNode {
   if (turns.length === 0) {
-    return <text fg={palette.muted}>{EMPTY_TRANSCRIPT_HINT}</text>
+    if (welcomeBannerVariant === "none") return null
+
+    const focused = controller.runtime(focusedSessionId)
+    const agents = controller.runtimes().map((runtime) => ({
+      displayName: runtime.displayName,
+      state: runtime.ready ? ("ready" as const) : ("unavailable" as const),
+    }))
+
+    return (
+      <WelcomeBanner
+        variant={welcomeBannerVariant}
+        agents={agents}
+        cwd={focused?.cwd ?? controller.runtimes()[0]?.cwd ?? ""}
+      />
+    )
   }
 
   return (
@@ -64,6 +131,44 @@ export function ConversationView(): ReactNode {
         <TurnView key={keyFor(turn, index)} turn={turn} />
       ))}
     </scrollbox>
+  )
+}
+
+function LiveRestorationBadge(): ReactNode {
+  const palette = usePalette()
+  return (
+    <text style={{ flexShrink: 0 }} fg={palette.muted}>
+      {RESTORATION_LIVE_LABEL}
+    </text>
+  )
+}
+
+function UnavailableRestoration({ bundle }: { bundle: HandoffBundle | null }): ReactNode {
+  const palette = usePalette()
+  return (
+    <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", gap: 1, paddingTop: 1 }}>
+      <text style={{ flexShrink: 0 }} fg={palette.status.error}>
+        {RESTORATION_UNAVAILABLE_LABEL}
+      </text>
+      {bundle ? (
+        <>
+          <text style={{ flexShrink: 0 }} fg={palette.muted}>
+            {RESTORATION_CONTEXT_LABEL}
+          </text>
+          <scrollbox
+            style={{ flexGrow: 1, flexShrink: 1 }}
+            scrollX={false}
+            horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
+          >
+            <text fg={palette.text}>{bundle.summary}</text>
+          </scrollbox>
+          <text style={{ flexShrink: 0 }}>
+            <span fg={palette.accent}>{NEW_RUN_KEY_HINT}</span>
+            <span fg={palette.text}>{` ${START_FRESH_LABEL}`}</span>
+          </text>
+        </>
+      ) : null}
+    </box>
   )
 }
 

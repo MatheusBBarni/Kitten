@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Key-to-VT input encoder"
 type: backend
 complexity: low

@@ -80,6 +80,18 @@ describe("ShellRuntime in-memory factory", () => {
     await runtime.dispose()
   })
 
+  test("view retains bounded scrollback above the visible viewport", async () => {
+    const { runtime, harness } = setup({ rows: 2 })
+
+    await harness.scriptOutput("one\r\ntwo\r\nthree\r\nfour")
+
+    const view = runtime.view()
+    expect(view.length).toBeGreaterThan(2)
+    expect(view.map(lineText).join("\n")).toContain("one")
+    expect(view.map(lineText).join("\n")).toContain("four")
+    await runtime.dispose()
+  })
+
   test("interrupt writes only the Ctrl+C byte", async () => {
     const { runtime, harness } = setup()
 
@@ -97,6 +109,40 @@ describe("ShellRuntime in-memory factory", () => {
 
     expect(harness.resizes).toEqual([{ cols: 42, rows: 7 }])
     expect(runtime.view()).toHaveLength(7)
+    await runtime.dispose()
+  })
+
+  test("DECSET 1049 renders the alternate buffer and DECRST restores primary content", async () => {
+    const { runtime, harness } = setup()
+    const bufferChanges: string[] = []
+    runtime.onBufferChange((buffer) => bufferChanges.push(buffer))
+
+    await harness.scriptOutput("primary")
+    expect(runtime.bufferType()).toBe("normal")
+
+    await harness.scriptOutput("\u001b[?1049h\u001b[Halternate")
+    expect(runtime.bufferType()).toBe("alternate")
+    expect(runtime.view().map(lineText).join("\n")).toContain("alternate")
+    expect(runtime.view().map(lineText).join("\n")).not.toContain("primary")
+
+    await harness.scriptOutput("\u001b[?1049l")
+    expect(runtime.bufferType()).toBe("normal")
+    expect(runtime.view().map(lineText).join("\n")).toContain("primary")
+    expect(runtime.view().map(lineText).join("\n")).not.toContain("alternate")
+    expect(bufferChanges).toEqual(["alternate", "normal"])
+    await runtime.dispose()
+  })
+
+  test("resize keeps an active alternate buffer aligned with the PTY dimensions", async () => {
+    const { runtime, harness } = setup()
+    await harness.scriptOutput("\u001b[?1049h\u001b[Hinteractive")
+
+    runtime.resize(42, 7)
+
+    expect(runtime.bufferType()).toBe("alternate")
+    expect(harness.resizes).toEqual([{ cols: 42, rows: 7 }])
+    expect(runtime.view()).toHaveLength(7)
+    expect(runtime.view().map(lineText).join("\n")).toContain("interactive")
     await runtime.dispose()
   })
 

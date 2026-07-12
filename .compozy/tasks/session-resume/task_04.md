@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "ACP adapter loadSession and capability capture"
 type: backend
 complexity: medium

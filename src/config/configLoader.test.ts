@@ -8,6 +8,9 @@ import {
   CODEX_ACP_PACKAGE,
   CONFIG_PATH_ENV_VAR,
   ConfigError,
+  DEFAULT_SESSION_PERSISTENCE_ENABLED,
+  DEFAULT_SHELL_SCROLLBACK,
+  MAX_SHELL_SCROLLBACK,
   defaultAppConfig,
   findAgentConfig,
   loadAppConfig,
@@ -18,7 +21,7 @@ import {
 
 /**
  * Unit tests for `AppConfig` loading (ADR-005): the shipped default provider recipes,
- * per-provider override merging, theme and telemetry preferences, session resolution
+ * per-provider override merging, theme, telemetry, and persistence preferences, session resolution
  * (zero-config default, per-session `cwd`/`title`/`task`, repeated-provider identities),
  * and the failure modes of an invalid config file. `loadAppConfig` is exercised against
  * real temp files so the missing-file and present-file paths are both covered end to end.
@@ -134,6 +137,53 @@ describe("user overrides", () => {
   })
 })
 
+describe("shell config", () => {
+  it("Should resolve shell defaults when the user omits the shell block", () => {
+    expect(parseAppConfig("{}").shell).toEqual({
+      enabled: true,
+      command: process.env.SHELL || "/bin/sh",
+      scrollback: DEFAULT_SHELL_SCROLLBACK,
+    })
+  })
+
+  it("Should merge a command override while retaining the other shell defaults", () => {
+    expect(parseAppConfig(JSON.stringify({ shell: { command: "/opt/bin/fish" } })).shell).toEqual({
+      enabled: true,
+      command: "/opt/bin/fish",
+      scrollback: DEFAULT_SHELL_SCROLLBACK,
+    })
+  })
+
+  it.each([
+    ["a negative", -1],
+    ["a value above the configured bound", MAX_SHELL_SCROLLBACK + 1],
+    ["a fractional", 1.5],
+    ["a non-numeric", "1000"],
+  ])("Should reject %s scrollback value", (_case, scrollback) => {
+    expect(() => parseAppConfig(JSON.stringify({ shell: { scrollback } }))).toThrow(ConfigError)
+    expect(() => parseAppConfig(JSON.stringify({ shell: { scrollback } }))).toThrow(/shell\.scrollback/)
+  })
+
+  it("Should reject unknown keys inside the shell block", () => {
+    expect(() => parseAppConfig(JSON.stringify({ shell: { enabled: true, history: 500 } }))).toThrow(ConfigError)
+    expect(() => parseAppConfig(JSON.stringify({ shell: { enabled: true, history: 500 } }))).toThrow(/shell/)
+  })
+
+  it("Should load a partial shell block from a real file as a complete AppConfig", async () => {
+    const path = await writeConfig(JSON.stringify({ shell: { enabled: false, scrollback: 2_500 } }))
+
+    const config = await loadAppConfig({ path })
+
+    expect(config.shell).toEqual({
+      enabled: false,
+      command: process.env.SHELL || "/bin/sh",
+      scrollback: 2_500,
+    })
+    expect(config.providers).toEqual(defaultAppConfig().providers)
+    expect(config.telemetryEnabled).toBe(false)
+  })
+})
+
 describe("resolveSessions", () => {
   it("Should seed one session per configured provider in the launch directory when none are declared", () => {
     const config = defaultAppConfig()
@@ -230,6 +280,35 @@ describe("telemetry opt-in", () => {
 
   it("Should honor an explicit telemetry opt-out", () => {
     expect(parseAppConfig(JSON.stringify({ telemetryEnabled: false })).telemetryEnabled).toBe(false)
+  })
+})
+
+describe("session persistence", () => {
+  it("Should default session persistence to on", () => {
+    expect(DEFAULT_SESSION_PERSISTENCE_ENABLED).toBe(true)
+    expect(defaultAppConfig().persistenceEnabled).toBe(true)
+  })
+
+  it("Should retain the enabled default when the user omits session persistence", () => {
+    expect(parseAppConfig("{}").persistenceEnabled).toBe(true)
+  })
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("Should honor an explicit session persistence value of %s", (_label, persistenceEnabled) => {
+    expect(parseAppConfig(JSON.stringify({ persistenceEnabled })).persistenceEnabled).toBe(persistenceEnabled)
+  })
+
+  it("Should reject a non-boolean session persistence value and name the field", () => {
+    expect(() => parseAppConfig('{"persistenceEnabled":"yes"}')).toThrow(ConfigError)
+    expect(() => parseAppConfig('{"persistenceEnabled":"yes"}')).toThrow(/persistenceEnabled/)
+  })
+
+  it("Should load a disabled session persistence delta from a real config file", async () => {
+    const path = await writeConfig('{"persistenceEnabled":false}')
+
+    expect((await loadAppConfig({ path })).persistenceEnabled).toBe(false)
   })
 })
 

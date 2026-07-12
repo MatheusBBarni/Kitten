@@ -1,0 +1,2 @@
+# Terminal-frame snapshots preserve trailing cells as part of their assertions.
+src/ui/__snapshots__/*.snap -whitespace

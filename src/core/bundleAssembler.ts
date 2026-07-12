@@ -19,7 +19,7 @@
  */
 
 import { createSecretRedactor, type SecretRedactor } from "./secretRedactor.ts"
-import type { HandoffBundle, PendingDiff, ProviderKind, SessionState, Turn } from "./types.ts"
+import type { HandoffBundle, PendingDiff, ProviderKind, SessionState, ShellSnapshot, Turn } from "./types.ts"
 
 /**
  * The hand-off assembly strategy (TechSpec "Core Interfaces").
@@ -27,7 +27,7 @@ import type { HandoffBundle, PendingDiff, ProviderKind, SessionState, Turn } fro
  * Deterministic in V1, LLM-backed in Phase 2, without touching callers.
  */
 export interface BundleAssembler {
-  assemble(session: SessionState, target: ProviderKind): HandoffBundle
+  assemble(session: SessionState, target: ProviderKind, shell?: ShellSnapshot): HandoffBundle
 }
 
 /** The bounds that keep the transcript excerpt from becoming a full dump. */
@@ -77,16 +77,18 @@ export function createDeterministicAssembler(options: DeterministicAssemblerOpti
   const redactor = options.redactor ?? createSecretRedactor()
 
   return {
-    assemble(session: SessionState, target: ProviderKind): HandoffBundle {
+    assemble(session: SessionState, target: ProviderKind, shell?: ShellSnapshot): HandoffBundle {
       const excerpt = buildExcerpt(session, target, redactor, limits)
       const diffs = redactDiffs(session.pendingDiffs, redactor)
+      const shellSnapshot = redactShell(shell, redactor)
 
       return {
         intent: "continue",
         summary: excerpt.summary,
         files: collectFiles(session),
         pendingDiffs: diffs.pendingDiffs,
-        redactionCount: excerpt.redactionCount + diffs.redactionCount,
+        ...(shellSnapshot.shell ? { shell: shellSnapshot.shell } : {}),
+        redactionCount: excerpt.redactionCount + diffs.redactionCount + shellSnapshot.redactionCount,
       }
     },
   }
@@ -117,6 +119,31 @@ function redactDiffs(
     return { toolCallId: diff.toolCallId, path: diff.path, unified: result.text }
   })
   return { pendingDiffs: redacted, redactionCount }
+}
+
+/** Copy only hand-off-safe shell fields and redact every captured shell string. */
+function redactShell(
+  shell: ShellSnapshot | undefined,
+  redactor: SecretRedactor,
+): { shell?: ShellSnapshot; redactionCount: number } {
+  if (!shell || shell.commands.length === 0) return { redactionCount: 0 }
+
+  let redactionCount = 0
+  const cwd = redactor.redact(shell.cwd)
+  redactionCount += cwd.count
+  const commands = shell.commands.map((command) => {
+    const commandText = redactor.redact(command.command)
+    const output = redactor.redact(command.output)
+    redactionCount += commandText.count + output.count
+    return {
+      id: command.id,
+      command: commandText.text,
+      output: output.text,
+      exitCode: command.exitCode,
+    }
+  })
+
+  return { shell: { cwd: cwd.text, commands }, redactionCount }
 }
 
 /**

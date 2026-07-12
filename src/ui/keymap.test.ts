@@ -22,14 +22,19 @@ import {
   matchCommand,
   matchHandoffCommand,
   matchModelSelectCommand,
+  matchSessionPickerCommand,
   matchSessionsCommand,
   matchSettingsCommand,
   MODEL_SELECT_CONFIRM_HINT,
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
   PROMPT_KEY_BINDINGS,
+  RESUME_KEY_HINT,
+  SESSION_PICKER_HINT,
+  SESSION_PICKER_KEYMAP,
   SESSIONS_HINT,
   SESSIONS_KEYMAP,
+  SHELL_HINT,
   SETTINGS_HINT,
   SETTINGS_KEYMAP,
   type CockpitKey,
@@ -41,6 +46,16 @@ function key(name: string, modifiers: Partial<CockpitKey> = {}): CockpitKey {
 }
 
 describe("matchCommand", () => {
+  it("maps Ctrl+` and the documented F2 fallback to toggle-shell", () => {
+    expect(matchCommand(key("`", { ctrl: true }))).toBe("toggle-shell")
+    expect(matchCommand(key("grave", { ctrl: true }))).toBe("toggle-shell")
+    expect(matchCommand(key("f2"))).toBe("toggle-shell")
+  })
+
+  it("maps F3 to the shell-only run-externally action", () => {
+    expect(matchCommand(key("f3"))).toBe("run-externally")
+  })
+
   it("maps Ctrl+O to switch-focus", () => {
     expect(matchCommand(key("o", { ctrl: true }))).toBe("switch-focus")
   })
@@ -51,6 +66,14 @@ describe("matchCommand", () => {
 
   it("maps Ctrl+S to sessions", () => {
     expect(matchCommand(key("s", { ctrl: true }))).toBe("sessions")
+  })
+
+  it("maps Ctrl+R to resume-session", () => {
+    expect(matchCommand(key("r", { ctrl: true }))).toBe("resume-session")
+  })
+
+  it("maps Ctrl+N to start-new-run", () => {
+    expect(matchCommand(key("n", { ctrl: true }))).toBe("start-new-run")
   })
 
   it("maps Ctrl+E to model-select, the selector's safe chord", () => {
@@ -86,9 +109,11 @@ describe("matchCommand", () => {
     expect(matchCommand(key("o", { ctrl: true, shift: true }))).toBeNull()
     expect(matchCommand(key("o", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("t", { ctrl: true, shift: true }))).toBeNull()
+    expect(matchCommand(key("r", { ctrl: true, shift: true }))).toBeNull()
     expect(matchCommand(key(",", { ctrl: true, shift: true }))).toBeNull()
     expect(matchCommand(key(",", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("f1", { ctrl: true }))).toBeNull()
+    expect(matchCommand(key("f2", { shift: true }))).toBeNull()
     expect(matchCommand(key("escape", { meta: true }))).toBeNull()
   })
 
@@ -103,9 +128,13 @@ describe("COCKPIT_KEYMAP", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
     expect(new Set(commands).size).toBe(commands.length)
     expect(commands).toEqual([
+      "toggle-shell",
+      "run-externally",
       "switch-focus",
       "hand-off",
       "sessions",
+      "resume-session",
+      "start-new-run",
       "model-select",
       "open-settings",
       "toggle-help",
@@ -139,9 +168,14 @@ describe("COCKPIT_KEYMAP", () => {
   })
 
   it("keeps the always-visible hint short enough for a narrow terminal", () => {
-    expect(KEYMAP_HINT).toContain("F1")
-    expect(KEYMAP_HINT).toContain("^,")
+    expect(KEYMAP_HINT).toContain("^`")
+    expect(KEYMAP_HINT).toContain("^R resume")
     expect(KEYMAP_HINT.length).toBeLessThanOrEqual(20)
+  })
+
+  it("keeps the status hint compact while the help row retains the F2 fallback", () => {
+    expect(SHELL_HINT).toBe("^` shell")
+    expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+` / F2")
   })
 })
 
@@ -209,7 +243,7 @@ describe("HELP_ENTRIES", () => {
     const escapes = HELP_ENTRIES.map((entry, index) => ({ index, keys: entry.keys })).filter((e) => e.keys === "Esc")
     // Help first: while the panel is open it consumes Escape, and only then does the
     // editor's interrupt become reachable.
-    expect(escapes.map((e) => e.index)).toEqual([6, 9])
+    expect(escapes.map((e) => e.index)).toEqual([10, 13])
   })
 
   it("documents the model selector, whose chord opens the model and effort picker", () => {
@@ -220,6 +254,17 @@ describe("HELP_ENTRIES", () => {
     expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+T")
   })
 
+  it("documents shell focus, external running, and curated attach behavior", () => {
+    const shell = COCKPIT_KEYMAP.find((entry) => entry.command === "toggle-shell")
+    const external = COCKPIT_KEYMAP.find((entry) => entry.command === "run-externally")
+    const handoff = COCKPIT_KEYMAP.find((entry) => entry.command === "hand-off")
+
+    expect(shell?.description).toContain("Ctrl+C interrupts")
+    expect(external).toMatchObject({ keys: "F3" })
+    expect(external?.description).toContain("external terminal")
+    expect(handoff?.description).toContain("shell cwd/commands")
+  })
+
   it("documents settings through the cockpit keymap", () => {
     expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+,")
   })
@@ -228,6 +273,7 @@ describe("HELP_ENTRIES", () => {
     for (const binding of [
       ...APPROVAL_KEYMAP,
       ...HANDOFF_KEYMAP,
+      ...SESSION_PICKER_KEYMAP,
       ...SESSIONS_KEYMAP,
       ...MODEL_SELECT_KEYMAP,
       ...SETTINGS_KEYMAP,
@@ -238,6 +284,11 @@ describe("HELP_ENTRIES", () => {
 
   it("documents the sessions overview, whose chord opens the fleet router", () => {
     expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+S")
+  })
+
+  it("documents saved-run resume in both the help panel and compact hint", () => {
+    expect(HELP_ENTRIES.map((entry) => entry.keys)).toContain("Ctrl+R")
+    expect(RESUME_KEY_HINT).toBe("^R resume")
   })
 })
 
@@ -393,6 +444,40 @@ describe("SESSIONS_KEYMAP", () => {
       expect(SESSIONS_HINT).toContain(binding.keys)
     }
     expect(SESSIONS_HINT).toContain("n next needy")
+  })
+})
+
+describe("SESSION_PICKER_KEYMAP", () => {
+  it("maps navigation, restore, deletion, and cancel to picker outcomes", () => {
+    expect(matchSessionPickerCommand(key("up"))).toBe("prev-run")
+    expect(matchSessionPickerCommand(key("down"))).toBe("next-run")
+    expect(matchSessionPickerCommand(key("space"))).toBe("preview")
+    expect(matchSessionPickerCommand(key("return"))).toBe("restore")
+    expect(matchSessionPickerCommand(key("kpenter"))).toBe("restore")
+    expect(matchSessionPickerCommand(key("d", { ctrl: true }))).toBe("delete-run")
+    expect(matchSessionPickerCommand(key("a", { ctrl: true }))).toBe("delete-all")
+    expect(matchSessionPickerCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("leaves filter text unclaimed and rejects modified outcomes", () => {
+    expect(matchSessionPickerCommand(key("a"))).toBeNull()
+    expect(matchSessionPickerCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchSessionPickerCommand(key("space", { ctrl: true }))).toBeNull()
+  })
+
+  it("binds each command once and names it in the modal hint", () => {
+    const commands = SESSION_PICKER_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual([
+      "prev-run",
+      "next-run",
+      "preview",
+      "restore",
+      "delete-run",
+      "delete-all",
+      "cancel",
+    ])
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const binding of SESSION_PICKER_KEYMAP) expect(SESSION_PICKER_HINT).toContain(binding.keys)
   })
 })
 

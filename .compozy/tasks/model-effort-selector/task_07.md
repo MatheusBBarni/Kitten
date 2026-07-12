@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Status strip model and effort display"
 type: frontend
 complexity: low
@@ -29,10 +29,10 @@ This is a small, read-only addition to the existing per-agent chip.
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Read `selectAgentModel`/`selectAgentEffort` in `AgentStatusChip` via memoized selectors
-- [ ] 7.2 Render the model and effort segment next to the display name and status
-- [ ] 7.3 Handle the no-effort and no-options cases by omitting segments
-- [ ] 7.4 Cover the rendered chip states with tests
+- [x] 7.1 Read `selectAgentModel`/`selectAgentEffort` in `AgentStatusChip` via memoized selectors
+- [x] 7.2 Render the model and effort segment next to the display name and status
+- [x] 7.3 Handle the no-effort and no-options cases by omitting segments
+- [x] 7.4 Cover the rendered chip states with tests
 
 ## Implementation Details
 Modify the status chip. See TechSpec "System Architecture" (UI Shell) and "User Experience" (discoverability). Mirror the memoized selector usage already in `AgentStatusChip` (`StatusStrip.tsx:69-89`, e.g. `statusSelector = useMemo(() => selectAgentStatus(agentId), [agentId])`).
@@ -55,12 +55,12 @@ Modify the status chip. See TechSpec "System Architecture" (UI Shell) and "User 
 
 ## Tests
 - Unit tests:
-  - [ ] A chip for an agent with model `opus` and effort `high` renders both values alongside the status
-  - [ ] A chip for an agent with a model but no effort omits the effort segment
-  - [ ] A chip for an agent advertising no options omits the whole model/effort segment
-  - [ ] Changing only the status does not change the rendered model/effort segment
+  - [x] A chip for an agent with model `opus` and effort `high` renders both values alongside the status
+  - [x] A chip for an agent with a model but no effort omits the effort segment
+  - [x] A chip for an agent advertising no options omits the whole model/effort segment
+  - [x] Changing only the status does not change the rendered model/effort segment
 - Integration tests:
-  - [ ] Rendering the full `StatusStrip` through `CockpitApp` shows both agents' model/effort, updating when a `config_options` event is dispatched
+  - [x] Rendering the full `StatusStrip` through `CockpitApp` shows both agents' model/effort, updating when a `config_options` event is dispatched
 - Test coverage target: >=80%
 - All tests must pass
 

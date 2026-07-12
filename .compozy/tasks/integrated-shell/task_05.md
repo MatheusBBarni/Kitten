@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Controller ownership and event wiring for the shell"
 type: backend
 complexity: medium
 dependencies:
-  - task_02
-  - task_03
+    - task_02
+    - task_03
 ---
 
 # Task 05: Controller ownership and event wiring for the shell

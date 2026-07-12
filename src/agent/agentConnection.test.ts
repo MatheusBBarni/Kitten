@@ -88,9 +88,15 @@ async function connected(mockOptions?: MockAgentOptions, scheduler?: FrameSchedu
 }
 
 describe("connect / session lifecycle", () => {
-  it("completes the initialize handshake and reports ready", async () => {
+  it("reports canLoadSession false when the initialize capability is absent", async () => {
     const { conn } = setup()
-    expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1 })
+    expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
+    await conn.dispose()
+  })
+
+  it("reports canLoadSession true when the agent advertises the initialize capability", async () => {
+    const { conn } = setup({ canLoadSession: true })
+    expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: true })
     await conn.dispose()
   })
 
@@ -108,6 +114,41 @@ describe("connect / session lifecycle", () => {
     const { conn } = await connected({ sessionId: "sess-7" })
     expect(await conn.newSession("/tmp/project")).toBe("sess-7")
     await conn.dispose()
+  })
+
+  it("forwards loadSession to the ACP agent with the stored session and working directory", async () => {
+    const { conn, mock } = await connected({ canLoadSession: true })
+
+    await conn.loadSession("sess-7", "/repo")
+
+    expect(mock.loadSessionRequests).toEqual([{ sessionId: "sess-7", cwd: "/repo", mcpServers: [] }])
+    await conn.dispose()
+  })
+
+  it("routes history replayed during loadSession through the existing domain update stream", async () => {
+    const { conn, events } = await connected({
+      canLoadSession: true,
+      onLoadSession: async (_request, ctx) => {
+        await ctx.update({
+          sessionUpdate: "user_message_chunk",
+          messageId: "history-1",
+          content: { type: "text", text: "Continue the saved work" },
+        })
+      },
+    })
+
+    await conn.loadSession("sess-7", "/repo")
+    await waitFor(() => events.length === 1)
+
+    expect(events).toEqual([
+      { kind: "user_message", messageId: "history-1", text: "Continue the saved work" },
+    ])
+    await conn.dispose()
+  })
+
+  it("throws when loading a session before connect", async () => {
+    const { conn } = setup()
+    await expect(conn.loadSession("sess-7", "/repo")).rejects.toThrow(/not connected/)
   })
 
   it("throws when prompting before connect", async () => {

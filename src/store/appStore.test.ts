@@ -9,7 +9,11 @@ import {
   selectApprovalOverlay,
   selectHandoffPreview,
   selectFocusedPane,
+  selectHasOpenOverlay,
   selectIsFocused,
+  selectRestoration,
+  selectRestorationBundle,
+  selectSessionPicker,
   selectShell,
   selectSessionStatus,
   selectSessionTurns,
@@ -82,7 +86,10 @@ describe("createAppStore", () => {
       modelSelect: null,
       settings: null,
       sessions: false,
+      sessionPicker: false,
     })
+    expect(state.restoration).toEqual({ "claude-code": null, codex: null })
+    expect(state.restorationBundle).toBeNull()
     expect(state.preferences).toEqual({ theme: "auto" })
   })
 
@@ -412,6 +419,39 @@ describe("overlay slots", () => {
     expect(overlays.approval?.sessionId).toBe("claude-code")
   })
 
+  it("opens and closes the session picker without clobbering payload slots", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
+    const before = store.getState()
+
+    store.openSessionPicker()
+
+    const opened = store.getState()
+    expect(selectSessionPicker(opened)).toBe(true)
+    expect(selectHasOpenOverlay(opened)).toBe(true)
+    expect(opened.overlays.approval).toBe(before.overlays.approval)
+    expect(opened.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(opened.sessions).toBe(before.sessions)
+    expect(opened.restoration).toBe(before.restoration)
+
+    store.closeSessionPicker()
+    const closed = store.getState()
+    expect(selectSessionPicker(closed)).toBe(false)
+    expect(closed.overlays.approval).toBe(before.overlays.approval)
+    expect(closed.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+  })
+
+  it("clears the overlay gate when the session picker was the only open slot", () => {
+    const store = createAppStore()
+    store.openSessionPicker()
+
+    store.closeSessionPicker()
+
+    expect(selectSessionPicker(store.getState())).toBe(false)
+    expect(selectHasOpenOverlay(store.getState())).toBe(false)
+  })
+
   it("does not notify when closing an already-closed slot", () => {
     const store = createAppStore()
     const before = store.getState()
@@ -423,6 +463,7 @@ describe("overlay slots", () => {
     store.closeModelSelect()
     store.closeSettings()
     store.closeSessions()
+    store.closeSessionPicker()
 
     expect(store.getState()).toBe(before)
     expect(notifications).toBe(0)
@@ -437,6 +478,56 @@ describe("overlay slots", () => {
     store.openSessions()
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("restoration state", () => {
+  it("defaults every seeded session to no restoration status", () => {
+    const store = createAppStore()
+
+    expect(selectRestoration("claude-code")(store.getState())).toBeNull()
+    expect(selectRestoration("codex")(store.getState())).toBeNull()
+  })
+
+  it("sets one session's restoration status without changing sibling state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setRestoration("codex", "unavailable")
+
+    const after = store.getState()
+    expect(selectRestoration("codex")(after)).toBe("unavailable")
+    expect(selectRestoration("claude-code")(after)).toBeNull()
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.overlays).toBe(before.overlays)
+  })
+
+  it("stores the persisted hand-off bundle without changing session state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.setRestorationBundle(HANDOFF_BUNDLE)
+
+    const after = store.getState()
+    expect(selectRestorationBundle(after)).toBe(HANDOFF_BUNDLE)
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.restoration).toBe(before.restoration)
+
+    store.setRestorationBundle(HANDOFF_BUNDLE)
+    expect(store.getState()).toBe(after)
+  })
+
+  it("ignores unknown sessions and unchanged restoration values", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+
+    store.setRestoration("ghost", "live")
+    expect(store.getState()).toBe(initial)
+
+    store.setRestoration("codex", "live")
+    const live = store.getState()
+    store.setRestoration("codex", "live")
+    expect(store.getState()).toBe(live)
   })
 })
 

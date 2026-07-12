@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Effort-tagged hand-off"
 type: frontend
 complexity: medium
@@ -32,11 +32,11 @@ This adds a target model/effort control to the preview, carries the choice throu
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Seed the target's `visibleConfigOptions` into the hand-off preview on `begin`
-- [ ] 8.2 Render the target model/effort control in `HandoffPreview` reusing the task_06 control
-- [ ] 8.3 Extend `HandoffEdits` with `targetConfig` and thread it through `send`
-- [ ] 8.4 Apply `targetConfig` on the target via the controller action during `confirm`
-- [ ] 8.5 Cover the seeded default, an escalation, and a no-change send with tests
+- [x] 8.1 Seed the target's `visibleConfigOptions` into the hand-off preview on `begin`
+- [x] 8.2 Render the target model/effort control in `HandoffPreview` reusing the task_06 control
+- [x] 8.3 Extend `HandoffEdits` with `targetConfig` and thread it through `send`
+- [x] 8.4 Apply `targetConfig` on the target via the controller action during `confirm`
+- [x] 8.5 Cover the seeded default, an escalation, and a no-change send with tests
 
 ## Implementation Details
 Modify the hand-off flow and preview. See TechSpec "System Architecture" (Hand-off) and ADR-001 (effort composes with hand-off). `createHandoffFlow.begin` opens the preview (`handoff.ts:164-184`); `confirm` composes blocks and sends (`handoff.ts:186-208`); the preview `send` reads edits (`HandoffPreview.tsx:121-127`) with the summary editor at 208-220.
@@ -63,13 +63,13 @@ Modify the hand-off flow and preview. See TechSpec "System Architecture" (Hand-o
 
 ## Tests
 - Unit tests:
-  - [ ] `begin` seeds the preview with the target agent's visible model/effort options and current values
-  - [ ] `confirm` with a `targetConfig` of `{model: opus, effort: high}` calls `setSessionConfigOption` on the target for each before sending the prompt
-  - [ ] `confirm` with empty `targetConfig` sends the hand-off without any config call
-  - [ ] The hand-off path shows no mid-conversation degrade warning
+  - [x] `begin` seeds the preview with the target agent's visible model/effort options and current values
+  - [x] `confirm` with a `targetConfig` of `{model: opus, effort: high}` calls `setSessionConfigOption` on the target for each before sending the prompt
+  - [x] `confirm` with empty `targetConfig` sends the hand-off without any config call
+  - [x] The hand-off path shows no mid-conversation degrade warning
 - Integration tests:
-  - [ ] From the preview: raising the target effort then sending applies the target's effort and forwards the bundle to the target, then switches focus
-  - [ ] File/diff drop and summary edit still work with the new control present
+  - [x] From the preview: raising the target effort then sending applies the target's effort and forwards the bundle to the target, then switches focus
+  - [x] File/diff drop and summary edit still work with the new control present
 - Test coverage target: >=80%
 - All tests must pass
 

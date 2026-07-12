@@ -66,11 +66,20 @@ const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
 /** Telemetry is opt-in and off until the user says otherwise (PRD privacy stance). */
 const DEFAULT_TELEMETRY_ENABLED = false
 
+/** Session persistence is on by default, with a user-configurable off-switch. */
+export const DEFAULT_SESSION_PERSISTENCE_ENABLED = true
+
 /** The default follows the terminal-reported theme unless the user selects an override. */
 const DEFAULT_THEME: ThemePreference = "auto"
 
 /** The welcome is full once, then quiet unless the user overrides it. */
 const DEFAULT_WELCOME_BANNER: WelcomeBannerPreference = "auto"
+
+/** Xterm's established default, now made explicit and user-configurable. */
+export const DEFAULT_SHELL_SCROLLBACK = 1_000
+
+/** Bound retained terminal history so a config typo cannot consume unbounded memory. */
+export const MAX_SHELL_SCROLLBACK = 100_000
 
 const THEME_PREFERENCES = ["auto", "light", "dark", "catppuccin-mocha", "catppuccin-latte"] as const satisfies readonly ThemePreference[]
 const WELCOME_BANNER_PREFERENCES = ["auto", "always", "off"] as const satisfies readonly WelcomeBannerPreference[]
@@ -118,6 +127,15 @@ const SESSION_DESCRIPTOR_SCHEMA = z
   })
   .strict()
 
+/** Optional user overrides for the controller-owned integrated shell. */
+const SHELL_OVERRIDE_SCHEMA = z
+  .object({
+    enabled: z.boolean().optional(),
+    command: z.string().min(1).optional(),
+    scrollback: z.number().int().min(0).max(MAX_SHELL_SCROLLBACK).optional(),
+  })
+  .strict()
+
 /**
  * The shape of the on-disk config file. Every field is optional: the file only ever
  * expresses deltas from {@link defaultAppConfig}. `strict()` rejects unknown keys so
@@ -127,6 +145,7 @@ const SESSION_DESCRIPTOR_SCHEMA = z
  */
 export const USER_CONFIG_SCHEMA = z
   .object({
+    persistenceEnabled: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
     theme: z.enum(THEME_PREFERENCES).optional(),
     welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
@@ -134,6 +153,7 @@ export const USER_CONFIG_SCHEMA = z
     /** @deprecated Use `providers`. Kept as an alias for one migration window. */
     agents: PROVIDERS_SCHEMA.optional(),
     sessions: z.array(SESSION_DESCRIPTOR_SCHEMA).optional(),
+    shell: SHELL_OVERRIDE_SCHEMA.optional(),
   })
   .strict()
 
@@ -156,6 +176,12 @@ export function defaultAppConfig(): AppConfig {
   return {
     providers: cloneProviders(DEFAULT_PROVIDERS),
     sessions: [],
+    shell: {
+      enabled: true,
+      command: process.env.SHELL || "/bin/sh",
+      scrollback: DEFAULT_SHELL_SCROLLBACK,
+    },
+    persistenceEnabled: DEFAULT_SESSION_PERSISTENCE_ENABLED,
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
     theme: DEFAULT_THEME,
     welcomeBanner: DEFAULT_WELCOME_BANNER,
@@ -190,6 +216,12 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
   return {
     providers: config.providers,
     sessions: user.sessions?.map((session) => ({ ...session })) ?? [],
+    shell: {
+      enabled: user.shell?.enabled ?? config.shell.enabled,
+      command: user.shell?.command ?? config.shell.command,
+      scrollback: user.shell?.scrollback ?? config.shell.scrollback,
+    },
+    persistenceEnabled: user.persistenceEnabled ?? config.persistenceEnabled,
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     theme: user.theme ?? config.theme,
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,

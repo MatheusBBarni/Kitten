@@ -1,5 +1,11 @@
+// Suite: PromptEditor presentation and controller interaction
+// Invariant: visual restyling never changes prompt composition, submission, interruption, or readiness behavior.
+// Boundary IN: real React rendering, OpenTUI textarea/layout, palette resolution, and controller actions.
+// Boundary OUT: agent transport behavior, owned by controller and adapter integration suites.
+
 import { describe, expect, it } from "bun:test"
 
+import { RGBA } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -10,10 +16,12 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
   PROMPT_DISABLED_TITLE,
+  PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
   PROMPT_TITLE,
   PromptEditor,
 } from "./PromptEditor.tsx"
+import { DARK_PALETTE } from "./theme.ts"
 
 /**
  * Mount the editor on a Kitty-keyboard terminal.
@@ -74,6 +82,39 @@ function sentText(controller: FakeController): string {
   expect(typeof input).toBe("string")
   return input as string
 }
+
+/** The painted foreground of the first span containing `needle`. */
+function foregroundOf(setup: TestRendererSetup, needle: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text.includes(needle))
+    ?.fg.toString()
+}
+
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
+}
+
+describe("PromptEditor presentation", () => {
+  it("renders a spaced warm-accent chevron before the unchanged ready placeholder", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+    const frame = setup.captureCharFrame()
+    const contentLine = frame.split("\n").find((line) => line.includes(PROMPT_PLACEHOLDER))
+
+    expect(frame).toContain("╭")
+    expect(contentLine).toBeDefined()
+    expect(contentLine).toContain(PROMPT_CHEVRON)
+    expect(contentLine!.indexOf(PROMPT_CHEVRON)).toBeGreaterThan(contentLine!.indexOf("│") + 1)
+    expect(contentLine!.indexOf(PROMPT_PLACEHOLDER)).toBeGreaterThan(
+      contentLine!.indexOf(PROMPT_CHEVRON) + PROMPT_CHEVRON.length,
+    )
+    expect(foregroundOf(setup, PROMPT_CHEVRON)).toBe(paletteColor(DARK_PALETTE.accent))
+
+    await destroyMounted(setup.renderer)
+  })
+})
 
 describe("PromptEditor submit", () => {
   it("sends the composed text to the focused agent on Enter and clears the editor", async () => {
@@ -224,6 +265,7 @@ describe("PromptEditor readiness gate", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(PROMPT_DISABLED_TITLE)
     expect(frame).toContain(PROMPT_DISABLED_PLACEHOLDER)
+    expect(foregroundOf(setup, "╭")).toBe(paletteColor(DARK_PALETTE.status.not_ready))
 
     await type(setup, "are you there")
     await pressEnter(setup)

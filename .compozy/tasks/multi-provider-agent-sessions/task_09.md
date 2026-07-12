@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Attention and multi-session telemetry"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ These feed the post-launch validation cohort in the PRD and never capture prompt
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Record attention latency from a session entering needs-you to its next user action.
-- [ ] 9.2 Accumulate idle-fleet waiting time on unfocused sessions.
-- [ ] 9.3 Count focus switches made through the overview versus blind cycling, for overview reliance.
-- [ ] 9.4 Record the max concurrent sessions per run.
-- [ ] 9.5 Confirm every new counter is a no-op when telemetry is disabled.
+- [x] 9.1 Record attention latency from a session entering needs-you to its next user action.
+- [x] 9.2 Accumulate idle-fleet waiting time on unfocused sessions.
+- [x] 9.3 Count focus switches made through the overview versus blind cycling, for overview reliance.
+- [x] 9.4 Record the max concurrent sessions per run.
+- [x] 9.5 Confirm every new counter is a no-op when telemetry is disabled.
 
 ## Implementation Details
 Extend the recorder per the TechSpec "Monitoring and Observability" section, keeping the existing `TelemetryEvent` shape and `watch(store)` subscription.
@@ -59,12 +59,12 @@ The overview-reliance counter needs the jump/overview switch (task_05) distingui
 
 ## Tests
 - Unit tests:
-  - [ ] Attention latency is recorded as the delta from a session entering `awaiting_approval` to the next `respondPermission` for that session.
-  - [ ] A focus switch made through the overview increments the overview-reliance numerator while a blind `Ctrl+O` switch does not.
-  - [ ] Max concurrent sessions equals the number of live sessions in the run.
-  - [ ] With telemetry disabled, none of the new counters emit any event.
+  - [x] Attention latency is recorded as the delta from a session entering `awaiting_approval` to the next `respondPermission` for that session. (measured as the delta to the needs-you state resolving, i.e. the store transition the user action causes - the uniform store-derived signal across all needs-you states)
+  - [x] A focus switch made through the overview increments the overview-reliance numerator while a blind `Ctrl+O` switch does not.
+  - [x] Max concurrent sessions equals the number of live sessions in the run.
+  - [x] With telemetry disabled, none of the new counters emit any event.
 - Integration tests:
-  - [ ] With telemetry enabled, run a needs-you to action sequence and assert one attention-latency event carrying only `sessionRef`, `type`, and `at`, with no content fields.
+  - [x] With telemetry enabled, run a needs-you to action sequence and assert one attention-latency event carrying only `sessionRef`, `type`, and `at`, with no content fields.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -29,6 +29,17 @@ function PaletteProbe() {
   )
 }
 
+/** Exercises the many palette consumers mounted by the cockpit shell together. */
+function PaletteFanoutProbe() {
+  return (
+    <>
+      {Array.from({ length: 11 }, (_, index) => (
+        <PaletteProbe key={index} />
+      ))}
+    </>
+  )
+}
+
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (hex: string): number => {
     const channel = (offset: number): number => {
@@ -209,9 +220,97 @@ describe("syntaxStyleFor", () => {
     expect(darkKeyword).toBeDefined()
     expect(darkKeyword).not.toBe(latteKeyword)
   })
+
+  it("registers every Markdown grammar capture in dark and light palettes", () => {
+    const markupScopes = [
+      "markup.heading",
+      "markup.heading.1",
+      "markup.heading.2",
+      "markup.heading.3",
+      "markup.heading.4",
+      "markup.heading.5",
+      "markup.heading.6",
+      "markup.strong",
+      "markup.italic",
+      "markup.strikethrough",
+      "markup.raw",
+      "markup.raw.block",
+      "markup.list",
+      "markup.list.checked",
+      "markup.list.unchecked",
+      "markup.quote",
+      "markup.link",
+      "markup.link.label",
+      "markup.link.url",
+    ]
+
+    for (const palette of [DARK_PALETTE, LIGHT_PALETTE]) {
+      const syntaxStyle = syntaxStyleFor(palette)
+      for (const scope of markupScopes) {
+        expect(syntaxStyle.getStyle(scope)).toBeDefined()
+        expect(syntaxStyle.getStyle(scope)?.fg).toBeDefined()
+        expect(syntaxStyle.getStyle(scope)?.bg).toBeUndefined()
+      }
+    }
+  })
+
+  it("styles Markdown headings and emphasis with supported attributes", () => {
+    const syntaxStyle = syntaxStyleFor(DARK_PALETTE)
+
+    expect(syntaxStyle.getStyle("markup.heading.1")?.bold).toBe(true)
+    expect(syntaxStyle.getStyle("markup.strong")?.bold).toBe(true)
+    expect(syntaxStyle.getStyle("markup.italic")?.italic).toBe(true)
+  })
+
+  it("styles Markdown links and dims strikethrough without a strike attribute", () => {
+    const syntaxStyle = syntaxStyleFor(DARK_PALETTE)
+    const linkUrl = syntaxStyle.getStyle("markup.link.url")
+    const strikethrough = syntaxStyle.getStyle("markup.strikethrough")
+
+    expect(linkUrl?.fg).toBeDefined()
+    expect(strikethrough?.fg).toBeDefined()
+    expect(strikethrough?.dim).toBe(true)
+    expect(strikethrough).not.toHaveProperty("strikethrough")
+  })
+
+  it("uses theme-aware Markdown heading foregrounds", () => {
+    const darkHeading = syntaxStyleFor(DARK_PALETTE).getStyle("markup.heading.1")?.fg?.toString()
+    const lightHeading = syntaxStyleFor(LIGHT_PALETTE).getStyle("markup.heading.1")?.fg?.toString()
+
+    expect(darkHeading).toBeDefined()
+    expect(lightHeading).toBeDefined()
+    expect(darkHeading).not.toBe(lightHeading)
+  })
+
+  it("does not invent unsupported Markdown heading levels", () => {
+    expect(syntaxStyleFor(DARK_PALETTE).getStyle("markup.heading.7")).toBeUndefined()
+  })
 })
 
 describe("usePalette", () => {
+  it("shares one renderer theme listener across palette consumers", async () => {
+    const store = createAppStore({ preferences: { theme: "auto" } })
+    const controller = createFakeController({ store })
+    const { renderer, waitForFrame } = await testRender(
+      <CockpitProvider controller={controller}>
+        <PaletteFanoutProbe />
+      </CockpitProvider>,
+      { width: 160, height: 24 },
+    )
+
+    expect(await waitForFrame((f) => f.includes("id=dark"))).toContain(DARK_PALETTE.accent)
+    expect(renderer.listenerCount("theme_mode")).toBe(1)
+
+    await actAsync(() => {
+      renderer.emit("theme_mode", "light")
+    })
+
+    expect(await waitForFrame((f) => f.includes("id=light"))).toContain(LIGHT_PALETTE.accent)
+    expect(renderer.listenerCount("theme_mode")).toBe(1)
+
+    await destroyMounted(renderer)
+  })
+
   it("repaints when the store preference changes from auto to Catppuccin Mocha", async () => {
     const store = createAppStore()
     const controller = createFakeController({ store })

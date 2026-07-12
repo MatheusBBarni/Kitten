@@ -55,6 +55,22 @@ To check your setup without opening the cockpit:
 bun run selfcheck
 ```
 
+This process-free smoke test checks the compiled UI/native runtime without launching
+adapters or using your agent authentication.
+
+To verify the live-resume contract manually or in a nightly job:
+
+```bash
+bun run selfcheck:reload
+```
+
+For every configured session this starts an adapter, creates and seeds a short probe
+session, then starts a fresh adapter and reloads that session ID. It prints the
+advertised `loadSession` capability and a `[PASS] reload confirmed` or `[FAIL]
+capability absent` / `reload failed` line for each session, and exits non-zero unless
+every reload re-streamed history. It uses your existing agent authentication and
+creates one short agent turn per session.
+
 ## Configuration
 
 A config file is optional. With no file, Kitten uses working defaults for both agents, each pinned to a known-good adapter version so an adapter release can't quietly change the handshake underneath you.

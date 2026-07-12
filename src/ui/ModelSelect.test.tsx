@@ -412,6 +412,8 @@ const APP_CONFIG: AppConfig = {
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   },
   sessions: [],
+  shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",

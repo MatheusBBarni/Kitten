@@ -1,12 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Ctrl+R session picker overlay"
 type: frontend
 complexity: high
 dependencies:
-  - task_02
-  - task_06
-  - task_07
+    - task_02
+    - task_06
+    - task_07
 ---
 
 # Task 09: Ctrl+R session picker overlay

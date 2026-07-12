@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Autosave writer wired at boot"
 type: backend
 complexity: medium
 dependencies:
-  - task_01
-  - task_02
+    - task_01
+    - task_02
 ---
 
 # Task 03: Autosave writer wired at boot

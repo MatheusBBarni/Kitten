@@ -4,15 +4,17 @@ import { createTestRenderer } from "@opentui/core/testing"
 
 import { createOfflineConnection, runSelfCheck } from "../src/app/selfCheck.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
-import { REPO_REQUIREMENT_MESSAGE, type FirstRunReport } from "../src/config/firstRun.ts"
+import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, type FirstRunGuidanceOptions } from "../src/config/firstRun.ts"
 import {
   exitBlocked,
   main,
   runtimeSetup,
+  wantsReloadProbe,
   wantsSelfCheck,
 } from "../src/index.ts"
 import type { AgentRuntimeState } from "../src/app/controller.ts"
 import { createFakeController } from "./fakeController.ts"
+import { actAsync, destroyMounted } from "./reactTui.ts"
 
 describe("main() repo gate", () => {
   it("refuses to boot outside a repository and never creates a renderer", async () => {
@@ -69,15 +71,24 @@ describe("main() readiness gate", () => {
     ]
     const controller = createFakeController({ runtimes: notReady })
     let reported: FirstRunReport | undefined
+    let markCalls = 0
 
-    const result = await main({
-      checkRepo: () => true,
-      createRenderer: async () => renderer,
-      createController: async () => controller,
-      reportFirstRun: (report) => {
-        reported = report
-      },
-      onBlocked: () => {},
+    let result: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      result = await main({
+        checkRepo: () => true,
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        loadConfig: async () => defaultAppConfig(),
+        readFirstRunSeen: () => false,
+        markFirstRunSeen: () => {
+          markCalls++
+        },
+        reportFirstRun: (report) => {
+          reported = report
+        },
+        onBlocked: () => {},
+      })
     })
 
     expect(result).toBeNull()
@@ -85,6 +96,77 @@ describe("main() readiness gate", () => {
     expect(controller.calls.dispose).toBe(1)
     expect(reported?.blocked).toBe(true)
     expect(reported?.gaps).toEqual(["Claude Code: command not found.", "Codex: not authenticated."])
+    expect(markCalls).toBe(0)
+  })
+})
+
+describe("main() persistence disclosure", () => {
+  it("surfaces the disclosure once on a first successful boot and does not stop startup", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const controller = createFakeController()
+    const config = defaultAppConfig()
+    config.persistenceEnabled = true
+    const guidance: string[] = []
+    let markCalls = 0
+
+    let result: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      result = await main({
+        checkRepo: () => true,
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        loadConfig: async () => config,
+        readFirstRunSeen: () => false,
+        markFirstRunSeen: () => {
+          markCalls++
+        },
+        renderBootBanner: () => () => {},
+        reportFirstRun: (report: FirstRunReport, options?: FirstRunGuidanceOptions) => {
+          guidance.push(...formatFirstRunReport(report, options))
+        },
+        wireNotifier: () => {},
+        onExit: () => {},
+      })
+    })
+
+    expect(result).not.toBeNull()
+    expect(result).not.toBeUndefined()
+    expect(guidance.filter((line) => line.includes("remembers sessions for this project"))).toHaveLength(1)
+    expect(guidance[0]).toContain("sessions")
+    expect(guidance[0]).toContain("Ctrl+D")
+    expect(markCalls).toBe(1)
+
+    await destroyMounted(renderer)
+    await result?.closed
+  })
+
+  it("does not repeat the disclosure after the first successful boot", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const controller = createFakeController()
+    const guidance: string[] = []
+
+    let result: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      result = await main({
+        checkRepo: () => true,
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        loadConfig: async () => defaultAppConfig(),
+        readFirstRunSeen: () => true,
+        renderBootBanner: () => () => {},
+        reportFirstRun: (report: FirstRunReport, options?: FirstRunGuidanceOptions) => {
+          guidance.push(...formatFirstRunReport(report, options))
+        },
+        wireNotifier: () => {},
+        onExit: () => {},
+      })
+    })
+
+    expect(result).not.toBeNull()
+    expect(guidance).toEqual([])
+
+    await destroyMounted(renderer)
+    await result?.closed
   })
 })
 
@@ -122,6 +204,11 @@ describe("wantsSelfCheck", () => {
   it("detects the --self-check flag", () => {
     expect(wantsSelfCheck(["bun", "index.ts", "--self-check"])).toBe(true)
     expect(wantsSelfCheck(["bun", "index.ts"])).toBe(false)
+  })
+
+  it("detects the opt-in real-adapter reload probe flag independently", () => {
+    expect(wantsReloadProbe(["bun", "index.ts", "--self-check", "--reload-probe"])).toBe(true)
+    expect(wantsReloadProbe(["bun", "index.ts", "--self-check"])).toBe(false)
   })
 })
 
@@ -166,7 +253,12 @@ describe("createOfflineConnection", () => {
 
 describe("runSelfCheck", () => {
   it("loads config, mounts the cockpit headlessly, and paints an agent name", async () => {
-    const { frame } = await runSelfCheck({ loadConfig: async () => defaultAppConfig() })
+    const { frame, highlights } = await runSelfCheck({
+      loadConfig: async () => defaultAppConfig(),
+      configureWorker: async () => null,
+    })
     expect(frame).toContain("Claude Code")
+    expect(highlights.markdownForeground).not.toBe(highlights.defaultForeground)
+    expect(highlights.diffForeground).not.toBe(highlights.defaultForeground)
   })
 })

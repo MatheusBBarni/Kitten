@@ -1,3 +1,8 @@
+// Suite: session controller orchestration
+// Invariant: each agent degrades independently while store binding, restore, actions, and telemetry stay ordered.
+// Boundary IN: real controller/store/actions over stub connections and in-process ACP transports.
+// Boundary OUT: rendered picker/cockpit behavior and real external agent binaries.
+
 import { describe, expect, it } from "bun:test"
 
 import { join } from "node:path"
@@ -11,9 +16,24 @@ import {
   type ReadyState,
 } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import type { AgentConfig, AppConfig, ConfigOption, DomainSessionEvent, ProviderKind, SessionId } from "../core/types.ts"
+import type {
+  AgentConfig,
+  AppConfig,
+  ConfigOption,
+  DomainSessionEvent,
+  ProviderKind,
+  SessionId,
+  ShellEvent,
+} from "../core/types.ts"
+import type { PersistedRunRecord } from "../persistence/runRecord.ts"
+import {
+  createInMemoryShellRuntimeFactory,
+  type ShellRuntime,
+  type ShellRuntimeFactory,
+} from "../shell/shellRuntime.ts"
 import { selectAgentModel } from "../store/selectors.ts"
 import { createAppStore } from "../store/appStore.ts"
+import { createTelemetryRecorder, type TelemetryRecord, type TelemetryRecorder } from "../telemetry/recorder.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
 import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
 import { createSessionController, type SessionController } from "./controller.ts"
@@ -41,6 +61,8 @@ const PROVIDERS: AppConfig["providers"] = {
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
   sessions: [],
+  shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
+  persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
@@ -79,6 +101,7 @@ interface StubConnection extends AgentConnection {
   readonly prompts: Array<{ sessionId: string; blocks: PromptBlock[] }>
   readonly cancels: string[]
   readonly newSessionCwds: string[]
+  readonly loadSessionCalls: Array<{ sessionId: string; cwd: string }>
   /** Every `setSessionConfigOption` call the controller made, in order. */
   readonly configCalls: Array<{ sessionId: string; configId: string; value: string }>
   readonly isDisposed: () => boolean
@@ -89,6 +112,9 @@ interface StubOptions {
   sessionId?: string
   connectThrows?: unknown
   newSessionThrows?: unknown
+  loadSessionThrows?: unknown
+  loadSessionEvents?: DomainSessionEvent[]
+  loadSessionWait?: Promise<void>
   promptThrows?: unknown
   cancelThrows?: unknown
   /** The full option set `setSessionConfigOption` echoes back (the confirmed state). */
@@ -99,11 +125,52 @@ interface StubOptions {
   newSessionConfig?: ConfigOption[]
 }
 
+interface StubShellRuntime extends ShellRuntime {
+  emit(event: ShellEvent): void
+  subscriberCount(): number
+  isDisposed(): boolean
+}
+
+function createStubShellRuntime(): StubShellRuntime {
+  const subscribers = new Set<(event: ShellEvent) => void>()
+  let disposed = false
+  return {
+    onEvent(cb) {
+      subscribers.add(cb)
+      return () => {
+        subscribers.delete(cb)
+      }
+    },
+    onBufferChange() {
+      return () => {}
+    },
+    bufferType: () => "normal",
+    write() {},
+    interrupt() {},
+    resize() {},
+    view: () => [],
+    snapshot: () => ({ cwd: CWD, commands: [] }),
+    async dispose() {
+      disposed = true
+    },
+    emit(event) {
+      for (const subscriber of subscribers) subscriber(event)
+    },
+    subscriberCount: () => subscribers.size,
+    isDisposed: () => disposed,
+  }
+}
+
+function createTestShellFactory(): ShellRuntimeFactory {
+  return createInMemoryShellRuntimeFactory().factory
+}
+
 function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
   const cancels: string[] = []
   const newSessionCwds: string[] = []
+  const loadSessionCalls: Array<{ sessionId: string; cwd: string }> = []
   const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   let disposed = false
@@ -117,11 +184,12 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     prompts,
     cancels,
     newSessionCwds,
+    loadSessionCalls,
     configCalls,
     isDisposed: () => disposed,
     async connect() {
       if (options.connectThrows !== undefined) throw options.connectThrows
-      return options.ready ?? { ready: true, protocolVersion: 1 }
+      return options.ready ?? { ready: true, protocolVersion: 1, canLoadSession: false }
     },
     async newSession(cwd) {
       newSessionCwds.push(cwd)
@@ -131,6 +199,12 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
       // its permanent subscription - the seed the controller must capture and replay.
       if (options.newSessionConfig !== undefined) emit({ kind: "config_options", options: options.newSessionConfig })
       return options.sessionId ?? `${id}-session`
+    },
+    async loadSession(sessionId, cwd) {
+      loadSessionCalls.push({ sessionId, cwd })
+      for (const event of options.loadSessionEvents ?? []) emit(event)
+      await options.loadSessionWait
+      if (options.loadSessionThrows !== undefined) throw options.loadSessionThrows
     },
     async prompt(sessionId, blocks) {
       prompts.push({ sessionId, blocks })
@@ -169,7 +243,12 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
 /** Build a controller over one stub connection per configured agent. */
 async function controllerWithStubs(
   stubs: Partial<Record<ProviderKind, StubOptions>> = {},
-  overrides: { onError?: (sessionId: SessionId, error: unknown) => void; recorder?: ActionTelemetry } = {},
+  overrides: {
+    onError?: (sessionId: SessionId, error: unknown) => void
+    recorder?: ActionTelemetry
+    readBranch?: (cwd: string) => Promise<string | null>
+    createShellRuntime?: ShellRuntimeFactory
+  } = {},
 ): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection> }> {
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
@@ -183,6 +262,8 @@ async function controllerWithStubs(
     newMessageId: () => "msg-1",
     onError: overrides.onError,
     recorder: overrides.recorder,
+    readBranch: overrides.readBranch ?? (async () => null),
+    createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
   })
   return { controller, connections }
 }
@@ -205,6 +286,8 @@ const THREE_SESSION_CONFIG: AppConfig = {
     { provider: "claude-code", cwd: FLEET_DIRS.beta, title: "Beta" },
     { provider: "codex", cwd: FLEET_DIRS.gamma, title: "Gamma" },
   ],
+  shell: APP_CONFIG.shell,
+  persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
@@ -218,6 +301,10 @@ const THREE_SESSION_CONFIG: AppConfig = {
 async function controllerOverFleet(
   config: AppConfig,
   optionsFor: (index: number) => StubOptions = () => ({}),
+  overrides: {
+    readBranch?: (cwd: string) => Promise<string | null>
+    createShellRuntime?: ShellRuntimeFactory
+  } = {},
 ): Promise<{ controller: SessionController; created: StubConnection[] }> {
   const created: StubConnection[] = []
   const controller = await createSessionController({
@@ -229,8 +316,67 @@ async function controllerOverFleet(
       return stub
     },
     newMessageId: () => "msg-1",
+    readBranch: overrides.readBranch ?? (async () => null),
+    createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
   })
   return { controller, created }
+}
+
+function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecord {
+  return {
+    version: 1,
+    runId: "run-07",
+    cwd: CWD,
+    gitBranch: "feat/session-resume",
+    focusedAgentId,
+    createdAt: 1_000,
+    updatedAt: 2_000,
+    agents: {
+      "claude-code": {
+        sessionId: "claude-stored",
+        lastPrompt: "continue claude",
+        messageCount: 1,
+        status: "finished",
+      },
+      codex: {
+        sessionId: "codex-stored",
+        lastPrompt: "continue codex",
+        messageCount: 1,
+        status: "idle",
+      },
+    },
+    handoffBundle: null,
+  }
+}
+
+async function controllerForRestore(
+  restoreOptions: Partial<Record<ProviderKind, StubOptions>> = {},
+  onError?: (sessionId: SessionId, error: unknown) => void,
+  recorder?: TelemetryRecorder,
+): Promise<{ controller: SessionController; restored: Record<ProviderKind, StubConnection> }> {
+  const startup = {
+    "claude-code": createStubConnection("claude-code"),
+    codex: createStubConnection("codex"),
+  } satisfies Record<ProviderKind, StubConnection>
+  const restored = {
+    "claude-code": createStubConnection("claude-code", restoreOptions["claude-code"]),
+    codex: createStubConnection("codex", restoreOptions.codex),
+  } satisfies Record<ProviderKind, StubConnection>
+  const queues = {
+    "claude-code": [startup["claude-code"], restored["claude-code"]],
+    codex: [startup.codex, restored.codex],
+  }
+
+  const controller = await createSessionController({
+    config: APP_CONFIG,
+    cwd: CWD,
+    createConnection: (config) => queues[config.id].shift()!,
+    onError,
+    recorder,
+    readBranch: async () => null,
+    createShellRuntime: createTestShellFactory(),
+  })
+  return { controller, restored }
 }
 
 /** Poll until `predicate` holds, so a test can await an async round-trip. */
@@ -264,6 +410,23 @@ describe("nextSessionId", () => {
 })
 
 describe("createSessionController - startup", () => {
+  it("Should pass resolved command and scrollback config to the shell runtime factory", async () => {
+    let received: Parameters<ShellRuntimeFactory>[0] | undefined
+    const shell = createStubShellRuntime()
+    const { controller } = await controllerWithStubs(
+      {},
+      {
+        createShellRuntime: (options) => {
+          received = options
+          return shell
+        },
+      },
+    )
+
+    expect(received).toEqual({ cwd: CWD, command: "/bin/sh", scrollback: 2_500 })
+    await controller.dispose()
+  })
+
   it("Should connect every agent and open one session against the cwd", async () => {
     const { controller, connections } = await controllerWithStubs()
 
@@ -327,9 +490,318 @@ describe("createSessionController - startup", () => {
 
     await controller.dispose()
   })
+
+  it("Should route scripted shell events into the store shell slice", async () => {
+    const shell = createStubShellRuntime()
+    const { controller } = await controllerWithStubs({}, { createShellRuntime: () => shell })
+
+    shell.emit({ kind: "cwd_changed", cwd: "/workspace/kitten/packages/app" })
+
+    expect(controller.shell).toEqual({ ready: true, runtime: shell })
+    expect(controller.store.getState().shell.cwd).toBe("/workspace/kitten/packages/app")
+
+    await controller.dispose()
+  })
+
+  it("Should read and store the branch for every session cwd at boot", async () => {
+    const calls: string[] = []
+    const branches = new Map([
+      [FLEET_DIRS.alpha, "branch-alpha"],
+      [FLEET_DIRS.beta, "branch-beta"],
+      [FLEET_DIRS.gamma, "branch-gamma"],
+    ])
+    const { controller } = await controllerOverFleet(THREE_SESSION_CONFIG, undefined, {
+      readBranch: async (cwd) => {
+        calls.push(cwd)
+        return branches.get(cwd) ?? null
+      },
+    })
+
+    await waitFor(() => controller.store.getState().sessions.codex?.branch === "branch-gamma", "boot branch reads")
+
+    expect(calls).toEqual([FLEET_DIRS.alpha, FLEET_DIRS.beta, FLEET_DIRS.gamma])
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBe("branch-alpha")
+    expect(controller.store.getState().sessions["claude-code-2"]!.branch).toBe("branch-beta")
+    expect(controller.store.getState().sessions.codex!.branch).toBe("branch-gamma")
+
+    await controller.dispose()
+  })
+
+  it("Should keep branch slots hidden when the reader returns null", async () => {
+    const { controller } = await controllerWithStubs({}, { readBranch: async () => null })
+
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBeUndefined()
+    expect(controller.store.getState().sessions.codex!.branch).toBeUndefined()
+
+    await controller.dispose()
+  })
+})
+
+describe("createSessionController - persisted restore", () => {
+  it("Should record a picker resume with both panes live", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 1000,
+      sessionRef: "resume-run",
+    })
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      },
+      undefined,
+      recorder,
+    )
+
+    await controller.restore(persistedRun(), "picker")
+
+    expect(records.find((record) => record.type === "session_resumed")).toMatchObject({
+      mode: "picker",
+      liveCount: 2,
+    })
+    expect(records.filter((record) => record.type === "resume_pane_unavailable")).toHaveLength(0)
+    await controller.dispose()
+  })
+
+  it("Should record the unavailable Codex pane without including persisted prompt text", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+    })
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionThrows: new Error("gone"),
+        },
+      },
+      undefined,
+      recorder,
+    )
+
+    await controller.restore(persistedRun(), "last-run")
+
+    expect(records.find((record) => record.type === "resume_pane_unavailable")).toMatchObject({ agent: "codex" })
+    expect(records.find((record) => record.type === "session_resumed")).toMatchObject({
+      mode: "last-run",
+      liveCount: 1,
+    })
+    expect(JSON.stringify(records)).not.toContain("continue codex")
+    await controller.dispose()
+  })
+
+  it("Should emit nothing across a full restore when telemetry is disabled", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      sink: { write: (record) => records.push(record) },
+    })
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionThrows: new Error("gone"),
+        },
+      },
+      undefined,
+      recorder,
+    )
+
+    await controller.restore(persistedRun(), "picker")
+
+    expect(records).toHaveLength(0)
+    await controller.dispose()
+  })
+
+  it("Should load stored sessions and replay their streamed history into both panes", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "user_message", messageId: "claude-replay", text: "restored claude" }],
+      },
+      codex: {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "agent_message", messageId: "codex-replay", textDelta: "restored codex" }],
+      },
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(restored["claude-code"].loadSessionCalls).toEqual([{ sessionId: "claude-stored", cwd: CWD }])
+    expect(restored.codex.loadSessionCalls).toEqual([{ sessionId: "codex-stored", cwd: CWD }])
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
+      { kind: "user", messageId: "claude-replay", text: "restored claude" },
+    ])
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([
+      { kind: "agent", messageId: "codex-replay", text: "restored codex" },
+    ])
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": "live", codex: "live" })
+    await controller.dispose()
+  })
+
+  it("Should bind and subscribe before loadSession emits its first replay update", async () => {
+    const { controller } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionEvents: [{ kind: "agent_message", messageId: "immediate", textDelta: "not dropped" }],
+      },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+    controller.store.applyEvent("claude-code", { kind: "agent_message", messageId: "stale", textDelta: "old" })
+
+    await controller.restore(persistedRun())
+
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
+      { kind: "agent", messageId: "immediate", text: "not dropped" },
+    ])
+    await controller.dispose()
+  })
+
+  it("Should isolate a rejected load while the other session restores live", async () => {
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const { controller } = await controllerForRestore(
+      {
+        "claude-code": {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionThrows: new Error("stored transcript is gone"),
+        },
+        codex: {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          loadSessionEvents: [{ kind: "agent_message", messageId: "codex-live", textDelta: "still restored" }],
+        },
+      },
+      (sessionId, error) => errors.push({ sessionId, error }),
+    )
+
+    await expect(controller.restore(persistedRun())).resolves.toBeUndefined()
+
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": "unavailable", codex: "live" })
+    expect(controller.isReady("claude-code")).toBe(false)
+    expect(controller.isReady("codex")).toBe(true)
+    expect(controller.store.getState().sessions.codex!.turns.at(-1)).toMatchObject({ text: "still restored" })
+    expect(errors).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it("Should start fresh and mark unavailable when loadSession is not advertised", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: false },
+        sessionId: "claude-fresh",
+      },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(restored["claude-code"].loadSessionCalls).toEqual([])
+    expect(restored["claude-code"].newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-fresh")
+    expect(controller.store.getState().restoration["claude-code"]).toBe("unavailable")
+    expect(controller.isReady("claude-code")).toBe(true)
+    await controller.dispose()
+  })
+
+  it("Should apply persisted focus only after both restore attempts settle", async () => {
+    let releaseClaude!: () => void
+    const claudeLoad = new Promise<void>((resolve) => {
+      releaseClaude = resolve
+    })
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+        loadSessionWait: claudeLoad,
+      },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+
+    const restoring = controller.restore(persistedRun("codex"))
+    await waitFor(() => restored["claude-code"].loadSessionCalls.length === 1, "claude restore to begin")
+    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+
+    releaseClaude()
+    await restoring
+
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    await controller.dispose()
+  })
+
+  it("Should replace a restored run with fresh sessions and clear the resumed indicator", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const phase = Math.floor(created.length / 2)
+        const connection = createStubConnection(config.id, {
+          ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+          sessionId: `${config.id}-fresh-${phase}`,
+        })
+        created.push(connection)
+        return connection
+      },
+      readBranch: async () => null,
+      createShellRuntime: createTestShellFactory(),
+    })
+
+    await controller.restore(persistedRun())
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": "live", codex: "live" })
+
+    await controller.actions.startNewRun()
+
+    expect(created.slice(4).map((connection) => connection.newSessionCwds)).toEqual([[CWD], [CWD]])
+    expect(controller.store.getState().restoration).toMatchObject({ "claude-code": null, codex: null })
+    expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-code-fresh-2")
+    expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh-2")
+    await controller.dispose()
+  })
 })
 
 describe("createSessionController - degraded startup", () => {
+  it("Should not create a runtime when the shell is disabled in config", async () => {
+    let factoryCalls = 0
+    const { controller } = await controllerOverFleet(
+      { ...APP_CONFIG, shell: { ...APP_CONFIG.shell, enabled: false } },
+      undefined,
+      {
+        createShellRuntime: () => {
+          factoryCalls += 1
+          return createStubShellRuntime()
+        },
+      },
+    )
+
+    expect(factoryCalls).toBe(0)
+    expect(controller.shell).toEqual({ ready: false, error: "The integrated shell is disabled in config" })
+    expect(controller.isReady("claude-code")).toBe(true)
+
+    await controller.dispose()
+  })
+
+  it("Should keep agents usable and expose shell unavailability when shell creation fails", async () => {
+    const { controller, connections } = await controllerWithStubs(
+      {},
+      {
+        createShellRuntime: () => {
+          throw new Error("PTY unavailable")
+        },
+      },
+    )
+
+    expect(controller.shell).toEqual({ ready: false, error: "PTY unavailable" })
+    expect(controller.isReady("claude-code")).toBe(true)
+    expect(controller.isReady("codex")).toBe(true)
+    expect(await controller.actions.sendPrompt("agents remain usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.codex.prompts).toHaveLength(1)
+
+    await controller.dispose()
+  })
+
   it("Should report a rejected handshake as not-ready and keep the other agent usable", async () => {
     const { controller, connections } = await controllerWithStubs({
       "claude-code": { ready: { ready: false, error: "not logged in" } },
@@ -467,6 +939,8 @@ describe("createSessionController - multi-session fleet", () => {
     const config: AppConfig = {
       providers: PROVIDERS,
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      shell: APP_CONFIG.shell,
+      persistenceEnabled: true,
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
@@ -546,15 +1020,47 @@ describe("actions - sendPrompt", () => {
       config: {
         providers: PROVIDERS,
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        shell: APP_CONFIG.shell,
+        persistenceEnabled: true,
         telemetryEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
       },
       cwd: CWD,
       createConnection: () => connection,
+      createShellRuntime: createTestShellFactory(),
     })
 
     expect(await controller.actions.sendPrompt("hi")).toBeNull()
+    await controller.dispose()
+  })
+
+  it("Should refresh the addressed session branch after a turn completes without waiting for git", async () => {
+    let readCount = 0
+    let resolveTurnRead!: (branch: string | null) => void
+    const turnRead = new Promise<string | null>((resolve) => {
+      resolveTurnRead = resolve
+    })
+    const { controller } = await controllerWithStubs({}, {
+      readBranch: async () => {
+        readCount += 1
+        return readCount <= 2 ? "main" : turnRead
+      },
+    })
+    await waitFor(() => controller.store.getState().sessions["claude-code"]?.branch === "main", "boot branch read")
+
+    const result = await controller.actions.sendPrompt("finish this turn")
+
+    expect(result).toEqual({ stopReason: "end_turn" })
+    await waitFor(() => readCount === 3, "turn-completion branch refresh to start")
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBe("main")
+
+    resolveTurnRead("feature/after-turn")
+    await waitFor(
+      () => controller.store.getState().sessions["claude-code"]?.branch === "feature/after-turn",
+      "turn-completion branch refresh to finish",
+    )
+
     await controller.dispose()
   })
 })
@@ -733,6 +1239,57 @@ describe("actions - switchFocus", () => {
 
     await controller.dispose()
   })
+
+  it("Should re-read the focused session branch and store the changed value", async () => {
+    let branch = "main"
+    let readCount = 0
+    const { controller } = await controllerWithStubs({}, {
+      readBranch: async () => {
+        readCount += 1
+        return branch
+      },
+    })
+    await waitFor(
+      () => controller.store.getState().sessions.codex?.branch === "main" && readCount === 2,
+      "both boot branch reads",
+    )
+
+    branch = "feature/focus-refresh"
+    controller.actions.switchFocus("codex")
+
+    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    await waitFor(
+      () => controller.store.getState().sessions.codex?.branch === "feature/focus-refresh",
+      "focus-switch branch refresh",
+    )
+    expect(readCount).toBe(3)
+    expect(controller.store.getState().sessions["claude-code"]!.branch).toBe("main")
+
+    await controller.dispose()
+  })
+
+  it("Should hide a previously stored branch when a focus refresh returns null", async () => {
+    let readCount = 0
+    const { controller } = await controllerWithStubs({}, {
+      readBranch: async () => {
+        readCount += 1
+        return readCount <= 2 ? "main" : null
+      },
+    })
+    await waitFor(
+      () => controller.store.getState().sessions.codex?.branch === "main" && readCount === 2,
+      "both boot branch reads",
+    )
+
+    controller.actions.switchFocus("codex")
+
+    await waitFor(
+      () => readCount === 3 && controller.store.getState().sessions.codex?.branch === undefined,
+      "null focus refresh to hide the branch",
+    )
+
+    await controller.dispose()
+  })
 })
 
 describe("actions - respondPermission", () => {
@@ -833,6 +1390,20 @@ describe("actions - respondPermission", () => {
 })
 
 describe("createSessionController - dispose", () => {
+  it("Should unsubscribe and dispose the owned shell before late events can reach the store", async () => {
+    const shell = createStubShellRuntime()
+    const { controller } = await controllerWithStubs({}, { createShellRuntime: () => shell })
+    shell.emit({ kind: "cwd_changed", cwd: "/before-dispose" })
+
+    expect(shell.subscriberCount()).toBe(1)
+    await controller.dispose()
+
+    expect(shell.subscriberCount()).toBe(0)
+    expect(shell.isDisposed()).toBe(true)
+    shell.emit({ kind: "cwd_changed", cwd: "/after-dispose" })
+    expect(controller.store.getState().shell.cwd).toBe("/before-dispose")
+  })
+
   it("Should cancel pending approvals, unsubscribe streams, and dispose connections", async () => {
     const { controller, connections } = await controllerWithStubs()
     const pending = connections["claude-code"].ask(PERMISSION_REQUEST)
@@ -866,12 +1437,15 @@ describe("createSessionController - dispose", () => {
       config: {
         providers: PROVIDERS,
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        shell: APP_CONFIG.shell,
+        persistenceEnabled: true,
         telemetryEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
       },
       cwd: CWD,
       createConnection: () => connection,
+      createShellRuntime: createTestShellFactory(),
     })
 
     await controller.dispose()
@@ -880,6 +1454,41 @@ describe("createSessionController - dispose", () => {
 })
 
 describe("createControllerActions", () => {
+  it("Should start a fresh session before sending persisted context to that session", async () => {
+    const store = createAppStore()
+    const connection = createStubConnection("codex")
+    const starts: string[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "codex", acpSessionId: "fresh-codex", connection }),
+      resolvePermission: () => {},
+      startFreshSession: async (sessionId) => {
+        starts.push(sessionId)
+        return true
+      },
+    })
+    const blocks: PromptBlock[] = [{ type: "text", text: "saved context" }]
+
+    await actions.startFreshFromContext(blocks, "codex")
+
+    expect(starts).toEqual(["codex"])
+    expect(connection.prompts).toEqual([{ sessionId: "fresh-codex", blocks }])
+  })
+
+  it("Should not send persisted context when a fresh session cannot start", async () => {
+    const store = createAppStore()
+    const connection = createStubConnection("codex")
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "codex", acpSessionId: "stale-codex", connection }),
+      resolvePermission: () => {},
+      startFreshSession: async () => false,
+    })
+
+    expect(await actions.startFreshFromContext("saved context", "codex")).toBeNull()
+    expect(connection.prompts).toHaveLength(0)
+  })
+
   it("Should default the message id to a fresh uuid per user turn", async () => {
     const store = createAppStore()
     const connection = createStubConnection("claude-code")
@@ -1038,6 +1647,7 @@ describe("integration - two mock ACP agents", () => {
       config: APP_CONFIG,
       cwd: CWD,
       createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
     })
 
     const result = await controller.actions.sendPrompt("do the thing")
@@ -1082,6 +1692,7 @@ describe("integration - two mock ACP agents", () => {
       config: APP_CONFIG,
       cwd: CWD,
       createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
     })
 
     const prompt = controller.actions.sendPrompt("edit the readme")
@@ -1114,6 +1725,7 @@ describe("integration - two mock ACP agents", () => {
         agents.push(agent)
         return connection
       },
+      createShellRuntime: createTestShellFactory(),
     })
 
     // Three live runtimes, two sharing a provider, each with a distinct SessionId.
@@ -1143,6 +1755,7 @@ describe("integration - two mock ACP agents", () => {
       config: APP_CONFIG,
       cwd: CWD,
       createConnection: (config) => connections[config.id],
+      createShellRuntime: createTestShellFactory(),
     })
 
     const claudeRuntime = controller.runtime("claude-code")!

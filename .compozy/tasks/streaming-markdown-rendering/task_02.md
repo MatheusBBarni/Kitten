@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Shared Markdown renderer leaf and MessageView migration"
 type: frontend
 complexity: medium
 dependencies:
-  - task_01
+    - task_01
 ---
 
 # Task 02: Shared Markdown renderer leaf and MessageView migration

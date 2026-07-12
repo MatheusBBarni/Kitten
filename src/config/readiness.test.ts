@@ -38,6 +38,8 @@ const APP_CONFIG: AppConfig = {
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   },
   sessions: [],
+  shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
@@ -136,7 +138,11 @@ describe("checkAgentReadiness - failure taxonomy", () => {
   })
 
   it("Should dispose the probe connection on the ready path too", async () => {
-    const stub = stubConnection(async () => ({ ready: true, protocolVersion: SUPPORTED_PROTOCOL_VERSION }))
+    const stub = stubConnection(async () => ({
+      ready: true,
+      protocolVersion: SUPPORTED_PROTOCOL_VERSION,
+      canLoadSession: false,
+    }))
 
     const result = await checkAgentReadiness(CODEX, {
       binaryExists: alwaysInstalled,
@@ -149,7 +155,11 @@ describe("checkAgentReadiness - failure taxonomy", () => {
 
   it("Should keep the verdict when teardown of the probe connection fails", async () => {
     const connection = {
-      connect: async () => ({ ready: true, protocolVersion: SUPPORTED_PROTOCOL_VERSION }),
+      connect: async () => ({
+        ready: true,
+        protocolVersion: SUPPORTED_PROTOCOL_VERSION,
+        canLoadSession: false,
+      }),
       dispose: async () => {
         throw new Error("kill failed")
       },

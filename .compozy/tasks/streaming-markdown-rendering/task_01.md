@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Register Markdown markup theme scopes"
 type: frontend
 complexity: low

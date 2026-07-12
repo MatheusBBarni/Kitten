@@ -1,12 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Hand-off shell snapshot assembly"
 type: backend
 complexity: medium
 dependencies:
-  - task_01
-  - task_04
-  - task_05
+    - task_01
+    - task_04
+    - task_05
 ---
 
 # Task 12: Hand-off shell snapshot assembly

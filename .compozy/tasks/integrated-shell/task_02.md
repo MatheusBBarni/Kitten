@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Shell store slice, pane focus, and selectors"
 type: backend
 complexity: medium
@@ -31,11 +31,11 @@ Replace the agent-only `focusedAgentId` mental model with a `focusedPane` union 
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add `shell` and `focusedPane` to `AppState` and the store constructor
-- [ ] 2.2 Implement `applyShellEvent` routing through `shellReducer`
-- [ ] 2.3 Implement `setFocusedPane` with the unchanged-is-no-op guard
-- [ ] 2.4 Add the shell and focused-pane selectors
-- [ ] 2.5 Confirm structural sharing keeps unrelated subscribers silent
+- [x] 2.1 Add `shell` and `focusedPane` to `AppState` and the store constructor
+- [x] 2.2 Implement `applyShellEvent` routing through `shellReducer`
+- [x] 2.3 Implement `setFocusedPane` with the unchanged-is-no-op guard
+- [x] 2.4 Add the shell and focused-pane selectors
+- [x] 2.5 Confirm structural sharing keeps unrelated subscribers silent
 
 ## Implementation Details
 Modify `src/store/appStore.ts` and `src/store/selectors.ts`. Follow the store's existing conventions: immutable `commit`, `subscribeSelector` narrowing, and no-op guards on setters. See TechSpec "Data Models" for the store additions and `AppState` shape.
@@ -62,13 +62,13 @@ Modify `src/store/appStore.ts` and `src/store/selectors.ts`. Follow the store's 
 
 ## Tests
 - Unit tests:
-  - [ ] `applyShellEvent` with a `cwd_changed` updates only the shell slice; the sessions slice keeps identity
-  - [ ] `setFocusedPane` to the current pane does not notify subscribers
-  - [ ] `setFocusedPane` from agent to shell notifies a `selectFocusedPane` subscriber exactly once
-  - [ ] `selectIsShellFocused` returns true only when `focusedPane.kind === "shell"`
-  - [ ] applying an agent event leaves `selectShell` reference-equal (no shell-subscriber notification)
+  - [x] `applyShellEvent` with a `cwd_changed` updates only the shell slice; the sessions slice keeps identity
+  - [x] `setFocusedPane` to the current pane does not notify subscribers
+  - [x] `setFocusedPane` from agent to shell notifies a `selectFocusedPane` subscriber exactly once
+  - [x] `selectIsShellFocused` returns true only when `focusedPane.kind === "shell"`
+  - [x] applying an agent event leaves `selectShell` reference-equal (no shell-subscriber notification)
 - Integration tests:
-  - [ ] a sequence of shell and agent events notifies only the matching selector subscribers
+  - [x] a sequence of shell and agent events notifies only the matching selector subscribers
 - Test coverage target: >=80%
 - All tests must pass
 

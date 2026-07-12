@@ -14,7 +14,8 @@
 
 import { createContext, useCallback, useContext, useSyncExternalStore, type ReactNode } from "react"
 
-import type { SessionController } from "../app/controller.ts"
+import type { SessionController, ShellRuntimeState } from "../app/controller.ts"
+import type { ShellBufferType } from "../shell/shellRuntime.ts"
 import type { Selector } from "../store/appStore.ts"
 
 const ControllerContext = createContext<SessionController | null>(null)
@@ -35,6 +36,27 @@ export function useController(): SessionController {
   const controller = useContext(ControllerContext)
   if (!controller) throw new Error("useController must be used inside a <CockpitProvider>")
   return controller
+}
+
+/** The controller-owned shell runtime, including its fail-soft unavailable state. */
+export function useShellRuntime(): ShellRuntimeState {
+  return useController().shell
+}
+
+/** Subscribe narrowly to primary/alternate buffer activation in the imperative runtime. */
+export function useShellBufferType(): ShellBufferType {
+  const shell = useShellRuntime()
+  const subscribe = useCallback(
+    (onStoreChange: () => void) =>
+      shell.ready ? shell.runtime.onBufferChange(() => onStoreChange()) : () => {},
+    [shell],
+  )
+  const getSnapshot = useCallback(
+    (): ShellBufferType => (shell.ready ? shell.runtime.bufferType() : "normal"),
+    [shell],
+  )
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
 /**

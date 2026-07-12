@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "ModelSelect overlay, keymap, and mid-switch warning"
 type: frontend
 complexity: high
@@ -32,12 +32,12 @@ Applying a change inside an established conversation swaps the overlay into an i
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Build the `ModelSelect` overlay reading the open slot and `selectAgentConfigOptions`
-- [ ] 6.2 Render model and effort sections with confirmed values; hide effort when unsupported
-- [ ] 6.3 Add the inline confirm step gated on an established conversation
-- [ ] 6.4 Apply changes via `actions.setSessionConfigOption` and reflect confirmed/unverified state
-- [ ] 6.5 Add the `model-select` keymap command, binding, and overlay keymap; choose a safe chord
-- [ ] 6.6 Dispatch and mount the overlay in `CockpitApp`
+- [x] 6.1 Build the `ModelSelect` overlay reading the open slot and `selectAgentConfigOptions`
+- [x] 6.2 Render model and effort sections with confirmed values; hide effort when unsupported
+- [x] 6.3 Add the inline confirm step gated on an established conversation
+- [x] 6.4 Apply changes via `actions.setSessionConfigOption` and reflect confirmed/unverified state
+- [x] 6.5 Add the `model-select` keymap command, binding, and overlay keymap; choose a safe chord
+- [x] 6.6 Dispatch and mount the overlay in `CockpitApp`
 
 ## Implementation Details
 Create the overlay and wire the keymap. See TechSpec "System Architecture" (UI Shell), "Technical Considerations", ADR-004. Mirror `HandoffPreview.tsx` (multi-section overlay, two-mode key handling) and the keymap additions in `keymap.ts` (`COCKPIT_KEYMAP` 79-107, matchers 263-276); dispatch in `CockpitApp.tsx` (77-110) and mount at 153-158.
@@ -64,17 +64,17 @@ Create the overlay and wire the keymap. See TechSpec "System Architecture" (UI S
 
 ## Tests
 - Unit tests:
-  - [ ] `matchCommand` maps the chosen chord to `model-select`; `Ctrl+M` is not the binding
-  - [ ] The overlay hides the effort section when the current model exposes no effort options
-  - [ ] After a model change, the effort section renders from the refreshed option set
-  - [ ] The overlay shows `unverified` when the applied value is not confirmed and never shows a requested-but-unconfirmed value
+  - [x] `matchCommand` maps the chosen chord to `model-select`; `Ctrl+M` is not the binding
+  - [x] The overlay hides the effort section when the current model exposes no effort options
+  - [x] After a model change, the effort section renders from the refreshed option set
+  - [x] The overlay shows `unverified` when the applied value is not confirmed and never shows a requested-but-unconfirmed value
 - Integration tests:
-  - [ ] Pressing the chord opens the overlay for the focused pane; the current model/effort are marked
-  - [ ] Applying a change on a session with prior turns shows the confirm step; Enter proceeds and calls `setSessionConfigOption`, Esc returns without applying
-  - [ ] Applying a change on a fresh session (no turns) applies without a confirm step
-  - [ ] Esc from the selector closes it and changes nothing
-- Test coverage target: >=80%
-- All tests must pass
+  - [x] Pressing the chord opens the overlay for the focused pane; the current model/effort are marked
+  - [x] Applying a change on a session with prior turns shows the confirm step; Enter proceeds and calls `setSessionConfigOption`, Esc returns without applying
+  - [x] Applying a change on a fresh session (no turns) applies without a confirm step
+  - [x] Esc from the selector closes it and changes nothing
+- Test coverage target: >=80% (achieved: `ModelSelect.tsx` 95% funcs / 98% lines, `keymap.ts` 100%)
+- All tests must pass (652 pass / 0 fail)
 
 ## Success Criteria
 - All tests passing

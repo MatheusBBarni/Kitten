@@ -13,12 +13,11 @@
  * reaches this textarea: printable characters, Enter and Shift+Enter (rebound in
  * `PROMPT_KEY_BINDINGS`), and Escape.
  *
- * The editor gives up the terminal's focus while a modal overlay is open, and takes it
- * back when the overlay closes. That is not merely cosmetic: the hand-off preview owns
- * a textarea of its own, and OpenTUI tracks exactly one focused renderable - so without
- * this the composer would keep the cursor while the preview's summary editor typed, and
- * would be left blurred once the preview unmounted. The draft survives, because the
- * draft is the textarea's buffer and blurring does not clear it.
+ * The editor gives up terminal focus while the shell or a modal overlay owns the
+ * keyboard, and takes it back when the agent pane returns. That is not cosmetic:
+ * OpenTUI tracks exactly one focused renderable, so the composer must not keep a cursor
+ * while shell bytes or preview edits are routed elsewhere. Its draft survives because
+ * blurring the textarea does not clear its edit buffer.
  *
  * Bracketed paste never travels the keypress path at all. OpenTUI's stdin parser
  * accumulates everything between the paste markers - across as many stdin chunks as
@@ -29,7 +28,12 @@
 import type { KeyEvent, TextareaRenderable } from "@opentui/core"
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
-import { selectFocusedSessionId, selectHasOpenOverlay, selectSessionStatus } from "../store/selectors.ts"
+import {
+  selectFocusedSessionId,
+  selectHasOpenOverlay,
+  selectIsShellFocused,
+  selectSessionStatus,
+} from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { PROMPT_KEY_BINDINGS } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -45,6 +49,9 @@ export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc int
 
 /** The empty-editor hint while the focused agent is not ready. */
 export const PROMPT_DISABLED_PLACEHOLDER = "Switch to a ready agent to send a prompt"
+
+/** The composer's visual prompt marker. */
+export const PROMPT_CHEVRON = "❯"
 
 /**
  * How tall the editor is when empty.
@@ -80,6 +87,7 @@ export function PromptEditor(): ReactNode {
   // whose handshake failed has no ACP session, so nothing may be sent to it.
   const ready = controller.isReady(focusedSessionId)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
+  const isShellFocused = useAppSelector(selectIsShellFocused)
 
   const textarea = useRef<TextareaRenderable | null>(null)
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
@@ -119,23 +127,29 @@ export function PromptEditor(): ReactNode {
 
   return (
     <box
+      borderStyle="rounded"
       style={{
         flexShrink: 0,
-        flexDirection: "column",
+        flexDirection: "row",
+        gap: 1,
         border: true,
         borderColor: ready ? palette.border : palette.status.not_ready,
         backgroundColor: palette.surface,
-        paddingLeft: 1,
-        paddingRight: 1,
+        paddingLeft: 2,
+        paddingRight: 2,
+        paddingTop: 1,
+        paddingBottom: 1,
         overflow: "hidden",
       }}
       title={ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE}
       titleColor={ready ? palette.accent : palette.status.not_ready}
     >
+      <text fg={ready ? palette.accent : palette.status.not_ready}>{PROMPT_CHEVRON}</text>
       <textarea
         ref={textarea}
-        focused={!overlayOpen}
+        focused={!overlayOpen && !isShellFocused}
         style={{
+          flexGrow: 1,
           height: rows,
           wrapMode: "word",
           textColor: palette.text,

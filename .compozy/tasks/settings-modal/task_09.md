@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Persistence and watcher wiring at boot"
 type: backend
 complexity: medium
@@ -33,12 +33,12 @@ This closes the loop so a modal change is durable and a hand-edit reconciles int
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Seed `createAppStore` preferences from `config.theme`
-- [ ] 9.2 Subscribe to the preference selector and debounce-persist via `persistUserConfig`
-- [ ] 9.3 Emit `theme_set` on change and `config_write`/`config_write_error` on write outcome
-- [ ] 9.4 Start `watchUserConfig` and feed external changes to `setThemePreference`
-- [ ] 9.5 Close the watcher and cancel pending writes on dispose
-- [ ] 9.6 Cover seeding, debounced persist, write-outcome telemetry, and reload-loop safety in tests
+- [x] 9.1 Seed `createAppStore` preferences from `config.theme`
+- [x] 9.2 Subscribe to the preference selector and debounce-persist via `persistUserConfig`
+- [x] 9.3 Emit `theme_set` on change and `config_write`/`config_write_error` on write outcome
+- [x] 9.4 Start `watchUserConfig` and feed external changes to `setThemePreference`
+- [x] 9.5 Close the watcher and cancel pending writes on dispose
+- [x] 9.6 Cover seeding, debounced persist, write-outcome telemetry, and reload-loop safety in tests
 
 ## Implementation Details
 Modify `src/index.ts` `createCockpitSession` (and the dispose/teardown seam it feeds).
@@ -66,14 +66,14 @@ See the TechSpec "System Architecture" (app-layer wiring) and "Development Seque
 
 ## Tests
 - Unit tests:
-  - [ ] `createCockpitSession` seeds the store preference from `config.theme` (inject `loadConfig`)
-  - [ ] changing the store preference triggers one debounced `persistUserConfig` with that theme (inject a fake writer)
-  - [ ] a successful write emits `config_write`; a writer that throws emits `config_write_error` and does not crash
-  - [ ] an external watcher callback with a new theme updates the store preference
-  - [ ] a watcher callback equal to the current preference performs no re-persist (loop broken)
-  - [ ] dispose closes the watcher and cancels a pending debounced write
+  - [x] `createCockpitSession` seeds the store preference from `config.theme` (inject `loadConfig`)
+  - [x] changing the store preference triggers one debounced `persistUserConfig` with that theme (inject a fake writer)
+  - [x] a successful write emits `config_write`; a writer that throws emits `config_write_error` and does not crash
+  - [x] an external watcher callback with a new theme updates the store preference
+  - [x] a watcher callback equal to the current preference performs no re-persist (loop broken)
+  - [x] dispose closes the watcher and cancels a pending debounced write
 - Integration tests:
-  - [ ] boot against a temp config, change the theme via the store, assert the file updates and a following watcher event does not loop
+  - [x] boot against a temp config, change the theme via the store, assert the file updates and a following watcher event does not loop
 - Test coverage target: >=80%
 - All tests must pass
 

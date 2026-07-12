@@ -27,6 +27,7 @@ describe("createSessionState", () => {
       providerKind: "codex",
       title: "codex",
       cwd: "/w",
+      branch: undefined,
       task: undefined,
       acpSessionId: "s-42",
       turns: [],
@@ -225,6 +226,46 @@ describe("plan and status events", () => {
     const state = sessionReducer(withTurn, { kind: "status", status: "awaiting_approval" })
     expect(state.status).toBe("awaiting_approval")
     expect(state.turns).toEqual(withTurn.turns)
+  })
+})
+
+describe("branch events", () => {
+  it("replaces only the branch field", () => {
+    const withWork = fold([
+      { kind: "status", status: "awaiting_approval" },
+      { kind: "user_message", messageId: "u1", text: "inspect the branch" },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "Edit branch-aware code",
+          status: "pending",
+          locations: ["src/app/controller.ts"],
+          diff: { path: "src/app/controller.ts", unified: "diff" },
+        },
+      },
+    ])
+
+    const state = sessionReducer(withWork, { kind: "branch", branch: "feature/status-bar" })
+
+    expect(state.branch).toBe("feature/status-bar")
+    expect(state.turns).toBe(withWork.turns)
+    expect(state.status).toBe(withWork.status)
+    expect(state.referencedFiles).toBe(withWork.referencedFiles)
+    expect(state.pendingDiffs).toBe(withWork.pendingDiffs)
+    expect(state.plan).toBe(withWork.plan)
+    expect(state.configOptions).toBe(withWork.configOptions)
+  })
+
+  it("clears a previously stored branch when the event is blank", () => {
+    const withBranch = sessionReducer(initial(), { kind: "branch", branch: "main" })
+
+    const state = sessionReducer(withBranch, { kind: "branch", branch: "" })
+
+    expect(state.branch).toBeUndefined()
+    expect(state.turns).toBe(withBranch.turns)
+    expect(state.status).toBe(withBranch.status)
   })
 })
 

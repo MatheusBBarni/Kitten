@@ -66,9 +66,11 @@ function realController(
   return {
     store,
     actions,
+    shell: { ready: false, error: "shell outside telemetry test boundary" },
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId)?.ready === true,
+    restore: async () => {},
     dispose: async () => {},
   }
 }
@@ -98,7 +100,7 @@ describe("telemetry over a scripted hand-off session", () => {
     // A confirmed model switch, then an effort-tagged hand-off to the other pane.
     await controller.actions.setSessionConfigOption("model", "opus", "claude-code")
     const flow = createHandoffFlow({ controller, recorder })
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
     await flow.confirm({
       ...createHandoffEdits(store.getState().overlays.handoffPreview!.bundle),
       targetConfig: [{ configId: "effort", value: "high" }],
@@ -150,7 +152,7 @@ describe("telemetry over a scripted hand-off session", () => {
 
       // Hand off to Codex, editing the summary in the preview before sending.
       const flow = createHandoffFlow({ controller, recorder })
-      expect(flow.begin()).toBe(true)
+      expect(flow.begin()).toEqual({ ok: true })
       const overlay = store.getState().overlays.handoffPreview!
       await flow.confirm({ ...createHandoffEdits(overlay.bundle), summary: "Finish the app.ts edit." })
 
@@ -278,5 +280,41 @@ describe("settings telemetry over an injected sink", () => {
         Object.keys(record).every((key) => ["type", "at", "sessionRef", "themeId", "source"].includes(key)),
       ),
     ).toBe(true)
+  })
+})
+
+describe("shell telemetry over the local JSONL sink", () => {
+  it("appends the three shell events as well-formed content-free records", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-shell-telemetry-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => 1000,
+        sessionRef: "run-fixed",
+      })
+
+      recorder.shellActivated()
+      recorder.shellSnapshotAttached()
+      recorder.externalRun()
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as TelemetryRecord)
+
+      expect(records).toEqual([
+        { type: "shell_activated", at: 1000, sessionRef: "run-fixed" },
+        { type: "shell_snapshot_attached", at: 1000, sessionRef: "run-fixed" },
+        { type: "external_run", at: 1000, sessionRef: "run-fixed" },
+      ])
+      expect(
+        records.every((record) => Object.keys(record).every((key) => ["type", "at", "sessionRef"].includes(key))),
+      ).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

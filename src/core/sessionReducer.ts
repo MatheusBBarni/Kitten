@@ -35,6 +35,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     providerKind: seed.providerKind,
     title: seed.title,
     cwd: seed.cwd,
+    branch: undefined,
     task: seed.task,
     acpSessionId: seed.acpSessionId ?? "",
     turns: [],
@@ -68,6 +69,11 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
     case "status":
       // Status changes never touch turns or derived fields.
       return { ...state, status: event.status }
+
+    case "branch":
+      // Branch refreshes replace only the off-render-path git value. A blank
+      // event clears the optional field so hide-when-absent selectors return null.
+      return { ...state, branch: event.branch || undefined }
 
     case "config_options":
       // The agent always returns the complete option set, so replace wholesale

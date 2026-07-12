@@ -15,6 +15,9 @@ import { prepareShellSpawn, registerShellIntegration } from "./shellIntegration.
 
 type Unsubscribe = () => void
 
+/** Public xterm buffer identity used to drive alternate-screen layout changes. */
+export type ShellBufferType = "normal" | "alternate"
+
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
 const DEFAULT_SCROLLBACK = 1_000
@@ -40,7 +43,7 @@ export interface StyledRun {
   readonly overline: boolean
 }
 
-/** One row from the active terminal buffer's visible viewport. */
+/** One row from the active terminal buffer, including its bounded scrollback. */
 export interface StyledLine {
   readonly runs: readonly StyledRun[]
   readonly isWrapped: boolean
@@ -63,6 +66,8 @@ export interface ShellSpawnOptions {
 /** Controller-owned shell boundary from the Integrated Shell TechSpec. */
 export interface ShellRuntime {
   onEvent(cb: (event: ShellEvent) => void): Unsubscribe
+  onBufferChange(cb: (buffer: ShellBufferType) => void): Unsubscribe
+  bufferType(): ShellBufferType
   write(bytes: Uint8Array): void
   interrupt(): void
   resize(cols: number, rows: number): void
@@ -100,11 +105,14 @@ export const createShellRuntime: ShellRuntimeFactory = (options) => {
 
 class ShellRuntimeImpl implements ShellRuntime {
   private readonly emulator: Terminal
+  private readonly bufferChange: { dispose(): void }
   private readonly integration: { dispose(): void }
   private readonly pty: ShellPty
   private readonly scheduler: FrameScheduler
   private readonly subscribers = new Set<(event: ShellEvent) => void>()
+  private readonly bufferSubscribers = new Set<(buffer: ShellBufferType) => void>()
   private shellState: ShellState
+  private activeBufferType: ShellBufferType
   private renderRev = 0
   private disposed = false
 
@@ -119,6 +127,12 @@ class ShellRuntimeImpl implements ShellRuntime {
       rows,
       scrollback: Math.max(0, Math.trunc(options.scrollback ?? DEFAULT_SCROLLBACK)),
     })
+    this.activeBufferType = this.emulator.buffer.active.type
+    this.bufferChange = this.emulator.buffer.onBufferChange((buffer) => {
+      if (this.disposed || buffer.type === this.activeBufferType) return
+      this.activeBufferType = buffer.type
+      for (const subscriber of this.bufferSubscribers) subscriber(buffer.type)
+    })
     this.integration = registerShellIntegration(this.emulator, (event) => this.dispatch(event))
 
     try {
@@ -127,6 +141,7 @@ class ShellRuntimeImpl implements ShellRuntime {
       })
     } catch (error) {
       this.scheduler.dispose()
+      this.bufferChange.dispose()
       this.integration.dispose()
       this.emulator.dispose()
       throw error
@@ -139,6 +154,18 @@ class ShellRuntimeImpl implements ShellRuntime {
     return () => {
       this.subscribers.delete(cb)
     }
+  }
+
+  onBufferChange(cb: (buffer: ShellBufferType) => void): Unsubscribe {
+    if (this.disposed) return () => {}
+    this.bufferSubscribers.add(cb)
+    return () => {
+      this.bufferSubscribers.delete(cb)
+    }
+  }
+
+  bufferType(): ShellBufferType {
+    return this.activeBufferType
   }
 
   write(bytes: Uint8Array): void {
@@ -154,8 +181,10 @@ class ShellRuntimeImpl implements ShellRuntime {
     if (this.disposed) return
     const nextCols = normalizeDimension(cols, DEFAULT_COLS)
     const nextRows = normalizeDimension(rows, DEFAULT_ROWS)
-    this.pty.resize(nextCols, nextRows)
+    // Resize the emulator first so the foreground app's SIGWINCH redraw is
+    // parsed against the new grid even if PTY output arrives immediately.
     this.emulator.resize(nextCols, nextRows)
+    this.pty.resize(nextCols, nextRows)
     this.scheduleScreenEvent()
   }
 
@@ -163,8 +192,8 @@ class ShellRuntimeImpl implements ShellRuntime {
     if (this.disposed) return []
     const buffer = this.emulator.buffer.active
     const lines: StyledLine[] = []
-    for (let row = 0; row < this.emulator.rows; row += 1) {
-      const line = buffer.getLine(buffer.viewportY + row)
+    for (let row = 0; row < buffer.length; row += 1) {
+      const line = buffer.getLine(row)
       lines.push(line ? styledLine(line, this.emulator.cols) : { runs: [], isWrapped: false })
     }
     return lines
@@ -182,11 +211,17 @@ class ShellRuntimeImpl implements ShellRuntime {
     this.disposed = true
     this.scheduler.dispose()
     this.subscribers.clear()
+    this.bufferSubscribers.clear()
 
     try {
       await this.pty.dispose()
     } catch {
       // Teardown must never mask the controller's own shutdown path.
+    }
+    try {
+      this.bufferChange.dispose()
+    } catch {
+      // Buffer activation subscription disposal is best-effort.
     }
     try {
       this.integration.dispose()
@@ -236,26 +271,11 @@ function createBunPty(
   options: ShellSpawnOptions & { command: string; cols: number; rows: number },
   onData: (data: Uint8Array) => void,
 ): ShellPty {
-  const terminal = new Bun.Terminal({
-    cols: options.cols,
-    rows: options.rows,
-    name: "xterm-256color",
-    data(_terminal, data) {
-      onData(data)
-    },
-  })
-
-  let spawn: ReturnType<typeof prepareShellSpawn>
-  try {
-    spawn = prepareShellSpawn(
-      options.command,
-      { ...process.env, ...options.env, TERM: "xterm-256color" },
-      options.shellIntegration !== false,
-    )
-  } catch (error) {
-    terminal.close()
-    throw error
-  }
+  const spawn = prepareShellSpawn(
+    options.command,
+    { ...process.env, ...options.env, TERM: "xterm-256color" },
+    options.shellIntegration !== false,
+  )
 
   let proc: ReturnType<typeof Bun.spawn>
   try {
@@ -263,12 +283,28 @@ function createBunPty(
       cmd: spawn.cmd,
       cwd: options.cwd,
       env: spawn.env,
-      terminal,
+      // Bun must create the PTY during spawn so the child becomes its session leader
+      // with a controlling terminal. Passing a preconstructed reusable Terminal leaves
+      // interactive shells without job control, so byte 0x03 cannot signal the foreground group.
+      terminal: {
+        cols: options.cols,
+        rows: options.rows,
+        name: "xterm-256color",
+        data(_terminal, data) {
+          onData(data)
+        },
+      },
     })
   } catch (error) {
-    terminal.close()
     spawn.dispose()
     throw error
+  }
+
+  const terminal = proc.terminal
+  if (!terminal) {
+    proc.kill("SIGKILL")
+    spawn.dispose()
+    throw new Error("Bun did not attach the requested shell terminal")
   }
 
   return {

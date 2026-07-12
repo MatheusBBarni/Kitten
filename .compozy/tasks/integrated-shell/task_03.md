@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "ShellRuntime over Bun.Terminal and @xterm/headless"
 type: backend
 complexity: high
@@ -31,11 +31,11 @@ This is the highest-risk task and the de-risking spike: it proves `@xterm/headle
 - MUST be POSIX-only and dispose cleanly (kill the PTY, release the emulator) without throwing.
 
 ## Subtasks
-- [ ] 3.1 Add and pin `@xterm/headless`; verify `Bun.Terminal` availability
-- [ ] 3.2 Spawn the shell PTY and wire its output into the emulator
-- [ ] 3.3 Implement `view()`, `write`, `interrupt`, `resize`, `snapshot`, and `dispose`
-- [ ] 3.4 Coalesce screen updates to one `screen` event per frame
-- [ ] 3.5 Provide the in-memory `ShellRuntimeFactory` test double
+- [x] 3.1 Add and pin `@xterm/headless`; verify `Bun.Terminal` availability
+- [x] 3.2 Spawn the shell PTY and wire its output into the emulator
+- [x] 3.3 Implement `view()`, `write`, `interrupt`, `resize`, `snapshot`, and `dispose`
+- [x] 3.4 Coalesce screen updates to one `screen` event per frame
+- [x] 3.5 Provide the in-memory `ShellRuntimeFactory` test double
 
 ## Implementation Details
 Create `src/shell/shellRuntime.ts`. Mirror the transport/connection pattern in `src/agent/transport.ts` (injectable factory) and `src/agent/agentConnection.ts` (the frame scheduler and buffered flush). See TechSpec "Core Interfaces" for the `ShellRuntime` shape and "Integration Points" for the Bun/`@xterm/headless` boundary. Keep OSC parsing out of this task (task_04) — emit only `screen` events here.
@@ -62,14 +62,14 @@ Create `src/shell/shellRuntime.ts`. Mirror the transport/connection pattern in `
 
 ## Tests
 - Unit tests (in-memory factory):
-  - [ ] scripted output bytes produce a `view()` whose rows match the expected styled runs
-  - [ ] `interrupt()` writes the `0x03` byte to the PTY sink
-  - [ ] `resize(cols, rows)` forwards new dimensions to the PTY and emulator
-  - [ ] multiple output chunks within one frame emit a single `screen` event
-  - [ ] `dispose()` resolves without throwing and after it `write` is a no-op
+  - [x] scripted output bytes produce a `view()` whose rows match the expected styled runs
+  - [x] `interrupt()` writes the `0x03` byte to the PTY sink
+  - [x] `resize(cols, rows)` forwards new dimensions to the PTY and emulator
+  - [x] multiple output chunks within one frame emit a single `screen` event
+  - [x] `dispose()` resolves without throwing and after it `write` is a no-op
 - Integration tests (real PTY):
-  - [ ] spawning `$SHELL` and writing `echo hello\n` renders `hello` in `view()`
-  - [ ] a colored output line yields styled runs with the expected foreground color
+  - [x] spawning `$SHELL` and writing `echo hello\n` renders `hello` in `view()`
+  - [x] a colored output line yields styled runs with the expected foreground color
 - Test coverage target: >=80%
 - All tests must pass
 

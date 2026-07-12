@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Config schema and theme preference type"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ This adds a `ThemePreference` type and an `AppConfig.theme` field threaded throu
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define `ThemePreference` and `ThemePresetId` in the core types
-- [ ] 1.2 Add `theme` to `AppConfig` and default it to `"auto"` in `defaultAppConfig`
-- [ ] 1.3 Extend the strict user config schema with an optional, validated `theme`
-- [ ] 1.4 Thread `theme` through `mergeAppConfig`
-- [ ] 1.5 Cover valid, absent, and invalid `theme` values in the loader tests
+- [x] 1.1 Define `ThemePreference` and `ThemePresetId` in the core types
+- [x] 1.2 Add `theme` to `AppConfig` and default it to `"auto"` in `defaultAppConfig`
+- [x] 1.3 Extend the strict user config schema with an optional, validated `theme`
+- [x] 1.4 Thread `theme` through `mergeAppConfig`
+- [x] 1.5 Cover valid, absent, and invalid `theme` values in the loader tests
 
 ## Implementation Details
 Modify `src/core/types.ts` (the `AppConfig` shape) and `src/config/configLoader.ts` (`USER_CONFIG_SCHEMA`, `mergeAppConfig`, `defaultAppConfig`).
@@ -61,13 +61,13 @@ Keep the schema strict and delta-over-defaults per the loader's existing design.
 
 ## Tests
 - Unit tests:
-  - [ ] `defaultAppConfig()` returns `theme: "auto"`
-  - [ ] `parseAppConfig('{"theme":"catppuccin-mocha"}')` yields `theme: "catppuccin-mocha"`
-  - [ ] `parseAppConfig('{"theme":"neon"}')` throws `ConfigError` naming `theme`
-  - [ ] a config object omitting `theme` merges to `"auto"`
-  - [ ] an unknown top-level key is still rejected (strict schema preserved)
+  - [x] `defaultAppConfig()` returns `theme: "auto"`
+  - [x] `parseAppConfig('{"theme":"catppuccin-mocha"}')` yields `theme: "catppuccin-mocha"`
+  - [x] `parseAppConfig('{"theme":"neon"}')` throws `ConfigError` naming `theme`
+  - [x] a config object omitting `theme` merges to `"auto"`
+  - [x] an unknown top-level key is still rejected (strict schema preserved)
 - Integration tests:
-  - [ ] `loadAppConfig` against a temp file containing a `theme` delta returns the merged config with that theme
+  - [x] `loadAppConfig` against a temp file containing a `theme` delta returns the merged config with that theme
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Store slot, selectors, and category allowlist"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This is the reactive boundary between the domain `configOptions` and the UI.
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add the `modelSelect` slot, its open/close actions, and init it to `null`
-- [ ] 4.2 OR the slot into `selectHasOpenOverlay`
-- [ ] 4.3 Add the curried config selectors for options, current model, and current effort
-- [ ] 4.4 Implement `visibleConfigOptions` with the `VISIBLE_CATEGORIES` allowlist
-- [ ] 4.5 Cover the slot, selectors, and allowlist with unit tests
+- [x] 4.1 Add the `modelSelect` slot, its open/close actions, and init it to `null`
+- [x] 4.2 OR the slot into `selectHasOpenOverlay`
+- [x] 4.3 Add the curried config selectors for options, current model, and current effort
+- [x] 4.4 Implement `visibleConfigOptions` with the `VISIBLE_CATEGORIES` allowlist
+- [x] 4.5 Cover the slot, selectors, and allowlist with unit tests
 
 ## Implementation Details
 Modify the store and selectors. See TechSpec "System Architecture" (Reactive Store) and ADR-004. Mirror the approval slot in `appStore.ts` (lines 52-55, 176-197) and `selectAgentStatus` in `selectors.ts` (lines 39-42); OR into `selectHasOpenOverlay` (lines 81-82).
@@ -62,13 +62,13 @@ Modify the store and selectors. See TechSpec "System Architecture" (Reactive Sto
 
 ## Tests
 - Unit tests:
-  - [ ] `openModelSelect({ agentId })` sets the slot; `closeModelSelect` clears it; `selectHasOpenOverlay` is true while open
-  - [ ] `selectAgentModel` returns the `currentValue` of the `model` category option, or undefined when absent
-  - [ ] `selectAgentEffort` returns the `currentValue` of the `thought_level` category option, or undefined when absent
-  - [ ] `visibleConfigOptions` returns model and effort options and drops a `mode` (`bypassPermissions`) option
-  - [ ] `visibleConfigOptions` drops an unknown/future category not in the allowlist
+  - [x] `openModelSelect({ agentId })` sets the slot; `closeModelSelect` clears it; `selectHasOpenOverlay` is true while open
+  - [x] `selectAgentModel` returns the `currentValue` of the `model` category option, or undefined when absent
+  - [x] `selectAgentEffort` returns the `currentValue` of the `thought_level` category option, or undefined when absent
+  - [x] `visibleConfigOptions` returns model and effort options and drops a `mode` (`bypassPermissions`) option
+  - [x] `visibleConfigOptions` drops an unknown/future category not in the allowlist
 - Integration tests:
-  - [ ] Dispatching a `config_options` event (task_01) makes `selectAgentModel` observe the new value through `subscribeSelector`
+  - [x] Dispatching a `config_options` event (task_01) makes `selectAgentModel` observe the new value through `subscribeSelector`
 - Test coverage target: >=80%
 - All tests must pass
 

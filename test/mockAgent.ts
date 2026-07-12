@@ -15,6 +15,7 @@ import {
   type Agent,
   type InitializeRequest,
   type InitializeResponse,
+  type LoadSessionRequest,
   type PermissionOption,
   type PromptRequest,
   type RequestPermissionOutcome,
@@ -48,12 +49,22 @@ export type MockPromptScript = (
 /** A scripted `initialize` handshake. Throw to make the agent reject the handshake. */
 export type MockInitializeScript = (request: InitializeRequest) => Promise<InitializeResponse> | InitializeResponse
 
+/** A scripted `session/load` request, optionally replaying history through updates. */
+export type MockLoadSessionScript = (
+  request: LoadSessionRequest,
+  ctx: Pick<MockAgentContext, "update">,
+) => Promise<void> | void
+
 export interface MockAgentOptions {
   sessionId?: string
   /** The protocol version the default `initialize` negotiates back to the client. */
   protocolVersion?: number
   /** Override the whole handshake - to reject it, or to answer with odd capabilities. */
   onInitialize?: MockInitializeScript
+  /** Whether the default handshake advertises `session/load` support. */
+  canLoadSession?: boolean
+  /** Handle `session/load`, usually by replaying history through `ctx.update`. */
+  onLoadSession?: MockLoadSessionScript
   onPrompt?: MockPromptScript
   /**
    * The config options the agent advertises. When set, `newSession` returns them and
@@ -75,6 +86,8 @@ export interface MockAgentHandle {
   readonly permissionOutcomes: RequestPermissionOutcome[]
   /** The working directory of every `session/new` the agent received, in order. */
   readonly newSessionCwds: string[]
+  /** Every `session/load` request the agent received, in order. */
+  readonly loadSessionRequests: LoadSessionRequest[]
   /** Every `session/set_config_option` request the agent received, in order. */
   readonly configOptionRequests: SetSessionConfigOptionRequest[]
   /** The agent's current config options, as mutated by `setSessionConfigOption`. */
@@ -93,6 +106,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const prompts: PromptRequest[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
   const newSessionCwds: string[] = []
+  const loadSessionRequests: LoadSessionRequest[] = []
   const configOptionRequests: SetSessionConfigOptionRequest[] = []
   // The live option set the agent advertises, mutated in place by set_config_option.
   const configOptions: SessionConfigOption[] = options.configOptions ? [...options.configOptions] : []
@@ -104,12 +118,19 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
     initialize: (request: InitializeRequest) =>
       options.onInitialize?.(request) ?? {
         protocolVersion,
-        agentCapabilities: {},
+        agentCapabilities: options.canLoadSession === undefined ? {} : { loadSession: options.canLoadSession },
         agentInfo: { name: "mock-agent", version: "0.0.0" },
       },
     newSession: (request) => {
       newSessionCwds.push(request.cwd)
       return advertisesConfig ? { sessionId, configOptions } : { sessionId }
+    },
+    async loadSession(request: LoadSessionRequest) {
+      loadSessionRequests.push(request)
+      await options.onLoadSession?.(request, {
+        update: (update) => connection.sessionUpdate({ sessionId: request.sessionId, update }),
+      })
+      return {}
     },
     setSessionConfigOption: (request: SetSessionConfigOptionRequest) => {
       configOptionRequests.push(request)
@@ -162,6 +183,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
     prompts,
     permissionOutcomes,
     newSessionCwds,
+    loadSessionRequests,
     configOptionRequests,
     configOptions,
     emitConfigOptionUpdate: (next) =>

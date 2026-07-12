@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Atomic delta config write-back"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ The write must be safe enough that a crash mid-write or an invalid value can nev
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Create `configWriter.ts` and the `persistUserConfig` signature with injectable path/env
-- [ ] 4.2 Read-modify the existing delta file, applying only the patched keys
-- [ ] 4.3 Validate the merged deltas against the strict schema before any write
-- [ ] 4.4 Write to a temp file and rename over the target, creating the parent directory
-- [ ] 4.5 Cover key preservation, validation rejection, and atomicity in tests
+- [x] 4.1 Create `configWriter.ts` and the `persistUserConfig` signature with injectable path/env
+- [x] 4.2 Read-modify the existing delta file, applying only the patched keys
+- [x] 4.3 Validate the merged deltas against the strict schema before any write
+- [x] 4.4 Write to a temp file and rename over the target, creating the parent directory
+- [x] 4.5 Cover key preservation, validation rejection, and atomicity in tests
 
 ## Implementation Details
 Create `src/config/configWriter.ts`.
@@ -61,13 +61,13 @@ See the TechSpec "Core Interfaces" (configWriter) section and ADR-004; the write
 
 ## Tests
 - Unit tests:
-  - [ ] persisting `{ theme: "dark" }` into a file that also carries a `telemetryEnabled` delta keeps `telemetryEnabled`
-  - [ ] the written file re-parses through `loadAppConfig` without error
-  - [ ] an invalid patch (e.g. `theme: "neon"`) throws and leaves the original file byte-for-byte untouched
-  - [ ] writing to a non-existent directory creates it and succeeds
-  - [ ] no temp/partial file remains after a successful write
+  - [x] persisting `{ theme: "dark" }` into a file that also carries a `telemetryEnabled` delta keeps `telemetryEnabled`
+  - [x] the written file re-parses through `loadAppConfig` without error
+  - [x] an invalid patch (e.g. `theme: "neon"`) throws and leaves the original file byte-for-byte untouched
+  - [x] writing to a non-existent directory creates it and succeeds
+  - [x] no temp/partial file remains after a successful write
 - Integration tests:
-  - [ ] `persistUserConfig` then `loadAppConfig` round-trips a theme delta against a real temp file
+  - [x] `persistUserConfig` then `loadAppConfig` round-trips a theme delta against a real temp file
 - Test coverage target: >=80%
 - All tests must pass
 

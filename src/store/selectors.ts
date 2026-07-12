@@ -17,6 +17,7 @@
 import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
 import type {
   ConfigOption,
+  ContextUsage,
   PendingDiff,
   PlanEntry,
   ProviderKind,
@@ -26,6 +27,7 @@ import type {
   ShellState,
   ThemePreference,
   Turn,
+  HandoffBundle,
 } from "../core/types.ts"
 import type {
   AppState,
@@ -34,6 +36,7 @@ import type {
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
   ModelSelectOverlay,
+  RestorationMode,
   SettingsOverlay,
   Selector,
 } from "./appStore.ts"
@@ -81,6 +84,40 @@ export const selectSessionStatus =
   (sessionId: SessionId): Selector<SessionStatus> =>
   (state) =>
     state.sessions[sessionId]!.status
+
+/** One session's live-restore outcome, or `null` during a normal non-restored run. */
+export const selectRestoration =
+  (sessionId: SessionId): Selector<RestorationMode | null> =>
+  (state) =>
+    state.restoration[sessionId] ?? null
+
+/** The persisted hand-off context for a restored run's unavailable pane. */
+export const selectRestorationBundle: Selector<HandoffBundle | null> = (state) =>
+  state.restorationBundle
+
+/** One session's current git branch, or `null` when it has not been resolved. */
+export const selectSessionBranch =
+  (sessionId: SessionId): Selector<string | null> =>
+  (state) =>
+    state.sessions[sessionId]?.branch ?? null
+
+/**
+ * Reserved model slot for the `model-effort-selector` feature. It stays hidden
+ * until that delegated feature owns and wires the backing session data.
+ */
+export const selectSessionModel =
+  (_sessionId: SessionId): Selector<string | null> =>
+  (_state) =>
+    null
+
+/**
+ * Reserved context slot for the `agent-usage-gauge` feature. It stays hidden
+ * until that delegated feature owns and wires the backing session data.
+ */
+export const selectSessionContext =
+  (_sessionId: SessionId): Selector<ContextUsage | null> =>
+  (_state) =>
+    null
 
 /** One session's transcript. The conversation view subscribes to this. */
 export const selectSessionTurns =
@@ -259,6 +296,9 @@ export const selectHandoffTarget: Selector<HandoffTargetOverlay | null> = (state
  */
 export const selectIsSessionsOpen: Selector<boolean> = (state) => state.overlays.sessions
 
+/** Whether the resumable-session picker is open. */
+export const selectSessionPicker: Selector<boolean> = (state) => state.overlays.sessionPicker
+
 /**
  * The session whose model/effort selector is open (ADR-004), or `null` when the
  * selector is closed. The overlay reads this to know which session to drive and
@@ -276,4 +316,5 @@ export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.handoffTarget !== null ||
   state.overlays.modelSelect !== null ||
   state.overlays.settings !== null ||
-  state.overlays.sessions
+  state.overlays.sessions ||
+  state.overlays.sessionPicker

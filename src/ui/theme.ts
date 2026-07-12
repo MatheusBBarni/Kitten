@@ -12,9 +12,9 @@
  * merely low-contrast, while the reverse can be unreadable.
  */
 
-import { SyntaxStyle, type ThemeMode, type ThemeTokenStyle } from "@opentui/core"
+import { SyntaxStyle, type CliRenderer, type ThemeMode, type ThemeTokenStyle } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
-import { useEffect, useState } from "react"
+import { useSyncExternalStore } from "react"
 
 import type { SessionStatus, ThemePreference, ToolCallStatus } from "../core/types.ts"
 import { selectThemePreference } from "../store/selectors.ts"
@@ -278,27 +278,77 @@ export function resolvePalette(pref: ThemePreference | string, mode: ThemeMode):
   return palette ?? paletteFor(mode)
 }
 
+interface ThemeModeStore {
+  readonly getSnapshot: () => ThemeMode
+  readonly subscribe: (onStoreChange: () => void) => () => void
+}
+
+/**
+ * One live theme-mode subscription per renderer.
+ *
+ * A palette is used by most cockpit leaves, so subscribing from every hook
+ * consumer breaches EventEmitter's listener limit in a real cockpit. The store
+ * fans one renderer event out to React subscribers and releases that event again
+ * when the last palette consumer unmounts.
+ */
+const THEME_MODE_STORES = new WeakMap<CliRenderer, ThemeModeStore>()
+
+function themeModeStoreFor(renderer: CliRenderer): ThemeModeStore {
+  const existing = THEME_MODE_STORES.get(renderer)
+  if (existing) return existing
+
+  let mode: ThemeMode = renderer.themeMode ?? "dark"
+  const subscribers = new Set<() => void>()
+  let listening = false
+
+  const notify = (): void => {
+    for (const subscriber of subscribers) subscriber()
+  }
+
+  const setMode = (next: ThemeMode): void => {
+    if (mode === next) return
+    mode = next
+    notify()
+  }
+
+  const onThemeMode = (next: ThemeMode): void => setMode(next)
+
+  const store: ThemeModeStore = {
+    getSnapshot: () => mode,
+    subscribe: (onStoreChange) => {
+      subscribers.add(onStoreChange)
+
+      if (!listening && !renderer.isDestroyed) {
+        renderer.on("theme_mode", onThemeMode)
+        listening = true
+        // The OSC query may have completed between render and subscription.
+        setMode(renderer.themeMode ?? "dark")
+      }
+
+      return () => {
+        subscribers.delete(onStoreChange)
+        if (listening && subscribers.size === 0) {
+          renderer.off("theme_mode", onThemeMode)
+          listening = false
+        }
+      }
+    },
+  }
+
+  THEME_MODE_STORES.set(renderer, store)
+  return store
+}
+
 /**
  * The terminal's current theme mode, kept live.
  *
  * The renderer may resolve its OSC query after mount, so the initial value is
- * read synchronously and then corrected by the `theme_mode` event.
+ * read synchronously and then corrected by the shared `theme_mode` event.
  */
 export function useThemeMode(): ThemeMode {
   const renderer = useRenderer()
-  const [mode, setMode] = useState<ThemeMode>(() => renderer.themeMode ?? "dark")
-
-  useEffect(() => {
-    const onThemeMode = (next: ThemeMode): void => setMode(next)
-    renderer.on("theme_mode", onThemeMode)
-    // The query may have completed between the initial render and this effect.
-    if (renderer.themeMode) setMode(renderer.themeMode)
-    return () => {
-      renderer.off("theme_mode", onThemeMode)
-    }
-  }, [renderer])
-
-  return mode
+  const store = themeModeStoreFor(renderer)
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
 }
 
 /** The effective palette for the live preference and terminal theme. */
@@ -327,6 +377,32 @@ function syntaxThemeFor(palette: CockpitPalette): ThemeTokenStyle[] {
     { scope: ["type", "type.builtin"], style: { foreground: palette.syntax.type } },
     { scope: ["variable", "variable.parameter", "property"], style: { foreground: palette.syntax.variable } },
     { scope: ["operator", "punctuation", "punctuation.delimiter"], style: { foreground: palette.muted } },
+    {
+      scope: [
+        "markup.heading",
+        "markup.heading.1",
+        "markup.heading.2",
+        "markup.heading.3",
+        "markup.heading.4",
+        "markup.heading.5",
+        "markup.heading.6",
+      ],
+      style: { foreground: palette.accent, bold: true },
+    },
+    { scope: ["markup.strong"], style: { foreground: palette.text, bold: true } },
+    { scope: ["markup.italic"], style: { foreground: palette.text, italic: true } },
+    { scope: ["markup.strikethrough"], style: { foreground: palette.muted, dim: true } },
+    { scope: ["markup.raw", "markup.raw.block"], style: { foreground: palette.syntax.string } },
+    {
+      scope: ["markup.list", "markup.list.checked", "markup.list.unchecked"],
+      style: { foreground: palette.accent },
+    },
+    { scope: ["markup.quote"], style: { foreground: palette.muted, italic: true } },
+    {
+      scope: ["markup.link", "markup.link.label"],
+      style: { foreground: palette.status.idle, underline: true },
+    },
+    { scope: ["markup.link.url"], style: { foreground: palette.muted } },
   ]
 }
 

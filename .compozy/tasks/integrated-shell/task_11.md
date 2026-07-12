@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Telemetry recorder surface for shell events"
 type: backend
 complexity: low
 dependencies:
-  - task_01
+    - task_01
 ---
 
 # Task 11: Telemetry recorder surface for shell events

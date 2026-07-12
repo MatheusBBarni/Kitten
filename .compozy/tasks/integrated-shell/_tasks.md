@@ -4,10 +4,10 @@
 
 | # | Title | Status | Complexity | Dependencies |
 |---|-------|--------|------------|--------------|
-| 01 | Shell domain types and reducer | pending | medium | — |
-| 02 | Shell store slice, pane focus, and selectors | pending | medium | task_01 |
-| 03 | ShellRuntime over Bun.Terminal and @xterm/headless | pending | high | task_01 |
-| 04 | Shell integration: OSC 133/OSC 7 command and cwd events | pending | high | task_03 |
+| 01 | Shell domain types and reducer | completed | medium | — |
+| 02 | Shell store slice, pane focus, and selectors | completed | medium | task_01 |
+| 03 | ShellRuntime over Bun.Terminal and @xterm/headless | completed | high | task_01 |
+| 04 | Shell integration: OSC 133/OSC 7 command and cwd events | completed | high | task_03 |
 | 05 | Controller ownership and event wiring for the shell | pending | medium | task_02, task_03 |
 | 06 | Shell configuration block | pending | low | task_01, task_03 |
 | 07 | Key-to-VT input encoder | pending | low | — |

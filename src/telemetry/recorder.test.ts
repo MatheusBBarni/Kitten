@@ -1,3 +1,8 @@
+// Suite: content-free local telemetry recorder
+// Invariant: enabled telemetry records only allowlisted metadata; disabled telemetry records nothing.
+// Boundary IN: recorder API, store-derived heuristics, injected clock/sink, and local JSONL sink.
+// Boundary OUT: controller/picker orchestration and rendered UI, owned by their canonical suites.
+
 import { describe, expect, it } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -45,11 +50,19 @@ describe("opt-in gating", () => {
     recorder.handoffSent({ targetSessionId: "codex", editChars: 400 })
     recorder.effortLinkedHandoff("codex")
     recorder.settingsOpened()
+    recorder.shellActivated()
+    recorder.shellSnapshotAttached()
+    recorder.externalRun()
     recorder.themeSet("catppuccin-mocha")
     recorder.configWrite("modal")
     recorder.configWriteError("modal")
     recorder.recordSwitch("codex", "model", true, false)
     recorder.recordSwitch("codex", "effort", false, false)
+    recorder.resumePickerOpened()
+    recorder.resumePickerInteractive()
+    recorder.resumeLoadStarted()
+    recorder.resumePaneUnavailable("codex")
+    recorder.sessionResumed({ mode: "picker", liveCount: 1 })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -93,6 +106,38 @@ describe("settings events", () => {
     ])
   })
 
+})
+
+describe("shell events", () => {
+  it("records shell_activated with only the common content-free fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.shellActivated()
+
+    expect(sink.records).toEqual([{ type: "shell_activated", at: 42, sessionRef: "run-1" }])
+    expect(Object.keys(sink.records[0]!)).not.toContain("text")
+  })
+
+  it("records shell_snapshot_attached with only the common content-free fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.shellSnapshotAttached()
+
+    expect(sink.records).toEqual([{ type: "shell_snapshot_attached", at: 42, sessionRef: "run-1" }])
+    expect(Object.keys(sink.records[0]!)).not.toContain("text")
+  })
+
+  it("records external_run with only the common content-free fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.externalRun()
+
+    expect(sink.records).toEqual([{ type: "external_run", at: 42, sessionRef: "run-1" }])
+    expect(Object.keys(sink.records[0]!)).not.toContain("text")
+  })
 })
 
 describe("hand-off events", () => {
@@ -238,6 +283,69 @@ describe("max concurrent sessions (task_09)", () => {
   })
 })
 
+describe("resume events", () => {
+  it("records picker and load timings plus content-free restore outcomes", () => {
+    const sink = memorySink()
+    const clock = fakeClock(1000)
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "run-1",
+    })
+
+    recorder.resumePickerOpened()
+    clock.advance(40)
+    recorder.resumePickerInteractive()
+    recorder.resumeLoadStarted()
+    clock.advance(300)
+    recorder.resumePaneUnavailable("codex")
+    recorder.sessionResumed({ mode: "picker", liveCount: 1 })
+
+    expect(sink.records).toEqual([
+      { type: "resume_picker_interactive_ms", durationMs: 40, at: 1040, sessionRef: "run-1" },
+      { type: "resume_pane_unavailable", agent: "codex", at: 1340, sessionRef: "run-1" },
+      { type: "session_resumed", mode: "picker", liveCount: 1, at: 1340, sessionRef: "run-1" },
+      { type: "resume_load_usable_ms", durationMs: 300, at: 1340, sessionRef: "run-1" },
+    ])
+  })
+
+  it("classifies only the first short post-resume message as continued", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    recorder.watch(store)
+    recorder.sessionResumed({ mode: "last-run", liveCount: 2 })
+
+    store.applyEvent("claude-code", { kind: "user_message", messageId: "m1", text: "keep going" })
+    store.applyEvent("codex", {
+      kind: "user_message",
+      messageId: "m2",
+      text: "x".repeat(REEXPLANATION_CHAR_THRESHOLD + 10),
+    })
+
+    const actions = sink.records.filter((record) => record.type === "resume_first_action")
+    expect(actions).toHaveLength(1)
+    expect(actions[0]).toMatchObject({ continued: true })
+  })
+
+  it("classifies a long first post-resume message as re-explanation", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    recorder.watch(store)
+    recorder.sessionResumed({ mode: "picker", liveCount: 2 })
+
+    store.applyEvent("codex", {
+      kind: "user_message",
+      messageId: "m1",
+      text: "x".repeat(REEXPLANATION_CHAR_THRESHOLD + 10),
+    })
+
+    expect(sink.records.find((record) => record.type === "resume_first_action")).toMatchObject({ continued: false })
+  })
+})
+
 describe("content-free guarantee", () => {
   it("never serializes prompt or code text, even from a long re-explanation", () => {
     const sink = memorySink()
@@ -248,6 +356,7 @@ describe("content-free guarantee", () => {
     const secret = "sk-ant-0123456789 THE-USER-TYPED-THIS-SENTENCE and this code: const x = 1"
     const promptText = `${secret} ${"and more context ".repeat(40)}`
     recorder.handoffSent({ targetSessionId: "codex", editChars: promptText.length })
+    recorder.sessionResumed({ mode: "picker", liveCount: 2 })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: promptText })
 
     const serialized = JSON.stringify(sink.records)
@@ -261,7 +370,7 @@ describe("content-free guarantee", () => {
       expect(keys).not.toContain("summary")
       expect(
         keys.every((key) =>
-          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source"].includes(
+          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source", "mode", "liveCount", "continued"].includes(
             key,
           ),
         ),

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Store restoration state and session-picker slot"
 type: backend
 complexity: medium

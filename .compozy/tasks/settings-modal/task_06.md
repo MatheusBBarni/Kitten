@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Settings keymap bindings"
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ This gives later tasks a documented `open-settings` command and a settings-scope
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add `open-settings` to `CockpitCommand` and the `Ctrl+,` binding to `COCKPIT_KEYMAP`
-- [ ] 6.2 Add the `SettingsCommand` union and the `SETTINGS_KEYMAP` entries
-- [ ] 6.3 Add `matchSettingsCommand` and `SETTINGS_HINT`
-- [ ] 6.4 Ensure the open-settings chord flows into `HELP_ENTRIES` and `KEYMAP_HINT`
-- [ ] 6.5 Cover chord matching, modal command matching, and help/hint presence in tests
+- [x] 6.1 Add `open-settings` to `CockpitCommand` and the `Ctrl+,` binding to `COCKPIT_KEYMAP`
+- [x] 6.2 Add the `SettingsCommand` union and the `SETTINGS_KEYMAP` entries
+- [x] 6.3 Add `matchSettingsCommand` and `SETTINGS_HINT`
+- [x] 6.4 Ensure the open-settings chord flows into `HELP_ENTRIES` and `KEYMAP_HINT`
+- [x] 6.5 Cover chord matching, modal command matching, and help/hint presence in tests
 
 ## Implementation Details
 Modify `src/ui/keymap.ts`.
@@ -61,13 +61,13 @@ See the TechSpec "Core Interfaces" (keymap) section and the "Known Risks" note a
 
 ## Tests
 - Unit tests:
-  - [ ] `matchCommand` for a `ctrl`+`","` key returns `"open-settings"`
-  - [ ] `matchCommand` for a plain `","` (no ctrl) returns `null` so the composer keeps the comma
-  - [ ] `matchSettingsCommand` maps up/down to prev/next option, the tab key to switch-tab, `"r"` to reset, and escape to close
-  - [ ] the open-settings chord appears in `HELP_ENTRIES`
-  - [ ] `KEYMAP_HINT` contains the settings chord
+  - [x] `matchCommand` for a `ctrl`+`","` key returns `"open-settings"`
+  - [x] `matchCommand` for a plain `","` (no ctrl) returns `null` so the composer keeps the comma
+  - [x] `matchSettingsCommand` maps up/down to prev/next option, the tab key to switch-tab, `"r"` to reset, and escape to close
+  - [x] the open-settings chord appears in `HELP_ENTRIES`
+  - [x] `KEYMAP_HINT` contains the settings chord
 - Integration tests:
-  - [ ] a synthesized `Ctrl+,` `KeyEvent` routed through `matchCommand` yields `open-settings` and matches no other command
+  - [x] a synthesized `Ctrl+,` `KeyEvent` routed through `matchCommand` yields `open-settings` and matches no other command
 - Test coverage target: >=80%
 - All tests must pass
 

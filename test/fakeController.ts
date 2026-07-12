@@ -12,10 +12,12 @@
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
 import { nextSessionId, type PromptInput } from "../src/app/actions.ts"
-import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
+import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
+import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
 import { selectNextNeedy } from "../src/store/selectors.ts"
+import type { ResumeMode } from "../src/telemetry/recorder.ts"
 
 /** Every action call the cockpit made, in order. */
 export interface RecordedCalls {
@@ -24,6 +26,10 @@ export interface RecordedCalls {
   setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
   switchFocus: (SessionId | undefined)[]
   jumpToNextNeedy: number
+  startNewRun: number
+  startFreshFromContext: { input: PromptInput; sessionId: SessionId | undefined }[]
+  restore: PersistedRunRecord[]
+  restoreModes: ResumeMode[]
   respondPermission: PermissionOutcome[]
   dispose: number
 }
@@ -39,6 +45,8 @@ export interface FakeControllerOptions {
   runtimes?: AgentRuntimeState[]
   /** The store to drive. Defaults to a fresh one. */
   store?: AppStore
+  /** Shell standing exposed to shell-aware views. Defaults to unavailable. */
+  shell?: ShellRuntimeState
 }
 
 /**
@@ -80,6 +88,10 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     setSessionConfigOption: [],
     switchFocus: [],
     jumpToNextNeedy: 0,
+    startNewRun: 0,
+    startFreshFromContext: [],
+    restore: [],
+    restoreModes: [],
     respondPermission: [],
     dispose: 0,
   }
@@ -88,6 +100,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
 
   return {
     store,
+    shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
@@ -109,6 +122,15 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         const target = selectNextNeedy(store.getState().focusedSessionId)(store.getState())
         if (target) store.setFocus(target)
       },
+      async startNewRun(): Promise<void> {
+        calls.startNewRun++
+        for (const sessionId of store.getState().order) store.setRestoration(sessionId, null)
+      },
+      async startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
+        calls.startFreshFromContext.push({ input, sessionId })
+        if (sessionId) store.setRestoration(sessionId, null)
+        return null
+      },
       respondPermission(outcome: PermissionOutcome): void {
         calls.respondPermission.push(outcome)
         // The real controller settles the agent's promise and then advances its queue,
@@ -120,6 +142,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
+    async restore(record, mode = "last-run"): Promise<void> {
+      calls.restore.push(record)
+      calls.restoreModes.push(mode)
+      store.setFocus(record.focusedAgentId)
+    },
     async dispose(): Promise<void> {
       calls.dispose++
     },

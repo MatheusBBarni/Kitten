@@ -1,12 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Restore orchestration with per-agent degradation"
 type: backend
 complexity: high
 dependencies:
-  - task_02
-  - task_04
-  - task_06
+    - task_02
+    - task_04
+    - task_06
 ---
 
 # Task 07: Restore orchestration with per-agent degradation

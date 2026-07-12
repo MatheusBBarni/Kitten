@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Render the hand-off summary as Markdown"
 type: frontend
 complexity: medium
 dependencies:
-  - task_01
-  - task_02
+    - task_01
+    - task_02
 ---
 
 # Task 04: Render the hand-off summary as Markdown

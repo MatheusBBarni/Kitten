@@ -1,13 +1,13 @@
 ---
-status: pending
+status: completed
 title: "Pane focus, toggle chord, input forwarding, and Ctrl+C routing"
 type: frontend
 complexity: high
 dependencies:
-  - task_02
-  - task_07
-  - task_08
-  - task_11
+    - task_02
+    - task_07
+    - task_08
+    - task_11
 ---
 
 # Task 09: Pane focus, toggle chord, input forwarding, and Ctrl+C routing

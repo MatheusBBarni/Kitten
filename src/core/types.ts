@@ -133,6 +133,13 @@ export interface ConfigOption {
   options: ConfigSelectOption[]
 }
 
+/** Context-window usage reported by an agent; `percent` is normalized to [0, 1]. */
+export interface ContextUsage {
+  used: number
+  size: number
+  percent: number
+}
+
 /** The config-option category id for the model picker. */
 export const MODEL_CATEGORY = "model"
 /** The config-option category id for the reasoning-effort picker (ACP `thought_level`). */
@@ -224,6 +231,8 @@ export interface SessionState {
   providerKind: ProviderKind
   title: string
   cwd: string
+  /** The session working tree's current branch, when it can be resolved. */
+  branch?: string
   task?: string
   acpSessionId: string
   turns: Turn[]
@@ -285,6 +294,7 @@ export type DomainSessionEvent =
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
+  | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
 
 /**
@@ -297,6 +307,8 @@ export interface HandoffBundle {
   summary: string // deterministic transcript excerpt in V1
   files: { path: string; reason: "read" | "edited" }[]
   pendingDiffs: PendingDiff[]
+  /** Redacted shell state offered to the developer for explicit preview curation. */
+  shell?: ShellSnapshot
   redactionCount: number // secrets stripped before preview
 }
 
@@ -345,6 +357,13 @@ export type ThemePreference = "auto" | "light" | "dark" | ThemePresetId
 /** Whether the welcome banner follows first-run state, always expands, or stays hidden. */
 export type WelcomeBannerPreference = "auto" | "always" | "off"
 
+/** Fully resolved policy for the controller-owned integrated shell. */
+export interface ShellConfig {
+  enabled: boolean
+  command: string
+  scrollback: number
+}
+
 /**
  * The loaded application configuration (ADR-005). `providers` is the map of spawn
  * recipes keyed by kind; `sessions` is the ordered fleet to open. An empty `sessions`
@@ -353,6 +372,8 @@ export type WelcomeBannerPreference = "auto" | "always" | "off"
 export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
   sessions: SessionDescriptor[]
+  shell: ShellConfig
+  persistenceEnabled: boolean
   telemetryEnabled: boolean
   theme: ThemePreference
   welcomeBanner: WelcomeBannerPreference

@@ -60,6 +60,14 @@ export interface FirstRunReport {
   blocked: boolean
 }
 
+/** Optional informational lines that accompany the readiness verdict. */
+export interface FirstRunGuidanceOptions {
+  /** Whether this run writes resumable session state to disk. */
+  persistenceEnabled?: boolean
+  /** Resolved directory containing Kitten's saved-session records. */
+  sessionsPath?: string
+}
+
 /**
  * Build a setup state, keeping the {@link AgentSetupState} shape in one place so the
  * two boot paths that produce it (a readiness verdict pre-boot, a live runtime state
@@ -152,7 +160,10 @@ export function buildFirstRunReport(input: {
  * not-ready agent's own reason. When at least one agent is ready but another is not,
  * the lines still name the gap so the user can fix it without hunting.
  */
-export function formatFirstRunReport(report: FirstRunReport): string[] {
+export function formatFirstRunReport(
+  report: FirstRunReport,
+  options: FirstRunGuidanceOptions = {},
+): string[] {
   const lines: string[] = []
   if (!report.insideRepo) {
     lines.push(REPO_REQUIREMENT_MESSAGE)
@@ -166,6 +177,11 @@ export function formatFirstRunReport(report: FirstRunReport): string[] {
     )
     for (const gap of report.gaps) lines.push(`  - ${gap}`)
     lines.push("Fix the setup above, then start Kitten again.")
+  }
+  if (options.persistenceEnabled && options.sessionsPath) {
+    lines.push(
+      `Kitten remembers sessions for this project in ${options.sessionsPath}; press Ctrl+R, then Ctrl+D to delete one or Ctrl+A to delete all.`,
+    )
   }
   return lines
 }

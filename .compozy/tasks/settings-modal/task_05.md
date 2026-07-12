@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Config file-watcher with debounced reload"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ The watcher is debounced and tolerant of a transient mid-edit parse failure, so 
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Create `configWatcher.ts` and the `watchUserConfig` signature returning a `ConfigWatcher`
-- [ ] 5.2 Watch the resolved path, handling both `change` and `rename` events
-- [ ] 5.3 Debounce events and reload via `loadAppConfig`
-- [ ] 5.4 Ignore transient parse/read failures without emitting
-- [ ] 5.5 Cover reload, debounce, invalid-file tolerance, and `close()` in tests
+- [x] 5.1 Create `configWatcher.ts` and the `watchUserConfig` signature returning a `ConfigWatcher`
+- [x] 5.2 Watch the resolved path, handling both `change` and `rename` events
+- [x] 5.3 Debounce events and reload via `loadAppConfig`
+- [x] 5.4 Ignore transient parse/read failures without emitting
+- [x] 5.5 Cover reload, debounce, invalid-file tolerance, and `close()` in tests
 
 ## Implementation Details
 Create `src/config/configWatcher.ts` using the Node `fs.watch` API, reusing `loadAppConfig` for the reload and `resolveConfigPath` for the path.
@@ -60,13 +60,13 @@ The store-level idempotence that breaks the write-reload loop is task_09; this t
 
 ## Tests
 - Unit tests:
-  - [ ] an external write to the watched file triggers exactly one `onConfig` after the debounce window
-  - [ ] `onConfig` receives the `AppConfig` reflecting the new file contents
-  - [ ] writing invalid JSON does not throw and does not call `onConfig`; the next valid write does
-  - [ ] `close()` stops all further `onConfig` callbacks
-  - [ ] a temp-file-plus-rename replacement is detected and reloads
+  - [x] an external write to the watched file triggers exactly one `onConfig` after the debounce window
+  - [x] `onConfig` receives the `AppConfig` reflecting the new file contents
+  - [x] writing invalid JSON does not throw and does not call `onConfig`; the next valid write does
+  - [x] `close()` stops all further `onConfig` callbacks
+  - [x] a temp-file-plus-rename replacement is detected and reloads
 - Integration tests:
-  - [ ] watch a temp file, write a theme change, and assert `onConfig` fires with the new theme
+  - [x] watch a temp file, write a theme change, and assert `onConfig` fires with the new theme
 - Test coverage target: >=80%
 - All tests must pass
 

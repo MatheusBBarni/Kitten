@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Safe multi-session approvals labeling"
 type: frontend
 complexity: medium
@@ -29,10 +29,10 @@ This closes the wrong-session hazard the PRD calls out, especially for two sessi
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Read the `SessionId`, title, and `cwd` from the approval overlay state.
-- [ ] 7.2 Render the session title and directory in the approval prompt header.
-- [ ] 7.3 Disambiguate status-strip chips and overview rows for same-provider sessions.
-- [ ] 7.4 Confirm no cross-session auto-approve path exists and each queued request is answered on its own.
+- [x] 7.1 Read the `SessionId`, title, and `cwd` from the approval overlay state.
+- [x] 7.2 Render the session title and directory in the approval prompt header.
+- [x] 7.3 Disambiguate status-strip chips and overview rows for same-provider sessions.
+- [x] 7.4 Confirm no cross-session auto-approve path exists and each queued request is answered on its own.
 
 ## Implementation Details
 The approval overlay already carries the session identity after task_03; this task surfaces it in the UI per the TechSpec "Safe multi-session approvals" note.

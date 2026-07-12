@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Fleet configuration model"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ This lets a developer pre-declare a fleet across several repositories, including
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Define the `providers` + `sessions` schema and the `SessionDescriptor`/`ProviderRecipe` types.
-- [ ] 2.2 Rewrite the defaults and the per-field merge over the pinned provider recipes.
-- [ ] 2.3 Resolve session descriptors into per-session spawn-plus-`cwd` inputs, defaulting `title` to the directory basename.
-- [ ] 2.4 Implement the zero-config default of one session per provider in the launch directory.
-- [ ] 2.5 Produce clear validation errors for unknown keys and for a missing or unreadable `cwd`.
+- [x] 2.1 Define the `providers` + `sessions` schema and the `SessionDescriptor`/`ProviderRecipe` types.
+- [x] 2.2 Rewrite the defaults and the per-field merge over the pinned provider recipes.
+- [x] 2.3 Resolve session descriptors into per-session spawn-plus-`cwd` inputs, defaulting `title` to the directory basename.
+- [x] 2.4 Implement the zero-config default of one session per provider in the launch directory.
+- [x] 2.5 Produce clear validation errors for unknown keys and for a missing or unreadable `cwd`.
 
 ## Implementation Details
 Extend `AppConfig` in the core and rewrite the loader per the TechSpec "Data Models" section and ADR-005.

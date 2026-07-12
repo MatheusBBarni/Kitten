@@ -25,8 +25,9 @@
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "selfcheck": "bun run src/index.ts --self-check",
+    "selfcheck:reload": "bun run src/index.ts --self-check --reload-probe",
     "build": "bun run scripts/build.ts",
-    "build:local": "bun build --compile ./src/index.ts --outfile kitten"
+    "build:local": "bun run scripts/build.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.2.1",

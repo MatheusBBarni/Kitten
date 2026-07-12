@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Theme palette registry, resolver, and live usePalette"
 type: frontend
 complexity: medium
@@ -31,11 +31,11 @@ This lets a theme change (auto, light, dark, Catppuccin Mocha, Catppuccin Latte)
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add a stable `id` to `CockpitPalette` and to the existing dark/light palettes
-- [ ] 3.2 Author the Catppuccin Mocha and Latte palettes and assemble the keyed registry
-- [ ] 3.3 Implement `resolvePalette(pref, mode)` with the auto path and unknown-id fallback
-- [ ] 3.4 Wire `usePalette` to the preference selector and the live terminal mode
-- [ ] 3.5 Re-key `syntaxStyleFor` by palette id and verify preset legibility on both backgrounds
+- [x] 3.1 Add a stable `id` to `CockpitPalette` and to the existing dark/light palettes
+- [x] 3.2 Author the Catppuccin Mocha and Latte palettes and assemble the keyed registry
+- [x] 3.3 Implement `resolvePalette(pref, mode)` with the auto path and unknown-id fallback
+- [x] 3.4 Wire `usePalette` to the preference selector and the live terminal mode
+- [x] 3.5 Re-key `syntaxStyleFor` by palette id and verify preset legibility on both backgrounds
 
 ## Implementation Details
 Modify `src/ui/theme.ts`.
@@ -62,15 +62,15 @@ See the TechSpec "Core Interfaces" (theme) section and ADR-005; the two Catppucc
 
 ## Tests
 - Unit tests:
-  - [ ] `resolvePalette("auto", "dark")` returns the dark palette and `("auto", "light")` the light palette
-  - [ ] `resolvePalette("light", <any mode>)` pins light and `("dark", <any mode>)` pins dark
-  - [ ] `resolvePalette("catppuccin-mocha", <any mode>)` returns the Mocha palette (id `"catppuccin-mocha"`)
-  - [ ] `resolvePalette("catppuccin-latte", <any mode>)` returns the Latte palette
-  - [ ] `resolvePalette(<unknown id>, "dark")` falls back to the dark terminal palette
-  - [ ] `syntaxStyleFor` returns and caches distinct styles for two different palette ids
+  - [x] `resolvePalette("auto", "dark")` returns the dark palette and `("auto", "light")` the light palette
+  - [x] `resolvePalette("light", <any mode>)` pins light and `("dark", <any mode>)` pins dark
+  - [x] `resolvePalette("catppuccin-mocha", <any mode>)` returns the Mocha palette (id `"catppuccin-mocha"`)
+  - [x] `resolvePalette("catppuccin-latte", <any mode>)` returns the Latte palette
+  - [x] `resolvePalette(<unknown id>, "dark")` falls back to the dark terminal palette
+  - [x] `syntaxStyleFor` returns and caches distinct styles for two different palette ids
 - Integration tests:
-  - [ ] a rendered view re-renders with the Mocha palette when the store preference changes from `"auto"` to `"catppuccin-mocha"`
-  - [ ] with preference `"auto"`, a terminal `theme_mode` flip re-resolves the palette
+  - [x] a rendered view re-renders with the Mocha palette when the store preference changes from `"auto"` to `"catppuccin-mocha"`
+  - [x] with preference `"auto"`, a terminal `theme_mode` flip re-resolves the palette
 - Test coverage target: >=80%
 - All tests must pass
 

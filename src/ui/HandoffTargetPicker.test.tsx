@@ -250,7 +250,9 @@ describe("integration - hand-off and hand-back across three sessions", () => {
 
     // The fake records the send but, unlike the real controller, does not echo the user
     // turn into the store. Mirror the delivered turn so C has a transcript to hand back.
-    controller.store.applyEvent("c", { kind: "user_message", messageId: "handed", text: "continue" })
+    await actAsync(() => {
+      controller.store.applyEvent("c", { kind: "user_message", messageId: "handed", text: "continue" })
+    })
 
     // C now holds the handed-over turn, so hand-back is the same flow pointed back.
     // From C the candidates are A and B; A (Alpha) is the first row - choose it directly.

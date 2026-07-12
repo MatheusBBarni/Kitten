@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "ShellPane render bridge"
 type: frontend
 complexity: high
 dependencies:
-  - task_02
-  - task_05
+    - task_02
+    - task_05
 ---
 
 # Task 08: ShellPane render bridge

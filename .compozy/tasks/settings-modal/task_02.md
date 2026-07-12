@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Reactive preferences slice and settings overlay slot"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This lets the settings modal open and close and lets a theme change repaint the 
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Add the preferences slice and the `AppStoreOptions.preferences` seed
-- [ ] 2.2 Add the `settings` overlay slot and `openSettings`/`closeSettings`
-- [ ] 2.3 Add `setThemePreference` with an unchanged-value no-op
-- [ ] 2.4 Add `selectThemePreference`/`selectSettingsOverlay` and extend `selectHasOpenOverlay`
-- [ ] 2.5 Cover slot isolation and subscription silence in tests
+- [x] 2.1 Add the preferences slice and the `AppStoreOptions.preferences` seed
+- [x] 2.2 Add the `settings` overlay slot and `openSettings`/`closeSettings`
+- [x] 2.3 Add `setThemePreference` with an unchanged-value no-op
+- [x] 2.4 Add `selectThemePreference`/`selectSettingsOverlay` and extend `selectHasOpenOverlay`
+- [x] 2.5 Cover slot isolation and subscription silence in tests
 
 ## Implementation Details
 Modify `src/store/appStore.ts` (`OverlayState`, `AppState`, `AppStoreOptions`, the actions, and the initializer) and `src/store/selectors.ts`.

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Controller action and session-start seeding"
 type: backend
 complexity: medium
@@ -31,11 +31,11 @@ This keeps the UI free of ACP concerns and gives it a single action to call.
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add `setSessionConfigOption` to the `ControllerActions` interface
-- [ ] 5.2 Implement it in `createControllerActions`, resolving the session and calling the adapter
-- [ ] 5.3 Seed captured session-start options into the store in `startAgent`
-- [ ] 5.4 Route the adapter-reported result into the store via `applyEvent`, not optimistically
-- [ ] 5.5 Cover the action and seeding with unit tests using a fake connection
+- [x] 5.1 Add `setSessionConfigOption` to the `ControllerActions` interface
+- [x] 5.2 Implement it in `createControllerActions`, resolving the session and calling the adapter
+- [x] 5.3 Seed captured session-start options into the store in `startAgent`
+- [x] 5.4 Route the adapter-reported result into the store via `applyEvent`, not optimistically
+- [x] 5.5 Cover the action and seeding with unit tests using a fake connection
 
 ## Implementation Details
 Modify the controller and actions. See TechSpec "System Architecture" (Controller / Actions) and ADR-004. Mirror `sendPrompt` (`actions.ts:78-93`); `getSession` builds the live `AgentSession` (`controller.ts:120-124`); `startAgent` calls `newSession` and subscribes updates (`controller.ts:127-153`).

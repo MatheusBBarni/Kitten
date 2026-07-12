@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "In-pane interactive application support"
 type: frontend
 complexity: medium
 dependencies:
-  - task_08
-  - task_09
+    - task_08
+    - task_09
 ---
 
 # Task 10: In-pane interactive application support

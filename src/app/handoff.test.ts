@@ -15,9 +15,11 @@ import {
   createHandoffFlow,
   FILES_HEADING,
   HANDOFF_INSTRUCTION,
+  includedCommands,
   includedDiffs,
   includedFiles,
   pendingDiffHeading,
+  SHELL_HEADING,
   type HandoffEdits,
 } from "./handoff.ts"
 
@@ -56,6 +58,15 @@ function controllerWithWork(options: { runtimes?: AgentRuntimeState[]; sessionId
   })
   store.applyEvent(sessionId, { kind: "tool_call", call: editCall() })
   return controller
+}
+
+/** Add two completed commands to the shell slice captured by the next hand-off. */
+function seedShellWork(controller: FakeController): void {
+  controller.store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/kitten" })
+  controller.store.applyShellEvent({ kind: "command_started", id: "command-test", command: "bun test" })
+  controller.store.applyShellEvent({ kind: "command_finished", id: "command-test", exitCode: 0, output: "12 pass" })
+  controller.store.applyShellEvent({ kind: "command_started", id: "command-status", command: "git status" })
+  controller.store.applyShellEvent({ kind: "command_finished", id: "command-status", exitCode: 0, output: "clean" })
 }
 
 /** Give `sessionId` a transcript worth handing over: a turn, a file it read, a diff. */
@@ -191,6 +202,7 @@ describe("composeHandoffBlocks", () => {
       summary: bundle.summary,
       excludedFiles: new Set(["src/app.ts", "cfg.json"]),
       excludedDiffs: new Set(["call-edit"]),
+      excludedCommands: new Set(),
       targetConfig: [],
     }
     const texts = composeHandoffBlocks(bundle, trimmed).map((block) => block.text)
@@ -210,6 +222,7 @@ describe("composeHandoffBlocks", () => {
       summary: "   \n  ",
       excludedFiles: new Set(["src/app.ts", "cfg.json"]),
       excludedDiffs: new Set(["call-edit"]),
+      excludedCommands: new Set(),
       targetConfig: [],
     }
     // Not "just the instruction": a target told to continue a task it has been told
@@ -224,6 +237,54 @@ describe("composeHandoffBlocks", () => {
       bare.summary,
     ])
   })
+
+  it("emits a Shell context block from the surviving commands and cwd", () => {
+    const shellBundle: HandoffBundle = {
+      ...bundle,
+      shell: {
+        cwd: "/workspace/kitten",
+        commands: [
+          { id: "command-1", command: "bun test", output: "12 pass", exitCode: 0 },
+          { id: "command-2", command: "false", output: "", exitCode: 1 },
+        ],
+      },
+    }
+    const shellEdits = {
+      ...createHandoffEdits(shellBundle),
+      excludedCommands: new Set(["command-2"]),
+    }
+
+    const blocks = composeHandoffBlocks(shellBundle, shellEdits)
+    const shellBlock = blocks.find((block) => block.text.startsWith(SHELL_HEADING))
+
+    expect(includedCommands(shellBundle, shellEdits).map((command) => command.id)).toEqual(["command-1"])
+    expect(shellBlock?.text).toBe(
+      [SHELL_HEADING, "Working directory: /workspace/kitten", "Command: bun test\nExit code: 0\nOutput:\n12 pass"].join(
+        "\n\n",
+      ),
+    )
+    expect(shellBlock?.text).not.toContain("Command: false")
+  })
+
+  it("omits the shell block when the developer drops every command", () => {
+    const shellOnly: HandoffBundle = {
+      intent: "continue",
+      summary: "",
+      files: [],
+      pendingDiffs: [],
+      shell: {
+        cwd: "/workspace/kitten",
+        commands: [{ id: "command-1", command: "bun test", output: "12 pass", exitCode: 0 }],
+      },
+      redactionCount: 0,
+    }
+    const dropped = {
+      ...createHandoffEdits(shellOnly),
+      excludedCommands: new Set(["command-1"]),
+    }
+
+    expect(composeHandoffBlocks(shellOnly, dropped)).toEqual([])
+  })
 })
 
 describe("HandoffFlow.begin", () => {
@@ -231,7 +292,7 @@ describe("HandoffFlow.begin", () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })
 
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
 
     const overlay = controller.store.getState().overlays.handoffPreview!
     expect(overlay.sourceSessionId).toBe("claude-code")
@@ -256,7 +317,7 @@ describe("HandoffFlow.begin", () => {
     ]
     controller.store.applyEvent("codex", { kind: "config_options", options })
 
-    expect(createHandoffFlow({ controller }).begin()).toBe(true)
+    expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: true })
 
     const preview = controller.store.getState().overlays.handoffPreview!
     expect(preview.targetConfigOptions).toEqual(targetConfigOptions("sonnet", "low"))
@@ -283,13 +344,13 @@ describe("HandoffFlow.begin", () => {
     expect(bundle.summary).not.toContain(SECRET)
   })
 
-  it("does nothing when the source agent has said nothing worth carrying", () => {
+  it("returns empty-source when the source agent has said nothing worth carrying", () => {
     const controller = createFakeController()
-    expect(createHandoffFlow({ controller }).begin()).toBe(false)
+    expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: false, reason: "empty-source" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
-  it("does nothing when the agent that would receive the bundle never came up", () => {
+  it("returns no-target when the agent that would receive the bundle never came up", () => {
     const runtimes: AgentRuntimeState[] = [
       readyRuntimes()[0]!,
       {
@@ -304,11 +365,11 @@ describe("HandoffFlow.begin", () => {
     ]
     const controller = controllerWithWork({ runtimes })
 
-    expect(createHandoffFlow({ controller }).begin()).toBe(false)
+    expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: false, reason: "no-target" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
-  it("does not clobber a pending permission request, which has an agent blocked on it", () => {
+  it("returns overlay-open without clobbering a pending permission request", () => {
     const controller = controllerWithWork()
     controller.store.openApproval({
       sessionId: "claude-code",
@@ -317,28 +378,33 @@ describe("HandoffFlow.begin", () => {
       request: { sessionId: "s", toolCall: { toolCallId: "call-1" }, options: [] },
     })
 
-    expect(createHandoffFlow({ controller }).begin()).toBe(false)
+    expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: false, reason: "overlay-open" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
   it("does not re-assemble over a preview the developer is already curating", () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
 
     const first = openBundle(controller)
     controller.store.applyEvent("claude-code", { kind: "user_message", messageId: "m3", text: "and again" })
 
-    expect(flow.begin()).toBe(false)
+    expect(flow.begin()).toEqual({ ok: false, reason: "overlay-open" })
     expect(openBundle(controller)).toBe(first)
   })
 
   it("assembles through the injected strategy, so Phase 2 swaps it without touching callers", () => {
     const controller = controllerWithWork()
     const seen: ProviderKind[] = []
+    controller.store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/kitten" })
+    controller.store.applyShellEvent({ kind: "command_started", id: "command-1", command: "bun test" })
+    controller.store.applyShellEvent({ kind: "command_finished", id: "command-1", output: "12 pass", exitCode: 0 })
+    let seenShell: HandoffBundle["shell"]
     const assembler: BundleAssembler = {
-      assemble(session, target) {
+      assemble(session, target, shell) {
         seen.push(target)
+        seenShell = shell
         return {
           intent: "continue",
           summary: `curated ${session.providerKind}`,
@@ -352,6 +418,10 @@ describe("HandoffFlow.begin", () => {
     createHandoffFlow({ controller, assembler }).begin()
 
     expect(seen).toEqual(["codex"])
+    expect(seenShell).toMatchObject({
+      cwd: "/workspace/kitten",
+      commands: [{ id: "command-1", command: "bun test", output: "12 pass", exitCode: 0 }],
+    })
     expect(openBundle(controller)).toEqual({
       intent: "continue",
       summary: "curated claude-code",
@@ -453,6 +523,40 @@ describe("HandoffFlow.confirm", () => {
     expect(records.some((record) => record.type === "effort_linked_handoff")).toBe(false)
   })
 
+  it("records shell_snapshot_attached when a confirmed hand-off carries a surviving command", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({ enabled: true, sink: { write: (record) => records.push(record) } })
+    const controller = controllerWithWork()
+    seedShellWork(controller)
+    const flow = createHandoffFlow({ controller, recorder })
+    flow.begin()
+    const bundle = openBundle(controller)
+
+    await flow.confirm({
+      ...createHandoffEdits(bundle),
+      excludedCommands: new Set(["command-test"]),
+    })
+
+    expect(records.filter((record) => record.type === "shell_snapshot_attached")).toHaveLength(1)
+  })
+
+  it("records no shell snapshot event when every command is dropped", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({ enabled: true, sink: { write: (record) => records.push(record) } })
+    const controller = controllerWithWork()
+    seedShellWork(controller)
+    const flow = createHandoffFlow({ controller, recorder })
+    flow.begin()
+    const bundle = openBundle(controller)
+
+    await flow.confirm({
+      ...createHandoffEdits(bundle),
+      excludedCommands: new Set(["command-test", "command-status"]),
+    })
+
+    expect(records.some((record) => record.type === "shell_snapshot_attached")).toBe(false)
+  })
+
   it("sends unchanged hand-offs without a target config call", async () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })
@@ -474,6 +578,7 @@ describe("HandoffFlow.confirm", () => {
       summary: "Just finish the edit.",
       excludedFiles: new Set(["cfg.json"]),
       excludedDiffs: new Set(),
+      excludedCommands: new Set(),
       targetConfig: [],
     })
 
@@ -493,6 +598,7 @@ describe("HandoffFlow.confirm", () => {
       summary: "",
       excludedFiles: new Set(["cfg.json", "src/app.ts"]),
       excludedDiffs: new Set(["call-edit"]),
+      excludedCommands: new Set(),
       targetConfig: [],
     })
 
@@ -506,7 +612,15 @@ describe("HandoffFlow.confirm", () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })
 
-    expect(await flow.confirm({ summary: "hi", excludedFiles: new Set(), excludedDiffs: new Set(), targetConfig: [] })).toBeNull()
+    expect(
+      await flow.confirm({
+        summary: "hi",
+        excludedFiles: new Set(),
+        excludedDiffs: new Set(),
+        excludedCommands: new Set(),
+        targetConfig: [],
+      }),
+    ).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
   })
@@ -538,7 +652,7 @@ describe("HandoffFlow.begin - fleet targeting", () => {
     const controller = fleetControllerWithWork()
     const flow = createHandoffFlow({ controller })
 
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
 
     const { overlays } = controller.store.getState()
     expect(overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
@@ -551,7 +665,7 @@ describe("HandoffFlow.begin - fleet targeting", () => {
     const controller = fleetControllerWithWork({ notReady: { c: true } })
     const flow = createHandoffFlow({ controller })
 
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
 
     const { overlays } = controller.store.getState()
     expect(overlays.handoffTarget).toBeNull()
@@ -559,10 +673,10 @@ describe("HandoffFlow.begin - fleet targeting", () => {
     expect(overlays.handoffPreview!.targetSessionId).toBe("b")
   })
 
-  it("returns false when only the source is ready, so there is no recipient", () => {
+  it("returns no-target when only the source is ready, so there is no recipient", () => {
     const controller = fleetControllerWithWork({ notReady: { b: true, c: true } })
 
-    expect(createHandoffFlow({ controller }).begin()).toBe(false)
+    expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: false, reason: "no-target" })
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
@@ -570,10 +684,10 @@ describe("HandoffFlow.begin - fleet targeting", () => {
   it("does not open a second picker over one already open", () => {
     const controller = fleetControllerWithWork()
     const flow = createHandoffFlow({ controller })
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
 
     // A picker is an open overlay, so a second chord finds the screen already owned.
-    expect(flow.begin()).toBe(false)
+    expect(flow.begin()).toEqual({ ok: false, reason: "overlay-open" })
     expect(controller.store.getState().overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
   })
 
@@ -650,7 +764,7 @@ describe("HandoffFlow.chooseTarget", () => {
     controller.store.setFocus("a")
     seedWork(controller, "a")
     const flow = createHandoffFlow({ controller })
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
 
     expect(flow.chooseTarget("d")).toBe(false)
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
@@ -700,6 +814,7 @@ describe("hand-off moat - characterization (ADR-002)", () => {
       summary: "  Only the edit matters.  ",
       excludedFiles: new Set(["cfg.json"]),
       excludedDiffs: new Set(),
+      excludedCommands: new Set(),
       targetConfig: [],
     }
     expect(composeHandoffBlocks(FIXED_BUNDLE, edits)).toEqual([
@@ -732,7 +847,7 @@ describe("hand-back", () => {
     const controller = controllerWithWork({ sessionId: "codex" })
     const flow = createHandoffFlow({ controller })
 
-    expect(flow.begin()).toBe(true)
+    expect(flow.begin()).toEqual({ ok: true })
     const overlay = controller.store.getState().overlays.handoffPreview!
     expect(overlay.sourceSessionId).toBe("codex")
     expect(overlay.targetSessionId).toBe("claude-code")

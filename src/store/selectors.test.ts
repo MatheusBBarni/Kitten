@@ -9,6 +9,10 @@ import {
   selectAgentModel,
   selectNextNeedy,
   selectSessionList,
+  selectSessionBranch,
+  selectSessionContext,
+  selectSessionModel,
+  selectRestoration,
   selectSessionPendingDiffs,
   selectSessionPlan,
   selectSessionReferencedFiles,
@@ -25,6 +29,7 @@ import {
   selectIsFocused,
   selectIsShellFocused,
   selectIsSessionsOpen,
+  selectSessionPicker,
   selectModelSelectOverlay,
   selectSettingsOverlay,
   selectShell,
@@ -162,6 +167,45 @@ describe("per-agent session selectors", () => {
     expect(selectSessionReferencedFiles("codex")(state)).toEqual(new Map([["src/parser.ts", "edited"]]))
   })
 
+  it("returns a stored branch and hides it when unresolved", () => {
+    const state = createAppStore().getState()
+    expect(selectSessionBranch("claude-code")(state)).toBeNull()
+
+    const withBranch = {
+      ...state,
+      sessions: {
+        ...state.sessions,
+        "claude-code": { ...state.sessions["claude-code"]!, branch: "feature/status-bar" },
+      },
+    }
+    expect(selectSessionBranch("claude-code")(withBranch)).toBe("feature/status-bar")
+  })
+
+  it("keeps delegated model and context slots hidden", () => {
+    const state = createAppStore().getState()
+    expect(selectSessionModel("claude-code")(state)).toBeNull()
+    expect(selectSessionContext("claude-code")(state)).toBeNull()
+  })
+
+  it("returns stable slot values from memoized per-session selectors", () => {
+    const base = createAppStore().getState()
+    const before = {
+      ...base,
+      sessions: {
+        ...base.sessions,
+        "claude-code": { ...base.sessions["claude-code"]!, branch: "feature/status-bar" },
+      },
+    }
+    const after = { ...before, focusedSessionId: "codex" }
+    const branch = selectSessionBranch("claude-code")
+    const model = selectSessionModel("claude-code")
+    const context = selectSessionContext("claude-code")
+
+    expect(branch(after)).toBe(branch(before))
+    expect(model(after)).toBe(model(before))
+    expect(context(after)).toBe(context(before))
+  })
+
   it("keeps an untouched agent's slices referentially stable", () => {
     const store = createAppStore()
     const before = store.getState()
@@ -285,6 +329,7 @@ describe("overlay selectors", () => {
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
     expect(selectIsSessionsOpen(state)).toBe(false)
+    expect(selectSessionPicker(state)).toBe(false)
   })
 
   it("report an open sessions overview as an open, modal overlay", () => {
@@ -297,6 +342,18 @@ describe("overlay selectors", () => {
     // The overview carries no payload, so the approval flag stays independent of it.
     expect(selectIsApprovalOpen(state)).toBe(false)
     expect(selectApprovalOverlay(state)).toBeNull()
+  })
+
+  it("reports an open session picker as an open, modal overlay", () => {
+    const store = createAppStore()
+    store.openSessionPicker()
+    const state = store.getState()
+
+    expect(selectSessionPicker(state)).toBe(true)
+    expect(selectHasOpenOverlay(state)).toBe(true)
+    expect(selectIsApprovalOpen(state)).toBe(false)
+    expect(selectApprovalOverlay(state)).toBeNull()
+    expect(selectHandoffPreview(state)).toBeNull()
   })
 
   it("report an open approval overlay", () => {

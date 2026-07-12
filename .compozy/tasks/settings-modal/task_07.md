@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Content-free telemetry events for settings"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Every new event preserves the recorder's structural no-text guarantee, recording
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Add the four event types to `TelemetryEventType`
-- [ ] 7.2 Add the fixed-enum `themeId`/`source` fields to `TelemetryRecord`
-- [ ] 7.3 Add the recorder methods to the `TelemetryRecorder` interface
-- [ ] 7.4 Implement them in `ActiveRecorder` and add no-ops to `NOOP_RECORDER`
-- [ ] 7.5 Cover enabled emission, disabled no-op, and the content-free shape in tests
+- [x] 7.1 Add the four event types to `TelemetryEventType`
+- [x] 7.2 Add the fixed-enum `themeId`/`source` fields to `TelemetryRecord`
+- [x] 7.3 Add the recorder methods to the `TelemetryRecorder` interface
+- [x] 7.4 Implement them in `ActiveRecorder` and add no-ops to `NOOP_RECORDER`
+- [x] 7.5 Cover enabled emission, disabled no-op, and the content-free shape in tests
 
 ## Implementation Details
 Modify `src/telemetry/recorder.ts`.
@@ -57,13 +57,13 @@ See the TechSpec "Monitoring and Observability" section; the `themeId` enum come
 
 ## Tests
 - Unit tests:
-  - [ ] an enabled recorder writes a `settings_opened` record carrying only its type/timestamp/sessionRef
-  - [ ] `themeSet("catppuccin-mocha")` writes a record with `themeId: "catppuccin-mocha"` and no text field
-  - [ ] `configWrite("modal")` and `configWriteError("modal")` write records with the `source` enum
-  - [ ] a disabled recorder writes nothing for all four methods
-  - [ ] `TelemetryRecord` exposes no free-text content field (shape assertion)
+  - [x] an enabled recorder writes a `settings_opened` record carrying only its type/timestamp/sessionRef
+  - [x] `themeSet("catppuccin-mocha")` writes a record with `themeId: "catppuccin-mocha"` and no text field
+  - [x] `configWrite("modal")` and `configWriteError("modal")` write records with the `source` enum
+  - [x] a disabled recorder writes nothing for all four methods
+  - [x] `TelemetryRecord` exposes no free-text content field (shape assertion)
 - Integration tests:
-  - [ ] with an injected in-memory sink, emitting the four events yields four content-free records
+  - [x] with an injected in-memory sink, emitting the four events yields four content-free records
 - Test coverage target: >=80%
 - All tests must pass
 

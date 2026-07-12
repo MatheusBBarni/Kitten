@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: "File-row provenance links for the hand-off preview"
 type: frontend
 complexity: medium
 dependencies:
-  - task_04
+    - task_04
 ---
 
 # Task 05: File-row provenance links for the hand-off preview

@@ -1,12 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Discovery affordances and run-externally action"
 type: frontend
 complexity: medium
 dependencies:
-  - task_09
-  - task_11
-  - task_13
+    - task_09
+    - task_11
+    - task_13
 ---
 
 # Task 14: Discovery affordances and run-externally action

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Controller: one runtime per session with its own working directory"
 type: backend
 complexity: high
@@ -31,11 +31,11 @@ This removes the single-shared-directory limitation, keys runtimes by `SessionId
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Key `runtimes` by `SessionId` and start one runtime per resolved session descriptor.
-- [ ] 3.2 Open each ACP session against its descriptor's own `cwd`.
-- [ ] 3.3 Aggregate per-session readiness into the first-run report without blocking the fleet on one bad session.
-- [ ] 3.4 Attach `SessionId`, `title`, and `cwd` to the parked approval request.
-- [ ] 3.5 Send the descriptor's optional first `task` as the opening prompt.
+- [x] 3.1 Key `runtimes` by `SessionId` and start one runtime per resolved session descriptor.
+- [x] 3.2 Open each ACP session against its descriptor's own `cwd`.
+- [x] 3.3 Aggregate per-session readiness into the first-run report without blocking the fleet on one bad session.
+- [x] 3.4 Attach `SessionId`, `title`, and `cwd` to the parked approval request.
+- [x] 3.5 Send the descriptor's optional first `task` as the opening prompt.
 
 ## Implementation Details
 Extend `createSessionController` and the boot path per the TechSpec "Component Overview" section.
@@ -65,13 +65,13 @@ Per-session readiness feeds `buildFirstRunReport`, and a session pointed at a no
 
 ## Tests
 - Unit tests:
-  - [ ] Three descriptors, two sharing a provider, produce three runtimes whose `newSession` calls receive three distinct working directories.
-  - [ ] A descriptor whose connection fails to spawn is recorded not-ready with its reason while the other sessions report ready.
-  - [ ] Enqueuing a permission request opens the approval overlay carrying that session's `SessionId`, `title`, and `cwd`.
-  - [ ] A descriptor carrying a first `task` sends that text as the opening prompt on start.
-  - [ ] A session pointed at a non-repository directory is reported not-ready without setting the whole report to blocked.
+  - [x] Three descriptors, two sharing a provider, produce three runtimes whose `newSession` calls receive three distinct working directories.
+  - [x] A descriptor whose connection fails to spawn is recorded not-ready with its reason while the other sessions report ready.
+  - [x] Enqueuing a permission request opens the approval overlay carrying that session's `SessionId`, `title`, and `cwd`.
+  - [x] A descriptor carrying a first `task` sends that text as the opening prompt on start.
+  - [x] A session pointed at a non-repository directory is reported not-ready without setting the whole report to blocked.
 - Integration tests:
-  - [ ] Boot with a three-session config against mock connections and assert live runtimes, focus on the first ready session, and per-session directories used across the `newSession` calls.
+  - [x] Boot with a three-session config against mock connections and assert live runtimes, focus on the first ready session, and per-session directories used across the `newSession` calls.
 - Test coverage target: >=80%
 - All tests must pass
 

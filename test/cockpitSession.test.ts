@@ -1,12 +1,20 @@
 import { describe, expect, it } from "bun:test"
+import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { createCockpitSession } from "../src/index.ts"
+import {
+  createCockpitSession as createRealCockpitSession,
+  type CockpitSessionDeps,
+} from "../src/index.ts"
 import type { AgentConnection } from "../src/agent/agentConnection.ts"
 import { createControllerActions } from "../src/app/actions.ts"
 import type { SessionController } from "../src/app/controller.ts"
 import type { ConfigWatcher } from "../src/config/configWatcher.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { AppConfig, ThemePreference } from "../src/core/types.ts"
+import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
+import { createRunStore } from "../src/persistence/runStore.ts"
 import { createAppStore } from "../src/store/appStore.ts"
 import { selectThemePreference } from "../src/store/selectors.ts"
 import { createTelemetryRecorder, type TelemetryRecord, type TelemetrySink } from "../src/telemetry/recorder.ts"
@@ -14,6 +22,14 @@ import { readyRuntimes } from "./fakeController.ts"
 
 const CONNECTION_STUB = { prompt: async () => ({ stopReason: "end_turn" as const }), cancel: async () => {} } as unknown as AgentConnection
 const NOOP_WATCHER: ConfigWatcher = { close() {} }
+
+/** Keep existing session tests off the real user state directory unless a case opts in. */
+function createCockpitSession(deps: CockpitSessionDeps = {}) {
+  return createRealCockpitSession({
+    ...deps,
+    createRunStore: deps.createRunStore ?? (() => createRunStore({ enabled: false })),
+  })
+}
 
 function controlledTimer(): {
   setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
@@ -46,7 +62,10 @@ function controlledTimer(): {
 }
 
 /** A controller built over the given store, so the session's `watch` and it agree. */
-function controllerOver(store: ReturnType<typeof createAppStore>): SessionController {
+function controllerOver(
+  store: ReturnType<typeof createAppStore>,
+  onRestore: (record: PersistedRunRecord) => void = () => {},
+): SessionController {
   const runtimes = readyRuntimes()
   const actions = createControllerActions({
     store,
@@ -56,14 +75,212 @@ function controllerOver(store: ReturnType<typeof createAppStore>): SessionContro
   return {
     store,
     actions,
+    shell: { ready: false, error: "shell outside cockpit-session test boundary" },
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
+    restore: async (record) => onRestore(record),
     dispose: async () => {},
   }
 }
 
+function persistedRun(runId: string, updatedAt: number, cwd = process.cwd()): PersistedRunRecord {
+  return {
+    version: 1,
+    runId,
+    cwd,
+    gitBranch: "feat/session-resume",
+    focusedAgentId: "codex",
+    createdAt: 1_000,
+    updatedAt,
+    agents: {
+      "claude-code": {
+        sessionId: `${runId}-claude`,
+        lastPrompt: "continue claude",
+        messageCount: 2,
+        status: "finished",
+      },
+      codex: {
+        sessionId: `${runId}-codex`,
+        lastPrompt: "continue codex",
+        messageCount: 3,
+        status: "idle",
+      },
+    },
+    handoffBundle: null,
+  }
+}
+
 describe("createCockpitSession", () => {
+  it("restores the persisted run with the greatest updatedAt before watching the new run", async () => {
+    const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-newest-"))
+    try {
+      const runStore = createRunStore({ enabled: true, path: base })
+      runStore.save(persistedRun("older", 2_000))
+      runStore.save(persistedRun("newest", 9_000))
+      runStore.save(persistedRun("middle", 5_000))
+      const restored: PersistedRunRecord[] = []
+
+      const session = await createCockpitSession({
+        loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: true }),
+        createRunStore: () => runStore,
+        buildController: async (options) => controllerOver(options.store!, (record) => {
+          restored.push(record)
+        }),
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+
+      expect(restored[0]?.runId).toBe("newest")
+      await session.controller.dispose()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the fresh controller untouched when the project has no persisted runs", async () => {
+    const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-empty-"))
+    try {
+      let restoreCalls = 0
+      let buildCalls = 0
+      const session = await createCockpitSession({
+        loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: true }),
+        createRunStore: () => createRunStore({ enabled: true, path: base }),
+        buildController: async (options) => {
+          buildCalls += 1
+          return controllerOver(options.store!, () => {
+            restoreCalls += 1
+          })
+        },
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+
+      expect(buildCalls).toBe(1)
+      expect(restoreCalls).toBe(0)
+      await session.controller.dispose()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the fresh controller untouched when persistence is disabled even if run files exist", async () => {
+    const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-disabled-"))
+    try {
+      const enabledStore = createRunStore({ enabled: true, path: base })
+      enabledStore.save(persistedRun("existing", 9_000))
+      let restoreCalls = 0
+      const session = await createCockpitSession({
+        loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: false }),
+        createRunStore: () => createRunStore({ enabled: false, path: base }),
+        buildController: async (options) => controllerOver(options.store!, () => {
+          restoreCalls += 1
+        }),
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+
+      expect(restoreCalls).toBe(0)
+      await session.controller.dispose()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it("writes one booted run only when persistence is enabled", async () => {
+    const enabledBase = mkdtempSync(join(tmpdir(), "kitten-cockpit-persistence-on-"))
+    const disabledBase = mkdtempSync(join(tmpdir(), "kitten-cockpit-persistence-off-"))
+    try {
+      const enabledStore = createRunStore({ enabled: true, path: enabledBase })
+      const enabled = await createCockpitSession({
+        loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: true }),
+        createRunStore: (flag) => {
+          expect(flag).toBe(true)
+          return enabledStore
+        },
+        buildController: async (options) => controllerOver(options.store!),
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+      await enabled.controller.dispose()
+
+      const disabledStore = createRunStore({ enabled: false, path: disabledBase })
+      const disabled = await createCockpitSession({
+        loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: false }),
+        createRunStore: (flag) => {
+          expect(flag).toBe(false)
+          return disabledStore
+        },
+        buildController: async (options) => controllerOver(options.store!),
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+      await disabled.controller.dispose()
+
+      expect(enabledStore.list(process.cwd())).toHaveLength(1)
+      expect(createRunStore({ enabled: true, path: disabledBase }).list(process.cwd())).toEqual([])
+      expect(readdirSync(disabledBase)).toEqual([])
+    } finally {
+      rmSync(enabledBase, { recursive: true, force: true })
+      rmSync(disabledBase, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps a multi-directory fleet in the launch project's run namespace", async () => {
+    const stateBase = mkdtempSync(join(tmpdir(), "kitten-cockpit-project-scope-state-"))
+    const launchCwd = mkdtempSync(join(tmpdir(), "kitten-cockpit-project-scope-launch-"))
+    const alphaCwd = mkdtempSync(join(tmpdir(), "kitten-cockpit-project-scope-alpha-"))
+    const betaCwd = mkdtempSync(join(tmpdir(), "kitten-cockpit-project-scope-beta-"))
+    const runStore = createRunStore({ enabled: true, path: stateBase })
+    const config: AppConfig = {
+      ...defaultAppConfig(),
+      persistenceEnabled: true,
+      sessions: [
+        { provider: "claude-code", cwd: alphaCwd },
+        { provider: "codex", cwd: betaCwd },
+      ],
+    }
+    const restored: PersistedRunRecord[] = []
+
+    try {
+      const first = await createCockpitSession({
+        cwd: launchCwd,
+        config,
+        createRunStore: () => runStore,
+        buildController: async (options) => {
+          options.store!.setFocus("codex")
+          return controllerOver(options.store!)
+        },
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+      await first.controller.dispose()
+
+      expect(runStore.list(launchCwd)).toHaveLength(1)
+      expect(runStore.list(alphaCwd)).toEqual([])
+      expect(runStore.list(betaCwd)).toEqual([])
+
+      const second = await createCockpitSession({
+        cwd: launchCwd,
+        config,
+        createRunStore: () => runStore,
+        buildController: async (options) => controllerOver(options.store!, (record) => {
+          restored.push(record)
+        }),
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+
+      expect(restored).toHaveLength(1)
+      await second.controller.dispose()
+    } finally {
+      rmSync(stateBase, { recursive: true, force: true })
+      rmSync(launchCwd, { recursive: true, force: true })
+      rmSync(alphaCwd, { recursive: true, force: true })
+      rmSync(betaCwd, { recursive: true, force: true })
+    }
+  })
+
   it("wires the recorder from config, records boot readiness, and watches the store", async () => {
     const records: TelemetryRecord[] = []
     const sink: TelemetrySink = { write: (record) => records.push(record) }

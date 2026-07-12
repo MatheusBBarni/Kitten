@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Shell integration: OSC 133/OSC 7 command and cwd events"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Inject OSC 133 and OSC 7 hooks into the spawned shell and register emulator hand
 - SHOULD detect an existing shell-integration setup and skip injecting a duplicate.
 
 ## Subtasks
-- [ ] 4.1 Author bash and zsh integration snippets emitting OSC 133/OSC 7
-- [ ] 4.2 Inject the correct snippet at shell spawn based on the shell
-- [ ] 4.3 Register emulator OSC handlers and map them to `ShellEvent`s
-- [ ] 4.4 Associate captured output with the open command record
-- [ ] 4.5 Verify graceful degradation when integration is absent
+- [x] 4.1 Author bash and zsh integration snippets emitting OSC 133/OSC 7
+- [x] 4.2 Inject the correct snippet at shell spawn based on the shell
+- [x] 4.3 Register emulator OSC handlers and map them to `ShellEvent`s
+- [x] 4.4 Associate captured output with the open command record
+- [x] 4.5 Verify graceful degradation when integration is absent
 
 ## Implementation Details
 Add `src/shell/shellIntegration.ts` (snippet selection + OSC handler registration) and shipped snippet assets, wired into `ShellRuntime` from task_03. See TechSpec "Integration Points" for the OSC boundary and ADR-004 for the rationale and degradation contract. Do not redact here — output is stored raw and redacted only at hand-off assembly (task_12).
@@ -58,14 +58,14 @@ Add `src/shell/shellIntegration.ts` (snippet selection + OSC handler registratio
 
 ## Tests
 - Unit tests (byte fixtures):
-  - [ ] an OSC 133 command-start then finished sequence with code `0` emits `command_started` then `command_finished` with `exitCode: 0`
-  - [ ] an OSC 133 finished sequence with code `1` emits `exitCode: 1`
-  - [ ] an OSC 7 `file://host/tmp` sequence emits `cwd_changed` with cwd `/tmp`
-  - [ ] output bytes between start and finish are captured into the command record
-  - [ ] a stream with no integration sequences emits no command/cwd events
+  - [x] an OSC 133 command-start then finished sequence with code `0` emits `command_started` then `command_finished` with `exitCode: 0`
+  - [x] an OSC 133 finished sequence with code `1` emits `exitCode: 1`
+  - [x] an OSC 7 `file://host/tmp` sequence emits `cwd_changed` with cwd `/tmp`
+  - [x] output bytes between start and finish are captured into the command record
+  - [x] a stream with no integration sequences emits no command/cwd events
 - Integration tests (real shell):
-  - [ ] under bash with the snippet, `cd /tmp` then `false` yields `cwd_changed` `/tmp` and a record with `exitCode: 1`
-  - [ ] under zsh with the snippet, a successful command yields `exitCode: 0`
+  - [x] under bash with the snippet, `cd /tmp` then `false` yields `cwd_changed` `/tmp` and a record with `exitCode: 1`
+  - [x] under zsh with the snippet, a successful command yields `exitCode: 0`
 - Test coverage target: >=80%
 - All tests must pass
 

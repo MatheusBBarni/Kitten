@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Session delete from the picker"
 type: frontend
 complexity: medium
 dependencies:
-  - task_02
-  - task_09
+    - task_02
+    - task_09
 ---
 
 # Task 10: Session delete from the picker

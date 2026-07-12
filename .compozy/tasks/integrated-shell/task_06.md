@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Shell configuration block"
 type: backend
 complexity: low
 dependencies:
-  - task_01
-  - task_03
+    - task_01
+    - task_03
 ---
 
 # Task 06: Shell configuration block

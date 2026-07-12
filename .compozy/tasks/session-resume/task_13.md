@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Resume telemetry counters"
 type: backend
 complexity: medium
 dependencies:
-  - task_07
-  - task_09
+    - task_07
+    - task_09
 ---
 
 # Task 13: Resume telemetry counters

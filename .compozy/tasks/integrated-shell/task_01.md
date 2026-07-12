@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Shell domain types and reducer"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This is the stable core every later shell task builds on: the `ShellState` slice
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define the shell data-model types in `src/core/types.ts`
-- [ ] 1.2 Implement `createShellState` and the pure `shellReducer`
-- [ ] 1.3 Apply command open/close, cwd, and screen-revision transitions
-- [ ] 1.4 Enforce the bounded command ring
-- [ ] 1.5 Add an exhaustiveness guard so an unhandled event kind is a compile error
+- [x] 1.1 Define the shell data-model types in `src/core/types.ts`
+- [x] 1.2 Implement `createShellState` and the pure `shellReducer`
+- [x] 1.3 Apply command open/close, cwd, and screen-revision transitions
+- [x] 1.4 Enforce the bounded command ring
+- [x] 1.5 Add an exhaustiveness guard so an unhandled event kind is a compile error
 
 ## Implementation Details
 Add types to `src/core/types.ts` and create `src/core/shellReducer.ts`. Follow the exact patterns in `src/core/sessionReducer.ts`: immutable updates, an `assertNever` exhaustiveness guard, and a `create*State` factory. See TechSpec "Data Models" for the type shapes and "System Architecture" for where the reducer sits in the layering.
@@ -60,15 +60,15 @@ Add types to `src/core/types.ts` and create `src/core/shellReducer.ts`. Follow t
 
 ## Tests
 - Unit tests:
-  - [ ] `createShellState` returns status `idle`, empty commands, empty cwd, renderRev 0
-  - [ ] `command_started` opens a record with `exitCode: null` and sets status `running`
-  - [ ] `command_finished` sets the matching record's `exitCode` and returns status `idle`
-  - [ ] `cwd_changed` updates cwd and leaves commands untouched
-  - [ ] `screen` bumps `renderRev` and touches nothing else
-  - [ ] the command ring drops the oldest record once the cap is exceeded
-  - [ ] the reducer returns a new object and does not mutate the input state
+  - [x] `createShellState` returns status `idle`, empty commands, empty cwd, renderRev 0
+  - [x] `command_started` opens a record with `exitCode: null` and sets status `running`
+  - [x] `command_finished` sets the matching record's `exitCode` and returns status `idle`
+  - [x] `cwd_changed` updates cwd and leaves commands untouched
+  - [x] `screen` bumps `renderRev` and touches nothing else
+  - [x] the command ring drops the oldest record once the cap is exceeded
+  - [x] the reducer returns a new object and does not mutate the input state
 - Integration tests:
-  - [ ] folding a realistic sequence (start, finish, cd, start, finish) yields the expected cwd and two closed records with correct exit codes
+  - [x] folding a realistic sequence (start, finish, cd, start, finish) yields the expected cwd and two closed records with correct exit codes
 - Test coverage target: >=80%
 - All tests must pass
 

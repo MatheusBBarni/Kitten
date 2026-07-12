@@ -1,19 +1,90 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import type { ShellEvent, ShellSnapshot } from "../src/core/types.ts"
-import { createShellRuntime, type ShellRuntime, type StyledLine } from "../src/shell/shellRuntime.ts"
+import type { AgentConnection } from "../src/agent/agentConnection.ts"
+import { createSessionController, type SessionController } from "../src/app/controller.ts"
+import type { AppConfig, ShellEvent, ShellSnapshot } from "../src/core/types.ts"
+import {
+  createShellRuntime,
+  type ShellRuntime,
+  type ShellSpawnOptions,
+  type StyledLine,
+} from "../src/shell/shellRuntime.ts"
 
-// Suite: real POSIX shell semantic integration
-// Invariant: shipped bash/zsh hooks produce real cwd, command, output, and exit-code state.
-// Boundary IN: Bun.Terminal, bash/zsh startup injection, xterm OSC parsing, and ShellRuntime.
-// Boundary OUT: Controller/store wiring and hand-off assembly.
+// Suite: real POSIX shell and controller ownership integration
+// Invariant: real PTY output becomes semantic store state and the controller reaps its shell.
+// Boundary IN: Bun.Terminal, shell startup, xterm parsing, ShellRuntime, controller, and store.
+// Boundary OUT: UI rendering and hand-off assembly.
 
 const encoder = new TextEncoder()
 
 const lineText = (line: StyledLine): string => line.runs.map((run) => run.text).join("")
+
+const CONTROLLER_CONFIG: AppConfig = {
+  providers: {
+    "claude-code": { displayName: "Claude Code", command: "claude-acp", args: [], env: {} },
+    codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
+  },
+  sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+  shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
+  persistenceEnabled: true,
+  telemetryEnabled: false,
+  theme: "auto",
+  welcomeBanner: "auto",
+}
+
+function createReadyConnection(): AgentConnection {
+  return {
+    id: "claude-code",
+    connect: async () => ({ ready: true, protocolVersion: 1, canLoadSession: false }),
+    newSession: async () => "controller-shell-agent-session",
+    loadSession: async () => {},
+    prompt: async () => ({ stopReason: "end_turn" }),
+    cancel: async () => {},
+    setSessionConfigOption: async () => [],
+    onUpdate: () => () => {},
+    onPermission() {},
+    dispose: async () => {},
+  }
+}
+
+async function createControllerWithRealShell(
+  cwd: string,
+): Promise<{ controller: SessionController; spawnOptions: ShellSpawnOptions }> {
+  let spawnOptions: ShellSpawnOptions | undefined
+  const controller = await createSessionController({
+    config: { ...CONTROLLER_CONFIG, sessions: [{ provider: "claude-code", cwd }] },
+    cwd,
+    createConnection: () => createReadyConnection(),
+    createShellRuntime: (options) => {
+      spawnOptions = options
+      return createShellRuntime({ ...options, command: "/bin/sh", cols: 100, rows: 12 })
+    },
+    readBranch: async () => null,
+  })
+  if (!spawnOptions) throw new Error("controller did not invoke the real shell factory")
+  return { controller, spawnOptions }
+}
+
+async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await Bun.sleep(10)
+  }
+  throw new Error(`Timed out waiting for ${label}`)
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 async function waitForView(runtime: ShellRuntime, predicate: (lines: readonly StyledLine[]) => boolean): Promise<void> {
   const deadline = Date.now() + 3_000
@@ -73,6 +144,163 @@ test("real PTY shell renders echo output through xterm", async () => {
     expect(runtime.view().map(lineText)).toContain("hello")
   } finally {
     await runtime.dispose()
+  }
+})
+
+test("Ctrl+C interrupts a foreground command and leaves the real shell usable", async () => {
+  const runtime = createShellRuntime({ cwd: process.cwd(), command: "/bin/sh", cols: 100, rows: 12 })
+  const started = "__KITTEN_RUNAWAY_STARTED__"
+  const recovered = "__KITTEN_AFTER_INTERRUPT__"
+  try {
+    runtime.write(encoder.encode(`printf '${started}\\n'; sleep 30\n`))
+    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).trim() === started))
+
+    runtime.interrupt()
+    runtime.write(encoder.encode(`printf '${recovered}\\n'\n`))
+
+    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).trim() === recovered))
+    expect(runtime.view().map(lineText)).toContain(recovered)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test("real PTY alternate-screen script renders its buffer and returns to primary output", async () => {
+  const runtime = createShellRuntime({
+    cwd: process.cwd(),
+    command: "/bin/sh",
+    cols: 80,
+    rows: 12,
+    shellIntegration: false,
+  })
+  const alternateMarker = "__KITTEN_ALT_SCREEN__"
+  const restoredMarker = "__KITTEN_PRIMARY_RESTORED__"
+  try {
+    runtime.write(
+      encoder.encode(
+        `printf '\\033[?1049h\\033[2J\\033[H${alternateMarker}'; ` +
+          `sleep 0.2; printf '\\033[?1049l${restoredMarker}\\n'\n`,
+      ),
+    )
+
+    await waitForCondition(
+      () => runtime.bufferType() === "alternate" && runtime.view().some((line) => lineText(line).includes(alternateMarker)),
+      "alternate-screen content",
+    )
+    expect(runtime.bufferType()).toBe("alternate")
+    expect(runtime.view().map(lineText).join("\n")).toContain(alternateMarker)
+
+    await waitForCondition(
+      () => runtime.bufferType() === "normal" && runtime.view().some((line) => lineText(line).includes(restoredMarker)),
+      "primary buffer restore",
+    )
+    expect(runtime.bufferType()).toBe("normal")
+    expect(runtime.view().map(lineText).join("\n")).toContain(restoredMarker)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+test("real vi edit and quit restores the shell with cwd and env continuity", async () => {
+  const editor = Bun.which("vi")
+  if (!editor) throw new Error("vi is required for the interactive editor integration test")
+
+  const cwd = mkdtempSync(join(tmpdir(), "kitten-interactive-editor-"))
+  const shellCwd = realpathSync(cwd)
+  const file = join(cwd, "note.txt")
+  const runtime = createShellRuntime({
+    cwd,
+    command: "/bin/sh",
+    cols: 200,
+    rows: 20,
+    shellIntegration: false,
+  })
+  const continuityMarker = "__KITTEN_CONTINUITY__"
+  try {
+    runtime.write(encoder.encode(`export KITTEN_APP_CONTINUITY=preserved; '${editor}' note.txt\n`))
+    await waitForCondition(() => runtime.bufferType() === "alternate", "vi alternate screen")
+
+    runtime.write(encoder.encode("ihello from kitten\u001b:wq\r"))
+    await waitForCondition(
+      () => runtime.bufferType() === "normal" && readFileSync(file, "utf8") === "hello from kitten\n",
+      "vi save and primary-buffer restore",
+    )
+
+    runtime.write(
+      encoder.encode(`printf '${continuityMarker}%s|%s\\n' "$PWD" "$KITTEN_APP_CONTINUITY"\n`),
+    )
+    await waitForView(runtime, (lines) =>
+      lines.some((line) => lineText(line).includes(`${continuityMarker}${shellCwd}|preserved`)),
+    )
+
+    expect(runtime.bufferType()).toBe("normal")
+    expect(readFileSync(file, "utf8")).toBe("hello from kitten\n")
+    expect(runtime.view().map(lineText).join("\n")).toContain(`${continuityMarker}${shellCwd}|preserved`)
+  } finally {
+    await runtime.dispose()
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test("controller opens the real shell in cwd and routes echo semantics into the store", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "kitten-controller-shell-"))
+  const shellCwd = realpathSync(cwd)
+  const { controller, spawnOptions } = await createControllerWithRealShell(cwd)
+  try {
+    expect(spawnOptions.cwd).toBe(cwd)
+    expect(spawnOptions.command).toBe("/bin/sh")
+    expect(spawnOptions.scrollback).toBe(2_500)
+    if (!controller.shell.ready) throw new Error(controller.shell.error)
+    const marker = "__KITTEN_CONTROLLER_ECHO__"
+    controller.shell.runtime.write(
+      encoder.encode(
+        `printf '\\033]7;file://localhost%s\\007' "$PWD"; ` +
+          `printf '\\033]133;C;echo%%20${marker}\\007'; ` +
+          `echo '${marker}'; printf '\\033]133;D;0\\007'\n`,
+      ),
+    )
+
+    await waitForCondition(() => {
+      const shell = controller.store.getState().shell
+      return shell.cwd === shellCwd && shell.commands.some((command) => command.output.includes(marker))
+    }, "controller shell cwd and echo event")
+
+    expect(controller.store.getState().shell).toMatchObject({ cwd: shellCwd, status: "idle" })
+    expect(controller.store.getState().shell.commands.at(-1)).toMatchObject({
+      command: `echo ${marker}`,
+      output: expect.stringContaining(marker),
+      exitCode: 0,
+    })
+  } finally {
+    await controller.dispose()
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test("controller disposal terminates the real shell process", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "kitten-controller-shell-dispose-"))
+  const { controller } = await createControllerWithRealShell(cwd)
+  let disposed = false
+  try {
+    if (!controller.shell.ready) throw new Error(controller.shell.error)
+    const pidPrefix = "__KITTEN_CONTROLLER_PID__"
+    controller.shell.runtime.write(encoder.encode(`printf '${pidPrefix}%s\\n' "$$"\n`))
+    await waitForView(controller.shell.runtime, (lines) =>
+      lines.some((line) => lineText(line).includes(pidPrefix) && new RegExp(`${pidPrefix}\\d+`).test(lineText(line))),
+    )
+
+    const output = controller.shell.runtime.view().map(lineText).join("\n")
+    const pid = Number.parseInt(output.match(new RegExp(`${pidPrefix}(\\d+)`))?.[1] ?? "", 10)
+    expect(Number.isSafeInteger(pid)).toBe(true)
+    expect(isProcessRunning(pid)).toBe(true)
+
+    await controller.dispose()
+    disposed = true
+    await waitForCondition(() => !isProcessRunning(pid), "controller-owned shell process to exit")
+    expect(isProcessRunning(pid)).toBe(false)
+  } finally {
+    if (!disposed) await controller.dispose()
+    rmSync(cwd, { recursive: true, force: true })
   }
 })
 

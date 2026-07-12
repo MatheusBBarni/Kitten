@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Resume-last-run startup fast-path"
 type: backend
 complexity: medium
 dependencies:
-  - task_02
-  - task_07
+    - task_02
+    - task_07
 ---
 
 # Task 08: Resume-last-run startup fast-path

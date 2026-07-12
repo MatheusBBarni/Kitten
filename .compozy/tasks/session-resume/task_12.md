@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Restoration degradation UX"
 type: frontend
 complexity: medium
 dependencies:
-  - task_06
-  - task_07
+    - task_06
+    - task_07
 ---
 
 # Task 12: Restoration degradation UX

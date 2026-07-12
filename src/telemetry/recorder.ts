@@ -22,6 +22,8 @@
  * counters, and the max-concurrent snapshot come from callers driving this recorder
  * directly. The re-explanation heuristic itself is the pure core predicate
  * (`../core/telemetryHeuristics.ts`); this module only feeds it and records its verdict.
+ * `reexplanation_detected` also serves as the shell moat signal: analysis compares
+ * hand-offs with and without a preceding `shell_snapshot_attached` event.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -72,6 +74,26 @@ export type TelemetryEventType =
   | "theme_set"
   | "config_write"
   | "config_write_error"
+  | "shell_activated"
+  | "shell_snapshot_attached"
+  | "external_run"
+  | "session_resumed"
+  | "resume_pane_unavailable"
+  | "resume_first_action"
+  | "resume_picker_interactive_ms"
+  | "resume_load_usable_ms"
+
+/** The two entry points whose adoption the resume metrics compare. */
+export type ResumeMode = "picker" | "last-run"
+
+/** Whole-cockpit live fidelity is deliberately capped to the V1 two-pane contract. */
+export type ResumeLiveCount = 0 | 1 | 2
+
+/** The content-free outcome emitted when one whole-cockpit restore settles. */
+export interface SessionResumedInput {
+  mode: ResumeMode
+  liveCount: ResumeLiveCount
+}
 
 /**
  * One recorded event. Deliberately holds no text: an anonymous `sessionRef`, an
@@ -88,7 +110,7 @@ export interface TelemetryRecord {
   agent?: SessionId
   /** A coarse character bucket (see `bucketChars`), never an exact count. */
   charBucket?: number
-  /** A measured duration in milliseconds, for `first_response_ms`. */
+  /** A measured duration in milliseconds, for timing events. */
   durationMs?: number
   /** A count of sessions, for `max_concurrent_sessions`. A small integer, never content. */
   count?: number
@@ -96,6 +118,12 @@ export interface TelemetryRecord {
   themeId?: ThemePreference
   /** The fixed origin of a settings config write, never a user-provided label. */
   source?: "modal"
+  /** Which fixed resume entry point was used. */
+  mode?: ResumeMode
+  /** How many of the two resume panes restored live. */
+  liveCount?: ResumeLiveCount
+  /** Whether the first post-resume prompt continued instead of re-explaining. */
+  continued?: boolean
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -123,6 +151,12 @@ export interface TelemetryRecorder {
   effortLinkedHandoff(sessionId: SessionId): void
   /** The settings modal was opened. */
   settingsOpened(): void
+  /** The integrated shell started its first command in this run. */
+  shellActivated(): void
+  /** A hand-off carried a developer-curated shell snapshot. */
+  shellSnapshotAttached(): void
+  /** The developer chose the in-cockpit affordance to run outside Kitten. */
+  externalRun(): void
   /** A validated theme preference was applied. */
   themeSet(themeId: ThemePreference): void
   /** A modal-originated config write succeeded. */
@@ -149,6 +183,16 @@ export interface TelemetryRecorder {
    * adoption signal (task_09). Recorded once from the boot readiness snapshot.
    */
   maxConcurrentSessions(count: number): void
+  /** Start the load-to-usable clock immediately before restore orchestration. */
+  resumeLoadStarted(): void
+  /** Record a settled whole-cockpit resume and arm its first-action classification. */
+  sessionResumed(input: SessionResumedInput): void
+  /** Record one pane that could not restore live. */
+  resumePaneUnavailable(sessionId: SessionId): void
+  /** Start the picker-open-to-interactive clock before opening its store slot. */
+  resumePickerOpened(): void
+  /** Close the picker clock after its interactive tree commits. */
+  resumePickerInteractive(): void
   /**
    * Subscribe to store transitions to derive `first_response_ms`,
    * `reexplanation_detected`, `attention_latency_ms`, and `idle_fleet_ms`. Returns an
@@ -178,6 +222,9 @@ const NOOP_RECORDER: TelemetryRecorder = {
   handoffSent() {},
   effortLinkedHandoff() {},
   settingsOpened() {},
+  shellActivated() {},
+  shellSnapshotAttached() {},
+  externalRun() {},
   themeSet() {},
   configWrite() {},
   configWriteError() {},
@@ -186,6 +233,11 @@ const NOOP_RECORDER: TelemetryRecorder = {
   agentUnready() {},
   focusSwitch() {},
   maxConcurrentSessions() {},
+  resumeLoadStarted() {},
+  sessionResumed() {},
+  resumePaneUnavailable() {},
+  resumePickerOpened() {},
+  resumePickerInteractive() {},
   watch() {
     return () => {}
   },
@@ -239,6 +291,9 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly sessionRef: string
   private readonly threshold: number
   private handoffCount = 0
+  private resumeLoadStartedAt: number | null = null
+  private resumePickerOpenedAt: number | null = null
+  private resumeFirstActionArmed = false
   private readonly watches = new Map<SessionId, AgentWatch>()
 
   constructor(options: TelemetryRecorderOptions) {
@@ -270,6 +325,18 @@ class ActiveRecorder implements TelemetryRecorder {
 
   settingsOpened(): void {
     this.record({ type: "settings_opened" })
+  }
+
+  shellActivated(): void {
+    this.record({ type: "shell_activated" })
+  }
+
+  shellSnapshotAttached(): void {
+    this.record({ type: "shell_snapshot_attached" })
+  }
+
+  externalRun(): void {
+    this.record({ type: "external_run" })
   }
 
   themeSet(themeId: ThemePreference): void {
@@ -312,6 +379,33 @@ class ActiveRecorder implements TelemetryRecorder {
 
   maxConcurrentSessions(count: number): void {
     this.record({ type: "max_concurrent_sessions", count })
+  }
+
+  resumeLoadStarted(): void {
+    this.resumeLoadStartedAt = this.now()
+  }
+
+  sessionResumed(input: SessionResumedInput): void {
+    this.record({ type: "session_resumed", mode: input.mode, liveCount: input.liveCount })
+    if (this.resumeLoadStartedAt !== null) {
+      this.record({ type: "resume_load_usable_ms", durationMs: this.now() - this.resumeLoadStartedAt })
+      this.resumeLoadStartedAt = null
+    }
+    this.resumeFirstActionArmed = true
+  }
+
+  resumePaneUnavailable(sessionId: SessionId): void {
+    this.record({ type: "resume_pane_unavailable", agent: sessionId })
+  }
+
+  resumePickerOpened(): void {
+    this.resumePickerOpenedAt = this.now()
+  }
+
+  resumePickerInteractive(): void {
+    if (this.resumePickerOpenedAt === null) return
+    this.record({ type: "resume_picker_interactive_ms", durationMs: this.now() - this.resumePickerOpenedAt })
+    this.resumePickerOpenedAt = null
   }
 
   watch(store: AppStore): Unsubscribe {
@@ -402,6 +496,14 @@ class ActiveRecorder implements TelemetryRecorder {
   private handleTurn(sessionId: SessionId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
     if (turn.kind === "user") {
       this.resolveEffortRetention(sessionId, watch)
+      if (this.resumeFirstActionArmed) {
+        this.resumeFirstActionArmed = false
+        const result = detectReexplanation(
+          [{ kind: "developer_message", charCount: turn.text?.length ?? 0 }],
+          this.threshold,
+        )
+        this.record({ type: "resume_first_action", continued: !result.detected })
+      }
       // A prompt was sent: start the first-response clock for this session.
       watch.awaitingResponseAt = this.now()
       if (watch.reexplanationArmed) {

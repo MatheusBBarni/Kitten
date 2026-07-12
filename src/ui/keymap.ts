@@ -38,9 +38,13 @@ export interface CockpitKey {
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
 export type CockpitCommand =
+  | "toggle-shell"
+  | "run-externally"
   | "switch-focus"
   | "hand-off"
   | "sessions"
+  | "resume-session"
+  | "start-new-run"
   | "model-select"
   | "open-settings"
   | "toggle-help"
@@ -67,6 +71,16 @@ export type HandoffCommand =
 
 /** Every intent the Ctrl+S sessions overview handles while it is on screen. */
 export type SessionsCommand = "prev-session" | "next-session" | "jump-into" | "jump-next-needy" | "cancel"
+
+/** Every intent the Ctrl+R saved-run picker handles while it is on screen. */
+export type SessionPickerCommand =
+  | "prev-run"
+  | "next-run"
+  | "preview"
+  | "restore"
+  | "delete-run"
+  | "delete-all"
+  | "cancel"
 
 /** One row of the help panel: the chord and what it does. */
 export interface HelpEntry {
@@ -97,6 +111,11 @@ function ctrl(name: string): (key: CockpitKey) => boolean {
   return (key) => key.name === name && key.ctrl && !key.meta && !key.shift
 }
 
+/** Match when any one of the supplied predicates claims the key. */
+function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: CockpitKey) => boolean {
+  return (key) => predicates.some((predicate) => predicate(key))
+}
+
 /**
  * The bindings, in help-panel order.
  *
@@ -104,6 +123,20 @@ function ctrl(name: string): (key: CockpitKey) => boolean {
  * while the help panel is open, leaving Escape free for the editor and overlays.
  */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
+  {
+    // Legacy terminals collapse Ctrl+` into the same NUL byte as Ctrl+Space/Ctrl+@,
+    // so F2 is the documented fallback when the Kitty keyboard protocol is absent.
+    command: "toggle-shell",
+    keys: "Ctrl+` / F2",
+    description: "Focus the shell; its keys route there and Ctrl+C interrupts",
+    matches: any(ctrl("`"), ctrl("grave"), plain("f2")),
+  },
+  {
+    command: "run-externally",
+    keys: "F3",
+    description: "Copy the latest shell command for an external terminal",
+    matches: plain("f3"),
+  },
   {
     command: "switch-focus",
     keys: "Ctrl+O",
@@ -116,7 +149,7 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     // the composer on every terminal that does not speak the Kitty protocol.
     command: "hand-off",
     keys: "Ctrl+T",
-    description: "Hand the task off to the other agent",
+    description: "Curate shell cwd/commands in hand-off preview with Space",
     matches: ctrl("t"),
   },
   {
@@ -124,6 +157,18 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Ctrl+S",
     description: "Show every session and jump to the one that needs you",
     matches: ctrl("s"),
+  },
+  {
+    command: "resume-session",
+    keys: "Ctrl+R",
+    description: "Find and resume a saved run for this project",
+    matches: ctrl("r"),
+  },
+  {
+    command: "start-new-run",
+    keys: "Ctrl+N",
+    description: "Start a new run with fresh agent sessions",
+    matches: ctrl("n"),
   },
   {
     // Ctrl+E for "effort" - and the model that composes with it. Ctrl+M is unusable
@@ -336,6 +381,56 @@ export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
 ]
 
 /**
+ * The saved-run picker's keys. Printable input belongs to its focused filter field;
+ * navigation remains plain, while destructive actions use control chords so a
+ * search term can contain every printable character.
+ */
+export const SESSION_PICKER_KEYMAP: readonly KeyBinding<SessionPickerCommand>[] = [
+  {
+    command: "prev-run",
+    keys: "↑",
+    description: "Highlight the previous saved run",
+    matches: plain("up"),
+  },
+  {
+    command: "next-run",
+    keys: "↓",
+    description: "Highlight the next saved run",
+    matches: plain("down"),
+  },
+  {
+    command: "preview",
+    keys: "Space",
+    description: "Preview the highlighted run without restoring it",
+    matches: plain("space"),
+  },
+  {
+    command: "restore",
+    keys: "Enter",
+    description: "Restore the highlighted run",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "delete-run",
+    keys: "Ctrl+D",
+    description: "Delete the highlighted Kitten run after confirmation",
+    matches: ctrl("d"),
+  },
+  {
+    command: "delete-all",
+    keys: "Ctrl+A",
+    description: "Delete all Kitten runs after confirmation",
+    matches: ctrl("a"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Close the picker without restoring",
+    matches: plain("escape"),
+  },
+]
+
+/**
  * The model/effort selector's keys, live only while the selector is on screen.
  *
  * Like the other overlays it is modal, so plain arrows and Enter are safe: nothing
@@ -434,10 +529,25 @@ function compactChord(keys: string): string {
   return keys.replace(/^Ctrl\+/, "^")
 }
 
-/** The always-visible hint in the status strip: the keys that matter right now. */
-export const KEYMAP_HINT = `${compactChord(bindingKeys(COCKPIT_KEYMAP, "switch-focus"))} swap ${compactChord(
-  bindingKeys(COCKPIT_KEYMAP, "open-settings"),
-)} ${bindingKeys(COCKPIT_KEYMAP, "toggle-help")} help`
+/** The primary chord only; documented fallbacks remain visible in the full help row. */
+function primaryChord(keys: string): string {
+  return keys.split(" / ", 1)[0]!
+}
+
+/** Compact chord shown by the status bar's always-visible hand-off affordance. */
+export const HANDOFF_KEY_HINT = compactChord(bindingKeys(COCKPIT_KEYMAP, "hand-off"))
+
+/** Start-fresh chord shown only while the status strip marks a resumed run. */
+export const NEW_RUN_KEY_HINT = compactChord(bindingKeys(COCKPIT_KEYMAP, "start-new-run"))
+
+/** Shell discovery hint kept compact enough to coexist with the hand-off affordance. */
+export const SHELL_HINT = `${compactChord(primaryChord(bindingKeys(COCKPIT_KEYMAP, "toggle-shell")))} shell`
+
+/** Saved-run discovery hint, derived from the same row dispatch and help consume. */
+export const RESUME_KEY_HINT = `${compactChord(bindingKeys(COCKPIT_KEYMAP, "resume-session"))} resume`
+
+/** The always-visible status hint keeps shell focus and saved-run resume discoverable. */
+export const KEYMAP_HINT = `${SHELL_HINT}  ${RESUME_KEY_HINT}`
 
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
@@ -450,6 +560,10 @@ export const HANDOFF_CONFIG_HINT = "↑↓ move  Enter set target option  Esc ba
 
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
 export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
+
+/** The hint printed inside the saved-run picker while its filter owns text input. */
+export const SESSION_PICKER_HINT =
+  "Type filter  ↑↓ move  Space preview  Enter resume  Ctrl+D delete  Ctrl+A clear all  Esc cancel"
 
 /** The hint printed inside the model/effort selector, where those keys are the only live ones. */
 export const MODEL_SELECT_HINT = "↑↓ move  Enter apply  Esc close"
@@ -495,6 +609,9 @@ export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)
 
 /** The overview command a keypress maps to, or `null` when the overview does not claim it. */
 export const matchSessionsCommand = makeMatcher(SESSIONS_KEYMAP)
+
+/** The saved-run command a keypress maps to, or `null` when it belongs to filter text. */
+export const matchSessionPickerCommand = makeMatcher(SESSION_PICKER_KEYMAP)
 
 /** The selector command a keypress maps to, or `null` when the selector does not claim it. */
 export const matchModelSelectCommand = makeMatcher(MODEL_SELECT_KEYMAP)

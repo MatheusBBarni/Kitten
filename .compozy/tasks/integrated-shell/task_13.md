@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: "Hand-off preview Shell context section"
 type: frontend
 complexity: medium
 dependencies:
-  - task_11
-  - task_12
+    - task_11
+    - task_12
 ---
 
 # Task 13: Hand-off preview Shell context section

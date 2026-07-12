@@ -46,6 +46,13 @@ export const BUILD_TARGETS: readonly BuildTarget[] = [
 /** The entry point compiled into each binary. */
 export const ENTRYPOINT = "./src/index.ts"
 
+/**
+ * OpenTUI computes this Worker URL, so Bun cannot trace it from the main graph.
+ * Listing it as a second compile entry embeds the worker and its web-tree-sitter wasm;
+ * OpenTUI's main graph already embeds the language wasm/scm assets it imports.
+ */
+export const TREE_SITTER_WORKER_ENTRYPOINT = "./node_modules/@opentui/core/parser.worker.js"
+
 /** Where the artifacts and the checksum manifest are written. */
 export const OUTPUT_DIR = "dist"
 
@@ -90,7 +97,8 @@ export function resolveTargets(names: readonly string[]): BuildTarget[] {
 /**
  * The `bun` argv that compiles one target.
  *
- * `bun build --compile --target=<bunTarget> --outfile <outDir>/<name> <entry>`.
+ * The worker is a second entrypoint in the same executable. Stable entry naming
+ * makes it addressable as `/$bunfs/root/parser.worker.js` for startup extraction.
  */
 export function compileCommand(
   target: BuildTarget,
@@ -102,10 +110,12 @@ export function compileCommand(
     "bun",
     "build",
     "--compile",
+    "--entry-naming=[name].[ext]",
     `--target=${target.bunTarget}`,
     "--outfile",
     `${outDir}/${artifactName(target)}`,
     entry,
+    TREE_SITTER_WORKER_ENTRYPOINT,
   ]
 }
 

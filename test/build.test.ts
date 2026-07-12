@@ -17,6 +17,7 @@ import {
   renderManifest,
   resolveTargets,
   runCommand,
+  TREE_SITTER_WORKER_ENTRYPOINT,
   type BuildArtifact,
   type BuildTarget,
 } from "../scripts/build.ts"
@@ -74,11 +75,19 @@ describe("compileCommand", () => {
       "bun",
       "build",
       "--compile",
+      "--entry-naming=[name].[ext]",
       "--target=bun-linux-x64",
       "--outfile",
       "dist/kitten-linux-x64",
       ENTRYPOINT,
+      TREE_SITTER_WORKER_ENTRYPOINT,
     ])
+  })
+
+  it("embeds OpenTUI's worker as a stable secondary entrypoint", () => {
+    const command = compileCommand(target)
+    expect(command).toContain("--entry-naming=[name].[ext]")
+    expect(command.at(-1)).toBe(TREE_SITTER_WORKER_ENTRYPOINT)
   })
 
   it("honors a custom entry and output directory", () => {

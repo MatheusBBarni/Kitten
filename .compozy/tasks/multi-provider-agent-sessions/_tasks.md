@@ -12,4 +12,4 @@
 | 06 | Session-addressed hand-off | completed | high | task_01, task_05 |
 | 07 | Safe multi-session approvals labeling | completed | medium | task_03 |
 | 08 | Layered attention notifier | completed | high | task_04 |
-| 09 | Attention and multi-session telemetry | pending | medium | task_04, task_05 |
+| 09 | Attention and multi-session telemetry | completed | medium | task_04, task_05 |

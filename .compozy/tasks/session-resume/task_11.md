@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: "First-run persistence disclosure"
 type: backend
 complexity: low
 dependencies:
-  - task_01
+    - task_01
 ---
 
 # Task 11: First-run persistence disclosure

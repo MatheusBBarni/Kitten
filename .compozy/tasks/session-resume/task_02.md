@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Run store: record type and one-file-per-run I/O"
 type: backend
 complexity: high

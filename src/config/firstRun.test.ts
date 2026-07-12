@@ -88,6 +88,8 @@ describe("buildFirstRunReport", () => {
 })
 
 describe("formatFirstRunReport", () => {
+  const sessionsPath = "/state/kitten/sessions"
+
   it("shows only the repo requirement message when outside a repo", () => {
     const report = buildFirstRunReport({ insideRepo: false, agents: [] })
     expect(formatFirstRunReport(report)).toEqual([REPO_REQUIREMENT_MESSAGE])
@@ -119,6 +121,27 @@ describe("formatFirstRunReport", () => {
   it("produces no lines when everything is ready and inside a repo", () => {
     const report = buildFirstRunReport({ insideRepo: true, agents: [ready("codex", "Codex")].map(readinessSetup) })
     expect(formatFirstRunReport(report)).toEqual([])
+  })
+
+  it("discloses where remembered sessions are stored and how to delete them when persistence is enabled", () => {
+    const report = buildFirstRunReport({ insideRepo: true, agents: [ready("codex", "Codex")].map(readinessSetup) })
+
+    const lines = formatFirstRunReport(report, { persistenceEnabled: true, sessionsPath })
+
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain("remembers sessions for this project")
+    expect(lines[0]).toContain(sessionsPath)
+    expect(lines[0]).toContain("Ctrl+R")
+    expect(lines[0]).toContain("Ctrl+D")
+    expect(lines[0]).toContain("Ctrl+A")
+    expect(report.blocked).toBe(false)
+  })
+
+  it("omits the persistence disclosure when persistence is disabled", () => {
+    const report = buildFirstRunReport({ insideRepo: true, agents: [ready("codex", "Codex")].map(readinessSetup) })
+
+    expect(formatFirstRunReport(report, { persistenceEnabled: false, sessionsPath })).toEqual([])
+    expect(report.blocked).toBe(false)
   })
 })
 

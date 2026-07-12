@@ -44,7 +44,9 @@ export interface PromptResult {
 }
 
 /** Outcome of `connect`: a completed handshake, or a legible not-ready reason. */
-export type ReadyState = { ready: true; protocolVersion: number } | { ready: false; error: string }
+export type ReadyState =
+  | { ready: true; protocolVersion: number; canLoadSession: boolean }
+  | { ready: false; error: string }
 
 /**
  * The ACP protocol version Kitten negotiates during `initialize`.
@@ -79,6 +81,7 @@ export interface AgentConnection {
   readonly id: ProviderKind
   connect(): Promise<ReadyState>
   newSession(cwd: string): Promise<string>
+  loadSession(sessionId: string, cwd: string): Promise<void>
   prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult>
   cancel(sessionId: string): Promise<void>
   /**
@@ -188,7 +191,11 @@ class AgentConnectionImpl implements AgentConnection {
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
         clientInfo: { name: "kitten", version: "0.0.0" },
       })
-      return { ready: true, protocolVersion: result.protocolVersion }
+      return {
+        ready: true,
+        protocolVersion: result.protocolVersion,
+        canLoadSession: result.agentCapabilities?.loadSession === true,
+      }
     } catch (error) {
       return { ready: false, error: handshakeErrorMessage(error) }
     }
@@ -206,6 +213,11 @@ class AgentConnectionImpl implements AgentConnection {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
     return result.sessionId
+  }
+
+  async loadSession(sessionId: string, cwd: string): Promise<void> {
+    const connection = this.requireConnection()
+    await connection.loadSession({ sessionId, cwd, mcpServers: [] })
   }
 
   async prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult> {

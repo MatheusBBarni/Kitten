@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: "Markdown rendering polish: tables, degradation, and clean copy"
 type: frontend
 complexity: medium
 dependencies:
-  - task_02
+    - task_02
 ---
 
 # Task 06: Markdown rendering polish: tables, degradation, and clean copy

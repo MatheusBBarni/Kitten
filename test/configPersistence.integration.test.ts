@@ -21,6 +21,7 @@ function controllerOver(store: ReturnType<typeof createAppStore>): SessionContro
   const runtimes = readyRuntimes()
   return {
     store,
+    shell: { ready: false, error: "shell outside config-persistence test boundary" },
     actions: createControllerActions({
       store,
       getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: CONNECTION_STUB }),
@@ -29,6 +30,7 @@ function controllerOver(store: ReturnType<typeof createAppStore>): SessionContro
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
+    restore: async () => {},
     dispose: async () => {},
   }
 }

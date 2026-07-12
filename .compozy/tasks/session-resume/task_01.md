@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "persistenceEnabled config flag"
 type: backend
 complexity: low

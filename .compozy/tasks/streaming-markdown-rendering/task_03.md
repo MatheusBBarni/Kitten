@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Fix #807: guarantee Markdown and diff highlighting in the compiled binary"
 type: infra
 complexity: high
