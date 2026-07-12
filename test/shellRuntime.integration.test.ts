@@ -151,20 +151,36 @@ test("real PTY shell renders echo output through xterm", async () => {
 test("Ctrl+C interrupts a foreground command and leaves the real shell usable", async () => {
   const runtime = createShellRuntime({ cwd: process.cwd(), command: "/bin/sh", cols: 100, rows: 12 })
   const started = "__KITTEN_RUNAWAY_STARTED__"
+  const interrupted = "__KITTEN_INTERRUPTED__"
   const recovered = "__KITTEN_AFTER_INTERRUPT__"
+  const scriptDirectory = mkdtempSync(join(tmpdir(), "kitten-interrupt-"))
+  const script = join(scriptDirectory, "foreground-command.sh")
+  writeFileSync(
+    script,
+    [
+      "#!/bin/sh",
+      `trap 'printf "${interrupted}\\n"; exit 130' INT`,
+      `printf "${started}\\n"`,
+      "while :; do sleep 30; done",
+    ].join("\n"),
+  )
   try {
-    // The marker comes from the foreground child itself, so Ctrl+C cannot land
-    // in the gap between the parent shell's printf builtin and spawning sleep.
-    runtime.write(encoder.encode(`/bin/sh -c 'printf "${started}\\n"; exec sleep 30'\n`))
+    // The child installs its signal handler before publishing readiness. This makes
+    // the observed marker a real foreground-process boundary rather than a guess
+    // about when the shell has finished spawning `sleep`.
+    runtime.write(encoder.encode(`/bin/sh ${JSON.stringify(script)}\n`))
     await waitForView(runtime, (lines) => lines.some((line) => lineText(line).trim() === started))
 
     runtime.interrupt()
+    // The terminal echoes Ctrl+C as `^C` immediately before the trap's output.
+    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).includes(interrupted)))
     runtime.write(encoder.encode(`printf '${recovered}\\n'\n`))
 
     await waitForView(runtime, (lines) => lines.some((line) => lineText(line).trim() === recovered))
     expect(runtime.view().map(lineText)).toContain(recovered)
   } finally {
     await runtime.dispose()
+    rmSync(scriptDirectory, { recursive: true, force: true })
   }
 })
 
