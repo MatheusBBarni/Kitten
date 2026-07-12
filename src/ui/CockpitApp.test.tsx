@@ -392,7 +392,7 @@ describe("CockpitApp keymap", () => {
         setup.mockInput.pressKey("F2")
       })
       await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING) && !frame.includes("Shell · focused"))
-      expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+      expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
       expect(setup.renderer.currentFocusedEditor?.plainText).toBe("agent draft")
 
       await actAsync(async () => {
@@ -551,7 +551,7 @@ describe("CockpitApp keymap", () => {
     expect(controller.calls.switchFocus).toEqual([undefined])
     // The action really moved focus, reflected by the compact inline summary.
     const frame = await setup.waitForFrame((f) => f.includes(`codex:— - ${STATUS_LABELS.idle}`))
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     expect(frame).toContain("Kitten")
 
     await destroyMounted(setup.renderer)
@@ -785,7 +785,7 @@ describe("CockpitApp keymap", () => {
     })
 
     expect(controller.calls.switchFocus).toEqual([])
-    expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+    expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
 

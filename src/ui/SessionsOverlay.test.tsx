@@ -200,7 +200,7 @@ describe("SessionsOverlay routing", () => {
     })
     const closed = await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
 
-    expect(controller.store.getState().focusedSessionId).toBe("b")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
     expect(controller.calls.switchFocus).toEqual(["b"])
     // The pane stays Kitten-branded after the focus change, and the composer is back.
     expect(closed.split("\n")[0]).toContain("Kitten")
@@ -223,7 +223,7 @@ describe("SessionsOverlay routing", () => {
     await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
 
     expect(controller.calls.jumpToNextNeedy).toBe(1)
-    expect(controller.store.getState().focusedSessionId).toBe("c")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("c")
 
     await destroyMounted(setup.renderer)
   })
@@ -240,7 +240,7 @@ describe("SessionsOverlay routing", () => {
 
     // The action fired but found no candidate, so focus stayed put.
     expect(controller.calls.jumpToNextNeedy).toBe(1)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
 
     await destroyMounted(setup.renderer)
   })
@@ -256,7 +256,7 @@ describe("SessionsOverlay routing", () => {
     const closed = await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
 
     // Focus never moved, and no routing action fired.
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
     expect(controller.calls.switchFocus).toHaveLength(0)
     expect(controller.calls.jumpToNextNeedy).toBe(0)
     expect(closed).toContain(PROMPT_PLACEHOLDER)
@@ -286,7 +286,7 @@ describe("SessionsOverlay modality", () => {
 
     // The shell's focus chord never fired, and `/help` never opened over the overview.
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
     expect(await setup.waitForFrame((frame) => frame.includes(SESSIONS_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, then read the composer: nothing typed at the overview leaked into it.
@@ -347,7 +347,7 @@ describe("SessionsOverlay modality", () => {
 
     expect(controller.calls.respondPermission).toEqual([{ outcome: "selected", optionId: "allow" }])
     expect(controller.store.getState().overlays.sessions).toBe(true)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
 
     await destroyMounted(setup.renderer)
   })

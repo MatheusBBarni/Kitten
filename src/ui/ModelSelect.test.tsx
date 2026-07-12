@@ -131,7 +131,7 @@ async function openSelector(
   controller: { store: FakeController["store"] },
 ): Promise<string> {
   await actAsync(() => {
-    controller.store.openModelSelect({ sessionId: controller.store.getState().focusedSessionId })
+    controller.store.openModelSelect({ sessionId: controller.store.getState().workspace.selectedVisibleId! })
   })
   return setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_HINT))
 }
@@ -440,7 +440,7 @@ describe("ModelSelect dismissal and modality", () => {
     })
 
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(await setup.waitForFrame((f) => f.includes(MODEL_SELECT_HINT))).not.toContain(HELP_TITLE)
 
     await actAsync(() => {

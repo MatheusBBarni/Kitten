@@ -152,7 +152,7 @@ describe("ApprovalPrompt visibility", () => {
     const frame = await waitForFrame((f) => f.includes(approvalTitleFor("Codex")))
 
     expect(frame).not.toContain(approvalTitleFor("Claude Code"))
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await destroyMounted(renderer)
   })
@@ -432,7 +432,7 @@ describe("ApprovalPrompt modality", () => {
 
     // Neither the global shell chord nor prompt command can reach past the approval gate.
     expect(controller.store.getState().focusedPane.kind).toBe("agent")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(await waitForFrame((f) => f.includes(APPROVAL_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it

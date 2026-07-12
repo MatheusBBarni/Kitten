@@ -129,11 +129,13 @@ class ActiveRunWriter implements RunWriter {
   }
 
   private snapshot(state: AppState): PersistedRunRecord {
-    const focused = state.sessions[state.focusedSessionId]
-    if (!focused) throw new Error(`Cannot persist missing focused session: ${state.focusedSessionId}`)
+    const focusedSessionId = state.workspace.selectedVisibleId
+    if (focusedSessionId === null) throw new Error("Cannot persist an empty V1 workspace")
+    const focused = state.sessions[focusedSessionId]
+    if (!focused) throw new Error(`Cannot persist missing focused session: ${focusedSessionId}`)
 
     const agents: Record<SessionId, PersistedAgent> = {}
-    for (const sessionId of state.order) {
+    for (const sessionId of state.workspace.order) {
       const session = state.sessions[sessionId]
       if (!session) continue
       agents[sessionId] = {
@@ -152,7 +154,7 @@ class ActiveRunWriter implements RunWriter {
       // same key to find it again.
       cwd: this.projectCwd,
       gitBranch: focused.branch ?? null,
-      focusedAgentId: state.focusedSessionId,
+      focusedAgentId: focusedSessionId,
       createdAt: this.createdAt,
       updatedAt: this.now(),
       agents,

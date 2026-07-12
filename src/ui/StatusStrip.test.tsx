@@ -34,8 +34,8 @@ function slotSelectors(values: {
 }): StatusSlotSelectors {
   return {
     ...HIDDEN_SELECTORS,
-    model: (sessionId) => () => values.model?.[sessionId] ?? null,
-    effort: (sessionId) => () => values.effort?.[sessionId],
+    model: (sessionId) => () => (sessionId ? values.model?.[sessionId] : undefined) ?? null,
+    effort: (sessionId) => () => (sessionId ? values.effort?.[sessionId] : undefined),
   }
 }
 

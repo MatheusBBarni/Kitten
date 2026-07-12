@@ -35,6 +35,14 @@ import {
   selectSettingsOverlay,
   selectShell,
   selectThemePreference,
+  selectActiveModal,
+  selectAttentionQueue,
+  selectBackgroundWork,
+  selectDuplicateLabels,
+  selectNextAttention,
+  selectSharedWorkspaces,
+  selectTabDialogOverlay,
+  selectVisibleTabs,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -107,10 +115,10 @@ describe("focus selectors", () => {
         { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w", acpSessionId: "session-codex" },
       ],
     })
-    expect(selectFocusedSession(store.getState()).providerKind).toBe("claude-code")
+    expect(selectFocusedSession(store.getState())?.providerKind).toBe("claude-code")
 
     store.setFocus("codex")
-    expect(selectFocusedSession(store.getState()).acpSessionId).toBe("session-codex")
+    expect(selectFocusedSession(store.getState())?.acpSessionId).toBe("session-codex")
   })
 
   it("projects pane focus and reports shell focus only for the shell pane", () => {
@@ -123,7 +131,7 @@ describe("focus selectors", () => {
     expect(selectIsShellFocused(store.getState())).toBe(true)
     expect(selectIsFocused("claude-code")(store.getState())).toBe(false)
 
-    store.setFocusedPane({ kind: "agent", agentId: "codex" })
+    store.setFocusedPane({ kind: "agent", sessionId: "codex" })
     expect(selectIsShellFocused(store.getState())).toBe(false)
   })
 })
@@ -199,7 +207,10 @@ describe("per-agent session selectors", () => {
         "claude-code": { ...base.sessions["claude-code"]!, branch: "feature/status-bar" },
       },
     }
-    const after = { ...before, focusedSessionId: "codex" }
+    const after = {
+      ...before,
+      workspace: { ...before.workspace, selectedVisibleId: "codex" },
+    }
     const branch = selectSessionBranch("claude-code")
     const model = selectSessionModel("claude-code")
     const context = selectSessionContext("claude-code")
@@ -481,5 +492,84 @@ describe("config-option selectors", () => {
     })
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("workspace view selectors", () => {
+  const workspaceStore = (): AppStore =>
+    createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/shared" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/shared" },
+        { id: "c", providerKind: "claude-code", title: "C", cwd: "/other" },
+      ],
+    })
+
+  it("orders visible/background views and disambiguates duplicate labels deterministically", () => {
+    const store = workspaceStore()
+    for (const id of ["a", "b", "c"]) store.renameConversation(id, "Work")
+    store.backgroundConversation("b")
+
+    const state = store.getState()
+    expect(selectVisibleTabs(state).map((tab) => tab.id)).toEqual(["a", "c"])
+    expect(selectBackgroundWork(state).map((tab) => tab.id)).toEqual(["b"])
+    expect(selectDuplicateLabels(state)).toEqual({
+      a: "Work (1)",
+      b: "Work (2)",
+      c: "Work (3)",
+    })
+    expect(selectSharedWorkspaces(state)).toEqual([
+      { cwd: "/shared", count: 2, sessionIds: ["a", "b"] },
+    ])
+    expect(selectVisibleTabs(state)[0]?.sharedWorkspaceCount).toBe(2)
+  })
+
+  it("routes unseen background attention by rank without losing execution status", () => {
+    const store = workspaceStore()
+    store.backgroundConversation("b")
+    store.applyEvent("c", { kind: "status", status: "error" })
+    store.applyEvent("b", { kind: "status", status: "awaiting_approval" })
+
+    expect(selectAttentionQueue(store.getState()).map((item) => item.id)).toEqual(["b", "c"])
+    expect(selectNextAttention(store.getState())).toBe("b")
+
+    store.reopenConversation("b")
+    expect(store.getState().sessions.b?.status).toBe("awaiting_approval")
+    expect(selectAttentionQueue(store.getState()).map((item) => item.id)).toEqual(["c"])
+  })
+
+  it("preserves unrelated tab identities through concurrent streaming", () => {
+    const store = workspaceStore()
+    const before = selectVisibleTabs(store.getState())
+
+    store.applyEvent("b", { kind: "agent_message", messageId: "m1", textDelta: "token" })
+    const streamed = selectVisibleTabs(store.getState())
+    expect(streamed).toBe(before)
+    expect(streamed[0]).toBe(before[0])
+    expect(streamed[1]).toBe(before[1])
+    expect(streamed[2]).toBe(before[2])
+
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    const finished = selectVisibleTabs(store.getState())
+    expect(finished).not.toBe(streamed)
+    expect(finished[0]).toBe(streamed[0])
+    expect(finished[1]).not.toBe(streamed[1])
+    expect(finished[2]).toBe(streamed[2])
+  })
+
+  it("reports approval above a captured tab dialog", () => {
+    const store = workspaceStore()
+    store.openTabDialog({ kind: "close", sessionId: "b" })
+    expect(selectTabDialogOverlay(store.getState())).toEqual({ kind: "close", sessionId: "b" })
+    expect(selectActiveModal(store.getState())).toEqual({ kind: "tab-dialog", sessionId: "b" })
+
+    store.openApproval({
+      sessionId: "c",
+      title: "C",
+      cwd: "/other",
+      request: { sessionId: "acp-c", toolCall: { toolCallId: "call-c" }, options: [] },
+    })
+    expect(selectActiveModal(store.getState())).toEqual({ kind: "approval", sessionId: "c" })
+    expect(selectTabDialogOverlay(store.getState())?.sessionId).toBe("b")
   })
 })

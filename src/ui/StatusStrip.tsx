@@ -38,7 +38,7 @@ export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
 export const RESUMED_RUN_LABEL = "resumed"
 
 const selectIsResumedRun: Selector<boolean> = (state) =>
-  state.order.some((sessionId) => state.restoration[sessionId] !== null)
+  state.workspace.order.some((sessionId) => state.restoration[sessionId] !== null)
 
 /** Selector factories consumed by the bar; injectable so delegated model slots can be exercised in isolation. */
 export interface StatusSlotSelectors {

@@ -74,12 +74,8 @@ export function ConversationView({
   const turns = useAppSelector(turnsSelector)
   const restoration = useAppSelector(restorationSelector)
   const bundle = useAppSelector(selectRestorationBundle)
-  const content = renderConversationContent(
-    controller,
-    focusedSessionId,
-    turns,
-    welcomeBannerVariant,
-  )
+  if (focusedSessionId === null) return null
+  const content = renderConversationContent(controller, focusedSessionId, turns, welcomeBannerVariant)
 
   if (restoration === "unavailable") {
     // A provider that cannot restore at all stays on the explicit degraded pane.

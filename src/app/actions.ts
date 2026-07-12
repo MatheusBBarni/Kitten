@@ -140,12 +140,15 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
 
-  const focused = (): SessionId => store.getState().focusedSessionId
+  const focused = (): SessionId | undefined =>
+    store.getState().workspace.selectedVisibleId ?? undefined
 
   async function sendPrompt(
     input: PromptInput,
-    sessionId: SessionId = focused(),
+    requestedSessionId?: SessionId,
   ): Promise<PromptResult | null> {
+    const sessionId = requestedSessionId ?? focused()
+    if (!sessionId) return null
     const session = getSession(sessionId)
     if (!session) return null
     const blocks = composePromptBlocks(input)
@@ -173,7 +176,9 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   return {
     sendPrompt,
 
-    async cancel(sessionId = focused()): Promise<void> {
+    async cancel(requestedSessionId?: SessionId): Promise<void> {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return
       const session = getSession(sessionId)
       if (!session) return
       try {
@@ -183,7 +188,9 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    async setSessionConfigOption(configId, value, sessionId = focused()): Promise<boolean> {
+    async setSessionConfigOption(configId, value, requestedSessionId?: SessionId): Promise<boolean> {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return false
       const session = getSession(sessionId)
       if (!session) return false
       // Keep the pre-call option only long enough to identify the allowlisted category
@@ -219,19 +226,27 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    switchFocus(sessionId = nextSessionId(store.getState().order, focused()), options?: SwitchFocusOptions): void {
-      const before = store.getState().focusedSessionId
-      store.setFocus(sessionId)
-      const after = store.getState().focusedSessionId
+    switchFocus(sessionId, options?: SwitchFocusOptions): void {
+      const currentState = store.getState()
+      const current = currentState.workspace.selectedVisibleId
+      const target =
+        sessionId ??
+        (current
+          ? nextSessionId(currentState.workspace.order, current)
+          : currentState.workspace.order[0])
+      if (!target) return
+      const before = store.getState().workspace.selectedVisibleId
+      store.setFocus(target)
+      const after = store.getState().workspace.selectedVisibleId
       // Only a switch that actually moved focus is a real navigation to count.
-      if (after !== before) {
+      if (after !== before && after !== null) {
         recorder.focusSwitch(after, options?.viaOverview === true)
         refreshBranch(after)
       }
     },
 
     jumpToNextNeedy(): void {
-      const target = selectNextNeedy(focused())(store.getState())
+      const target = selectNextNeedy(focused() ?? null)(store.getState())
       if (!target) return
       store.setFocus(target)
       // Jump-to-next is reachable only from the overview, so it is always overview-driven.
@@ -243,11 +258,14 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       try {
         await startNewRun()
       } catch (error) {
-        onError(focused(), error)
+        const sessionId = focused()
+        if (sessionId) onError(sessionId, error)
       }
     },
 
-    async startFreshFromContext(input, sessionId = focused()): Promise<PromptResult | null> {
+    async startFreshFromContext(input, requestedSessionId?: SessionId): Promise<PromptResult | null> {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return null
       const blocks = composePromptBlocks(input)
       if (blocks.length === 0) return null
       try {

@@ -68,7 +68,7 @@ function seededStore(): AppStore {
       { id: "claude", providerKind: "claude-code", title: "Claude", cwd: "/work/kitten" },
       { id: "codex", providerKind: "codex", title: "Codex", cwd: "/work/kitten" },
     ],
-    focusedSessionId: "claude",
+    selectedVisibleId: "claude",
   })
   store.startSession("claude", "claude-acp-session")
   store.startSession("codex", "codex-acp-session")
@@ -113,7 +113,7 @@ describe("createRunWriter", () => {
         { id: "claude", providerKind: "claude-code", title: "Claude", cwd: "/work/alpha" },
         { id: "codex", providerKind: "codex", title: "Codex", cwd: "/work/beta" },
       ],
-      focusedSessionId: "claude",
+      selectedVisibleId: "claude",
     })
     const runStore = recordingRunStore()
     const timer = controlledTimer()

@@ -521,8 +521,8 @@ function focusReadySession(
   plan: { seed: SessionSeed }[],
   runtimes: Map<SessionId, AgentRuntime>,
 ): void {
-  const focused = store.getState().focusedSessionId
-  if (runtimes.get(focused)?.state.ready) return
+  const focused = store.getState().workspace.selectedVisibleId
+  if (focused !== null && runtimes.get(focused)?.state.ready) return
   const firstReady = plan.find((entry) => runtimes.get(entry.seed.id)?.state.ready)
   if (firstReady) store.setFocus(firstReady.seed.id)
 }

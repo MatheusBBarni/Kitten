@@ -159,7 +159,7 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
 
   // Readiness is a boot-time fact about the connection, not a store slice: a session
   // whose handshake failed has no ACP session, so nothing may be sent to it.
-  const ready = controller.isReady(focusedSessionId)
+  const ready = focusedSessionId !== null && controller.isReady(focusedSessionId)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
   const restorationSelector = useMemo(() => selectRestoration(focusedSessionId), [focusedSessionId])

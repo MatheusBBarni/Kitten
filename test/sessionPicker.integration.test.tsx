@@ -193,7 +193,7 @@ describe("slash-command saved-run restore", () => {
 
       const state = controller.store.getState()
       expect(state.overlays.sessionPicker).toBe(false)
-      expect(state.focusedSessionId).toBe("codex")
+      expect(state.workspace.selectedVisibleId).toBe("codex")
       expect(state.restoration).toMatchObject({ "claude-code": "live", codex: "live" })
       expect(state.sessions.codex?.turns).toEqual([
         { kind: "agent", messageId: "codex-restored", text: "history from selected-codex" },

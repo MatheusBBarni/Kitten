@@ -82,7 +82,7 @@ export function readyRuntimes(): AgentRuntimeState[] {
 export function createFakeController(options: FakeControllerOptions = {}): FakeController {
   // Most view tests intentionally exercise Claude turns. Keep that fixture focus
   // explicit so production's Codex-first default is covered by real-store tests.
-  const store = options.store ?? createAppStore({ focusedSessionId: "claude-code" })
+  const store = options.store ?? createAppStore({ selectedVisibleId: "claude-code" })
   const runtimes = options.runtimes ?? readyRuntimes()
   const calls: RecordedCalls = {
     sendPrompt: [],
@@ -118,16 +118,22 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       switchFocus(sessionId?: SessionId): void {
         calls.switchFocus.push(sessionId)
-        store.setFocus(sessionId ?? nextSessionId(store.getState().order, store.getState().focusedSessionId))
+        const state = store.getState()
+        const target =
+          sessionId ??
+          (state.workspace.selectedVisibleId
+            ? nextSessionId(state.workspace.order, state.workspace.selectedVisibleId)
+            : state.workspace.order[0])
+        if (target) store.setFocus(target)
       },
       jumpToNextNeedy(): void {
         calls.jumpToNextNeedy++
-        const target = selectNextNeedy(store.getState().focusedSessionId)(store.getState())
+        const target = selectNextNeedy(store.getState().workspace.selectedVisibleId)(store.getState())
         if (target) store.setFocus(target)
       },
       async startNewRun(): Promise<void> {
         calls.startNewRun++
-        for (const sessionId of store.getState().order) store.setRestoration(sessionId, null)
+        for (const sessionId of store.getState().workspace.order) store.setRestoration(sessionId, null)
       },
       async startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.startFreshFromContext.push({ input, sessionId })

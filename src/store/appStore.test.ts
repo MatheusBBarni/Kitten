@@ -75,9 +75,9 @@ describe("createAppStore", () => {
     const state = createAppStore().getState()
     expect(state.sessions["claude-code"]).toEqual(createSessionState(seed("claude-code")))
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
-    expect(state.order).toEqual(["claude-code", "codex"])
-    expect(state.focusedSessionId).toBe("claude-code")
-    expect(state.focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+    expect(state.workspace.order).toEqual(["claude-code", "codex"])
+    expect(state.workspace.selectedVisibleId).toBe("claude-code")
+    expect(state.focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
     expect(state.shell).toEqual(createShellState())
     expect(state.overlays).toEqual({
       approval: null,
@@ -85,6 +85,7 @@ describe("createAppStore", () => {
       handoffTarget: null,
       modelSelect: null,
       settings: null,
+      tabDialog: null,
       sessions: false,
       sessionPicker: false,
     })
@@ -114,12 +115,12 @@ describe("createAppStore", () => {
   it("honors pre-bound session ids and an initial focused session", () => {
     const store = createAppStore({
       seeds: [seed("claude-code"), seed("codex", "session-codex")],
-      focusedSessionId: "codex",
+      selectedVisibleId: "codex",
     })
     const state = store.getState()
     expect(state.sessions.codex!.acpSessionId).toBe("session-codex")
     expect(state.sessions["claude-code"]!.acpSessionId).toBe("")
-    expect(state.focusedSessionId).toBe("codex")
+    expect(state.workspace.selectedVisibleId).toBe("codex")
   })
 
   it("seeds the theme preference from options", () => {
@@ -237,14 +238,14 @@ describe("setFocus", () => {
     store.setFocus("codex")
 
     const after = store.getState()
-    expect(after.focusedSessionId).toBe("codex")
-    expect(after.focusedPane).toEqual({ kind: "agent", agentId: "codex" })
+    expect(after.workspace.selectedVisibleId).toBe("codex")
+    expect(after.focusedPane).toEqual({ kind: "agent", sessionId: "codex" })
     expect(after.sessions).toBe(before.sessions)
     expect(after.overlays).toBe(before.overlays)
   })
 
   it("is a no-op when the agent is already focused", () => {
-    const store = createAppStore({ focusedSessionId: "codex" })
+    const store = createAppStore({ selectedVisibleId: "codex" })
     const before = store.getState()
     let notifications = 0
     store.subscribe(() => notifications++)
@@ -280,7 +281,7 @@ describe("setFocus", () => {
     store.setFocus("ghost")
 
     expect(store.getState()).toBe(before)
-    expect(store.getState().focusedSessionId).toBe("claude-code")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 })
 
@@ -291,7 +292,7 @@ describe("setFocusedPane", () => {
     let notifications = 0
     store.subscribe(() => notifications++)
 
-    store.setFocusedPane({ kind: "agent", agentId: "claude-code" })
+    store.setFocusedPane({ kind: "agent", sessionId: "claude-code" })
 
     expect(store.getState()).toBe(before)
     expect(notifications).toBe(0)
@@ -305,14 +306,14 @@ describe("setFocusedPane", () => {
     store.setFocusedPane({ kind: "shell" })
 
     expect(panes).toEqual([{ kind: "shell" }])
-    expect(store.getState().focusedSessionId).toBe("claude-code")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("ignores an agent pane whose session does not exist", () => {
     const store = createAppStore()
     const before = store.getState()
 
-    store.setFocusedPane({ kind: "agent", agentId: "ghost" })
+    store.setFocusedPane({ kind: "agent", sessionId: "ghost" })
 
     expect(store.getState()).toBe(before)
   })
@@ -543,7 +544,7 @@ describe("preferences", () => {
     expect(afterChange.preferences).not.toBe(before.preferences)
     expect(afterChange.sessions).toBe(before.sessions)
     expect(afterChange.overlays).toBe(before.overlays)
-    expect(afterChange.focusedSessionId).toBe(before.focusedSessionId)
+    expect(afterChange.workspace.selectedVisibleId).toBe(before.workspace.selectedVisibleId)
 
     store.setThemePreference("dark")
 
@@ -572,21 +573,21 @@ describe("integration: settings preference flow", () => {
     expect(opened.overlays.settings).toEqual({ tab: "theme" })
     expect(opened.preferences).toBe(initial.preferences)
     expect(opened.sessions).toBe(initial.sessions)
-    expect(opened.focusedSessionId).toBe(initial.focusedSessionId)
+    expect(opened.workspace.selectedVisibleId).toBe(initial.workspace.selectedVisibleId)
 
     store.setThemePreference("dark")
     const themed = store.getState()
     expect(themed.preferences).toEqual({ theme: "dark" })
     expect(themed.overlays).toBe(opened.overlays)
     expect(themed.sessions).toBe(opened.sessions)
-    expect(themed.focusedSessionId).toBe(opened.focusedSessionId)
+    expect(themed.workspace.selectedVisibleId).toBe(opened.workspace.selectedVisibleId)
 
     store.closeSettings()
     const closed = store.getState()
     expect(closed.overlays.settings).toBeNull()
     expect(closed.preferences).toBe(themed.preferences)
     expect(closed.sessions).toBe(themed.sessions)
-    expect(closed.focusedSessionId).toBe(themed.focusedSessionId)
+    expect(closed.workspace.selectedVisibleId).toBe(themed.workspace.selectedVisibleId)
   })
 })
 
@@ -595,7 +596,7 @@ describe("subscriptions", () => {
     const store = createAppStore()
     const seen: { focused: SessionId; previous: SessionId }[] = []
     const unsubscribe = store.subscribe((state, previous) =>
-      seen.push({ focused: state.focusedSessionId, previous: previous.focusedSessionId }),
+      seen.push({ focused: state.workspace.selectedVisibleId!, previous: previous.workspace.selectedVisibleId! }),
     )
 
     store.setFocus("codex")
@@ -780,7 +781,7 @@ describe("integration: a scripted interleaved event stream", () => {
     }
 
     const state = store.getState()
-    expect(state.focusedSessionId).toBe("codex")
+    expect(state.workspace.selectedVisibleId).toBe("codex")
     expect(state.overlays.approval?.request).toBe(APPROVAL_REQUEST)
   })
 })
@@ -800,5 +801,139 @@ describe("integration: shell and agent selector isolation", () => {
 
     expect(shellCwds).toEqual(["/one", "/two"])
     expect(agentStatuses).toEqual(["working"])
+  })
+})
+
+describe("workspace lifecycle integration", () => {
+  it("represents an empty workspace without an invalid agent pane", () => {
+    const store = createAppStore({ seeds: [] })
+
+    expect(store.getState().sessions).toEqual({})
+    expect(store.getState().workspace).toEqual({
+      conversations: {},
+      order: [],
+      selectedVisibleId: null,
+    })
+    expect(store.getState().focusedPane).toEqual({ kind: "workspace" })
+  })
+
+  it("atomically inserts and removes a dynamic execution slice and workspace entry", () => {
+    const store = createAppStore({ seeds: [] })
+    const dynamic: SessionSeed = {
+      id: "dynamic",
+      providerKind: "codex",
+      title: "Dynamic",
+      cwd: "/work/dynamic",
+    }
+
+    store.addSession(dynamic, { displayName: "Parser", availability: { kind: "ready" } })
+    const inserted = store.getState()
+    expect(inserted.sessions.dynamic).toEqual(createSessionState(dynamic))
+    expect(inserted.workspace.conversations.dynamic).toMatchObject({
+      displayName: "Parser",
+      lifecycle: "visible",
+      availability: { kind: "ready" },
+    })
+    expect(inserted.workspace.selectedVisibleId).toBe("dynamic")
+    expect(inserted.focusedPane).toEqual({ kind: "agent", sessionId: "dynamic" })
+
+    store.removeSession("dynamic")
+    const removed = store.getState()
+    expect(removed.sessions.dynamic).toBeUndefined()
+    expect(removed.workspace.conversations.dynamic).toBeUndefined()
+    expect(removed.workspace.selectedVisibleId).toBeNull()
+    expect(removed.focusedPane).toEqual({ kind: "workspace" })
+  })
+
+  it("preserves SessionState through rename, background, reopen, teardown, and availability", () => {
+    const store = createAppStore()
+    const session = store.getState().sessions["claude-code"]!
+
+    store.renameConversation("claude-code", "Compiler")
+    store.backgroundConversation("claude-code")
+    store.reopenConversation("claude-code")
+    store.setConversationTeardown("claude-code", "closing")
+    store.setConversationAvailability("claude-code", {
+      kind: "unavailable",
+      reasonCode: "teardown-failed",
+      retryable: true,
+    })
+
+    expect(store.getState().sessions["claude-code"]).toBe(session)
+    expect(store.getState().workspace.conversations["claude-code"]).toMatchObject({
+      displayName: "Compiler",
+      lifecycle: "visible",
+      teardownState: "closing",
+      availability: {
+        kind: "unavailable",
+        reasonCode: "teardown-failed",
+        retryable: true,
+      },
+    })
+  })
+
+  it("creates attention epochs and acknowledges only the selected current epoch", () => {
+    const store = createAppStore()
+
+    store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
+    expect(store.getState().sessions.codex?.status).toBe("awaiting_approval")
+    expect(store.getState().workspace.conversations.codex?.attention).toEqual({
+      status: "awaiting_approval",
+      seen: false,
+      sequence: 1,
+    })
+
+    store.setFocus("codex")
+    expect(store.getState().sessions.codex?.status).toBe("awaiting_approval")
+    expect(store.getState().workspace.conversations.codex?.attention.seen).toBe(true)
+
+    store.applyEvent("codex", { kind: "status", status: "working" })
+    store.applyEvent("codex", { kind: "status", status: "error" })
+    expect(store.getState().workspace.conversations.codex?.attention).toEqual({
+      status: "error",
+      seen: false,
+      sequence: 2,
+    })
+  })
+
+  it("keeps a background approval attributed while another conversation is selected", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "status", status: "awaiting_approval" })
+    store.backgroundConversation("claude-code")
+    store.openApproval({
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      request: APPROVAL_REQUEST,
+    })
+
+    expect(store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(store.getState().workspace.conversations["claude-code"]?.lifecycle).toBe("background")
+    expect(store.getState().workspace.conversations["claude-code"]?.attention.seen).toBe(false)
+    expect(store.getState().overlays.approval?.sessionId).toBe("claude-code")
+  })
+
+  it("suppresses focus changes under overlays and retains captured target identity", () => {
+    const store = createAppStore()
+    store.openTabDialog({ kind: "rename", sessionId: "claude-code" })
+    store.setFocus("codex")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "claude-code",
+    })
+
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      request: APPROVAL_REQUEST,
+    })
+    store.openTabDialog({ kind: "close", sessionId: "codex" })
+    expect(store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "claude-code",
+    })
+    expect(store.getState().overlays.approval?.sessionId).toBe("codex")
   })
 })

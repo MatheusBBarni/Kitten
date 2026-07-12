@@ -141,7 +141,9 @@ function CockpitFrame({
           setExternalRunNotice(null)
           controller.store.setFocusedPane(
             state.focusedPane.kind === "shell"
-              ? { kind: "agent", agentId: state.focusedSessionId }
+              ? state.workspace.selectedVisibleId
+                ? { kind: "agent", sessionId: state.workspace.selectedVisibleId }
+                : { kind: "workspace" }
               : { kind: "shell" },
           )
           return
@@ -179,10 +181,15 @@ function CockpitFrame({
         case "start-new-run": {
           setHelpOpen(false)
           const bundle = state.restorationBundle
-          if (state.restoration[state.focusedSessionId] === "unavailable" && bundle) {
+          const selectedVisibleId = state.workspace.selectedVisibleId
+          if (
+            selectedVisibleId &&
+            state.restoration[selectedVisibleId] === "unavailable" &&
+            bundle
+          ) {
             void controller.actions.startFreshFromContext(
               composeHandoffBlocks(bundle, createHandoffEdits(bundle)),
-              state.focusedSessionId,
+              selectedVisibleId,
             )
           } else {
             void controller.actions.startNewRun()
@@ -195,7 +202,9 @@ function CockpitFrame({
           return
         case "model-select":
           setHelpOpen(false)
-          controller.store.openModelSelect({ sessionId: state.focusedSessionId })
+          if (state.workspace.selectedVisibleId) {
+            controller.store.openModelSelect({ sessionId: state.workspace.selectedVisibleId })
+          }
           return
         case "open-settings":
           setHelpOpen(false)
@@ -251,7 +260,7 @@ function CockpitFrame({
     [focusedSessionId],
   )
   const focusedRestoration = useAppSelector(focusedRestorationSelector)
-  const focused = controller.runtime(focusedSessionId)
+  const focused = focusedSessionId ? controller.runtime(focusedSessionId) : undefined
   const paneTitle = isShellFocused ? "Shell · focused" : "Kitten"
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
 

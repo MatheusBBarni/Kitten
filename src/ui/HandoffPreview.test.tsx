@@ -409,7 +409,7 @@ describe("HandoffPreview visibility", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await destroyMounted(setup.renderer)
   })
@@ -677,7 +677,7 @@ describe("HandoffPreview target configuration", () => {
 
     expect(controller.calls.setSessionConfigOption).toEqual([{ configId: "effort", value: "high", sessionId: "codex" }])
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     await destroyMounted(setup.renderer)
   })
@@ -696,7 +696,7 @@ describe("HandoffPreview outcome", () => {
     expect(controller.calls.sendPrompt).toHaveLength(1)
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     // The preview is gone and focus has moved to the receiving agent.
     const closed = await setup.waitForFrame((f) => !f.includes(HANDOFF_HINT))
@@ -717,7 +717,7 @@ describe("HandoffPreview outcome", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(setup.renderer)
@@ -767,7 +767,7 @@ describe("HandoffPreview outcome", () => {
     seed(controller, "codex")
     controller.store.setFocus("codex")
     const setup = await renderCockpit(controller)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     const frame = await handoff(setup)
     expect(frame).toContain(handoffTitleFor("Codex", "Claude Code"))
@@ -777,7 +777,7 @@ describe("HandoffPreview outcome", () => {
     })
 
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("claude-code")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await destroyMounted(setup.renderer)
   })
@@ -796,7 +796,7 @@ describe("HandoffPreview modality", () => {
 
     // Neither the global shell chord nor the prompt command reached through the preview.
     expect(controller.store.getState().focusedPane.kind).toBe("agent")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it lands,
@@ -997,7 +997,7 @@ describe("integration - hand-off across two mock agents", () => {
 
     // The source agent was prompted once, by the user, and never by the hand-off.
     expect(claude.agent.prompts).toHaveLength(1)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     expect(controller.store.getState().sessions.codex!.turns).toHaveLength(1)
 
     await destroyMounted(setup.renderer)

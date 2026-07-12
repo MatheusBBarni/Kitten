@@ -412,7 +412,7 @@ class ActiveRecorder implements TelemetryRecorder {
     // Prime the per-session state so pre-existing transcript is not replayed as new and
     // a session already needing the developer at subscribe time is still measured.
     const initial = store.getState()
-    for (const sessionId of initial.order) {
+    for (const sessionId of initial.workspace.order) {
       const session = initial.sessions[sessionId]!
       const watch = this.watchFor(sessionId)
       watch.seenAcpSessionId = session.acpSessionId
@@ -420,10 +420,10 @@ class ActiveRecorder implements TelemetryRecorder {
       watch.seenEffortValue = effortValue(session.configOptions)
       const needy = needsAttention(session.status)
       watch.neededSince = needy ? this.now() : null
-      watch.idleFleetSince = needy && initial.focusedSessionId !== sessionId ? this.now() : null
+      watch.idleFleetSince = needy && initial.workspace.selectedVisibleId !== sessionId ? this.now() : null
     }
     return store.subscribe((state) => {
-      for (const sessionId of state.order) {
+      for (const sessionId of state.workspace.order) {
         const session = state.sessions[sessionId]!
         const watch = this.watchFor(sessionId)
         // A rebound ACP session id means the slice was reset. Drop every stale timer and
@@ -441,7 +441,7 @@ class ActiveRecorder implements TelemetryRecorder {
         }
         this.processEffortChange(sessionId, session.configOptions)
         this.processSession(sessionId, session.turns)
-        this.processAttention(sessionId, session.status, state.focusedSessionId === sessionId)
+        this.processAttention(sessionId, session.status, state.workspace.selectedVisibleId === sessionId)
       }
     })
   }

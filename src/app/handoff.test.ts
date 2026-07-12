@@ -330,7 +330,7 @@ describe("HandoffFlow.begin", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("redacts the bundle before it is shown, and reports how many secrets went", () => {
@@ -445,7 +445,7 @@ describe("HandoffFlow.confirm", () => {
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
     expect(controller.calls.switchFocus).toEqual(["codex"])
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
@@ -658,7 +658,7 @@ describe("HandoffFlow.cancel", () => {
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("is a no-op with no preview open", () => {
@@ -718,7 +718,7 @@ describe("HandoffFlow.begin - fleet targeting", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
   })
 })
 
@@ -751,7 +751,7 @@ describe("HandoffFlow.chooseTarget", () => {
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("c")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
     expect(controller.calls.switchFocus).toEqual(["c"])
-    expect(controller.store.getState().focusedSessionId).toBe("c")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("c")
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
@@ -802,7 +802,7 @@ describe("HandoffFlow.chooseTarget", () => {
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
   })
 })
 
@@ -877,6 +877,6 @@ describe("hand-back", () => {
     await flow.confirm(createHandoffEdits(overlay.bundle))
 
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("claude-code")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 })

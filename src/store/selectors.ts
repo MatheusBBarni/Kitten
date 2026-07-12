@@ -15,6 +15,7 @@
  */
 
 import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
+import { attentionConversationIds } from "../core/workspace.ts"
 import type {
   AvailableCommand,
   ConfigOption,
@@ -29,6 +30,10 @@ import type {
   ThemePreference,
   Turn,
   HandoffBundle,
+  ConversationAvailability,
+  TeardownState,
+  WorkspaceConversation,
+  WorkspaceState,
 } from "../core/types.ts"
 import type {
   AppState,
@@ -40,6 +45,7 @@ import type {
   RestorationMode,
   SettingsOverlay,
   Selector,
+  TabDialogOverlay,
 } from "./appStore.ts"
 
 /**
@@ -50,8 +56,16 @@ import type {
  */
 export { needsAttention }
 
+const EMPTY_TURNS: Turn[] = []
+const EMPTY_PLAN: PlanEntry[] = []
+const EMPTY_COMMANDS: AvailableCommand[] = []
+const EMPTY_PENDING_DIFFS: PendingDiff[] = []
+const EMPTY_REFERENCED_FILES = new Map<string, "read" | "edited">()
+const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
+
 /** The active conversation, retained while the shell owns keyboard focus. */
-export const selectFocusedSessionId: Selector<SessionId> = (state) => state.focusedSessionId
+export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
+  state.workspace.selectedVisibleId
 
 /** The pane that currently owns keyboard input. */
 export const selectFocusedPane: Selector<FocusedPane> = (state) => state.focusedPane
@@ -69,7 +83,7 @@ export const selectThemePreference: Selector<ThemePreference> = (state) => state
 export const selectIsFocused =
   (sessionId: SessionId): Selector<boolean> =>
   (state) =>
-    state.focusedPane.kind === "agent" && state.focusedPane.agentId === sessionId
+    state.focusedPane.kind === "agent" && state.focusedPane.sessionId === sessionId
 
 /** One session's full state. Changes on every event for that session. */
 export const selectSessionState =
@@ -78,19 +92,22 @@ export const selectSessionState =
     state.sessions[sessionId]!
 
 /** The focused session's full state. Changes when focus moves or that session updates. */
-export const selectFocusedSession: Selector<SessionState> = (state) => state.sessions[state.focusedSessionId]!
+export const selectFocusedSession: Selector<SessionState | null> = (state) => {
+  const sessionId = state.workspace.selectedVisibleId
+  return sessionId ? (state.sessions[sessionId] ?? null) : null
+}
 
 /** One session's lifecycle status. The status strip subscribes to this per session. */
 export const selectSessionStatus =
-  (sessionId: SessionId): Selector<SessionStatus> =>
+  (sessionId: SessionId | null): Selector<SessionStatus> =>
   (state) =>
-    state.sessions[sessionId]!.status
+    (sessionId ? state.sessions[sessionId]?.status : undefined) ?? "idle"
 
 /** One session's live-restore outcome, or `null` during a normal non-restored run. */
 export const selectRestoration =
-  (sessionId: SessionId): Selector<RestorationMode | null> =>
+  (sessionId: SessionId | null): Selector<RestorationMode | null> =>
   (state) =>
-    state.restoration[sessionId] ?? null
+    (sessionId ? state.restoration[sessionId] : null) ?? null
 
 /** The persisted hand-off context for a restored run's unavailable pane. */
 export const selectRestorationBundle: Selector<HandoffBundle | null> = (state) =>
@@ -122,15 +139,15 @@ export const selectSessionContext =
 
 /** One session's transcript. The conversation view subscribes to this. */
 export const selectSessionTurns =
-  (sessionId: SessionId): Selector<Turn[]> =>
+  (sessionId: SessionId | null): Selector<Turn[]> =>
   (state) =>
-    state.sessions[sessionId]!.turns
+    (sessionId ? state.sessions[sessionId]?.turns : undefined) ?? EMPTY_TURNS
 
 /** One session's most recent plan. */
 export const selectSessionPlan =
-  (sessionId: SessionId): Selector<PlanEntry[]> =>
+  (sessionId: SessionId | null): Selector<PlanEntry[]> =>
   (state) =>
-    state.sessions[sessionId]!.plan
+    (sessionId ? state.sessions[sessionId]?.plan : undefined) ?? EMPTY_PLAN
 
 /**
  * One session's latest agent-advertised slash commands. The reducer replaces this
@@ -138,21 +155,21 @@ export const selectSessionPlan =
  * types in the command menu or another session streams.
  */
 export const selectSessionCommands =
-  (sessionId: SessionId): Selector<AvailableCommand[]> =>
+  (sessionId: SessionId | null): Selector<AvailableCommand[]> =>
   (state) =>
-    state.sessions[sessionId]!.commands
+    (sessionId ? state.sessions[sessionId]?.commands : undefined) ?? EMPTY_COMMANDS
 
 /** One session's proposed-but-unapplied edit diffs. */
 export const selectSessionPendingDiffs =
-  (sessionId: SessionId): Selector<PendingDiff[]> =>
+  (sessionId: SessionId | null): Selector<PendingDiff[]> =>
   (state) =>
-    state.sessions[sessionId]!.pendingDiffs
+    (sessionId ? state.sessions[sessionId]?.pendingDiffs : undefined) ?? EMPTY_PENDING_DIFFS
 
 /** One session's referenced files and the strongest access seen for each. */
 export const selectSessionReferencedFiles =
-  (sessionId: SessionId): Selector<Map<string, "read" | "edited">> =>
+  (sessionId: SessionId | null): Selector<Map<string, "read" | "edited">> =>
   (state) =>
-    state.sessions[sessionId]!.referencedFiles
+    (sessionId ? state.sessions[sessionId]?.referencedFiles : undefined) ?? EMPTY_REFERENCED_FILES
 
 /**
  * One session's full advertised config-option set (ADR-003), returned unfiltered so
@@ -162,9 +179,9 @@ export const selectSessionReferencedFiles =
  * it; keeping the raw slice here is what preserves referential stability.
  */
 export const selectAgentConfigOptions =
-  (sessionId: SessionId): Selector<ConfigOption[]> =>
+  (sessionId: SessionId | null): Selector<ConfigOption[]> =>
   (state) =>
-    state.sessions[sessionId]!.configOptions
+    (sessionId ? state.sessions[sessionId]?.configOptions : undefined) ?? EMPTY_CONFIG_OPTIONS
 
 /**
  * One session's confirmed model, or `undefined` when the agent advertises no `model`
@@ -172,21 +189,21 @@ export const selectAgentConfigOptions =
  * only when the live model actually changes.
  */
 export const selectAgentModel =
-  (sessionId: SessionId): Selector<string | undefined> =>
+  (sessionId: SessionId | null): Selector<string | undefined> =>
   (state) =>
-    state.sessions[sessionId]!.configOptions.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+    (sessionId ? state.sessions[sessionId]?.configOptions : undefined)?.find((option) => option.category === MODEL_CATEGORY)?.currentValue
 
 /**
  * One session's confirmed reasoning effort, or `undefined` when the agent advertises no
  * `thought_level` category. A primitive slice like {@link selectAgentModel}.
  */
 export const selectAgentEffort =
-  (sessionId: SessionId): Selector<string | undefined> =>
+  (sessionId: SessionId | null): Selector<string | undefined> =>
   (state) =>
-    state.sessions[sessionId]!.configOptions.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
+    (sessionId ? state.sessions[sessionId]?.configOptions : undefined)?.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
 
 /** Every session id in display order. */
-export const selectSessionOrder: Selector<SessionId[]> = (state) => state.order
+export const selectSessionOrder: Selector<SessionId[]> = (state) => state.workspace.order
 
 /** One row of {@link selectSessionList}: a session's identity plus its live status. */
 export interface SessionListItem {
@@ -198,6 +215,7 @@ export interface SessionListItem {
   status: SessionStatus
   /** Whether this session's status is one the developer must act on (ADR-006). */
   needsAttention: boolean
+  lifecycle: "visible" | "background"
 }
 
 /**
@@ -219,16 +237,19 @@ const sessionListCache = new WeakMap<AppState, SessionListItem[]>()
 export const selectSessionList: Selector<SessionListItem[]> = (state) => {
   const cached = sessionListCache.get(state)
   if (cached) return cached
-  const list = state.order.map((id) => {
+  const list = state.workspace.order.flatMap((id) => {
     const session = state.sessions[id]!
-    return {
+    const conversation = state.workspace.conversations[id]
+    if (!session || !conversation) return []
+    return [{
       id,
-      title: session.title,
+      title: conversation.displayName,
       providerKind: session.providerKind,
       cwd: session.cwd,
       status: session.status,
       needsAttention: needsAttention(session.status),
-    }
+      lifecycle: conversation.lifecycle,
+    }]
   })
   sessionListCache.set(state, list)
   return list
@@ -258,12 +279,12 @@ const ATTENTION_RANK: Readonly<Record<SessionStatus, number>> = {
  * wins, and a lone needy session earlier in the order is still found by wrapping.
  */
 export const selectNextNeedy =
-  (afterSessionId: SessionId): Selector<SessionId | null> =>
+  (afterSessionId: SessionId | null): Selector<SessionId | null> =>
   (state) => {
-    const { order } = state
+    const { order } = state.workspace
     const count = order.length
     if (count === 0) return null
-    const pivot = order.indexOf(afterSessionId)
+    const pivot = afterSessionId === null ? -1 : order.indexOf(afterSessionId)
 
     // Walk the order forward from just after the pivot, wrapping around, so ties in
     // rank are broken by nearest-after-pivot (a strict `<` keeps the first, i.e. the
@@ -273,7 +294,9 @@ export const selectNextNeedy =
     for (let step = 1; step <= count; step++) {
       const id = order[(pivot + step) % count]!
       if (id === afterSessionId) continue
-      const status = state.sessions[id]!.status
+      const conversation = state.workspace.conversations[id]
+      if (!conversation || conversation.attention.seen) continue
+      const status = conversation.attention.status
       if (!needsAttention(status)) continue
       const rank = ATTENTION_RANK[status]
       if (best === null || rank < best.rank) best = { id, rank }
@@ -320,6 +343,33 @@ export const selectModelSelectOverlay: Selector<ModelSelectOverlay | null> = (st
 /** The active settings tab, or `null` while the settings modal is closed. */
 export const selectSettingsOverlay: Selector<SettingsOverlay | null> = (state) => state.overlays.settings
 
+/** The captured-target rename/close dialog, below approval in modal precedence. */
+export const selectTabDialogOverlay: Selector<TabDialogOverlay | null> = (state) =>
+  state.overlays.tabDialog
+
+export type ActiveModal =
+  | { kind: "approval"; sessionId: SessionId }
+  | { kind: "tab-dialog"; sessionId: SessionId }
+  | { kind: "sessions" }
+  | { kind: "session-picker" }
+  | { kind: "model-select"; sessionId: SessionId }
+  | { kind: "settings" }
+  | { kind: "handoff-target"; sessionId: SessionId }
+  | null
+
+/** Explicit modal precedence; approval identity always wins over a captured tab target. */
+export const selectActiveModal: Selector<ActiveModal> = (state) => {
+  const overlays = state.overlays
+  if (overlays.approval) return { kind: "approval", sessionId: overlays.approval.sessionId }
+  if (overlays.tabDialog) return { kind: "tab-dialog", sessionId: overlays.tabDialog.sessionId }
+  if (overlays.sessions) return { kind: "sessions" }
+  if (overlays.sessionPicker) return { kind: "session-picker" }
+  if (overlays.modelSelect) return { kind: "model-select", sessionId: overlays.modelSelect.sessionId }
+  if (overlays.settings) return { kind: "settings" }
+  if (overlays.handoffTarget) return { kind: "handoff-target", sessionId: overlays.handoffTarget.sourceSessionId }
+  return null
+}
+
 /** Whether any overlay is open, for views that dim or disable the cockpit beneath. */
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.approval !== null ||
@@ -327,5 +377,204 @@ export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.handoffTarget !== null ||
   state.overlays.modelSelect !== null ||
   state.overlays.settings !== null ||
+  state.overlays.tabDialog !== null ||
   state.overlays.sessions ||
   state.overlays.sessionPicker
+
+/** Render-ready workspace row shared by visible tabs, background work, and attention. */
+export interface WorkspaceConversationView {
+  id: SessionId
+  displayName: string
+  label: string
+  lifecycle: "visible" | "background"
+  providerKind: ProviderKind
+  cwd: string
+  status: SessionStatus
+  selected: boolean
+  needsAttention: boolean
+  attentionSeen: boolean
+  availability: ConversationAvailability
+  teardownState: TeardownState
+  duplicateIndex: number
+  duplicateCount: number
+  sharedWorkspaceCount: number
+}
+
+export interface SharedWorkspaceCue {
+  cwd: string
+  count: number
+  sessionIds: SessionId[]
+}
+
+interface WorkspaceListCache {
+  visible?: WorkspaceConversationView[]
+  background?: WorkspaceConversationView[]
+  attention?: WorkspaceConversationView[]
+  duplicateLabels?: Readonly<Record<SessionId, string>>
+  shared?: SharedWorkspaceCue[]
+}
+
+const workspaceListCache = new WeakMap<WorkspaceState, WorkspaceListCache>()
+const conversationViewCache = new WeakMap<
+  WorkspaceConversation,
+  Map<string, WorkspaceConversationView>
+>()
+
+function duplicatePosition(state: AppState, sessionId: SessionId): { index: number; count: number } {
+  const conversation = state.workspace.conversations[sessionId]!
+  const matching = state.workspace.order.filter(
+    (id) => state.workspace.conversations[id]?.displayName === conversation.displayName,
+  )
+  return { index: matching.indexOf(sessionId) + 1, count: matching.length }
+}
+
+function sharedWorkspaceCount(state: AppState, cwd: string): number {
+  return state.workspace.order.reduce(
+    (count, id) => count + (state.sessions[id]?.cwd === cwd ? 1 : 0),
+    0,
+  )
+}
+
+function workspaceConversationView(
+  state: AppState,
+  sessionId: SessionId,
+): WorkspaceConversationView | null {
+  const conversation = state.workspace.conversations[sessionId]
+  const session = state.sessions[sessionId]
+  if (!conversation || !session) return null
+  const duplicate = duplicatePosition(state, sessionId)
+  const sharedCount = sharedWorkspaceCount(state, session.cwd)
+  const selected = state.workspace.selectedVisibleId === sessionId
+  const key = [
+    session.providerKind,
+    session.cwd,
+    session.status,
+    selected,
+    duplicate.index,
+    duplicate.count,
+    sharedCount,
+  ].join("\u0000")
+  let byKey = conversationViewCache.get(conversation)
+  if (!byKey) {
+    byKey = new Map()
+    conversationViewCache.set(conversation, byKey)
+  }
+  const cached = byKey.get(key)
+  if (cached) return cached
+  const view: WorkspaceConversationView = {
+    id: sessionId,
+    displayName: conversation.displayName,
+    label:
+      duplicate.count > 1
+        ? `${conversation.displayName} (${duplicate.index})`
+        : conversation.displayName,
+    lifecycle: conversation.lifecycle,
+    providerKind: session.providerKind,
+    cwd: session.cwd,
+    status: session.status,
+    selected,
+    needsAttention: needsAttention(conversation.attention.status),
+    attentionSeen: conversation.attention.seen,
+    availability: conversation.availability,
+    teardownState: conversation.teardownState,
+    duplicateIndex: duplicate.index,
+    duplicateCount: duplicate.count,
+    sharedWorkspaceCount: sharedCount,
+  }
+  byKey.set(key, view)
+  return view
+}
+
+function stableList(
+  workspace: WorkspaceState,
+  slot: "visible" | "background" | "attention",
+  next: WorkspaceConversationView[],
+): WorkspaceConversationView[] {
+  let cache = workspaceListCache.get(workspace)
+  if (!cache) {
+    cache = {}
+    workspaceListCache.set(workspace, cache)
+  }
+  const previous = cache[slot]
+  if (
+    previous &&
+    previous.length === next.length &&
+    previous.every((item, index) => item === next[index])
+  ) {
+    return previous
+  }
+  cache[slot] = next
+  return next
+}
+
+export const selectVisibleTabs: Selector<WorkspaceConversationView[]> = (state) =>
+  stableList(
+    state.workspace,
+    "visible",
+    state.workspace.order.flatMap((id) => {
+      if (state.workspace.conversations[id]?.lifecycle !== "visible") return []
+      const item = workspaceConversationView(state, id)
+      return item ? [item] : []
+    }),
+  )
+
+export const selectBackgroundWork: Selector<WorkspaceConversationView[]> = (state) =>
+  stableList(
+    state.workspace,
+    "background",
+    state.workspace.order.flatMap((id) => {
+      if (state.workspace.conversations[id]?.lifecycle !== "background") return []
+      const item = workspaceConversationView(state, id)
+      return item ? [item] : []
+    }),
+  )
+
+export const selectAttentionQueue: Selector<WorkspaceConversationView[]> = (state) =>
+  stableList(
+    state.workspace,
+    "attention",
+    attentionConversationIds(state.workspace).flatMap((id) => {
+      const item = workspaceConversationView(state, id)
+      return item ? [item] : []
+    }),
+  )
+
+export const selectNextAttention: Selector<SessionId | null> = (state) =>
+  attentionConversationIds(state.workspace)[0] ?? null
+
+export const selectDuplicateLabels: Selector<Readonly<Record<SessionId, string>>> = (state) => {
+  let cache = workspaceListCache.get(state.workspace)
+  if (!cache) {
+    cache = {}
+    workspaceListCache.set(state.workspace, cache)
+  }
+  if (cache.duplicateLabels) return cache.duplicateLabels
+  const labels: Record<SessionId, string> = {}
+  for (const id of state.workspace.order) {
+    const item = workspaceConversationView(state, id)
+    if (item) labels[id] = item.label
+  }
+  cache.duplicateLabels = labels
+  return labels
+}
+
+export const selectSharedWorkspaces: Selector<SharedWorkspaceCue[]> = (state) => {
+  let cache = workspaceListCache.get(state.workspace)
+  if (!cache) {
+    cache = {}
+    workspaceListCache.set(state.workspace, cache)
+  }
+  if (cache.shared) return cache.shared
+  const idsByCwd = new Map<string, SessionId[]>()
+  for (const id of state.workspace.order) {
+    const cwd = state.sessions[id]?.cwd
+    if (!cwd) continue
+    const ids = idsByCwd.get(cwd) ?? []
+    ids.push(id)
+    idsByCwd.set(cwd, ids)
+  }
+  cache.shared = [...idsByCwd.entries()]
+    .filter(([, ids]) => ids.length > 1)
+    .map(([cwd, sessionIds]) => ({ cwd, count: sessionIds.length, sessionIds }))
+  return cache.shared
+}

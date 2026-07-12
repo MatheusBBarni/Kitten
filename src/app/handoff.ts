@@ -253,12 +253,13 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
       // preview would strand the agent waiting on it.
       if (selectHasOpenOverlay(state)) return { ok: false, reason: "overlay-open" }
 
-      const sourceSessionId = state.focusedSessionId
+      const sourceSessionId = state.workspace.selectedVisibleId
+      if (sourceSessionId === null) return { ok: false, reason: "empty-source" }
       const session = state.sessions[sourceSessionId]
       if (!session || session.turns.length === 0) return { ok: false, reason: "empty-source" }
 
       // No ready session on the far side means no one to hand to.
-      const recipients = readyRecipients(state.order, sourceSessionId)
+      const recipients = readyRecipients(state.workspace.order, sourceSessionId)
       if (recipients.length === 0) return { ok: false, reason: "no-target" }
 
       // Snapshot the pure shell slice at the start of the hand-off. If a target picker

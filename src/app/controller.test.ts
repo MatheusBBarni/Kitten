@@ -261,7 +261,7 @@ async function controllerWithStubs(
   const controller = await createSessionController({
     config: APP_CONFIG,
     cwd: CWD,
-    store: overrides.useProductionStore ? undefined : overrides.store ?? createAppStore({ focusedSessionId: "claude-code" }),
+    store: overrides.useProductionStore ? undefined : overrides.store ?? createAppStore({ selectedVisibleId: "claude-code" }),
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
     onError: overrides.onError,
@@ -376,7 +376,7 @@ async function controllerForRestore(
   const controller = await createSessionController({
     config: APP_CONFIG,
     cwd: CWD,
-    store: createAppStore({ focusedSessionId: "claude-code" }),
+    store: createAppStore({ selectedVisibleId: "claude-code" }),
     createConnection: (config) => queues[config.id].shift()!,
     onError,
     recorder,
@@ -468,15 +468,15 @@ describe("createSessionController - startup", () => {
 
   it("Should retain an initial focus supplied by the caller's store", async () => {
     const { controller } = await controllerWithStubs()
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     await controller.dispose()
   })
 
   it("Should default the built-in zero-config cockpit to Codex", async () => {
     const { controller } = await controllerWithStubs({}, { useProductionStore: true })
 
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
-    expect(controller.store.getState().order).toEqual(["codex", "claude-code"])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(controller.store.getState().workspace.order).toEqual(["codex", "claude-code"])
 
     await controller.dispose()
   })
@@ -805,12 +805,12 @@ describe("createSessionController - persisted restore", () => {
 
     const restoring = controller.restore(persistedRun("codex"))
     await waitFor(() => restored["claude-code"].loadSessionCalls.length === 1, "claude restore to begin")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     releaseClaude()
     await restoring
 
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     await controller.dispose()
   })
 
@@ -906,7 +906,7 @@ describe("createSessionController - degraded startup", () => {
     expect(connections["claude-code"].newSessionCwds).toEqual([])
 
     // Focus falls through to the agent that did come up.
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     await controller.actions.sendPrompt("still works")
     expect(connections.codex.prompts).toHaveLength(1)
 
@@ -932,7 +932,7 @@ describe("createSessionController - degraded startup", () => {
     const { controller } = await controllerWithStubs({ codex: { newSessionThrows: "no session for you" } })
 
     expect(controller.runtime("codex")).toMatchObject({ ready: false, error: "no session for you" })
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -943,7 +943,7 @@ describe("createSessionController - degraded startup", () => {
       codex: { ready: { ready: false, error: "down" } },
     })
 
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(controller.runtimes().every((runtime) => !runtime.ready)).toBe(true)
     // A not-ready agent has no session, so the action surface is inert rather than fatal.
     expect(await controller.actions.sendPrompt("hello")).toBeNull()
@@ -1087,7 +1087,7 @@ describe("actions - sendPrompt", () => {
       { sessionId: "codex-session", blocks: [{ type: "text", text: "continue this" }] },
     ])
     expect(connections["claude-code"].prompts).toEqual([])
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -1316,7 +1316,7 @@ describe("actions - switchFocus", () => {
     controller.actions.switchFocus("codex")
 
     const state = controller.store.getState()
-    expect(state.focusedSessionId).toBe("codex")
+    expect(state.workspace.selectedVisibleId).toBe("codex")
     expect(state.sessions["claude-code"]).toBe(before["claude-code"])
     expect(state.sessions["claude-code"]!.acpSessionId).toBe("claude-code-session")
     expect(state.sessions.codex!.acpSessionId).toBe("codex-session")
@@ -1334,9 +1334,9 @@ describe("actions - switchFocus", () => {
     const { controller } = await controllerWithStubs()
 
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await controller.dispose()
   })
@@ -1358,7 +1358,7 @@ describe("actions - switchFocus", () => {
     branch = "feature/focus-refresh"
     controller.actions.switchFocus("codex")
 
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     await waitFor(
       () => controller.store.getState().sessions.codex?.branch === "feature/focus-refresh",
       "focus-switch branch refresh",
@@ -1641,7 +1641,7 @@ describe("createControllerActions", () => {
 
     actions.jumpToNextNeedy()
 
-    expect(store.getState().focusedSessionId).toBe("c")
+    expect(store.getState().workspace.selectedVisibleId).toBe("c")
   })
 
   it("Should leave focus alone when no other session needs attention", () => {
@@ -1650,7 +1650,7 @@ describe("createControllerActions", () => {
 
     actions.jumpToNextNeedy()
 
-    expect(store.getState().focusedSessionId).toBe("claude-code")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("Should count an overview switch through the numerator but a direct /switch only through the denominator", () => {
@@ -1832,7 +1832,7 @@ describe("integration - two mock ACP agents", () => {
     // Three live runtimes, two sharing a provider, each with a distinct SessionId.
     expect(controller.runtimes().map((runtime) => runtime.sessionId)).toEqual(["claude-code", "claude-code-2", "codex"])
     expect(controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     // Each mock agent opened its session against its descriptor's own directory.
     expect(agents.map((agent) => agent.newSessionCwds)).toEqual([[FLEET_DIRS.alpha], [FLEET_DIRS.beta], [FLEET_DIRS.gamma]])
@@ -1864,7 +1864,7 @@ describe("integration - two mock ACP agents", () => {
     expect(claudeRuntime.ready === false && claudeRuntime.error).toContain("authenticate first")
 
     expect(controller.isReady("codex")).toBe(true)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     const result = await controller.actions.sendPrompt("carry on")
     expect(result).toEqual({ stopReason: "end_turn" })

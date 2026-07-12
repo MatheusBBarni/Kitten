@@ -182,7 +182,7 @@ describe("HandoffTargetPicker selection", () => {
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     // The composer took the keyboard back: typing now lands in the prompt.
@@ -210,7 +210,7 @@ describe("HandoffTargetPicker modality", () => {
 
     // The shell chord never fired, and the prompt command never opened help over the picker.
     expect(controller.store.getState().focusedPane.kind).toBe("agent")
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
     expect(await setup.waitForFrame((frame) => frame.includes(HANDOFF_TARGET_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, then read the composer: nothing typed at the picker leaked into it.
@@ -253,7 +253,7 @@ describe("integration - hand-off and hand-back across three sessions", () => {
     expect(controller.calls.sendPrompt).toHaveLength(1)
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("c")
     expect(sentText(controller, 0)).toContain(HANDOFF_INSTRUCTION)
-    expect(controller.store.getState().focusedSessionId).toBe("c")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("c")
 
     // The fake records the send but, unlike the real controller, does not echo the user
     // turn into the store. Mirror the delivered turn so C has a transcript to hand back.
@@ -283,7 +283,7 @@ describe("integration - hand-off and hand-back across three sessions", () => {
     expect(controller.calls.sendPrompt).toHaveLength(2)
     expect(controller.calls.sendPrompt[1]!.sessionId).toBe("a")
     expect(sentText(controller, 1)).toContain(HANDOFF_INSTRUCTION)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
 
     await destroyMounted(setup.renderer)
   })

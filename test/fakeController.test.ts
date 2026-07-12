@@ -37,13 +37,13 @@ describe("createFakeController", () => {
 
   it("cycles focus in the store, like the real controller does", () => {
     const controller = createFakeController()
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     controller.actions.switchFocus("claude-code")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(controller.calls.switchFocus).toEqual([undefined, "claude-code"])
   })
 
