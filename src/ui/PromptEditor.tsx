@@ -111,18 +111,23 @@ export function slashTokenAt(text: string, cursorOffset: number): SlashToken | n
   while (end < text.length && !/\s/.test(text[end]!)) end += 1
 
   const token = text.slice(start, end)
-  if (!token.startsWith("/") || token.indexOf("/", 1) !== -1) return null
+  if (cursor === start || !token.startsWith("/") || token.indexOf("/", 1) !== -1) return null
   return { start, end, filter: token.slice(1) }
 }
 
 /** Build the deterministic cockpit-first command rows, filtering a slash token. */
 export function slashMenuRows(filter: string, agentCommands: readonly AvailableCommand[]): MenuRow[] {
   const normalized = filter.trim().toLocaleLowerCase()
-  const matches = (name: string, description: string): boolean =>
-    normalized.length === 0 || name.toLocaleLowerCase().includes(normalized) || description.toLocaleLowerCase().includes(normalized)
+  const matches = (name: string): boolean =>
+    normalized.length === 0 || name.toLocaleLowerCase().startsWith(normalized)
 
-  const cockpitRows: MenuRow[] = COCKPIT_COMMANDS
-    .filter((command) => matches(command.name, command.description))
+  // The menu is a teaching surface: keep the product-defining hand-off visible at
+  // the top, then retain the registry's deterministic order for every other action.
+  const cockpitCommands = [...COCKPIT_COMMANDS].sort((left, right) =>
+    left.command === "hand-off" ? -1 : right.command === "hand-off" ? 1 : 0
+  )
+  const cockpitRows: MenuRow[] = cockpitCommands
+    .filter((command) => matches(command.name))
     .map((command) => ({
       source: "cockpit" as const,
       command: command.command,
@@ -131,7 +136,7 @@ export function slashMenuRows(filter: string, agentCommands: readonly AvailableC
     }))
   const agentRows: MenuRow[] = agentCommands
     .map((command) => ({ ...command, name: command.name.replace(/^\/+/, "") }))
-    .filter((command) => command.name.length > 0 && matches(command.name, command.description))
+    .filter((command) => command.name.length > 0 && matches(command.name))
     .map((command) => ({
       source: "agent" as const,
       name: command.name,

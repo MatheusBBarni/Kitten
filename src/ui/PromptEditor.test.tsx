@@ -8,13 +8,16 @@ import { describe, expect, it } from "bun:test"
 import { RGBA } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
+import { Profiler } from "react"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import type { HandoffBundle } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
+import { selectHasOpenOverlay } from "../store/selectors.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
+import { ConversationView } from "./ConversationView.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
   PROMPT_DISABLED_TITLE,
@@ -23,6 +26,8 @@ import {
   PROMPT_TITLE,
   PROMPT_WORKSPACE_TITLE,
   PromptEditor,
+  slashMenuRows,
+  slashTokenAt,
 } from "./PromptEditor.tsx"
 import type { CockpitCommand } from "./keymap.ts"
 import { DARK_PALETTE } from "./theme.ts"
@@ -256,26 +261,61 @@ describe("PromptEditor interrupt", () => {
 })
 
 describe("PromptEditor slash commands", () => {
-  it("filters agent commands and inserts the selected command without sending it", async () => {
+  const agentCommands = [
+    { name: "review", description: "Review the current diff", hint: "[scope]" },
+    { name: "test", description: "Run the focused tests" },
+  ]
+
+  function seedAgentCommands(controller: FakeController): void {
+    controller.store.applyEvent("claude-code", { kind: "commands", commands: agentCommands })
+  }
+
+  it("detects only slash tokens that begin at a token boundary and still own the caret", () => {
+    expect(slashTokenAt("/", 1)).toEqual({ start: 0, end: 1, filter: "" })
+    expect(slashTokenAt("foo /", 5)).toEqual({ start: 4, end: 5, filter: "" })
+    expect(slashTokenAt("foo/bar", 7)).toBeNull()
+    expect(slashTokenAt("/usr/", 5)).toBeNull()
+    expect(slashTokenAt("/review", 0)).toBeNull()
+    expect(slashTokenAt("/review ", 8)).toBeNull()
+  })
+
+  it("produces no candidates for an unmatched token", () => {
+    expect(slashMenuRows("xyz", agentCommands)).toEqual([])
+  })
+
+  it("opens with the Cockpit group first, hand-off on top, and agent commands below", async () => {
     const controller = createFakeController()
-    controller.store.applyEvent("claude-code", {
-      kind: "commands",
-      commands: [
-        { name: "review", description: "Review the current diff", hint: "[scope]" },
-        { name: "test", description: "Run the focused tests" },
-      ],
-    })
+    seedAgentCommands(controller)
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff", "Agent commands", "/review")
+
+    expect(menu.indexOf("Cockpit")).toBeLessThan(menu.indexOf("Agent commands"))
+    expect(menu.indexOf("/handoff")).toBeLessThan(menu.indexOf("/shell"))
+    expect(menu).toContain("▸ /handoff")
+    expect(selectHasOpenOverlay(controller.store.getState())).toBeFalse()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("filters to and highlights /review, then inserts it with the cursor after the trailing space", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
     // The menu is positioned above the prompt, as it is in the real cockpit. Dock
     // the standalone editor to the bottom so the test observes that real layout.
     const setup = await renderEditor(controller, 32, undefined, true)
 
-    await type(setup, "/review")
+    await type(setup, "/rev")
     const menu = await frameWith(setup, "Commands", "Agent commands", "/review", "[scope]")
     expect(menu).not.toContain("/settings")
+    expect(menu).toContain("▸ /review")
 
     await pressEnter(setup)
     expect(controller.calls.sendPrompt).toEqual([])
-    await frameWith(setup, "/review")
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/review ")
+    expect(setup.renderer.currentFocusedEditor?.cursorOffset).toBe(8)
+    expect(await setup.waitForFrame((frame) => frame.includes("/review ") && !frame.includes("Commands"))).not.toContain("Commands")
 
     // Selecting an agent command owns the separating space; subsequent prompt text
     // must append directly instead of creating an accidental double space.
@@ -286,19 +326,81 @@ describe("PromptEditor slash commands", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("dispatches a selected Kitten command instead of sending it to the agent", async () => {
+  it("dispatches hand-off from the top row instead of sending it to the agent", async () => {
     const controller = createFakeController()
     const dispatched: CockpitCommand[] = []
     const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
 
-    await type(setup, "/model")
-    const menu = await frameWith(setup, "Commands", "/model")
-    expect(menu).not.toContain("Choose an agent model")
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "▸ /handoff")
     await pressEnter(setup)
 
-    expect(dispatched).toEqual(["model-select"])
+    expect(dispatched).toEqual(["hand-off"])
     expect(controller.calls.sendPrompt).toEqual([])
-    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/model")
+    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/handoff")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("dismisses without clearing text, then lets Enter submit normally", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "/handoff")
+    await pressEscape(setup)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/")
+    expect(await setup.waitForFrame((frame) => frame.includes("/") && !frame.includes("Commands"))).not.toContain("Commands")
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("/")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("submits /usr/bin as literal prompt text after the second slash disarms the menu", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/usr/bin")
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/usr/bin")
+    expect(setup.captureCharFrame()).not.toContain("Commands")
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("/usr/bin")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not re-render the transcript while navigating the editor-local menu", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
+    let transcriptCommits = 0
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <box style={{ height: 32, flexDirection: "column" }}>
+          <box style={{ flexGrow: 1 }}>
+            <Profiler id="transcript" onRender={() => { transcriptCommits += 1 }}>
+              <ConversationView welcomeBannerVariant="none" />
+            </Profiler>
+          </box>
+          <PromptEditor />
+        </box>
+      </CockpitProvider>,
+      { width: 64, height: 32, kittyKeyboard: true },
+    )
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    const baselineCommits = transcriptCommits
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "/handoff", "/review")
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressArrow("up")
+    })
+
+    expect(transcriptCommits).toBe(baselineCommits)
 
     await destroyMounted(setup.renderer)
   })
