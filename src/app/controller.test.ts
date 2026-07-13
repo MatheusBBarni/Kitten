@@ -43,6 +43,7 @@ import {
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
 import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
 import { createSessionController, type SessionController } from "./controller.ts"
+import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 
 /**
  * The controller is verified two ways.
@@ -340,6 +341,7 @@ async function controllerOverFleet(
   optionsFor: (index: number) => StubOptions = () => ({}),
   overrides: {
     readBranch?: (cwd: string) => Promise<string | null>
+    repositoryFileSource?: RepositoryFileSource
     createShellRuntime?: ShellRuntimeFactory
     sendInitialTasks?: boolean
   } = {},
@@ -355,6 +357,7 @@ async function controllerOverFleet(
     },
     newMessageId: () => "msg-1",
     readBranch: overrides.readBranch ?? (async () => null),
+    repositoryFileSource: overrides.repositoryFileSource,
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
     sendInitialTasks: overrides.sendInitialTasks,
   })

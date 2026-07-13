@@ -23,6 +23,7 @@ import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } fr
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
+import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
@@ -126,6 +127,8 @@ export interface ActionDeps {
   refreshBranch?: (sessionId: SessionId) => void
   /** The telemetry recorder to report navigation and adapter-confirmed switches to. */
   recorder?: ActionTelemetry
+  /** Repository discovery owned and injected by the controller. */
+  repositoryFileSource?: RepositoryFileSource
   /** Replace every live agent session with a fresh one. */
   startNewRun?: () => Promise<void>
   /** Replace one unavailable restored session with a fresh promptable session. */
@@ -150,6 +153,8 @@ export interface ControllerActions {
   reopenConversation(sessionId: SessionId, options?: SwitchFocusOptions): void
   /** Apply an explicit, fail-soft close-policy outcome. */
   closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult>
+  /** List safe repository-relative files for one explicitly addressed configured session. */
+  listRepositoryFiles(sessionId: SessionId): Promise<RepositoryFileList>
   /** Record that a valid file-selector token opened for one addressed session. */
   fileSelectorOpened(sessionId: SessionId): void
   /** Record a fixed discovery outcome and caller-owned duration. */
@@ -229,6 +234,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const onError = deps.onError ?? (() => {})
   const refreshBranch = deps.refreshBranch ?? (() => {})
   const recorder = deps.recorder ?? NOOP_ACTION_TELEMETRY
+  const repositoryFileSource = deps.repositoryFileSource
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
@@ -361,6 +367,19 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       } catch (error) {
         onError(sessionId, error)
         return { outcome: "teardown-failed" }
+      }
+    },
+
+    async listRepositoryFiles(sessionId): Promise<RepositoryFileList> {
+      // Capture from configured session state before awaiting. Live ACP lookup and
+      // current focus are deliberately irrelevant to repository discovery.
+      const cwd = store.getState().sessions[sessionId]?.cwd
+      if (!cwd) return { kind: "unavailable", reason: "unknown_session" }
+      if (!repositoryFileSource) return { kind: "unavailable", reason: "discovery_failed" }
+      try {
+        return await repositoryFileSource.list(cwd)
+      } catch {
+        return { kind: "unavailable", reason: "discovery_failed" }
       }
     },
 

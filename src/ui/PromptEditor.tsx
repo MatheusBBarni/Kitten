@@ -40,6 +40,21 @@ import {
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
+import { FileSelector, type FileSelectorStatus } from "./FileSelector.tsx"
+import {
+  clearPendingFileReferencesOnSubmit,
+  fileTokenAt,
+  formatFileReference,
+  isFileTokenSuppressed,
+  rankFileMatches,
+  suppressFileToken,
+  updateFileTokenSuppression,
+  updatePendingFileReferences,
+  visibleFileMatches,
+  type FileToken,
+  type FileTokenSuppression,
+  type PendingFileReference,
+} from "./fileCompletion.ts"
 import {
   COCKPIT_COMMANDS,
   COCKPIT_KEYMAP,
@@ -98,6 +113,45 @@ export interface SlashToken {
   start: number
   end: number
   filter: string
+}
+
+interface SlashCompletion {
+  readonly kind: "slash"
+  readonly token: SlashToken
+  readonly selected: number
+}
+
+interface FileCompletion {
+  readonly kind: "file"
+  readonly token: FileToken
+  readonly status: FileSelectorStatus
+  readonly paths: readonly string[]
+  readonly selected: number
+  readonly sessionId: SessionId
+  readonly generation: number
+  readonly openedAt: number
+  readonly revision: number
+}
+
+type PromptCompletion = SlashCompletion | FileCompletion | null
+
+interface ActiveFileInteraction {
+  readonly sessionId: SessionId
+  readonly tokenStart: number
+  readonly generation: number
+  readonly openedAt: number
+}
+
+interface FilePathCache {
+  readonly sessionId: SessionId
+  readonly paths: readonly string[]
+}
+
+interface PendingQueryRenderMetric {
+  readonly sessionId: SessionId
+  readonly revision: number
+  readonly state: "results" | "empty" | "unavailable"
+  readonly startedAt: number
 }
 
 /**
@@ -169,6 +223,25 @@ function moveVertically(editor: TextareaRenderable, direction: "previous" | "nex
   const before = editor.visualCursor.offset
   const reported = direction === "previous" ? editor.moveCursorUp() : editor.moveCursorDown()
   return reported && editor.visualCursor.offset !== before
+}
+
+/** Identify the first accepted reference removed by the pure range update. */
+function correctedReferenceSession(
+  previous: readonly PendingFileReference[],
+  next: readonly PendingFileReference[],
+): SessionId | null {
+  const retained = new Map<string, number>()
+  for (const reference of next) {
+    const key = `${reference.sessionId}\u0000${reference.text}`
+    retained.set(key, (retained.get(key) ?? 0) + 1)
+  }
+  for (const reference of previous) {
+    const key = `${reference.sessionId}\u0000${reference.text}`
+    const count = retained.get(key) ?? 0
+    if (count === 0) return reference.sessionId
+    retained.set(key, count - 1)
+  }
+  return null
 }
 
 /** The multi-line prompt editor, bound to whichever agent currently has focus. */
@@ -244,21 +317,260 @@ function SelectedPromptEditor({
   const textarea = useRef<TextareaRenderable | null>(null)
   const previousSession = useRef(focusedSessionId)
   const recalledSession = useRef<SessionId | null>(null)
+  const focusedSession = useRef(focusedSessionId)
+  focusedSession.current = focusedSessionId
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
-  const [menu, setMenu] = useState<SlashToken & { selected: number } | null>(null)
+  const [completion, setCompletion] = useState<PromptCompletion>(null)
+  const completionRef = useRef<PromptCompletion>(null)
+  const fileCache = useRef<FilePathCache | null>(null)
+  const fileLoad = useRef<{ sessionId: SessionId; generation: number } | null>(null)
+  const fileRequestGeneration = useRef(0)
+  const fileRevision = useRef(0)
+  const activeFileInteraction = useRef<ActiveFileInteraction | null>(null)
+  const fileSuppression = useRef<FileTokenSuppression | null>(null)
+  const pendingFileReferences = useRef<readonly PendingFileReference[]>([])
+  const previousDraft = useRef("")
+  const acceptingFileReference = useRef(false)
+  const pendingQueryRenderMetric = useRef<PendingQueryRenderMetric | null>(null)
 
+  const commitCompletion = useCallback((next: PromptCompletion): void => {
+    completionRef.current = next
+    setCompletion(next)
+  }, [])
+
+  const slashCompletion = completion?.kind === "slash" ? completion : null
   const matchingRows = useMemo(
-    () => slashMenuRows(menu?.filter ?? "", agentCommands),
-    [agentCommands, menu?.filter],
+    () => slashMenuRows(slashCompletion?.token.filter ?? "", agentCommands),
+    [agentCommands, slashCompletion?.token.filter],
   )
-  const armedMenu = menu !== null && matchingRows.length > 0 ? menu : null
-  const highlighted = Math.min(armedMenu?.selected ?? 0, Math.max(matchingRows.length - 1, 0))
+  const armedSlashMenu = slashCompletion !== null && matchingRows.length > 0 ? slashCompletion : null
+  const slashHighlight = Math.min(armedSlashMenu?.selected ?? 0, Math.max(matchingRows.length - 1, 0))
+  const fileCompletion = completion?.kind === "file" ? completion : null
+  const armedFileMenu = fileCompletion?.status === "ready" && fileCompletion.paths.length > 0
+    ? fileCompletion
+    : null
+  const fileHighlight = Math.min(armedFileMenu?.selected ?? 0, Math.max((armedFileMenu?.paths.length ?? 0) - 1, 0))
 
   const syncRows = useCallback((editor = textarea.current): void => {
     if (!editor) return
     const next = editorRows(Math.max(editor.lineCount, editor.virtualLineCount))
     setRows((current) => (current === next ? current : next))
   }, [])
+
+  const renderCachedFileToken = useCallback((
+    token: FileToken,
+    interaction: ActiveFileInteraction,
+    paths: readonly string[],
+    measureWarmQuery: boolean,
+  ): void => {
+    const visiblePaths = visibleFileMatches(rankFileMatches(paths, token.filter))
+    const status: FileSelectorStatus = visiblePaths.length > 0 ? "ready" : "empty"
+    const revision = ++fileRevision.current
+    if (measureWarmQuery) {
+      pendingQueryRenderMetric.current = {
+        sessionId: interaction.sessionId,
+        revision,
+        state: status === "ready" ? "results" : "empty",
+        startedAt: performance.now(),
+      }
+    }
+    commitCompletion({
+      kind: "file",
+      token,
+      status,
+      paths: visiblePaths,
+      selected: 0,
+      sessionId: interaction.sessionId,
+      generation: interaction.generation,
+      openedAt: interaction.openedAt,
+      revision,
+    })
+  }, [commitCompletion])
+
+  const beginFileCompletion = useCallback((token: FileToken): void => {
+    const current = completionRef.current
+    const active = activeFileInteraction.current
+    if (active?.sessionId === focusedSessionId && active.tokenStart === token.start) {
+      if (current?.kind === "file" && current.status === "loading") {
+        commitCompletion({ ...current, token, selected: 0 })
+        return
+      }
+      if (
+        current?.kind === "file"
+        && (current.status === "ready" || current.status === "empty")
+        && fileCache.current?.sessionId === focusedSessionId
+      ) {
+        renderCachedFileToken(token, active, fileCache.current.paths, true)
+        return
+      }
+      if (current?.kind === "file" && current.status === "unavailable") {
+        const revision = ++fileRevision.current
+        pendingQueryRenderMetric.current = {
+          sessionId: focusedSessionId,
+          revision,
+          state: "unavailable",
+          startedAt: performance.now(),
+        }
+        commitCompletion({ ...current, token, selected: 0, revision })
+        return
+      }
+    }
+
+    const openedAt = performance.now()
+    controller.actions.fileSelectorOpened(focusedSessionId)
+    const cached = fileCache.current
+    if (cached?.sessionId === focusedSessionId) {
+      const interaction: ActiveFileInteraction = {
+        sessionId: focusedSessionId,
+        tokenStart: token.start,
+        generation: fileRequestGeneration.current,
+        openedAt,
+      }
+      activeFileInteraction.current = interaction
+      renderCachedFileToken(token, interaction, cached.paths, true)
+      return
+    }
+
+    const inFlight = fileLoad.current
+    if (inFlight?.sessionId === focusedSessionId) {
+      const interaction: ActiveFileInteraction = {
+        sessionId: focusedSessionId,
+        tokenStart: token.start,
+        generation: inFlight.generation,
+        openedAt,
+      }
+      activeFileInteraction.current = interaction
+      commitCompletion({
+        kind: "file",
+        token,
+        status: "loading",
+        paths: [],
+        selected: 0,
+        sessionId: focusedSessionId,
+        generation: inFlight.generation,
+        openedAt,
+        revision: ++fileRevision.current,
+      })
+      return
+    }
+
+    const generation = ++fileRequestGeneration.current
+    const interaction: ActiveFileInteraction = {
+      sessionId: focusedSessionId,
+      tokenStart: token.start,
+      generation,
+      openedAt,
+    }
+    activeFileInteraction.current = interaction
+    fileLoad.current = { sessionId: focusedSessionId, generation }
+    commitCompletion({
+      kind: "file",
+      token,
+      status: "loading",
+      paths: [],
+      selected: 0,
+      sessionId: focusedSessionId,
+      generation,
+      openedAt,
+      revision: ++fileRevision.current,
+    })
+
+    const discoveryStartedAt = performance.now()
+    void controller.actions.listRepositoryFiles(focusedSessionId).then(
+      (result) => {
+        controller.actions.fileSelectorDiscovery(
+          focusedSessionId,
+          result.kind,
+          Math.max(0, performance.now() - discoveryStartedAt),
+        )
+        if (
+          focusedSession.current !== focusedSessionId
+          || fileRequestGeneration.current !== generation
+          || fileLoad.current?.generation !== generation
+        ) return
+
+        fileLoad.current = null
+        if (result.kind === "ready") fileCache.current = { sessionId: focusedSessionId, paths: result.paths }
+
+        const editor = textarea.current
+        const currentInteraction = activeFileInteraction.current
+        const currentToken = editor ? fileTokenAt(editor.plainText, editor.cursorOffset) : null
+        if (
+          !currentInteraction
+          || currentInteraction.sessionId !== focusedSessionId
+          || currentInteraction.generation !== generation
+          || currentToken?.start !== currentInteraction.tokenStart
+          || isFileTokenSuppressed(fileSuppression.current, currentToken)
+        ) return
+
+        if (result.kind === "ready") {
+          renderCachedFileToken(currentToken, currentInteraction, result.paths, false)
+          return
+        }
+        commitCompletion({
+          kind: "file",
+          token: currentToken,
+          status: "unavailable",
+          paths: [],
+          selected: 0,
+          sessionId: focusedSessionId,
+          generation,
+          openedAt: currentInteraction.openedAt,
+          revision: ++fileRevision.current,
+        })
+      },
+      () => {
+        controller.actions.fileSelectorDiscovery(
+          focusedSessionId,
+          "unavailable",
+          Math.max(0, performance.now() - discoveryStartedAt),
+        )
+        if (
+          focusedSession.current !== focusedSessionId
+          || fileRequestGeneration.current !== generation
+          || fileLoad.current?.generation !== generation
+        ) return
+        fileLoad.current = null
+
+        const editor = textarea.current
+        const currentInteraction = activeFileInteraction.current
+        const currentToken = editor ? fileTokenAt(editor.plainText, editor.cursorOffset) : null
+        if (
+          !currentInteraction
+          || currentInteraction.generation !== generation
+          || currentToken?.start !== currentInteraction.tokenStart
+          || isFileTokenSuppressed(fileSuppression.current, currentToken)
+        ) return
+        commitCompletion({
+          kind: "file",
+          token: currentToken,
+          status: "unavailable",
+          paths: [],
+          selected: 0,
+          sessionId: focusedSessionId,
+          generation,
+          openedAt: currentInteraction.openedAt,
+          revision: ++fileRevision.current,
+        })
+      },
+    )
+  }, [commitCompletion, controller, focusedSessionId, renderCachedFileToken])
+
+  useEffect(() => {
+    const metric = pendingQueryRenderMetric.current
+    if (
+      !metric
+      || !fileCompletion
+      || fileCompletion.sessionId !== metric.sessionId
+      || fileCompletion.revision !== metric.revision
+    ) return
+    pendingQueryRenderMetric.current = null
+    controller.actions.fileSelectorQueryRendered(
+      metric.sessionId,
+      metric.state,
+      Math.max(0, performance.now() - metric.startedAt),
+    )
+  }, [controller, fileCompletion])
 
   // The textarea is deliberately shared across ordinary focus changes so an unsent
   // draft survives. Recalled text is different: it belongs to one session. Clear it
@@ -267,22 +579,35 @@ function SelectedPromptEditor({
   useEffect(() => {
     if (previousSession.current === focusedSessionId) return
     previousSession.current = focusedSessionId
+    fileRequestGeneration.current += 1
+    fileCache.current = null
+    fileLoad.current = null
+    fileSuppression.current = null
+    activeFileInteraction.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
 
     const editor = textarea.current
     if (!editor) return
     const recalled = promptHistory.cursor === null ? undefined : promptHistory.entries[promptHistory.cursor]
     if (recalled !== undefined) {
       editor.setText(recalled)
+      previousDraft.current = recalled
       recalledSession.current = focusedSessionId
       syncRows(editor)
       return
     }
     if (recalledSession.current !== null) {
       editor.clear()
+      previousDraft.current = ""
       recalledSession.current = null
       syncRows(editor)
     }
-  }, [focusedSessionId, promptHistory, syncRows])
+  }, [commitCompletion, focusedSessionId, promptHistory, syncRows])
+
+  useEffect(() => () => {
+    fileRequestGeneration.current += 1
+  }, [])
 
   const submit = useCallback((): void => {
     const editor = textarea.current
@@ -295,53 +620,127 @@ function SelectedPromptEditor({
     // Local acceptance owns history even if the asynchronous agent call later fails.
     controller.actions.recordPromptHistory(text, focusedSessionId)
     recalledSession.current = null
+    pendingFileReferences.current = clearPendingFileReferencesOnSubmit(pendingFileReferences.current).pending
+    activeFileInteraction.current = null
+    fileSuppression.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
 
     // Clear before awaiting: `sendPrompt` records the user's turn synchronously, so
     // the transcript already shows the message the composer just gave up.
+    acceptingFileReference.current = true
     editor.clear()
+    previousDraft.current = ""
+    acceptingFileReference.current = false
     setRows(MIN_EDITOR_ROWS)
     void controller.actions.sendPrompt(text)
-  }, [controller, focusedSessionId, ready, restorationContextOpen])
+  }, [commitCompletion, controller, focusedSessionId, ready, restorationContextOpen])
 
-  const selectMenuRow = useCallback((selectedRow?: MenuRow): void => {
+  const selectSlashMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current
-    if (!editor || !armedMenu) return
-    const row = selectedRow ?? matchingRows[highlighted]
+    if (!editor || !armedSlashMenu) return
+    const row = selectedRow ?? matchingRows[slashHighlight]
     if (!row) return
 
     if (row.source === "cockpit") {
-      editor.setSelection(armedMenu.start, armedMenu.end)
+      editor.setSelection(armedSlashMenu.token.start, armedSlashMenu.token.end)
       editor.deleteSelection()
-      setMenu(null)
+      commitCompletion(null)
       syncRows(editor)
       onRunCommand(row.command)
       return
     }
 
-    editor.setSelection(armedMenu.start, armedMenu.end)
+    editor.setSelection(armedSlashMenu.token.start, armedSlashMenu.token.end)
     editor.insertText(`/${row.name} `)
-    setMenu(null)
+    commitCompletion(null)
     syncRows(editor)
-  }, [armedMenu, highlighted, matchingRows, onRunCommand, syncRows])
+  }, [armedSlashMenu, commitCompletion, matchingRows, onRunCommand, slashHighlight, syncRows])
+
+  const selectFileMenuRow = useCallback((): void => {
+    const editor = textarea.current
+    if (!editor || !armedFileMenu) return
+    const path = armedFileMenu.paths[fileHighlight]
+    if (!path) return
+
+    const reference = formatFileReference(path)
+    acceptingFileReference.current = true
+    editor.setSelection(armedFileMenu.token.start, armedFileMenu.token.end)
+    editor.insertText(`${reference} `)
+    const nextDraft = editor.plainText
+    previousDraft.current = nextDraft
+    acceptingFileReference.current = false
+    pendingFileReferences.current = [
+      ...pendingFileReferences.current,
+      {
+        text: reference,
+        start: armedFileMenu.token.start,
+        end: armedFileMenu.token.start + reference.length,
+        sessionId: armedFileMenu.sessionId,
+      },
+    ]
+    controller.actions.fileSelectorSelected(
+      armedFileMenu.sessionId,
+      Math.max(0, performance.now() - armedFileMenu.openedAt),
+    )
+    activeFileInteraction.current = null
+    fileSuppression.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
+    syncRows(editor)
+  }, [armedFileMenu, commitCompletion, controller, fileHighlight, syncRows])
+
+  const moveCompletionSelection = useCallback((direction: "previous" | "next", lastIndex: number): void => {
+    const current = completionRef.current
+    if (!current) return
+    const selected = direction === "previous"
+      ? Math.max(current.selected - 1, 0)
+      : Math.min(current.selected + 1, Math.max(lastIndex, 0))
+    commitCompletion({ ...current, selected })
+  }, [commitCompletion])
 
   const onKeyDown = useCallback(
     (key: KeyEvent): void => {
-      if (armedMenu) {
-        const command = matchMenuCommand(key)
+      const command = matchMenuCommand(key)
+      if (fileCompletion && command === "dismiss") {
+        key.preventDefault()
+        fileSuppression.current = suppressFileToken(fileCompletion.token)
+        activeFileInteraction.current = null
+        pendingQueryRenderMetric.current = null
+        commitCompletion(null)
+        return
+      }
+      if (armedFileMenu && command !== null) {
+        key.preventDefault()
+        switch (command) {
+          case "prev-item":
+            moveCompletionSelection("previous", armedFileMenu.paths.length - 1)
+            return
+          case "next-item":
+            moveCompletionSelection("next", armedFileMenu.paths.length - 1)
+            return
+          case "confirm":
+            selectFileMenuRow()
+            return
+          case "dismiss":
+            return
+        }
+      }
+      if (armedSlashMenu) {
         if (command !== null) {
           key.preventDefault()
           switch (command) {
             case "prev-item":
-              setMenu((current) => current ? { ...current, selected: Math.max(current.selected - 1, 0) } : current)
+              moveCompletionSelection("previous", matchingRows.length - 1)
               return
             case "next-item":
-              setMenu((current) => current ? { ...current, selected: Math.min(current.selected + 1, Math.max(matchingRows.length - 1, 0)) } : current)
+              moveCompletionSelection("next", matchingRows.length - 1)
               return
             case "confirm":
-              selectMenuRow()
+              selectSlashMenuRow()
               return
             case "dismiss":
-              setMenu(null)
+              commitCompletion(null)
               return
           }
         }
@@ -368,7 +767,20 @@ function SelectedPromptEditor({
       key.preventDefault()
       void controller.actions.cancel()
     },
-    [armedMenu, controller, focusedSessionId, matchingRows.length, selectMenuRow, status, syncRows],
+    [
+      armedFileMenu,
+      armedSlashMenu,
+      commitCompletion,
+      controller,
+      fileCompletion,
+      focusedSessionId,
+      matchingRows.length,
+      moveCompletionSelection,
+      selectFileMenuRow,
+      selectSlashMenuRow,
+      status,
+      syncRows,
+    ],
   )
 
   // Keep visual and input height in sync after both content and layout changes. A
@@ -376,23 +788,77 @@ function SelectedPromptEditor({
   const onContentChange = useCallback((): void => {
     const editor = textarea.current
     if (!editor) return
+    const text = editor.plainText
 
-    if (editor.plainText === "!" && editor.cursorOffset === 1) {
+    if (acceptingFileReference.current) {
+      previousDraft.current = text
+      syncRows(editor)
+      return
+    }
+
+    const priorPending = pendingFileReferences.current
+    const pendingUpdate = updatePendingFileReferences(previousDraft.current, text, priorPending)
+    if (pendingUpdate.corrected) {
+      const correctedSession = correctedReferenceSession(priorPending, pendingUpdate.pending)
+      if (correctedSession !== null) controller.actions.fileSelectorCorrected(correctedSession)
+    }
+    pendingFileReferences.current = pendingUpdate.pending
+    previousDraft.current = text
+
+    if (text === "!" && editor.cursorOffset === 1) {
+      acceptingFileReference.current = true
       editor.clear()
-      setMenu(null)
+      previousDraft.current = ""
+      acceptingFileReference.current = false
+      activeFileInteraction.current = null
+      fileSuppression.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
       syncRows(editor)
       onRunCommand("toggle-shell")
       return
     }
 
     syncRows(editor)
-    const token = slashTokenAt(editor.plainText, editor.cursorOffset)
-    if (token === null || slashMenuRows(token.filter, agentCommands).length === 0) {
-      setMenu(null)
+    const fileToken = fileTokenAt(text, editor.cursorOffset)
+    fileSuppression.current = updateFileTokenSuppression(fileSuppression.current, fileToken)
+    if (fileToken !== null && !isFileTokenSuppressed(fileSuppression.current, fileToken)) {
+      beginFileCompletion(fileToken)
       return
     }
-    setMenu({ ...token, selected: 0 })
-  }, [agentCommands, onRunCommand, syncRows])
+    if (completionRef.current?.kind === "file") {
+      activeFileInteraction.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
+    }
+
+    const slashToken = slashTokenAt(text, editor.cursorOffset)
+    if (slashToken === null || slashMenuRows(slashToken.filter, agentCommands).length === 0) {
+      commitCompletion(null)
+      return
+    }
+    commitCompletion({ kind: "slash", token: slashToken, selected: 0 })
+  }, [agentCommands, beginFileCompletion, commitCompletion, controller, onRunCommand, syncRows])
+
+  const onCursorChange = useCallback((): void => {
+    const editor = textarea.current
+    if (!editor) return
+    const token = fileTokenAt(editor.plainText, editor.cursorOffset)
+    fileSuppression.current = updateFileTokenSuppression(fileSuppression.current, token)
+    const current = completionRef.current
+    if (
+      current?.kind === "file"
+      && (
+        token === null
+        || token.start !== current.token.start
+        || isFileTokenSuppressed(fileSuppression.current, token)
+      )
+    ) {
+      activeFileInteraction.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
+    }
+  }, [commitCompletion])
 
   const onSizeChange = useCallback(
     function onSizeChange(this: EditBufferRenderable): void {
@@ -426,9 +892,27 @@ function SelectedPromptEditor({
       }
       titleColor={ready ? palette.accent : palette.status.not_ready}
     >
-      {armedMenu ? (
+      {armedSlashMenu ? (
         <box style={{ position: "absolute", left: 0, right: 0, bottom: rows + 2, zIndex: 1 }}>
-          <SlashMenu groups={menuGroups(matchingRows)} highlightedIndex={highlighted} onSelect={selectMenuRow} />
+          <SlashMenu groups={menuGroups(matchingRows)} highlightedIndex={slashHighlight} onSelect={selectSlashMenuRow} />
+        </box>
+      ) : fileCompletion ? (
+        <box
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: rows + 2,
+            zIndex: 1,
+            height: fileCompletion.status === "ready" ? fileCompletion.paths.length + 2 : 1,
+          }}
+        >
+          <FileSelector
+            key={`${fileCompletion.sessionId}:${fileCompletion.revision}`}
+            status={fileCompletion.status}
+            paths={fileCompletion.paths}
+            highlightedIndex={fileHighlight}
+          />
         </box>
       ) : null}
       <text fg={ready ? palette.accent : palette.status.not_ready}>{PROMPT_CHEVRON}</text>
@@ -448,6 +932,7 @@ function SelectedPromptEditor({
         onSubmit={submit}
         onKeyDown={onKeyDown}
         onContentChange={onContentChange}
+        onCursorChange={onCursorChange}
         onSizeChange={onSizeChange}
       />
     </box>

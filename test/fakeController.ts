@@ -19,6 +19,7 @@ import {
   type FileSelectorRenderState,
   type PromptInput,
 } from "../src/app/actions.ts"
+import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
@@ -38,6 +39,7 @@ export interface RecordedCalls {
   backgroundConversation: SessionId[]
   reopenConversation: SessionId[]
   closeConversation: { sessionId: SessionId; choice: CloseChoice }[]
+  listRepositoryFiles: SessionId[]
   fileSelectorOpened: SessionId[]
   fileSelectorDiscovery: { sessionId: SessionId; outcome: FileSelectorDiscoveryOutcome; durationMs: number }[]
   fileSelectorQueryRendered: { sessionId: SessionId; state: FileSelectorRenderState; durationMs: number }[]
@@ -72,6 +74,10 @@ export interface FakeControllerOptions {
   store?: AppStore
   /** Shell standing exposed to shell-aware views. Defaults to unavailable. */
   shell?: ShellRuntimeState
+  /** Explicit-session repository discovery seam for mounted selector tests. */
+  listRepositoryFiles?: (
+    sessionId: SessionId,
+  ) => RepositoryFileList | Promise<RepositoryFileList>
 }
 
 /**
@@ -119,6 +125,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     backgroundConversation: [],
     reopenConversation: [],
     closeConversation: [],
+    listRepositoryFiles: [],
     fileSelectorOpened: [],
     fileSelectorDiscovery: [],
     fileSelectorQueryRendered: [],
@@ -209,6 +216,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         store.reopenConversation(sessionId)
       },
       closeConversation,
+      async listRepositoryFiles(sessionId): Promise<RepositoryFileList> {
+        calls.listRepositoryFiles.push(sessionId)
+        return await (options.listRepositoryFiles?.(sessionId)
+          ?? { kind: "unavailable", reason: "discovery_failed" })
+      },
       fileSelectorOpened(sessionId): void {
         calls.fileSelectorOpened.push(sessionId)
       },

@@ -53,6 +53,10 @@ import {
   type CloseConversationResult,
   type ControllerActions,
 } from "./actions.ts"
+import {
+  repositoryFileSource as productionRepositoryFileSource,
+  type RepositoryFileSource,
+} from "./fileDiscovery.ts"
 
 export type { CloseChoice, CloseConversationResult } from "./actions.ts"
 
@@ -96,6 +100,8 @@ export interface SessionControllerOptions {
   onError?: (sessionId: SessionId, error: unknown) => void
   /** Off-render-path git branch reader. Defaults to the fail-soft production reader. */
   readBranch?: (cwd: string) => Promise<string | null>
+  /** Repository file discovery source. Defaults to the fail-soft production source. */
+  repositoryFileSource?: RepositoryFileSource
   /** The telemetry recorder actions report navigation and switch outcomes to. */
   recorder?: ControllerTelemetry
   /** Optional output seam for the gated, content-free usage-emission debug log. */
@@ -157,6 +163,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
+  const repositoryFileSource = options.repositoryFileSource ?? productionRepositoryFileSource
   const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
   const usageSeenSink = options.config.telemetryEnabled
     ? options.usageSeenSink ?? createUsageSeenJsonlFileSink(resolveTelemetryPath())
@@ -674,6 +681,7 @@ export async function createSessionController(options: SessionControllerOptions)
     onError,
     refreshBranch,
     recorder: options.recorder,
+    repositoryFileSource,
     createConversation,
     closeConversation,
     startNewRun: async () => {
