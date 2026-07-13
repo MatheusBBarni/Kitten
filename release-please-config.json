@@ -1,0 +1,21 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "changelog-sections": [
+        {
+          "type": "!",
+          "section": "Breaking Changes"
+        },
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Fixes"
+        }
+      ]
+    }
+  }
+}
