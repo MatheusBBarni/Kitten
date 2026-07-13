@@ -154,6 +154,22 @@ describe("createAppStore", () => {
 })
 
 describe("applyEvent", () => {
+  it("routes commands through the reducer to only the addressed session", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const commands = [
+      { name: "review", description: "Review the current diff", hint: "[scope]" },
+      { name: "test", description: "Run the test suite" },
+    ]
+
+    store.applyEvent("claude-code", { kind: "commands", commands })
+
+    const after = store.getState()
+    expect(after.sessions["claude-code"]!.commands).toBe(commands)
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+    expect(after.sessions.codex!.commands).toEqual([])
+  })
+
   it("applies usage to the target session while preserving the other session slice", () => {
     const store = createAppStore()
     const before = store.getState()

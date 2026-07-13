@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import type { AvailableCommand, ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
 import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
 
 /**
@@ -395,16 +395,42 @@ describe("config_options events", () => {
 })
 
 describe("commands events", () => {
-  const review = { name: "review", description: "Review the current diff", hint: "[scope]" }
-  const test = { name: "test", description: "Run the test suite" }
+  const review: AvailableCommand = { name: "review", description: "Review the current diff", hint: "[scope]" }
+  const test: AvailableCommand = { name: "test", description: "Run the test suite" }
+
+  it("sets commands to exactly the advertised list", () => {
+    const commands = [review, test]
+    const state = sessionReducer(initial(), { kind: "commands", commands })
+
+    expect(state.commands).toBe(commands)
+    expect(state.commands).toEqual([review, test])
+  })
 
   it("replaces the advertised list wholesale", () => {
-    const state = fold([
-      { kind: "commands", commands: [review, test] },
-      { kind: "commands", commands: [test] },
-    ])
+    const first = sessionReducer(initial(), { kind: "commands", commands: [review, test] })
+    const replacement = [test]
+    const state = sessionReducer(first, { kind: "commands", commands: replacement })
 
+    expect(state.commands).toBe(replacement)
     expect(state.commands).toEqual([test])
+  })
+
+  it("changes no other session field when commands are replaced", () => {
+    const withWork = fold([
+      { kind: "status", status: "awaiting_approval" },
+      { kind: "user_message", messageId: "u1", text: "review this" },
+      { kind: "plan", entries: [{ content: "Inspect diff", status: "in_progress" }] },
+    ])
+    const commands = [review, test]
+
+    const next = sessionReducer(withWork, { kind: "commands", commands })
+
+    expect(next).toEqual({ ...withWork, commands })
+    expect(next.turns).toBe(withWork.turns)
+    expect(next.plan).toBe(withWork.plan)
+    expect(next.referencedFiles).toBe(withWork.referencedFiles)
+    expect(next.pendingDiffs).toBe(withWork.pendingDiffs)
+    expect(next.configOptions).toBe(withWork.configOptions)
   })
 
   it("leaves the command-list reference intact for unrelated events", () => {
