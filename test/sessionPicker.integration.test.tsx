@@ -261,7 +261,13 @@ describe("slash-command saved-run restore", () => {
       expect(records.find((record) => record.type === "resume_pane_unavailable")).toMatchObject({ agent: "codex" })
       expect(records.some((record) => record.type === "resume_picker_interactive_ms")).toBe(true)
       expect(records.some((record) => record.type === "resume_load_usable_ms")).toBe(true)
-      for (const record of records) {
+      const resumeRecords = records.filter((record) =>
+        record.type === "session_resumed"
+        || record.type === "resume_pane_unavailable"
+        || record.type === "resume_picker_interactive_ms"
+        || record.type === "resume_load_usable_ms"
+      )
+      for (const record of resumeRecords) {
         expect(
           Object.keys(record).every((key) =>
             ["type", "at", "sessionRef", "agent", "durationMs", "mode", "liveCount"].includes(key),

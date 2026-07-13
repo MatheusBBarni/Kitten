@@ -123,6 +123,41 @@ export type TelemetryEventType =
   | "file_selector_query_rendered"
   | "file_selector_selected"
   | "file_selector_corrected"
+  | "clarification_capability_classified"
+  | "clarification_presented"
+  | "clarification_settled"
+  | "clarification_preempted"
+  | "clarification_resumed"
+  | "clarification_session_loss_cancelled"
+
+/** Closed lifecycle values for structured-clarification telemetry. */
+export type ClarificationCapabilityStatus = "supported" | "unsupported"
+export type ClarificationCapabilityDiagnostic =
+  | "verified_recipe"
+  | "unknown_recipe"
+  | "recipe_overridden"
+  | "unverified_recipe"
+export type ClarificationTerminalKind = "answered" | "cancelled"
+export type ClarificationInteractionKind = "permission" | "clarification"
+export type ClarificationSessionLossReason =
+  | "connection_error"
+  | "session_replaced"
+  | "conversation_closed"
+  | "controller_disposed"
+export type ClarificationFieldCountBucket = "zero" | "one" | "two_to_three" | "four_or_more"
+export type ClarificationDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+/** Content-free presentation metadata; request/session identities are never serialized. */
+export interface ClarificationPresentedInput {
+  requestId: string
+  sessionId: SessionId
+  capability: ClarificationCapabilityStatus
+  focused: boolean
+  hasSingle: boolean
+  hasMulti: boolean
+  hasText: boolean
+  fieldCount: number
+}
 
 /** Closed discovery outcomes; no repository or query detail crosses this boundary. */
 export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
@@ -175,6 +210,29 @@ export interface TelemetryRecord {
   outcome?: FileSelectorDiscoveryOutcome
   /** Fixed warm-query render state; never a candidate count or candidate content. */
   state?: FileSelectorRenderState
+  /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
+  agentRef?: number
+  /** Closed structured-clarification capability state. */
+  capability?: ClarificationCapabilityStatus
+  /** Closed capability reason; never an adapter package, version, command, or recipe. */
+  diagnostic?: ClarificationCapabilityDiagnostic
+  /** Whether the requesting session was focused when its dialog was first projected. */
+  focused?: boolean
+  /** Terminal clarification result without selected values or text. */
+  terminalKind?: ClarificationTerminalKind
+  /** Non-exclusive form-shape flags; mixed forms may set several to true. */
+  hasSingle?: boolean
+  hasMulti?: boolean
+  hasText?: boolean
+  /** Coarse form size and latency buckets; exact counts and durations are not recorded. */
+  fieldCountBucket?: ClarificationFieldCountBucket
+  durationBucket?: ClarificationDurationBucket
+  /** The closed kind of interaction suspended or resumed by clarification priority. */
+  interactionKind?: ClarificationInteractionKind
+  /** The closed lifecycle reason for terminal cancellation on session loss. */
+  lossReason?: ClarificationSessionLossReason
+  /** Provider classification is safe only as Kitten's closed provider enum. */
+  provider?: ProviderKind
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -245,6 +303,25 @@ export interface TelemetryRecorder {
   fileSelectorSelected(sessionId: SessionId, durationMs: number): void
   /** One pending accepted reference was edited through before submission. */
   fileSelectorCorrected(sessionId: SessionId): void
+  /** A provider recipe was classified without recording any recipe identity. */
+  clarificationCapabilityClassified(
+    provider: ProviderKind,
+    capability: ClarificationCapabilityStatus,
+    diagnostic: ClarificationCapabilityDiagnostic,
+  ): void
+  /** A clarification dialog was first projected; starts its private latency clock. */
+  clarificationPresented(input: ClarificationPresentedInput): void
+  /** A projected clarification reached its first terminal outcome. */
+  clarificationSettled(requestId: string, terminalKind: ClarificationTerminalKind): void
+  /** Clarification priority suspended one active agent interaction. */
+  clarificationPreempted(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void
+  /** A previously suspended agent interaction became active again. */
+  clarificationResumed(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void
+  /** A clarification was terminally cancelled because its live session was lost. */
+  clarificationCancelledOnSessionLoss(
+    sessionId: SessionId,
+    lossReason: ClarificationSessionLossReason,
+  ): void
   /** A session completed its handshake and holds a live ACP session. */
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
@@ -315,6 +392,12 @@ const NOOP_RECORDER: TelemetryRecorder = {
   fileSelectorQueryRendered() {},
   fileSelectorSelected() {},
   fileSelectorCorrected() {},
+  clarificationCapabilityClassified() {},
+  clarificationPresented() {},
+  clarificationSettled() {},
+  clarificationPreempted() {},
+  clarificationResumed() {},
+  clarificationCancelledOnSessionLoss() {},
   agentReady() {},
   agentUnready() {},
   focusSwitch() {},
@@ -370,6 +453,15 @@ interface AgentWatch {
   idleFleetSince: number | null
 }
 
+interface ClarificationWatch {
+  startedAt: number
+  agentRef: number
+  hasSingle: boolean
+  hasMulti: boolean
+  hasText: boolean
+  fieldCountBucket: ClarificationFieldCountBucket
+}
+
 class ActiveRecorder implements TelemetryRecorder {
   readonly enabled = true
   private readonly sink: TelemetrySink
@@ -382,6 +474,9 @@ class ActiveRecorder implements TelemetryRecorder {
   private resumeFirstActionArmed = false
   private readonly promptSubmissionCounts = new Map<SessionId, number>()
   private readonly watches = new Map<SessionId, AgentWatch>()
+  private readonly agentRefs = new Map<SessionId, number>()
+  private readonly clarificationWatches = new Map<string, ClarificationWatch>()
+  private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
     this.sink = options.sink ?? createJsonlFileSink(resolveTelemetryPath())
@@ -492,6 +587,70 @@ class ActiveRecorder implements TelemetryRecorder {
 
   fileSelectorCorrected(sessionId: SessionId): void {
     this.record({ type: "file_selector_corrected", agent: sessionId })
+  }
+
+  clarificationCapabilityClassified(
+    provider: ProviderKind,
+    capability: ClarificationCapabilityStatus,
+    diagnostic: ClarificationCapabilityDiagnostic,
+  ): void {
+    this.record({ type: "clarification_capability_classified", provider, capability, diagnostic })
+  }
+
+  clarificationPresented(input: ClarificationPresentedInput): void {
+    if (this.clarificationWatches.has(input.requestId)) return
+    const at = this.now()
+    const watch: ClarificationWatch = {
+      startedAt: at,
+      agentRef: this.agentRef(input.sessionId),
+      hasSingle: input.hasSingle,
+      hasMulti: input.hasMulti,
+      hasText: input.hasText,
+      fieldCountBucket: bucketClarificationFieldCount(input.fieldCount),
+    }
+    this.clarificationWatches.set(input.requestId, watch)
+    this.record({
+      type: "clarification_presented",
+      agentRef: watch.agentRef,
+      capability: input.capability,
+      focused: input.focused,
+    }, at)
+  }
+
+  clarificationSettled(requestId: string, terminalKind: ClarificationTerminalKind): void {
+    const watch = this.clarificationWatches.get(requestId)
+    if (!watch) return
+    this.clarificationWatches.delete(requestId)
+    const at = this.now()
+    this.record({
+      type: "clarification_settled",
+      agentRef: watch.agentRef,
+      terminalKind,
+      hasSingle: watch.hasSingle,
+      hasMulti: watch.hasMulti,
+      hasText: watch.hasText,
+      fieldCountBucket: watch.fieldCountBucket,
+      durationBucket: bucketClarificationDuration(at - watch.startedAt),
+    }, at)
+  }
+
+  clarificationPreempted(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void {
+    this.record({ type: "clarification_preempted", agentRef: this.agentRef(sessionId), interactionKind })
+  }
+
+  clarificationResumed(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void {
+    this.record({ type: "clarification_resumed", agentRef: this.agentRef(sessionId), interactionKind })
+  }
+
+  clarificationCancelledOnSessionLoss(
+    sessionId: SessionId,
+    lossReason: ClarificationSessionLossReason,
+  ): void {
+    this.record({
+      type: "clarification_session_loss_cancelled",
+      agentRef: this.agentRef(sessionId),
+      lossReason,
+    })
   }
 
   agentReady(sessionId: SessionId): void {
@@ -675,9 +834,18 @@ class ActiveRecorder implements TelemetryRecorder {
     return watch
   }
 
+  private agentRef(sessionId: SessionId): number {
+    const existing = this.agentRefs.get(sessionId)
+    if (existing !== undefined) return existing
+    const created = this.nextAgentRef
+    this.nextAgentRef += 1
+    this.agentRefs.set(sessionId, created)
+    return created
+  }
+
   /** Stamp and write one event. The one place `at`/`sessionRef` are attached. */
-  private record(event: Omit<TelemetryRecord, "at" | "sessionRef">): void {
-    this.sink.write({ ...event, at: this.now(), sessionRef: this.sessionRef })
+  private record(event: Omit<TelemetryRecord, "at" | "sessionRef">, at = this.now()): void {
+    this.sink.write({ ...event, at, sessionRef: this.sessionRef })
   }
 
   /** Compare one store snapshot's confirmed effort to the prior snapshot. */
@@ -700,6 +868,20 @@ class ActiveRecorder implements TelemetryRecorder {
     if (effortChangeKept(events)) this.record({ type: "effort_change_kept", agent: sessionId })
     watch.effortRetention = null
   }
+}
+
+function bucketClarificationFieldCount(count: number): ClarificationFieldCountBucket {
+  if (count <= 0) return "zero"
+  if (count === 1) return "one"
+  if (count <= 3) return "two_to_three"
+  return "four_or_more"
+}
+
+function bucketClarificationDuration(durationMs: number): ClarificationDurationBucket {
+  if (durationMs < 5_000) return "under_5s"
+  if (durationMs < 30_000) return "5_to_30s"
+  if (durationMs < 120_000) return "30_to_120s"
+  return "over_120s"
 }
 
 /** Read an effort's current value from the generic, adapter-owned option surface. */

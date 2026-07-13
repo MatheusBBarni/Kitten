@@ -2119,6 +2119,111 @@ describe("actions - respondClarification", () => {
 
     await controller.dispose()
   })
+
+  it("emits one ordered content-free lifecycle from projection through settlement", async () => {
+    const records: TelemetryRecord[] = []
+    let now = 1_000
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => now,
+      sessionRef: "run-fixed",
+    })
+    const ids = ["permission-private", "clarification-private"]
+    const { controller, connections } = await controllerWithStubs({}, {
+      recorder,
+      newInteractionId: () => ids.shift()!,
+    })
+    const permission = connections["claude-code"].ask(PERMISSION_REQUEST)
+    const mixedPayload: ClarificationPayload = {
+      prompt: "secret prompt",
+      fields: [
+        ...CLARIFICATION_PAYLOAD.fields,
+        {
+          id: "compatible",
+          label: "secret options",
+          mode: "multi",
+          required: false,
+          options: [{ id: "yes", label: "secret selected value" }],
+        },
+        {
+          id: "details",
+          label: "secret answer",
+          mode: "text",
+          required: false,
+        },
+      ],
+    }
+
+    const clarification = connections.codex.clarify(mixedPayload)
+    const overlay = controller.store.getState().overlays.clarification!
+    now += 8_000
+    controller.actions.respondClarification(overlay.requestId, overlay.generation, {
+      kind: "answered",
+      values: { boundary: "controller", compatible: ["yes"], details: "private text" },
+    })
+
+    expect(await clarification).toEqual({
+      kind: "answered",
+      values: { boundary: "controller", compatible: ["yes"], details: "private text" },
+    })
+    const lifecycle = records.filter((record) => record.type.startsWith("clarification_"))
+    expect(lifecycle.map((record) => record.type)).toEqual([
+      "clarification_capability_classified",
+      "clarification_capability_classified",
+      "clarification_preempted",
+      "clarification_presented",
+      "clarification_settled",
+      "clarification_resumed",
+    ])
+    expect(lifecycle.find((record) => record.type === "clarification_presented")).toMatchObject({
+      capability: "unsupported",
+      focused: false,
+    })
+    expect(lifecycle.find((record) => record.type === "clarification_settled")).toMatchObject({
+      terminalKind: "answered",
+      hasSingle: true,
+      hasMulti: true,
+      hasText: true,
+      fieldCountBucket: "two_to_three",
+      durationBucket: "5_to_30s",
+    })
+    const serialized = JSON.stringify(lifecycle)
+    expect(serialized).not.toContain("secret prompt")
+    expect(serialized).not.toContain("secret options")
+    expect(serialized).not.toContain("private text")
+    expect(serialized).not.toContain(CWD)
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    expect(await permission).toEqual({ outcome: "cancelled" })
+    await controller.dispose()
+  })
+
+  it("records session-loss cancellation and terminal settlement exactly once", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 1_000,
+      sessionRef: "run-fixed",
+    })
+    const { controller, connections } = await controllerWithStubs({}, {
+      recorder,
+      newInteractionId: () => "clarification-loss",
+    })
+    const clarification = connections.codex.clarify(CLARIFICATION_PAYLOAD)
+
+    await controller.dispose()
+    await controller.dispose()
+
+    expect(await clarification).toEqual({ kind: "cancelled" })
+    expect(records.filter((record) => record.type === "clarification_session_loss_cancelled")).toEqual([
+      expect.objectContaining({ lossReason: "controller_disposed" }),
+    ])
+    expect(records.filter((record) => record.type === "clarification_settled")).toEqual([
+      expect.objectContaining({ terminalKind: "cancelled", durationBucket: "under_5s" }),
+    ])
+  })
 })
 
 describe("createSessionController - per-conversation close", () => {
@@ -2520,7 +2625,7 @@ describe("file-selector telemetry action facade", () => {
 
     controller.actions.fileSelectorDiscovery("codex", "ready", 18)
 
-    expect(records).toEqual([
+    expect(records.filter((record) => record.type === "file_selector_discovery")).toEqual([
       {
         type: "file_selector_discovery",
         agent: "codex",

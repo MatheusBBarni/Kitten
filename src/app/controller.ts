@@ -43,6 +43,8 @@ import {
   type ResumeLiveCount,
   type ResumeMode,
   type SessionResumedInput,
+  type ClarificationCapabilityDiagnostic,
+  type ClarificationSessionLossReason,
   type UsageSeenSink,
 } from "../telemetry/recorder.ts"
 import {
@@ -65,6 +67,28 @@ export interface ControllerTelemetry extends ActionTelemetry {
   resumeLoadStarted?(): void
   sessionResumed?(input: SessionResumedInput): void
   resumePaneUnavailable?(sessionId: SessionId): void
+  clarificationCapabilityClassified?(
+    provider: ProviderKind,
+    capability: "supported" | "unsupported",
+    diagnostic: ClarificationCapabilityDiagnostic,
+  ): void
+  clarificationPresented?(input: {
+    requestId: string
+    sessionId: SessionId
+    capability: "supported" | "unsupported"
+    focused: boolean
+    hasSingle: boolean
+    hasMulti: boolean
+    hasText: boolean
+    fieldCount: number
+  }): void
+  clarificationSettled?(requestId: string, terminalKind: "answered" | "cancelled"): void
+  clarificationPreempted?(sessionId: SessionId, interactionKind: "permission" | "clarification"): void
+  clarificationResumed?(sessionId: SessionId, interactionKind: "permission" | "clarification"): void
+  clarificationCancelledOnSessionLoss?(
+    sessionId: SessionId,
+    lossReason: ClarificationSessionLossReason,
+  ): void
 }
 
 /**
@@ -167,8 +191,12 @@ export interface InteractionCoordinator {
     payload: ClarificationPayload,
   ): Promise<ClarificationOutcome>
   resolveActive(requestId: string, generation: number, outcome: AgentInteractionOutcome): boolean
-  cancelSession(sessionId: SessionId, generation: number): void
-  cancelAll(): void
+  cancelSession(
+    sessionId: SessionId,
+    generation: number,
+    lossReason?: ClarificationSessionLossReason,
+  ): void
+  cancelAll(lossReason?: ClarificationSessionLossReason): void
   dispose(): void
 }
 
@@ -177,6 +205,16 @@ export interface InteractionCoordinatorOptions {
   newRequestId?: () => string
   /** Receives only the resolver-free active projection. */
   onActiveChanged?: (interaction: ActiveAgentInteraction | null) => void
+  /** Reports the interaction displaced by a newly active clarification. */
+  onPreempted?: (interaction: ActiveAgentInteraction) => void
+  /** Reports a suspended interaction when it becomes active again. */
+  onResumed?: (interaction: ActiveAgentInteraction) => void
+  /** Reports exactly one terminal clarification outcome and its optional loss cause. */
+  onClarificationSettled?: (
+    interaction: Extract<ActiveAgentInteraction, { kind: "clarification" }>,
+    outcome: ClarificationOutcome,
+    lossReason?: ClarificationSessionLossReason,
+  ) => void
 }
 
 type InteractionLifecycle = "queued" | "active" | "suspended" | "terminal"
@@ -213,6 +251,9 @@ export function createInteractionCoordinator(
 ): InteractionCoordinator {
   const newRequestId = options.newRequestId ?? (() => crypto.randomUUID())
   const onActiveChanged = options.onActiveChanged ?? (() => {})
+  const onPreempted = options.onPreempted ?? (() => {})
+  const onResumed = options.onResumed ?? (() => {})
+  const onClarificationSettled = options.onClarificationSettled ?? (() => {})
   const queued: PendingInteraction[] = []
   const suspended: PendingInteraction[] = []
   let active: PendingInteraction | null = null
@@ -247,15 +288,26 @@ export function createInteractionCoordinator(
 
   function advance(): void {
     const next = suspended.pop() ?? queued.shift() ?? null
-    if (next) activate(next)
+    if (next) {
+      const wasSuspended = next.lifecycle === "suspended"
+      activate(next)
+      if (wasSuspended) onResumed(projection(next))
+    }
     publishActive()
   }
 
-  function cancel(entry: PendingInteraction): void {
+  function cancel(
+    entry: PendingInteraction,
+    lossReason: ClarificationSessionLossReason,
+  ): void {
     if (entry.lifecycle === "terminal") return
     entry.lifecycle = "terminal"
     if (entry.kind === "permission") entry.resolve({ outcome: "cancelled" })
-    else entry.resolve({ kind: "cancelled" })
+    else {
+      const outcome = { kind: "cancelled" } as const
+      onClarificationSettled(projection(entry) as Extract<ActiveAgentInteraction, { kind: "clarification" }>, outcome, lossReason)
+      entry.resolve(outcome)
+    }
   }
 
   function removeMatching(
@@ -272,7 +324,10 @@ export function createInteractionCoordinator(
     return removed
   }
 
-  function cancelWhere(matches: (entry: PendingInteraction) => boolean): void {
+  function cancelWhere(
+    matches: (entry: PendingInteraction) => boolean,
+    lossReason: ClarificationSessionLossReason,
+  ): void {
     const activeMatched = active !== null && matches(active)
     const removed: PendingInteraction[] = []
     if (activeMatched) {
@@ -280,11 +335,11 @@ export function createInteractionCoordinator(
       active = null
     }
     removed.push(...removeMatching(queued, matches), ...removeMatching(suspended, matches))
-    for (const entry of removed) cancel(entry)
+    for (const entry of removed) cancel(entry, lossReason)
     if (activeMatched) advance()
   }
 
-  function cancelAll(): void {
+  function cancelAll(lossReason: ClarificationSessionLossReason = "controller_disposed"): void {
     const hadActive = active !== null
     const removed = [
       ...(active ? [active] : []),
@@ -292,7 +347,7 @@ export function createInteractionCoordinator(
       ...suspended.splice(0),
     ]
     active = null
-    for (const entry of removed) cancel(entry)
+    for (const entry of removed) cancel(entry, lossReason)
     if (hadActive) publishActive()
   }
 
@@ -332,6 +387,7 @@ export function createInteractionCoordinator(
         if (active) {
           active.lifecycle = "suspended"
           suspended.push(active)
+          onPreempted(projection(active))
         }
         activate(entry)
         publishActive()
@@ -352,14 +408,20 @@ export function createInteractionCoordinator(
       active = null
       current.lifecycle = "terminal"
       if (current.kind === "permission" && "outcome" in outcome) current.resolve(outcome)
-      else if (current.kind === "clarification" && "kind" in outcome) current.resolve(outcome)
+      else if (current.kind === "clarification" && "kind" in outcome) {
+        onClarificationSettled(projection(current) as Extract<ActiveAgentInteraction, { kind: "clarification" }>, outcome)
+        current.resolve(outcome)
+      }
       else return false
       advance()
       return true
     },
 
-    cancelSession(sessionId, generation) {
-      cancelWhere((entry) => entry.sessionId === sessionId && entry.generation === generation)
+    cancelSession(sessionId, generation, lossReason = "connection_error") {
+      cancelWhere(
+        (entry) => entry.sessionId === sessionId && entry.generation === generation,
+        lossReason,
+      )
     },
 
     cancelAll,
@@ -425,6 +487,17 @@ export async function createSessionController(options: SessionControllerOptions)
       activeInteraction = interaction
       if (interaction?.kind === "clarification") {
         store.openClarification(clarificationOverlay(interaction))
+        const capability = clarificationCapabilityFor(runtimes.get(interaction.sessionId)?.config ?? null)
+        options.recorder?.clarificationPresented?.({
+          requestId: interaction.requestId,
+          sessionId: interaction.sessionId,
+          capability: capability.status,
+          focused: store.getState().workspace.selectedVisibleId === interaction.sessionId,
+          hasSingle: interaction.payload.fields.some((field) => field.mode === "single"),
+          hasMulti: interaction.payload.fields.some((field) => field.mode === "multi"),
+          hasText: interaction.payload.fields.some((field) => field.mode === "text"),
+          fieldCount: interaction.payload.fields.length,
+        })
         return
       }
 
@@ -440,6 +513,21 @@ export async function createSessionController(options: SessionControllerOptions)
       } else {
         store.closeApproval()
       }
+    },
+    onPreempted(interaction) {
+      options.recorder?.clarificationPreempted?.(interaction.sessionId, interaction.kind)
+    },
+    onResumed(interaction) {
+      options.recorder?.clarificationResumed?.(interaction.sessionId, interaction.kind)
+    },
+    onClarificationSettled(interaction, outcome, lossReason) {
+      if (lossReason) {
+        options.recorder?.clarificationCancelledOnSessionLoss?.(
+          interaction.sessionId,
+          lossReason,
+        )
+      }
+      options.recorder?.clarificationSettled?.(interaction.requestId, outcome.kind)
     },
   })
   let disposed = false
@@ -504,7 +592,11 @@ export async function createSessionController(options: SessionControllerOptions)
   function applyRuntimeEvent(runtime: AgentRuntime, event: DomainSessionEvent): void {
     if (!acceptsRuntimeEvents(runtime)) return
     if (event.kind === "status" && event.status === "error") {
-      interactionCoordinator.cancelSession(runtime.seed.id, runtime.generation)
+      interactionCoordinator.cancelSession(
+        runtime.seed.id,
+        runtime.generation,
+        "connection_error",
+      )
     }
     if (event.kind === "usage") {
       logUsageSeen(
@@ -628,7 +720,13 @@ export async function createSessionController(options: SessionControllerOptions)
       generation: 0,
     }
     runtimes.set(seed.id, runtime)
-    store.setClarificationCapability(seed.id, clarificationCapabilityFor(config))
+    const capability = clarificationCapabilityFor(config)
+    store.setClarificationCapability(seed.id, capability)
+    options.recorder?.clarificationCapabilityClassified?.(
+      seed.providerKind,
+      capability.status,
+      capabilityDiagnostic(capability),
+    )
     return runtime
   }
 
@@ -691,7 +789,11 @@ export async function createSessionController(options: SessionControllerOptions)
     error: string,
     reasonCode: "connection-failed" | "restore-unavailable" | "provider-unavailable",
   ): Promise<void> {
-    interactionCoordinator.cancelSession(runtime.seed.id, runtime.generation)
+    interactionCoordinator.cancelSession(
+      runtime.seed.id,
+      runtime.generation,
+      "connection_error",
+    )
     runtime.state = {
       sessionId: runtime.seed.id,
       providerKind: runtime.seed.providerKind,
@@ -749,7 +851,11 @@ export async function createSessionController(options: SessionControllerOptions)
    */
   async function restoreSession(seed: SessionSeed, config: AgentConfig, stored: PersistedAgent | undefined): Promise<void> {
     const previous = runtimes.get(seed.id) ?? registerRuntime(seed, config)
-    interactionCoordinator.cancelSession(seed.id, previous.generation)
+    interactionCoordinator.cancelSession(
+      seed.id,
+      previous.generation,
+      "session_replaced",
+    )
     previous.closing = true
     previous.acceptEvents = false
     previous?.unsubscribe?.()
@@ -901,7 +1007,11 @@ export async function createSessionController(options: SessionControllerOptions)
     runtime.closing = true
     runtime.acceptEvents = false
     store.setConversationTeardown(sessionId, "closing")
-    interactionCoordinator.cancelSession(sessionId, runtime.generation)
+    interactionCoordinator.cancelSession(
+      sessionId,
+      runtime.generation,
+      "conversation_closed",
+    )
 
     try {
       if (
@@ -1121,6 +1231,12 @@ function clarificationCapabilityFor(config: AgentConfig | null): ClarificationCa
   return isResolvedAgentConfig(config)
     ? config.clarificationCapability
     : { status: "unsupported", reason: "unknown_recipe" }
+}
+
+function capabilityDiagnostic(
+  capability: ClarificationCapability,
+): ClarificationCapabilityDiagnostic {
+  return capability.status === "supported" ? "verified_recipe" : capability.reason
 }
 
 function isResolvedAgentConfig(config: AgentConfig | null): config is ResolvedAgentConfig {

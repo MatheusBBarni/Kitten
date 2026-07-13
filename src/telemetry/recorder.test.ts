@@ -96,6 +96,21 @@ describe("opt-in gating", () => {
     recorder.fileSelectorQueryRendered("codex", "empty", 3)
     recorder.fileSelectorSelected("codex", 150)
     recorder.fileSelectorCorrected("codex")
+    recorder.clarificationCapabilityClassified("codex", "unsupported", "unknown_recipe")
+    recorder.clarificationPresented({
+      requestId: "request-secret",
+      sessionId: "codex",
+      capability: "unsupported",
+      focused: false,
+      hasSingle: true,
+      hasMulti: true,
+      hasText: true,
+      fieldCount: 3,
+    })
+    recorder.clarificationPreempted("codex", "permission")
+    recorder.clarificationResumed("codex", "permission")
+    recorder.clarificationCancelledOnSessionLoss("codex", "connection_error")
+    recorder.clarificationSettled("request-secret", "cancelled")
     recorder.resumePickerOpened()
     recorder.resumePickerInteractive()
     recorder.resumeLoadStarted()
@@ -121,6 +136,143 @@ describe("opt-in gating", () => {
     recorder.fileSelectorQueryRendered("codex", "results", 2)
     recorder.fileSelectorSelected("codex", 25)
     recorder.fileSelectorCorrected("codex")
+  })
+})
+
+describe("clarification lifecycle events", () => {
+  it("records one ordered mixed-form lifecycle with anonymous refs and coarse duration", () => {
+    const sink = memorySink()
+    const clock = fakeClock()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "run-1",
+    })
+
+    recorder.clarificationCapabilityClassified("codex", "supported", "verified_recipe")
+    recorder.clarificationPresented({
+      requestId: "request-private",
+      sessionId: "developer-named-session",
+      capability: "supported",
+      focused: false,
+      hasSingle: true,
+      hasMulti: true,
+      hasText: true,
+      fieldCount: 3,
+    })
+    recorder.clarificationPreempted("developer-named-session", "permission")
+    clock.advance(7_000)
+    recorder.clarificationResumed("developer-named-session", "permission")
+    recorder.clarificationSettled("request-private", "answered")
+    recorder.clarificationSettled("request-private", "cancelled")
+
+    expect(types(sink.records)).toEqual([
+      "clarification_capability_classified",
+      "clarification_presented",
+      "clarification_preempted",
+      "clarification_resumed",
+      "clarification_settled",
+    ])
+    expect(sink.records).toEqual([
+      {
+        type: "clarification_capability_classified",
+        provider: "codex",
+        capability: "supported",
+        diagnostic: "verified_recipe",
+        at: 1_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_presented",
+        agentRef: 1,
+        capability: "supported",
+        focused: false,
+        at: 1_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_preempted",
+        agentRef: 1,
+        interactionKind: "permission",
+        at: 1_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_resumed",
+        agentRef: 1,
+        interactionKind: "permission",
+        at: 8_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_settled",
+        agentRef: 1,
+        terminalKind: "answered",
+        hasSingle: true,
+        hasMulti: true,
+        hasText: true,
+        fieldCountBucket: "two_to_three",
+        durationBucket: "5_to_30s",
+        at: 8_000,
+        sessionRef: "run-1",
+      },
+    ])
+  })
+
+  it("serializes no request, answer, session identity, or adapter recipe content", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+
+    recorder.clarificationCapabilityClassified("claude-code", "unsupported", "recipe_overridden")
+    recorder.clarificationPresented({
+      requestId: "request-containing-prompt",
+      sessionId: "/private/workspace/customer-project",
+      capability: "unsupported",
+      focused: true,
+      hasSingle: false,
+      hasMulti: false,
+      hasText: true,
+      fieldCount: 1,
+    })
+    recorder.clarificationCancelledOnSessionLoss(
+      "/private/workspace/customer-project",
+      "session_replaced",
+    )
+    recorder.clarificationSettled("request-containing-prompt", "cancelled")
+
+    const serialized = JSON.stringify(sink.records)
+    expect(serialized).not.toContain("customer-project")
+    expect(serialized).not.toContain("request-containing-prompt")
+    expect(serialized).not.toContain("adapterPackage")
+    expect(serialized).not.toContain("adapterVersion")
+    expect(serialized).not.toContain("prompt")
+    expect(serialized).not.toContain("answer")
+    expect(serialized).not.toContain("selected")
+    expect(serialized).not.toContain("command")
+    expect(serialized).not.toContain("cwd")
+    expect(sink.records.map((record) => Object.keys(record).sort())).toEqual([
+      ["at", "capability", "diagnostic", "provider", "sessionRef", "type"],
+      ["agentRef", "at", "capability", "focused", "sessionRef", "type"],
+      ["agentRef", "at", "lossReason", "sessionRef", "type"],
+      [
+        "agentRef",
+        "at",
+        "durationBucket",
+        "fieldCountBucket",
+        "hasMulti",
+        "hasSingle",
+        "hasText",
+        "sessionRef",
+        "terminalKind",
+        "type",
+      ],
+    ])
   })
 })
 
