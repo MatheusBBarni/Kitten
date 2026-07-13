@@ -79,7 +79,7 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
       // and drop booleans (V1 renders select categories only, ADR-003/ADR-004).
       return { kind: "config_options", options: translateConfigOptions(update.configOptions) }
     case "available_commands_update":
-      return { kind: "commands", commands: update.availableCommands.map(translateAvailableCommand) }
+      return { kind: "commands", commands: update.availableCommands.map(translateCommand) }
     case "usage_update":
       return translateUsage(update)
     // Deliberately not surfaced in V1 (documented in the module header).
@@ -156,11 +156,11 @@ export function translateConfigOptions(options: SessionConfigOption[]): ConfigOp
  * Flatten ACP's extensible slash-command shape into the domain's small command
  * record. In particular, `_meta` never crosses the adapter boundary.
  */
-export function translateAvailableCommand(command: AcpAvailableCommand): AvailableCommand {
+export function translateCommand(command: AcpAvailableCommand): AvailableCommand {
   return {
     name: command.name,
     description: command.description,
-    ...(command.input?.hint ? { hint: command.input.hint } : {}),
+    hint: command.input?.hint,
   }
 }
 

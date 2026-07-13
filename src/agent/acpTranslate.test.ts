@@ -7,7 +7,7 @@ import type { DomainSessionEvent, McpServerConfig } from "../core/types.ts"
 import {
   toAcpMcpServers,
   toUnifiedDiff,
-  translateAvailableCommand,
+  translateCommand,
   translateSessionUpdate,
   translateToolCall,
 } from "./acpTranslate.ts"
@@ -185,6 +185,7 @@ describe("translateSessionUpdate: plan, commands, and ignored variants", () => {
     { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } },
     { sessionUpdate: "current_mode_update", currentModeId: "code" },
     { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p1", content: "# plan" } },
+    { sessionUpdate: "plan_removed", planId: "p1" },
     { sessionUpdate: "session_info_update", title: "Renamed session" },
   ])("returns null for the unsurfaced variant %o", (update) => {
     expect(translateSessionUpdate(update)).toBeNull()
@@ -237,17 +238,24 @@ describe("translateSessionUpdate: available commands", () => {
         { name: "test", description: "Run tests" },
       ],
     })
+    expect(event?.kind === "commands" && event.commands[1]?.hint).toBeUndefined()
   })
 
-  it("drops ACP metadata and an empty input hint", () => {
+  it("drops ACP metadata while preserving the advertised input hint", () => {
     expect(
-      translateAvailableCommand({
+      translateCommand({
         name: "status",
         description: "Show status",
         input: { hint: "", _meta: { internal: true } },
         _meta: { internal: true },
       }),
-    ).toEqual({ name: "status", description: "Show status" })
+    ).toEqual({ name: "status", description: "Show status", hint: "" })
+  })
+
+  it("translates an empty advertised command list into an empty commands event", () => {
+    expect(
+      translateSessionUpdate({ sessionUpdate: "available_commands_update", availableCommands: [] }),
+    ).toEqual({ kind: "commands", commands: [] })
   })
 
   it("flows an available-commands update through the reducer", () => {
@@ -460,6 +468,18 @@ describe("translation completeness", () => {
     }
     const events = [
       translateSessionUpdate({ ...acpToolCall, sessionUpdate: "tool_call" }),
+      translateSessionUpdate({
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "review",
+            description: "Review the current changes",
+            input: { hint: "[scope]", _meta: { trace: "nested" } },
+            _meta: { trace: "command" },
+          },
+        ],
+        _meta: { trace: "update" },
+      }),
       translateSessionUpdate({
         sessionUpdate: "usage_update",
         used: 36000,
