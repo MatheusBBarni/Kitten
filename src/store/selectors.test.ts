@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import type { ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
+import type { AvailableCommand, ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
@@ -280,6 +280,48 @@ describe("per-agent session selectors", () => {
     expect(selectSessionCommands("claude-code")(after)).toBe(selectSessionCommands("claude-code")(before))
     expect(selectSessionStatus("claude-code")(after)).toBe(selectSessionStatus("claude-code")(before))
     expect(selectSessionTurns("claude-code")(after)).not.toBe(selectSessionTurns("claude-code")(before))
+  })
+})
+
+describe("selectSessionCommands", () => {
+  const commands: AvailableCommand[] = [
+    { name: "review", description: "Review the current diff", hint: "[scope]" },
+    { name: "test", description: "Run the test suite" },
+  ]
+
+  it("returns a session's advertised commands after a commands event", () => {
+    const store = createAppStore()
+
+    store.applyEvent("claude-code", { kind: "commands", commands })
+
+    expect(selectSessionCommands("claude-code")(store.getState())).toBe(commands)
+  })
+
+  it("returns an empty list for a freshly created session", () => {
+    const store = createAppStore()
+
+    expect(selectSessionCommands("claude-code")(store.getState())).toEqual([])
+  })
+
+  it("preserves the list reference across an unrelated update to the same session", () => {
+    const store = createAppStore()
+    const selectCommands = selectSessionCommands("claude-code")
+    store.applyEvent("claude-code", { kind: "commands", commands })
+    const before = selectCommands(store.getState())
+
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+
+    expect(Object.is(selectCommands(store.getState()), before)).toBe(true)
+  })
+
+  it("preserves another session's list reference when commands change", () => {
+    const store = createAppStore()
+    const selectCodexCommands = selectSessionCommands("codex")
+    const before = selectCodexCommands(store.getState())
+
+    store.applyEvent("claude-code", { kind: "commands", commands })
+
+    expect(Object.is(selectCodexCommands(store.getState()), before)).toBe(true)
   })
 })
 
