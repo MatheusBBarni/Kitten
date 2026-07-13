@@ -26,7 +26,7 @@
  */
 
 import type { EditBufferRenderable, KeyEvent, TextareaRenderable } from "@opentui/core"
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { AvailableCommand, SessionId } from "../core/types.ts"
 import {
@@ -36,6 +36,7 @@ import {
   selectRestoration,
   selectRestorationBundle,
   selectSessionCommands,
+  selectSessionPromptHistory,
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
@@ -156,6 +157,20 @@ function menuGroups(rows: readonly MenuRow[]): SlashMenuGroup[] {
   ]
 }
 
+/**
+ * Let OpenTUI perform vertical movement, then report whether its native cursor moved.
+ *
+ * OpenTUI 0.4.3 declares a boolean result here but its shipped renderable currently
+ * returns `true` even when the native editor clamps at a boundary. Comparing the
+ * native cursor offset before and after preserves wrapping behavior without teaching
+ * the composer how visual lines are calculated.
+ */
+function moveVertically(editor: TextareaRenderable, direction: "previous" | "next"): boolean {
+  const before = editor.visualCursor.offset
+  const reported = direction === "previous" ? editor.moveCursorUp() : editor.moveCursorDown()
+  return reported && editor.visualCursor.offset !== before
+}
+
 /** The multi-line prompt editor, bound to whichever agent currently has focus. */
 export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand?: (command: CockpitCommand) => void }): ReactNode {
   const selectedSessionId = useAppSelector(selectFocusedSessionId)
@@ -210,6 +225,8 @@ function SelectedPromptEditor({
   const status = useAppSelector(statusSelector)
   const commandsSelector = useMemo(() => selectSessionCommands(focusedSessionId), [focusedSessionId])
   const agentCommands = useAppSelector(commandsSelector)
+  const historySelector = useMemo(() => selectSessionPromptHistory(focusedSessionId), [focusedSessionId])
+  const promptHistory = useAppSelector(historySelector)
 
   // Readiness is a boot-time fact about the connection, not a store slice: a session
   // whose handshake failed has no ACP session, so nothing may be sent to it.
@@ -225,6 +242,8 @@ function SelectedPromptEditor({
   const restorationContextOpen = restoration === "unavailable" && restorationBundle !== null
 
   const textarea = useRef<TextareaRenderable | null>(null)
+  const previousSession = useRef(focusedSessionId)
+  const recalledSession = useRef<SessionId | null>(null)
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
   const [menu, setMenu] = useState<SlashToken & { selected: number } | null>(null)
 
@@ -241,6 +260,30 @@ function SelectedPromptEditor({
     setRows((current) => (current === next ? current : next))
   }, [])
 
+  // The textarea is deliberately shared across ordinary focus changes so an unsent
+  // draft survives. Recalled text is different: it belongs to one session. Clear it
+  // when entering an ordinary session, or restore the target session's own selected
+  // history entry when returning to a session that is still browsing.
+  useEffect(() => {
+    if (previousSession.current === focusedSessionId) return
+    previousSession.current = focusedSessionId
+
+    const editor = textarea.current
+    if (!editor) return
+    const recalled = promptHistory.cursor === null ? undefined : promptHistory.entries[promptHistory.cursor]
+    if (recalled !== undefined) {
+      editor.setText(recalled)
+      recalledSession.current = focusedSessionId
+      syncRows(editor)
+      return
+    }
+    if (recalledSession.current !== null) {
+      editor.clear()
+      recalledSession.current = null
+      syncRows(editor)
+    }
+  }, [focusedSessionId, promptHistory, syncRows])
+
   const submit = useCallback((): void => {
     const editor = textarea.current
     if (!editor || !ready || restorationContextOpen) return
@@ -249,12 +292,16 @@ function SelectedPromptEditor({
     // A stray Enter on an empty or whitespace-only buffer must not start a turn.
     if (text.trim().length === 0) return
 
+    // Local acceptance owns history even if the asynchronous agent call later fails.
+    controller.actions.recordPromptHistory(text, focusedSessionId)
+    recalledSession.current = null
+
     // Clear before awaiting: `sendPrompt` records the user's turn synchronously, so
     // the transcript already shows the message the composer just gave up.
     editor.clear()
     setRows(MIN_EDITOR_ROWS)
     void controller.actions.sendPrompt(text)
-  }, [controller, ready, restorationContextOpen])
+  }, [controller, focusedSessionId, ready, restorationContextOpen])
 
   const selectMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current
@@ -299,6 +346,21 @@ function SelectedPromptEditor({
           }
         }
       }
+      const verticalDirection = key.name === "up" ? "previous" : key.name === "down" ? "next" : null
+      const modified = key.ctrl || key.meta || key.shift || key.option || key.super || key.hyper
+      if (verticalDirection !== null && !modified) {
+        const editor = textarea.current
+        if (!editor) return
+        key.preventDefault()
+        if (moveVertically(editor, verticalDirection)) return
+
+        const selection = controller.actions.navigatePromptHistory(verticalDirection, focusedSessionId)
+        if (selection.text === null) return
+        editor.setText(selection.text)
+        recalledSession.current = selection.text === "" ? null : focusedSessionId
+        syncRows(editor)
+        return
+      }
       if (key.name !== "escape" || key.ctrl || key.meta || key.shift) return
       // Escape only means "interrupt" when there is a turn to interrupt. Idle, it
       // stays free for whatever the shell or a future overlay wants to do with it.
@@ -306,7 +368,7 @@ function SelectedPromptEditor({
       key.preventDefault()
       void controller.actions.cancel()
     },
-    [armedMenu, controller, matchingRows.length, selectMenuRow, status],
+    [armedMenu, controller, focusedSessionId, matchingRows.length, selectMenuRow, status, syncRows],
   )
 
   // Keep visual and input height in sync after both content and layout changes. A
@@ -357,7 +419,11 @@ function SelectedPromptEditor({
         paddingBottom: 0,
         overflow: "visible",
       }}
-      title={ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE}
+      title={
+        ready && promptHistory.cursor !== null
+          ? `${PROMPT_TITLE} · History ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
+          : ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE
+      }
       titleColor={ready ? palette.accent : palette.status.not_ready}
     >
       {armedMenu ? (

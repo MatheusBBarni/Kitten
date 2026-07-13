@@ -120,6 +120,14 @@ describe("COCKPIT_KEYMAP", () => {
     }
   })
 
+  it("documents boundary-aware editor recall without claiming global arrows", () => {
+    expect(EDITOR_KEYMAP).toContainEqual({
+      keys: "↑ / ↓",
+      description: "Recall prompts at multiline editing boundaries",
+    })
+    expect(COCKPIT_KEYMAP.some(({ keys }) => keys.includes("↑") || keys.includes("↓"))).toBeFalse()
+  })
+
   it("keeps slash-first compact affordances derived from the command registry", () => {
     expect(KEYMAP_HINT).toContain("/help")
     expect(SHELL_HINT).toBe("/shell")

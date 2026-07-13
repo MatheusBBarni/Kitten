@@ -244,6 +244,7 @@ export const EDITOR_KEYMAP: readonly HelpEntry[] = [
   { keys: "/", description: "Open and filter the command menu" },
   { keys: "Enter", description: "Send the prompt to the focused agent" },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt" },
+  { keys: "↑ / ↓", description: "Recall prompts at multiline editing boundaries" },
   { keys: "Esc", description: "Interrupt the agent while it is working" },
 ]
 

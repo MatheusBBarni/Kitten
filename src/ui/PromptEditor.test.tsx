@@ -89,6 +89,17 @@ async function pressEscape(setup: TestRendererSetup): Promise<void> {
   })
 }
 
+/** Press a vertical arrow, optionally with modifiers held. */
+async function pressArrow(
+  setup: TestRendererSetup,
+  direction: "up" | "down",
+  modifiers?: { shift?: boolean; ctrl?: boolean; meta?: boolean; super?: boolean; hyper?: boolean },
+): Promise<void> {
+  await actAsync(() => {
+    setup.mockInput.pressArrow(direction, modifiers)
+  })
+}
+
 /**
  * Wait until the painted frame contains every one of `needles`.
  *
@@ -177,6 +188,28 @@ describe("PromptEditor submit", () => {
     expect(sentText(controller)).toBe("explain this repo")
     // The draft is gone: the placeholder is back, which only shows on an empty buffer.
     expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("explain this repo")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("records an accepted submission before invoking the existing send action", async () => {
+    const controller = createFakeController()
+    const events: string[] = []
+    const record = controller.actions.recordPromptHistory.bind(controller.actions)
+    controller.actions.recordPromptHistory = (text, sessionId) => {
+      events.push(`record:${text}:${sessionId}`)
+      record(text, sessionId)
+    }
+    controller.actions.sendPrompt = async (input) => {
+      events.push(`send:${String(input)}`)
+      return null
+    }
+    const setup = await renderEditor(controller)
+
+    await type(setup, "accepted locally")
+    await pressEnter(setup)
+
+    expect(events).toEqual(["record:accepted locally:claude-code", "send:accepted locally"])
 
     await destroyMounted(setup.renderer)
   })
@@ -401,6 +434,150 @@ describe("PromptEditor slash commands", () => {
     })
 
     expect(transcriptCommits).toBe(baselineCommits)
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps armed-menu arrows out of history even when prompts are recallable", async () => {
+    const controller = createFakeController()
+    controller.actions.recordPromptHistory("session secret", "claude-code")
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "▸ /handoff")
+    await pressArrow(setup, "down")
+    await pressArrow(setup, "up")
+
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/")
+    expect(setup.captureCharFrame()).not.toContain("session secret")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor history recall", () => {
+  it("recalls newest-to-oldest, moves forward, then clears after the newest entry", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await type(setup, "first prompt")
+    await pressEnter(setup)
+    await type(setup, "second prompt")
+    await pressEnter(setup)
+
+    await pressArrow(setup, "up")
+    expect(await frameWith(setup, "second prompt", "History 2/2")).toContain("History 2/2")
+    await pressArrow(setup, "up")
+    expect(await frameWith(setup, "first prompt", "History 1/2")).not.toContain("second prompt")
+    await pressArrow(setup, "down")
+    expect(await frameWith(setup, "second prompt", "History 2/2")).not.toContain("first prompt")
+    await pressArrow(setup, "down")
+
+    const cleared = await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER) && !frame.includes("History"))
+    expect(cleared).not.toContain("second prompt")
+    expect(controller.calls.navigatePromptHistory.map(({ direction }) => direction)).toEqual([
+      "previous",
+      "previous",
+      "next",
+      "next",
+    ])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("leaves the draft unchanged when history navigation returns null", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await type(setup, "ordinary draft")
+    await pressArrow(setup, "up")
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("ordinary draft")
+    expect(controller.calls.navigatePromptHistory).toEqual([{ direction: "previous", sessionId: "claude-code" }])
+    expect(setup.captureCharFrame()).not.toContain("History")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps modified vertical arrows outside the recall path", async () => {
+    const controller = createFakeController()
+    controller.actions.recordPromptHistory("recallable", "claude-code")
+    const setup = await renderEditor(controller)
+
+    await type(setup, "draft")
+    await pressArrow(setup, "up", { shift: true })
+    await pressArrow(setup, "down", { ctrl: true })
+    await pressArrow(setup, "up", { meta: true })
+
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("draft")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses native multiline movement before entering history at the true boundary", async () => {
+    const controller = createFakeController()
+    controller.actions.recordPromptHistory("recalled prompt", "claude-code")
+    const setup = await renderEditor(controller)
+
+    await type(setup, "top line")
+    await pressEnter(setup, { shift: true })
+    await type(setup, "bottom line")
+    const before = setup.renderer.currentFocusedEditor?.cursorOffset
+
+    await pressArrow(setup, "up")
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("top line\nbottom line")
+    expect(setup.renderer.currentFocusedEditor?.cursorOffset).not.toBe(before)
+
+    await pressArrow(setup, "up")
+    expect(controller.calls.navigatePromptHistory).toEqual([{ direction: "previous", sessionId: "claude-code" }])
+    expect(await frameWith(setup, "recalled prompt", "History 1/1")).not.toContain("top line")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps recalled text and indicators isolated when focus changes sessions", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await type(setup, "claude only")
+    await pressEnter(setup)
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await type(setup, "codex only")
+    await pressEnter(setup)
+    await pressArrow(setup, "up")
+    await frameWith(setup, "codex only", "History 1/1")
+
+    await actAsync(() => controller.actions.switchFocus("claude-code"))
+    const claudePlain = await setup.waitForFrame(
+      (frame) => frame.includes(PROMPT_PLACEHOLDER) && !frame.includes("codex only") && !frame.includes("History"),
+    )
+    expect(claudePlain).not.toContain("codex only")
+
+    await pressArrow(setup, "up")
+    expect(await frameWith(setup, "claude only", "History 1/1")).not.toContain("codex only")
+
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    expect(await frameWith(setup, "codex only", "History 1/1")).not.toContain("claude only")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("collapses consecutive duplicate submissions into one visible recall entry", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    for (let count = 0; count < 2; count += 1) {
+      await type(setup, "same prompt")
+      await pressEnter(setup)
+    }
+    await pressArrow(setup, "up")
+
+    expect(await frameWith(setup, "same prompt", "History 1/1")).toContain("History 1/1")
+    expect(controller.store.getState().sessions["claude-code"]!.promptHistory.entries).toEqual(["same prompt"])
 
     await destroyMounted(setup.renderer)
   })
