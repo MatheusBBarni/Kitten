@@ -94,6 +94,32 @@ async function openPicker(setup: TestRendererSetup): Promise<string> {
   return setup.waitForFrame((frame) => frame.includes(HANDOFF_TARGET_HINT))
 }
 
+/** Open the real top-priority clarification overlay over the mounted target picker. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "b",
+      title: "Clarification owner",
+      cwd: "/work/beta",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
+}
+
 /** Every block's text of the nth recorded prompt, joined the way `sendPrompt` records it. */
 function sentText(controller: FakeController, index = 0): string {
   const call = controller.calls.sendPrompt[index]
@@ -197,6 +223,56 @@ describe("HandoffTargetPicker selection", () => {
 })
 
 describe("HandoffTargetPicker modality", () => {
+  it("preserves selection and blocks choose or close while clarification owns input", async () => {
+    const controller = fleetController()
+    const setup = await renderCockpit(controller)
+    await openPicker(setup)
+    const suspendedPicker = controller.store.getState().overlays.handoffTarget
+
+    // Select Gamma locally before preemption. This index lives only in the mounted
+    // picker and therefore proves the dialog was resumed rather than reconstructed.
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => {
+      const line = frame.split("\n").find((candidate) => candidate.includes("Gamma"))
+      return line?.includes(SESSION_MARKER) === true
+    })
+
+    await openClarification(controller, "clarification-target-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressArrow("up")
+      setup.mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification).toHaveLength(1)
+    expect(controller.store.getState().overlays.handoffTarget).toBe(suspendedPicker)
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+    await setup.waitForFrame((frame) => {
+      const line = frame.split("\n").find((candidate) => candidate.includes("Gamma"))
+      return line?.includes(SESSION_MARKER) === true
+    })
+
+    await openClarification(controller, "clarification-target-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(controller.store.getState().overlays.handoffTarget).toBe(suspendedPicker)
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT))
+    expect(controller.store.getState().overlays.handoffPreview?.targetSessionId).toBe("c")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("keeps every key from the shell and the prompt editor while it is open", async () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)

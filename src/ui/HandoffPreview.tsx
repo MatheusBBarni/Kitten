@@ -40,7 +40,7 @@ import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from
 import type { HandoffFlow } from "../app/handoff.ts"
 import type { ConfigOption, PendingDiff, ShellCommandRecord } from "../core/types.ts"
 import type { HandoffPreviewOverlay } from "../store/appStore.ts"
-import { selectHandoffPreview, selectIsApprovalOpen, selectSessionHeadroom } from "../store/selectors.ts"
+import { selectHandoffPreview, selectIsApprovalOpen, selectIsClarificationOpen, selectSessionHeadroom } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { formatHeadroom } from "./headroom.ts"
 import { CURRENT_MARK, ModelEffortControl, modelEffortValueRows, TARGET_MARK, type ModelEffortValueRow } from "./ModelSelect.tsx"
@@ -105,6 +105,7 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
   const palette = usePalette()
   const renderer = useRenderer()
   const { height } = useTerminalDimensions()
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
 
   const { bundle, sourceSessionId, targetSessionId, targetConfigOptions } = overlay
@@ -192,6 +193,10 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification owns top modal priority. Stand down before preventDefault or any
+      // local curation so this exact mounted preview can resume with its draft intact.
+      if (clarificationOpen) return
+
       // A permission request blocks an agent mid-turn. It outranks a bundle that is
       // waiting on nothing but the developer, so hand it the keyboard whole.
       if (approvalOpen) return
@@ -261,7 +266,7 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
           return
       }
     },
-    [approvalOpen, chooseTargetConfig, clampedTargetSelected, editing, editingTargetConfig, flow, itemCount, selected, send, targetRows, toggle],
+    [approvalOpen, chooseTargetConfig, clarificationOpen, clampedTargetSelected, editing, editingTargetConfig, flow, itemCount, selected, send, targetRows, toggle],
   )
   useKeyboard(onKey)
 

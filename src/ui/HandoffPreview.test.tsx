@@ -189,6 +189,32 @@ async function renderWithPreview(controller: FakeController, hyperlinks?: boolea
   return setup
 }
 
+/** Open the real top-priority clarification overlay over the mounted preview. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "codex",
+      title: "Clarification owner",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
+}
+
 /** Every block's text, joined the way `sendPrompt` records the turn. */
 function sentText(controller: FakeController): string {
   const call = controller.calls.sendPrompt[0]
@@ -835,6 +861,63 @@ describe("HandoffPreview outcome", () => {
 })
 
 describe("HandoffPreview modality", () => {
+  it("preserves curation and blocks send, discard, and edit while clarification owns input", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    controller.store.applyEvent("codex", { kind: "config_options", options: targetConfigOptions() })
+    const setup = await renderWithPreview(controller)
+    const suspendedPreview = controller.store.getState().overlays.handoffPreview
+
+    // Establish local state that cannot be reconstructed from the store: select and
+    // drop the second file before clarification preempts the mounted preview.
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(`${ITEM_MARKER} ${KEPT_BOX} src/app.ts (edited)`))
+    await actAsync(async () => {
+      await setup.mockInput.typeText(" ")
+    })
+    await setup.waitForFrame((frame) => frame.includes(`${ITEM_MARKER} ${DROPPED_BOX} src/app.ts (edited)`))
+
+    await openClarification(controller, "clarification-preview-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(async () => {
+      setup.mockInput.pressKey("e")
+      setup.mockInput.pressKey("m")
+      setup.mockInput.pressArrow("up")
+      await setup.mockInput.typeText(" ")
+      setup.mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification).toHaveLength(1)
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.store.getState().overlays.handoffPreview).toBe(suspendedPreview)
+    const resumed = await setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT))
+    expect(resumed).toContain(`${ITEM_MARKER} ${DROPPED_BOX} src/app.ts (edited)`)
+    expect(resumed).not.toContain(HANDOFF_EDIT_HINT)
+    expect(resumed).not.toContain(HANDOFF_CONFIG_HINT)
+
+    await openClarification(controller, "clarification-preview-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.store.getState().overlays.handoffPreview).toBe(suspendedPreview)
+
+    // The same preview resumes and performs its unchanged action with the preemption-
+    // era curation still applied.
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect(sentText(controller)).not.toContain("- src/app.ts (edited)")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("keeps every key from the shell and the prompt editor while it is open", async () => {
     const controller = createFakeController()
     seed(controller, "claude-code")
