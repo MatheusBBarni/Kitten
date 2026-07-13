@@ -188,6 +188,11 @@ bun run build         # build release binaries
 bun run build:local   # quick local binary build
 ```
 
+## Contributing
+
+Pull request titles must follow Conventional Commits, for example `feat: add session search` or `fix!: remove a legacy option`.
+The repository uses squash merge, with **Default to PR title for squash merge commits** enabled in GitHub, so the linted PR title becomes the commit that release-please reads from `main`.
+
 ## Project structure
 
 - `src/agent` — ACP adapter boundary
