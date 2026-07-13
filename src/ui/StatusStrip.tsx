@@ -9,12 +9,13 @@
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } from "../core/types.ts"
 import type { Selector } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
   selectAgentEffort,
   selectAgentModel,
+  selectBackgroundWork,
   selectFocusedSessionId,
   selectIsShellFocused,
   selectKeyboardCapability,
@@ -37,6 +38,15 @@ export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
 
 /** Textual boot-state marker; color is deliberately not its only signal. */
 export const RESUMED_RUN_LABEL = "resumed"
+
+/** Workspace-level status shown when no Visible conversation is selected. */
+export const EMPTY_WORKSPACE_STATUS_LABEL = "workspace: no visible conversations"
+
+/** Prefix for the count of live conversations kept outside the visible tab strip. */
+export const BACKGROUND_STATUS_LABEL = "background"
+
+/** Prefix for background conversations whose state still requires attention. */
+export const BACKGROUND_ATTENTION_LABEL = "needs attention"
 
 const selectIsResumedRun: Selector<boolean> = (state) =>
   state.workspace.order.some((sessionId) => state.restoration[sessionId] !== null)
@@ -67,14 +77,11 @@ export interface StatusStripProps {
 
 /** Focused provider, model, effort, and run state. */
 export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripProps): ReactNode {
-  const controller = useController()
   const palette = usePalette()
-  const runtimes = controller.runtimes()
   const resumed = useAppSelector(selectIsResumedRun)
   const shellFocused = useAppSelector(selectIsShellFocused)
   const keyboardCapability = useAppSelector(selectKeyboardCapability)
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
-  const focusedRuntime = runtimes.find((runtime) => runtime.sessionId === focusedSessionId)
 
   return (
     <box
@@ -89,7 +96,11 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
     >
       <box style={{ flexDirection: "row", justifyContent: "space-between", overflow: "hidden" }}>
         <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, gap: 1, overflow: "hidden" }}>
-          {focusedRuntime ? <AgentModelSummary runtime={focusedRuntime} selectors={selectors} /> : null}
+          {focusedSessionId === null ? (
+            <WorkspaceStatusSummary />
+          ) : (
+            <SelectedAgentSummary sessionId={focusedSessionId} selectors={selectors} />
+          )}
         </box>
         <box style={{ flexDirection: "row", flexShrink: 0, gap: 2, overflow: "hidden" }}>
           {resumed ? (
@@ -101,6 +112,35 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
         </box>
       </box>
     </box>
+  )
+}
+
+/** Resolve runtime and session selectors only after workspace selection is known real. */
+function SelectedAgentSummary({
+  sessionId,
+  selectors,
+}: {
+  sessionId: SessionId
+  selectors: StatusSlotSelectors
+}): ReactNode {
+  const controller = useController()
+  const runtime = controller.runtimes().find((candidate) => candidate.sessionId === sessionId)
+  return runtime ? <AgentModelSummary runtime={runtime} selectors={selectors} /> : null
+}
+
+/** Empty-workspace feedback that never reads model, effort, status, or runtime state. */
+function WorkspaceStatusSummary(): ReactNode {
+  const palette = usePalette()
+  const background = useAppSelector(selectBackgroundWork)
+  const needsAttention = background.filter((conversation) => conversation.needsAttention).length
+  return (
+    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none">
+      <span fg={palette.text}>{EMPTY_WORKSPACE_STATUS_LABEL}</span>
+      <span fg={palette.muted}>{` · ${BACKGROUND_STATUS_LABEL}: ${background.length}`}</span>
+      {needsAttention > 0 ? (
+        <span fg={palette.status.awaiting_approval}>{` · ${BACKGROUND_ATTENTION_LABEL}: ${needsAttention}`}</span>
+      ) : null}
+    </text>
   )
 }
 

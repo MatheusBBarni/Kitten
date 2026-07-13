@@ -406,7 +406,7 @@ describe("overlay selectors", () => {
   })
 
   it("report an open model selector as an open, modal overlay", () => {
-    const store = createAppStore()
+    const store = createAppStore({ selectedVisibleId: "codex" })
     store.openModelSelect({ sessionId: "codex" })
     const state = store.getState()
 

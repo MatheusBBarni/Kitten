@@ -13,6 +13,7 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import type { HandoffBundle } from "../core/types.ts"
+import { createAppStore } from "../store/appStore.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
@@ -20,6 +21,7 @@ import {
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
   PROMPT_TITLE,
+  PROMPT_WORKSPACE_TITLE,
   PromptEditor,
 } from "./PromptEditor.tsx"
 import type { CockpitCommand } from "./keymap.ts"
@@ -53,7 +55,11 @@ async function renderEditor(
     </CockpitProvider>,
     { width: 64, height, kittyKeyboard: true },
   )
-  await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE) || frame.includes(PROMPT_DISABLED_TITLE))
+  await setup.waitForFrame((frame) =>
+    frame.includes(PROMPT_TITLE) ||
+    frame.includes(PROMPT_DISABLED_TITLE) ||
+    frame.includes(PROMPT_WORKSPACE_TITLE),
+  )
   return setup
 }
 
@@ -132,6 +138,28 @@ describe("PromptEditor presentation", () => {
 })
 
 describe("PromptEditor submit", () => {
+  it("does not consult or invoke selected-session behavior without a visible selection", async () => {
+    const controller = createFakeController({ store: createAppStore({ seeds: [] }), runtimes: [] })
+    let readinessChecks = 0
+    controller.isReady = () => {
+      readinessChecks += 1
+      return true
+    }
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 10, (command) => dispatched.push(command))
+
+    await type(setup, "/model")
+    await pressEnter(setup)
+    await pressEscape(setup)
+
+    expect(readinessChecks).toBe(0)
+    expect(dispatched).toEqual([])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.cancel).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("sends the composed text to the focused agent on Enter and clears the editor", async () => {
     const controller = createFakeController()
     const setup = await renderEditor(controller)

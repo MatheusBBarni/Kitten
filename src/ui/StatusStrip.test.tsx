@@ -11,9 +11,12 @@ import { createFakeController, readyRuntimes } from "../../test/fakeController.t
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
+import { createAppStore } from "../store/appStore.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
 import {
+  BACKGROUND_STATUS_LABEL,
+  EMPTY_WORKSPACE_STATUS_LABEL,
   RESUMED_RUN_LABEL,
   STATUS_LABELS,
   StatusStrip,
@@ -67,6 +70,39 @@ function paletteColor(hex: string): string {
 }
 
 describe("StatusStrip agent state", () => {
+  it("renders workspace and background state without consulting stale runtime or model slots", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "background", providerKind: "codex", title: "Background", cwd: "/work" }],
+      selectedVisibleId: "background",
+    })
+    store.backgroundConversation("background")
+    const controller = createFakeController({ store, runtimes: [] })
+    controller.runtimes = () => {
+      throw new Error("no selected workspace must not consult runtimes")
+    }
+    const throwingSelectors: StatusSlotSelectors = {
+      model: () => () => {
+        throw new Error("no selected workspace must not consult model")
+      },
+      effort: () => () => {
+        throw new Error("no selected workspace must not consult effort")
+      },
+    }
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <StatusStrip selectors={throwingSelectors} />
+      </CockpitProvider>,
+      { width: 100, height: HEIGHT },
+    )
+
+    const frame = await setup.waitForFrame((value) => value.includes(EMPTY_WORKSPACE_STATUS_LABEL))
+    expect(frame).toContain(`${BACKGROUND_STATUS_LABEL}: 1`)
+    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain(STATUS_LABELS.working)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders only the focused status beside the provider and model", async () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller)

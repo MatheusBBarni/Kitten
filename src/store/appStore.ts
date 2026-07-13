@@ -597,6 +597,17 @@ class AppStoreImpl implements AppStore {
   }
 
   openModelSelect(overlay: ModelSelectOverlay): void {
+    const selectedSessionId = this.state.workspace.selectedVisibleId
+    const selectedConversation = selectedSessionId
+      ? this.state.workspace.conversations[selectedSessionId]
+      : undefined
+    if (
+      selectedSessionId === null ||
+      overlay.sessionId !== selectedSessionId ||
+      selectedConversation?.lifecycle !== "visible"
+    ) {
+      return
+    }
     this.setOverlays({ modelSelect: overlay })
   }
 

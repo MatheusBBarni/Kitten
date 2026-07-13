@@ -28,7 +28,7 @@
 import type { EditBufferRenderable, KeyEvent, TextareaRenderable } from "@opentui/core"
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { AvailableCommand } from "../core/types.ts"
+import type { AvailableCommand, SessionId } from "../core/types.ts"
 import {
   selectFocusedSessionId,
   selectHasOpenOverlay,
@@ -59,6 +59,12 @@ export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc int
 
 /** The empty-editor hint while the focused agent is not ready. */
 export const PROMPT_DISABLED_PLACEHOLDER = "Switch to a ready agent to send a prompt"
+
+/** The composer's frame title when the workspace has no selected Visible conversation. */
+export const PROMPT_WORKSPACE_TITLE = "Prompt (select a conversation)"
+
+/** Empty-workspace feedback shown in place of an editable input. */
+export const PROMPT_WORKSPACE_PLACEHOLDER = "Select a visible conversation to send a prompt"
 
 /** The composer's visual prompt marker. */
 export const PROMPT_CHEVRON = "❯"
@@ -146,9 +152,51 @@ function menuGroups(rows: readonly MenuRow[]): SlashMenuGroup[] {
 
 /** The multi-line prompt editor, bound to whichever agent currently has focus. */
 export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand?: (command: CockpitCommand) => void }): ReactNode {
+  const selectedSessionId = useAppSelector(selectFocusedSessionId)
+  return selectedSessionId === null
+    ? <WorkspacePromptEditor />
+    : <SelectedPromptEditor sessionId={selectedSessionId} onRunCommand={onRunCommand} />
+}
+
+/** A non-editable composer surface for the valid no-selection workspace state. */
+function WorkspacePromptEditor(): ReactNode {
+  const palette = usePalette()
+  return (
+    <box
+      borderStyle="rounded"
+      style={{
+        position: "relative",
+        flexShrink: 0,
+        flexDirection: "row",
+        gap: 1,
+        border: true,
+        borderColor: palette.status.not_ready,
+        backgroundColor: palette.surface,
+        paddingLeft: 1,
+        paddingRight: 1,
+        overflow: "hidden",
+      }}
+      title={PROMPT_WORKSPACE_TITLE}
+      titleColor={palette.status.not_ready}
+    >
+      <text fg={palette.status.not_ready}>{PROMPT_CHEVRON}</text>
+      <text style={{ height: MIN_EDITOR_ROWS, flexGrow: 1 }} fg={palette.muted}>
+        {PROMPT_WORKSPACE_PLACEHOLDER}
+      </text>
+    </box>
+  )
+}
+
+/** The editable composer for one real selected Visible conversation. */
+function SelectedPromptEditor({
+  sessionId: focusedSessionId,
+  onRunCommand,
+}: {
+  sessionId: SessionId
+  onRunCommand: (command: CockpitCommand) => void
+}): ReactNode {
   const controller = useController()
   const palette = usePalette()
-  const focusedSessionId = useAppSelector(selectFocusedSessionId)
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
@@ -159,7 +207,7 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
 
   // Readiness is a boot-time fact about the connection, not a store slice: a session
   // whose handshake failed has no ACP session, so nothing may be sent to it.
-  const ready = focusedSessionId !== null && controller.isReady(focusedSessionId)
+  const ready = controller.isReady(focusedSessionId)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
   const restorationSelector = useMemo(() => selectRestoration(focusedSessionId), [focusedSessionId])

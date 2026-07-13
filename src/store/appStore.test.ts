@@ -383,7 +383,7 @@ describe("overlay slots", () => {
   })
 
   it("exposes an opened model selector and clears it on close", () => {
-    const store = createAppStore()
+    const store = createAppStore({ selectedVisibleId: "codex" })
     const overlay = { sessionId: "codex" as SessionId }
 
     store.openModelSelect(overlay)
@@ -394,7 +394,7 @@ describe("overlay slots", () => {
   })
 
   it("keeps the model selector independent of the approval slot", () => {
-    const store = createAppStore()
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
     store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
     store.openModelSelect({ sessionId: "claude-code" })
 
@@ -403,6 +403,19 @@ describe("overlay slots", () => {
     const overlays = store.getState().overlays
     expect(overlays.modelSelect).toBeNull()
     expect(overlays.approval?.sessionId).toBe("codex")
+  })
+
+  it("rejects model selectors without the exact selected Visible conversation", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+
+    store.openModelSelect({ sessionId: "codex" })
+    expect(store.getState().overlays.modelSelect).toBeNull()
+
+    store.backgroundConversation("claude-code")
+    store.backgroundConversation("codex")
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+    store.openModelSelect({ sessionId: "codex" })
+    expect(store.getState().overlays.modelSelect).toBeNull()
   })
 
   it("opens settings without changing the other overlay-slot identities", () => {

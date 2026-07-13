@@ -34,7 +34,7 @@
 
 import type { KeyEvent } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 
 import {
   EFFORT_CATEGORY,
@@ -46,6 +46,7 @@ import {
 import type { ModelSelectOverlay } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
+  selectFocusedSessionId,
   selectIsApprovalOpen,
   selectModelSelectOverlay,
   selectSessionList,
@@ -96,8 +97,16 @@ export function modelSelectTitleFor(displayName: string): string {
  * swallow keys.
  */
 export function ModelSelect(): ReactNode {
+  const controller = useController()
   const overlay = useAppSelector(selectModelSelectOverlay)
-  if (!overlay) return null
+  const selectedSessionId = useAppSelector(selectFocusedSessionId)
+  const validOverlay = overlay !== null && overlay.sessionId === selectedSessionId
+
+  useEffect(() => {
+    if (overlay !== null && !validOverlay) controller.store.closeModelSelect()
+  }, [controller, overlay, validOverlay])
+
+  if (!validOverlay) return null
   // A new open target starts with a fresh tab/row selection rather than preserving
   // transient state from the last selector instance.
   return <ModelSelectDialog key={overlay.sessionId} overlay={overlay} />

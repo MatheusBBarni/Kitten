@@ -18,6 +18,7 @@ import {
   type ProviderKind,
   type SessionId,
 } from "../core/types.ts"
+import { createAppStore } from "../store/appStore.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import {
   CURRENT_MARK,
@@ -144,6 +145,49 @@ async function renderWithSelector(controller: FakeController): Promise<TestRende
 }
 
 describe("ModelSelect visibility and content", () => {
+  it("keeps the overlay closed when no visible conversation is selected", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "background", providerKind: "codex", title: "Background", cwd: "/work" }],
+      selectedVisibleId: "background",
+    })
+    store.backgroundConversation("background")
+    const controller = createFakeController({ store, runtimes: [] })
+    const setup = await testRender(<CockpitApp controller={controller} />, {
+      width: WIDTH,
+      height: HEIGHT,
+      kittyKeyboard: true,
+    })
+
+    await actAsync(() => controller.store.openModelSelect({ sessionId: "background" }))
+    await setup.renderOnce()
+
+    expect(controller.store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(controller.store.getState().overlays.modelSelect).toBeNull()
+    expect(setup.captureCharFrame()).not.toContain(MODEL_SELECT_HINT)
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("closes an already-open overlay when the final visible selection disappears", async () => {
+    const controller = createFakeController()
+    const setup = await renderWithSelector(controller)
+
+    expect(controller.store.getState().overlays.modelSelect).toEqual({ sessionId: "claude-code" })
+    await actAsync(() => {
+      controller.store.backgroundConversation("claude-code")
+      controller.store.backgroundConversation("codex")
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.modelSelect === null)
+    const closed = await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
+
+    expect(controller.store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(closed).not.toContain(MODEL_SELECT_HINT)
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders nothing until the selector is opened", async () => {
     const controller = createFakeController()
     seedOptions(controller, "claude-code", configOptions())
