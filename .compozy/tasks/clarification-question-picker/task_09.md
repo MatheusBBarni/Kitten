@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Suspend sessions, session-picker, and model-selector handlers during clarification preemption"
 type: frontend
 complexity: high
@@ -26,10 +26,10 @@ Suspend keyboard and filter input behavior for fleet, restored-session, and mode
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Gate fleet overview keyboard input.
-- [ ] 9.2 Gate restored-session picker keyboard and filter input.
-- [ ] 9.3 Gate model selector keyboard input.
-- [ ] 9.4 Add resumption regressions for all three overlays.
+- [x] 9.1 Gate fleet overview keyboard input.
+- [x] 9.2 Gate restored-session picker keyboard and filter input.
+- [x] 9.3 Gate model selector keyboard input.
+- [x] 9.4 Add resumption regressions for all three overlays.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -58,12 +58,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Sessions overlay ignores Enter, n, arrows, and Escape while clarification is active.
-  - [ ] Session picker ignores Enter, delete chord, and printable filter input while clarification is active.
-  - [ ] Model selector ignores navigation, confirmation, and Escape while clarification is active.
-  - [ ] Each overlay resumes its preexisting action after clarification settles.
+  - [x] Sessions overlay ignores Enter, n, arrows, and Escape while clarification is active.
+  - [x] Session picker ignores Enter, delete chord, and printable filter input while clarification is active.
+  - [x] Model selector ignores navigation, confirmation, and Escape while clarification is active.
+  - [x] Each overlay resumes its preexisting action after clarification settles.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

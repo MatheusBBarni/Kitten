@@ -9,6 +9,7 @@ import {
   assertValidShowcaseConfig,
   showcaseConfig,
 } from "../config/showcase-config.ts";
+import "../styles/site.css";
 
 assertValidShowcaseConfig(showcaseConfig);
 
@@ -25,7 +26,7 @@ const { site, hero, proof, install, requirements, faq, repository } =
     <title>{site.title}</title>
   </head>
   <body>
-    <main>
+    <main id="main-content">
       <Hero section={hero} install={install} />
       <Proof section={proof} />
       <Install section={install} />

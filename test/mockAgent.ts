@@ -18,6 +18,7 @@ import {
   type InitializeRequest,
   type InitializeResponse,
   type LoadSessionRequest,
+  type NewSessionRequest,
   type PermissionOption,
   type PromptRequest,
   type RequestPermissionOutcome,
@@ -94,6 +95,8 @@ export interface MockAgentHandle {
   readonly elicitationRequests: CreateElicitationRequest[]
   /** The working directory of every `session/new` the agent received, in order. */
   readonly newSessionCwds: string[]
+  /** Every `session/new` request the agent received, including provisioned MCP servers. */
+  readonly newSessionRequests: NewSessionRequest[]
   /** Every `session/load` request the agent received, in order. */
   readonly loadSessionRequests: LoadSessionRequest[]
   /** Every `session/set_config_option` request the agent received, in order. */
@@ -118,6 +121,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const elicitationOutcomes: CreateElicitationResponse[] = []
   const elicitationRequests: CreateElicitationRequest[] = []
   const newSessionCwds: string[] = []
+  const newSessionRequests: NewSessionRequest[] = []
   const loadSessionRequests: LoadSessionRequest[] = []
   const configOptionRequests: SetSessionConfigOptionRequest[] = []
   // The live option set the agent advertises, mutated in place by set_config_option.
@@ -142,6 +146,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
       },
     newSession: (request) => {
       newSessionCwds.push(request.cwd)
+      newSessionRequests.push(request)
       return advertisesConfig ? { sessionId, configOptions } : { sessionId }
     },
     async loadSession(request: LoadSessionRequest) {
@@ -207,6 +212,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
     elicitationOutcomes,
     elicitationRequests,
     newSessionCwds,
+    newSessionRequests,
     loadSessionRequests,
     configOptionRequests,
     configOptions,

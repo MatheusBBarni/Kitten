@@ -6,7 +6,7 @@ complexity: medium
 dependencies: []
 ---
 
-# Task 02: Honest install: installer slug fix, README rewrite, CI resolve-check
+# Honest install: installer slug fix, README rewrite, CI resolve-check
 
 ## Overview
 Both advertised install paths are broken for a new user: the curl one-liner 404s on a placeholder repo slug (`OWNER/kitten`), and the README documents only the from-source `bun install` flow.

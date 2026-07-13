@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Create standalone Astro subproject scaffold
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Create an isolated `site/` project so the showcase website can be built, tested,
 
 ## Subtasks
 
-- [ ] 01.01 Create `site/` with `package.json`, `astro.config.mjs`, and TypeScript config scaffolding.
-- [ ] 01.02 Add base directories for pages, components, scripts, config, and public assets.
-- [ ] 01.03 Add a `src/` `index` placeholder route that renders a temporary placeholder while subsequent tasks replace it.
-- [ ] 01.04 Wire strict mode and base URL assumptions for a Pages deploy target.
-- [ ] 01.05 Document in task notes which files become the ownership boundary for all future site changes.
+- [x] 01.01 Create `site/` with `package.json`, `astro.config.mjs`, and TypeScript config scaffolding.
+- [x] 01.02 Add base directories for pages, components, scripts, config, and public assets.
+- [x] 01.03 Add a `src/` `index` placeholder route that renders a temporary placeholder while subsequent tasks replace it.
+- [x] 01.04 Wire strict mode and base URL assumptions for a Pages deploy target.
+- [x] 01.05 Document in task notes which files become the ownership boundary for all future site changes.
 
 ## Implementation Details
 
@@ -76,11 +76,11 @@ This task implements the implementation boundary from PRD technical constraints 
 ## Tests
 
 - Unit tests:
-  - [ ] `node -e "import('./site/astro.config.mjs')"` should not throw and must expose `output: 'static'` (or equivalent static mode signal used by Astro config).
-  - [ ] Package manifest parser check confirms required scripts and static build dependencies are declared.
+  - [x] `node -e "import('./site/astro.config.mjs')"` should not throw and must expose `output: 'static'` (or equivalent static mode signal used by Astro config).
+  - [x] Package manifest parser check confirms required scripts and static build dependencies are declared.
 - Integration tests:
-  - [ ] `cd site && bun run check` (or `bunx astro check`) returns success with the placeholder route.
-  - [ ] `cd site && bun run build` produces `site/dist`.
+  - [x] `cd site && bun run check` (or `bunx astro check`) returns success with the placeholder route.
+  - [x] `cd site && bun run build` produces `site/dist`.
 - Test coverage target: >=80% for any scripts/config validators added in this task.
 - All tests must pass.
 

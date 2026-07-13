@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Usage domain event, state field, and reducer case"
 type: backend
 complexity: medium
@@ -29,10 +29,10 @@ This is the foundation the translation, selector, and UI all read, and it keeps 
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define the `SessionUsage` domain type and add the `usage` member to the `DomainSessionEvent` union.
-- [ ] 1.2 Add the optional `usage` field to `SessionState` and default it to `undefined` in `createSessionState`.
-- [ ] 1.3 Implement the reducer `case "usage"` as a wholesale single-field replace.
-- [ ] 1.4 Add reducer tests folding a usage event and confirming unrelated state and immutability.
+- [x] 1.1 Define the `SessionUsage` domain type and add the `usage` member to the `DomainSessionEvent` union.
+- [x] 1.2 Add the optional `usage` field to `SessionState` and default it to `undefined` in `createSessionState`.
+- [x] 1.3 Implement the reducer `case "usage"` as a wholesale single-field replace.
+- [x] 1.4 Add reducer tests folding a usage event and confirming unrelated state and immutability.
 
 ## Implementation Details
 Modify `src/core/types.ts` (the `DomainSessionEvent` union, the `SessionState` interface, and a new `SessionUsage` interface) and `src/core/sessionReducer.ts` (the event `switch` and `createSessionState`).
@@ -59,13 +59,13 @@ Mirror the existing `status` case exactly — a flat discriminant plus scalar fi
 
 ## Tests
 - Unit tests:
-  - [ ] Folding `{ kind: "usage", used: 124000, size: 200000 }` sets `state.usage` to `{ used: 124000, size: 200000 }`.
-  - [ ] Folding a usage event leaves `turns`, `status`, `plan`, `referencedFiles`, and `pendingDiffs` unchanged.
-  - [ ] `createSessionState` returns `usage` as `undefined`.
-  - [ ] A second usage event replaces the prior `usage` value wholesale.
-  - [ ] The reducer does not mutate the input state object.
+  - [x] Folding `{ kind: "usage", used: 124000, size: 200000 }` sets `state.usage` to `{ used: 124000, size: 200000 }`.
+  - [x] Folding a usage event leaves `turns`, `status`, `plan`, `referencedFiles`, and `pendingDiffs` unchanged.
+  - [x] `createSessionState` returns `usage` as `undefined`.
+  - [x] A second usage event replaces the prior `usage` value wholesale.
+  - [x] The reducer does not mutate the input state object.
 - Integration tests:
-  - [ ] `store.applyEvent(id, { kind: "usage", used, size })` updates that session's `usage` and preserves the other session's slice identity.
+  - [x] `store.applyEvent(id, { kind: "usage", used, size })` updates that session's `usage` and preserves the other session's slice identity.
 - Test coverage target: >=80%
 - All tests must pass
 

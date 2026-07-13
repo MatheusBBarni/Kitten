@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: Adapter-honor smoke test and fixture MCP server
 type: test
 complexity: medium
 dependencies:
-  - task_04
+    - task_04
 ---
 
 # Task 08: Adapter-honor smoke test and fixture MCP server

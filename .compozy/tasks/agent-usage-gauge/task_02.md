@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Surface usage_update in ACP translation"
 type: backend
 complexity: low
@@ -30,10 +30,10 @@ This is what feeds real per-agent context data from the agents into the store.
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Lift `usage_update` out of the dropped-variant group and build the domain usage event.
-- [ ] 2.2 Add a content-free `translateUsage` helper that copies only `used`/`size`.
-- [ ] 2.3 Update the "returns null for the unsurfaced variant" test so it no longer includes `usage_update`, and assert the new mapping.
-- [ ] 2.4 Extend the translation-completeness test so `cost` and `_meta` do not survive translation.
+- [x] 2.1 Lift `usage_update` out of the dropped-variant group and build the domain usage event.
+- [x] 2.2 Add a content-free `translateUsage` helper that copies only `used`/`size`.
+- [x] 2.3 Update the "returns null for the unsurfaced variant" test so it no longer includes `usage_update`, and assert the new mapping.
+- [x] 2.4 Extend the translation-completeness test so `cost` and `_meta` do not survive translation.
 
 ## Implementation Details
 Modify `src/agent/acpTranslate.ts`: add `UsageUpdate` to the SDK import, move the `usage_update` case out of the shared `return null` block, and add a `translateUsage` helper alongside `translatePlanEntry` that copies scalars field-by-field (the same discipline that keeps `_meta` from leaking in `translateToolCall`).
@@ -59,11 +59,11 @@ No change is expected in `agentConnection` routing — non-message events alread
 
 ## Tests
 - Unit tests:
-  - [ ] A `usage_update` with `{ used: 36000, size: 200000 }` translates to `{ kind: "usage", used: 36000, size: 200000 }`.
-  - [ ] A `usage_update` carrying `cost` and `_meta` translates to an event with only `used`/`size` (neither `cost` nor `_meta` present).
-  - [ ] Other unsurfaced variants (e.g., `session_info_update`, `current_mode_update`) still translate to `null`.
+  - [x] A `usage_update` with `{ used: 36000, size: 200000 }` translates to `{ kind: "usage", used: 36000, size: 200000 }`.
+  - [x] A `usage_update` carrying `cost` and `_meta` translates to an event with only `used`/`size` (neither `cost` nor `_meta` present).
+  - [x] Other unsurfaced variants (e.g., `session_info_update`, `current_mode_update`) still translate to `null`.
 - Integration tests:
-  - [ ] Feeding a `usage_update` notification through `agentConnection.onSessionUpdate` results in a `usage` domain event delivered to `onUpdate` subscribers.
+  - [x] Feeding a `usage_update` notification through `agentConnection.onSessionUpdate` results in a `usage` domain event delivered to `onUpdate` subscribers.
 - Test coverage target: >=80%
 - All tests must pass
 

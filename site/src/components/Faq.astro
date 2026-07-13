@@ -10,7 +10,7 @@ const { section } = Astro.props;
 ---
 
 <Section id={section.id} heading={section.heading} body={section.body}>
-  <dl>
+  <dl class="faq-list">
     {
       section.items.map((item) => (
         <div>

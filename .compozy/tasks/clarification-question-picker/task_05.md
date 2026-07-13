@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Replace the permission queue with a controller interaction coordinator"
 type: refactor
 complexity: high
@@ -26,10 +26,10 @@ Replace the controller-private permission FIFO with a discriminated coordinator 
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Define discriminated pending interaction lifecycle.
-- [ ] 5.2 Capture controller connection generations.
-- [ ] 5.3 Implement preemption and deterministic resumption.
-- [ ] 5.4 Implement replacement and disposal terminal cleanup.
+- [x] 5.1 Define discriminated pending interaction lifecycle.
+- [x] 5.2 Capture controller connection generations.
+- [x] 5.3 Implement preemption and deterministic resumption.
+- [x] 5.4 Implement replacement and disposal terminal cleanup.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -55,12 +55,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Permission requests remain FIFO and advance only after the displayed request settles.
-  - [ ] Clarification preempts a permission and the unchanged permission resumes after settlement.
-  - [ ] Wrong ID, old generation, and duplicate answers are no-ops.
-  - [ ] Session replacement and disposal cancel matching entries exactly once while another session remains usable.
+  - [x] Permission requests remain FIFO and advance only after the displayed request settles.
+  - [x] Clarification preempts a permission and the unchanged permission resumes after settlement.
+  - [x] Wrong ID, old generation, and duplicate answers are no-ops.
+  - [x] Session replacement and disposal cancel matching entries exactly once while another session remains usable.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

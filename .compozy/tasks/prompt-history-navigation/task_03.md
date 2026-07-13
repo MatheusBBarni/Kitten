@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Controller Recall Actions and Private Telemetry"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ Expose the controller actions that let the composer record accepted submissions 
 
 ## Subtasks
 
-- [ ] 3.1 Extend the UI-facing controller action contract for record and navigation operations.
-- [ ] 3.2 Route the new actions through the existing store event path and preserve focused or explicit-session targeting.
-- [ ] 3.3 Update the fake controller so mounted UI tests drive the real history state contract.
-- [ ] 3.4 Extend the opt-in recorder’s typed event surface and disabled no-op surface.
-- [ ] 3.5 Emit only the approved content-free history outcomes and verify their record shapes.
-- [ ] 3.6 Add controller and recorder regressions for ordering, failures, isolation, and privacy.
+- [x] 3.1 Extend the UI-facing controller action contract for record and navigation operations.
+- [x] 3.2 Route the new actions through the existing store event path and preserve focused or explicit-session targeting.
+- [x] 3.3 Update the fake controller so mounted UI tests drive the real history state contract.
+- [x] 3.4 Extend the opt-in recorder’s typed event surface and disabled no-op surface.
+- [x] 3.5 Emit only the approved content-free history outcomes and verify their record shapes.
+- [x] 3.6 Add controller and recorder regressions for ordering, failures, isolation, and privacy.
 
 ## Implementation Details
 
@@ -72,15 +72,15 @@ Use the TechSpec’s **API Endpoints**, **Monitoring and Observability**, and **
 ## Tests
 
 - Unit tests:
-  - [ ] Recording an accepted nonblank composer prompt dispatches history state before an agent prompt promise resolves or rejects.
-  - [ ] Navigation for an explicit session id returns that session’s selected text without changing the focused session’s history.
-  - [ ] Empty history and next-from-idle navigation return no replacement text.
-  - [ ] Disabled telemetry writes no history records and enabled telemetry emits only approved fixed event names.
-  - [ ] Every new telemetry record lacks text, hashes, character lengths, capacity, indices, and entries.
+  - [x] Recording an accepted nonblank composer prompt dispatches history state before an agent prompt promise resolves or rejects.
+  - [x] Navigation for an explicit session id returns that session’s selected text without changing the focused session’s history.
+  - [x] Empty history and next-from-idle navigation return no replacement text.
+  - [x] Disabled telemetry writes no history records and enabled telemetry emits only approved fixed event names.
+  - [x] Every new telemetry record lacks text, hashes, character lengths, capacity, indices, and entries.
 - Integration tests:
-  - [ ] A controller action followed by a rejected agent call still leaves the submitted prompt recallable through the store.
-  - [ ] A fake controller used by a mounted view applies record/navigation events to the same session state that selectors read.
-  - [ ] Handoff and initial-task paths do not create composer-history telemetry or entries.
+  - [x] A controller action followed by a rejected agent call still leaves the submitted prompt recallable through the store.
+  - [x] A fake controller used by a mounted view applies record/navigation events to the same session state that selectors read.
+  - [x] Handoff and initial-task paths do not create composer-history telemetry or entries.
 - Test coverage target: >=80%
 - All tests must pass
 

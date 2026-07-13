@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add GitHub Pages workflow for site build and deployment
 type: infra
 complexity: high
@@ -29,11 +29,11 @@ Create the deployment pipeline that builds the `site/` Astro artifact and publis
 
 ## Subtasks
 
-- [ ] 07.01 Add workflow trigger(s) for push to `main` and manual dispatch.
-- [ ] 07.02 Add setup, install, build, and deploy steps for the `site` package artifact.
-- [ ] 07.03 Configure Pages upload and deployment actions with the repository target environment.
-- [ ] 07.04 Add failure visibility and output checks in deployment step.
-- [ ] 07.05 Ensure workflow does not depend on release pipeline state.
+- [x] 07.01 Add workflow trigger(s) for push to `main` and manual dispatch.
+- [x] 07.02 Add setup, install, build, and deploy steps for the `site` package artifact.
+- [x] 07.03 Configure Pages upload and deployment actions with the repository target environment.
+- [x] 07.04 Add failure visibility and output checks in deployment step.
+- [x] 07.05 Ensure workflow does not depend on release pipeline state.
 
 ## Implementation Details
 
@@ -68,11 +68,11 @@ This task maps to TechSpec integration point "GitHub Pages" and PRD phased rollo
 ## Tests
 
 - Unit tests:
-  - [ ] Workflow syntax check validates required triggers, permissions, and steps.
-  - [ ] `site/package.json` exposes build command used by workflow.
+  - [x] Workflow syntax check validates required triggers, permissions, and steps.
+  - [x] `site/package.json` exposes build command used by workflow.
 - Integration tests:
-  - [ ] Dry-run or local simulation confirms `site/dist` is uploaded to Pages artifact.
-  - [ ] Manual dispatch path completes without runtime prompt dependency.
+  - [x] Dry-run or local simulation confirms `site/dist` is uploaded to Pages artifact.
+  - [x] Manual dispatch path completes without runtime prompt dependency.
 - Test coverage target: >=80%
 - All tests must pass
 

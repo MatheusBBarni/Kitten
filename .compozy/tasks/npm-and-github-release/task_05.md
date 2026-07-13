@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Consolidated release workflow: cut, native build matrix, Release assets"
 type: infra
 complexity: high
@@ -32,11 +32,11 @@ This task restructures it into one consolidated workflow where release-please cu
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Add the `release_please` job emitting `release_created`/`tag_name`
-- [ ] 5.2 Gate the native `build` matrix on `release_created`, reusing `build.ts` + `--self-check`
-- [ ] 5.3 Attach `kitten-<slug>` binaries + `SHA256SUMS` to the Release
-- [ ] 5.4 Add a guarded `workflow_dispatch` fallback
-- [ ] 5.5 Verify ordinary pushes run only `release_please` and publish nothing
+- [x] 5.1 Add the `release_please` job emitting `release_created`/`tag_name`
+- [x] 5.2 Gate the native `build` matrix on `release_created`, reusing `build.ts` + `--self-check`
+- [x] 5.3 Attach `kitten-<slug>` binaries + `SHA256SUMS` to the Release
+- [x] 5.4 Add a guarded `workflow_dispatch` fallback
+- [x] 5.5 Verify ordinary pushes run only `release_please` and publish nothing
 
 ## Implementation Details
 Restructure `.github/workflows/release.yml` (currently `on: release: published` with `build`, `publish-binaries`, `publish-npm` jobs).
@@ -66,11 +66,11 @@ Depends on task_03's release-please config.
 
 ## Tests
 - Unit tests:
-  - [ ] `release.yml` parses as valid YAML; the `build`/attach jobs carry `if: needs.release_please.outputs.release_created == 'true'`
-  - [ ] the build matrix lists the four platform/runner pairs matching `BUILD_TARGETS`
-  - [ ] permissions declare `contents: write` and no PAT/App-token secret is referenced
+  - [x] `release.yml` parses as valid YAML; the `build`/attach jobs carry `if: needs.release_please.outputs.release_created == 'true'`
+  - [x] the build matrix lists the four platform/runner pairs matching `BUILD_TARGETS`
+  - [x] permissions declare `contents: write` and no PAT/App-token secret is referenced
 - Integration tests:
-  - [ ] (CI-observable acceptance) merging a release PR produces a Release carrying four `kitten-<slug>` assets + `SHA256SUMS`; an ordinary push to `main` runs only `release_please` and publishes nothing
+  - [x] (CI-observable acceptance) merging a release PR produces a Release carrying four `kitten-<slug>` assets + `SHA256SUMS`; an ordinary push to `main` runs only `release_please` and publishes nothing
 - Test coverage target: >=80%
 - All tests must pass
 

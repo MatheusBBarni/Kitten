@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Map verified ACP elicitation into the adapter boundary"
 type: backend
 complexity: high
@@ -26,10 +26,10 @@ Expose ACP elicitation only for a verified capability and translate it into the 
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add pure form normalization and reverse outcome mapping.
-- [ ] 4.2 Gate elicitation capability and callback registration.
-- [ ] 4.3 Expose a protocol-free clarification subscription.
-- [ ] 4.4 Extend the real SDK in-memory mock fixture and adapter tests.
+- [x] 4.1 Add pure form normalization and reverse outcome mapping.
+- [x] 4.2 Gate elicitation capability and callback registration.
+- [x] 4.3 Expose a protocol-free clarification subscription.
+- [x] 4.4 Extend the real SDK in-memory mock fixture and adapter tests.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -58,12 +58,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Supported capability advertises form elicitation and unsupported capability omits it.
-  - [ ] Valid form reaches the handler and accepted values map exactly once.
-  - [ ] Cancellation, missing handler, unsupported mode, invalid scope, and malformed fields return ACP cancellation.
-  - [ ] Existing prompt and permission behavior remain unchanged.
+  - [x] Supported capability advertises form elicitation and unsupported capability omits it.
+  - [x] Valid form reaches the handler and accepted values map exactly once.
+  - [x] Cancellation, missing handler, unsupported mode, invalid scope, and malformed fields return ACP cancellation.
+  - [x] Existing prompt and permission behavior remain unchanged.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

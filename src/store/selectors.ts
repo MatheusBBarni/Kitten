@@ -77,6 +77,12 @@ const UNKNOWN_CLARIFICATION_CAPABILITY: ClarificationCapability = {
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
   state.workspace.selectedVisibleId
 
+/** One conversation's reactive connection standing, or `null` when it no longer exists. */
+export const selectConversationAvailability =
+  (sessionId: SessionId | null): Selector<ConversationAvailability | null> =>
+  (state) =>
+    (sessionId ? state.workspace.conversations[sessionId]?.availability : null) ?? null
+
 /** Ephemeral empty-workspace action feedback. */
 export const selectWorkspaceNotice: Selector<WorkspaceNotice | null> = (state) =>
   state.workspaceNotice

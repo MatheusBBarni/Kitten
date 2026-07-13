@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "release-please config and version-floor manifest"
 type: infra
 complexity: low
@@ -29,11 +29,11 @@ This task adds the release-please configuration and manifest that make the relea
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add `release-please-config.json` for a single root Node package
-- [ ] 3.2 Add `.release-please-manifest.json` seeding the version floor
-- [ ] 3.3 Configure the Breaking/Features/Fixes changelog sections
-- [ ] 3.4 Ensure the config bumps `package.json` `version`
-- [ ] 3.5 Add a validity test asserting the config/manifest parse and reference the root package
+- [x] 3.1 Add `release-please-config.json` for a single root Node package
+- [x] 3.2 Add `.release-please-manifest.json` seeding the version floor
+- [x] 3.3 Configure the Breaking/Features/Fixes changelog sections
+- [x] 3.4 Ensure the config bumps `package.json` `version`
+- [x] 3.5 Add a validity test asserting the config/manifest parse and reference the root package
 
 ## Implementation Details
 New `release-please-config.json` and `.release-please-manifest.json` at the repo root.
@@ -62,12 +62,12 @@ The version-floor value is an Open Question (default `0.1.0`).
 
 ## Tests
 - Unit tests:
-  - [ ] `release-please-config.json` parses as JSON and declares the root package with `release-type: node`
-  - [ ] `.release-please-manifest.json` parses and sets the root package to the seeded floor version
-  - [ ] the config's `changelog-sections` include `feat` -> Features, `fix` -> Fixes, and a Breaking section
-  - [ ] the config keeps `package.json` as the versioned file (no extra-files drift)
+  - [x] `release-please-config.json` parses as JSON and declares the root package with `release-type: node`
+  - [x] `.release-please-manifest.json` parses and sets the root package to the seeded floor version
+  - [x] the config's `changelog-sections` include `feat` -> Features, `fix` -> Fixes, and a Breaking section
+  - [x] the config keeps `package.json` as the versioned file (no extra-files drift)
 - Integration tests:
-  - [ ] (CI-observable) release-please parses the config against the repo without error on a dry run (documented as the acceptance check)
+  - [x] (CI-observable) release-please parses the config against the repo without error on a dry run (documented as the acceptance check)
 - Test coverage target: >=80%
 - All tests must pass
 

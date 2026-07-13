@@ -10,7 +10,7 @@ const { section } = Astro.props;
 ---
 
 <Section id={section.id} heading={section.heading} body={section.body}>
-  <ul>
+  <ul class="requirements-list">
     {section.items.map((item) => <li>{item}</li>)}
   </ul>
 </Section>

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add motion-safe media presentation, styling, and accessibility hardening
 type: frontend
 complexity: high
@@ -29,13 +29,13 @@ Finalize the user experience quality of the launch page with clear responsive la
 
 ## Subtasks
 
-- [ ] 06.01 Add responsive layout and spacing tokens for all section components.
-- [ ] 06.02 Implement reduced-motion behavior for proof media and ensure captions or text alternatives remain visible.
-- [ ] 06.03 Add poster/asset references and fallback copy for video media in launch scenarios.
-- [ ] 06.04 Update Proof and Hero sections with keyboard-focus and contrast-safe presentation classes.
-- [ ] 06.05 Add explicit `prefers-reduced-motion` handling and accessible fallback controls.
-- [ ] 06.06 Include alt text and labeling for non-text proof explanation content.
-- [ ] 06.07 Validate light/dark contrast assumptions against terminal and browser backgrounds likely used in release.
+- [x] 06.01 Add responsive layout and spacing tokens for all section components.
+- [x] 06.02 Implement reduced-motion behavior for proof media and ensure captions or text alternatives remain visible.
+- [x] 06.03 Add poster/asset references and fallback copy for video media in launch scenarios.
+- [x] 06.04 Update Proof and Hero sections with keyboard-focus and contrast-safe presentation classes.
+- [x] 06.05 Add explicit `prefers-reduced-motion` handling and accessible fallback controls.
+- [x] 06.06 Include alt text and labeling for non-text proof explanation content.
+- [x] 06.07 Validate light/dark contrast assumptions against terminal and browser backgrounds likely used in release.
 
 ## Implementation Details
 
@@ -77,12 +77,12 @@ This task implements the accessibility and media guarantees in TechSpec "Build O
 ## Tests
 
 - Unit tests:
-  - [ ] `prefers-reduced-motion` branch in proof media helper (if helper exists) returns expected behavior.
-  - [ ] Validation checks confirm heading and landmark sequence remains intact.
-  - [ ] CTA text remains present and readable at mobile breakpoints.
+  - [x] `prefers-reduced-motion` branch in proof media helper (if helper exists) returns expected behavior.
+  - [x] Validation checks confirm heading and landmark sequence remains intact.
+  - [x] CTA text remains present and readable at mobile breakpoints.
 - Integration tests:
   - [ ] Keyboard tab flow reaches hero→install→proof→requirements→FAQ without dead ends.
-  - [ ] Motion toggle simulation leaves proof controls usable when playback is reduced or disabled.
+  - [x] Motion toggle simulation leaves proof controls usable when playback is reduced or disabled.
   - [ ] Screenshot smoke for primary sections in narrow viewport does not clip CTAs.
 - Test coverage target: >=80%
 - All tests must pass

@@ -33,6 +33,7 @@ import type {
   ClarificationPayload,
   ConfigOption,
   DomainSessionEvent,
+  McpServerConfig,
   ProviderKind,
   ResolvedAgentConfig,
   SessionStatus,
@@ -41,6 +42,7 @@ import type {
 import { KITTEN_VERSION } from "../version.ts"
 import {
   toAcpElicitationOutcome,
+  toAcpMcpServers,
   translateConfigOptions,
   translateElicitationForm,
   translateSessionUpdate,
@@ -102,8 +104,8 @@ type Unsubscribe = () => void
 export interface AgentConnection {
   readonly id: ProviderKind
   connect(): Promise<ReadyState>
-  newSession(cwd: string): Promise<string>
-  loadSession(sessionId: string, cwd: string): Promise<void>
+  newSession(cwd: string, mcpServers?: McpServerConfig[]): Promise<string>
+  loadSession(sessionId: string, cwd: string, mcpServers?: McpServerConfig[]): Promise<void>
   prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult>
   cancel(sessionId: string): Promise<void>
   /**
@@ -184,6 +186,8 @@ class AgentConnectionImpl implements AgentConnection {
   /** Set the instant `dispose` begins, so an intentional teardown's transport close
    * does not masquerade as a crash. */
   private closing = false
+  /** An unexpected transport close is terminal for this connection. */
+  private transportFailed = false
 
   private readonly subscribers = new Set<(event: DomainSessionEvent) => void>()
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
@@ -204,6 +208,7 @@ class AgentConnectionImpl implements AgentConnection {
 
   async connect(): Promise<ReadyState> {
     try {
+      this.transportFailed = false
       this.transport = this.transportFactory(this.config)
       // A transport close we did not ask for is a lost subprocess: surface `error`
       // (ADR-006). The `closing` guard suppresses the close that `dispose` itself
@@ -212,6 +217,7 @@ class AgentConnectionImpl implements AgentConnection {
       // this is a real signal - no fallback to holding the last state is needed.
       this.transport.onClose(() => {
         if (this.closing) return
+        this.transportFailed = true
         this.emit({ kind: "status", status: "error" })
       })
       this.connection = new ClientSideConnection(() => this.buildClient(), this.transport.stream)
@@ -237,9 +243,9 @@ class AgentConnectionImpl implements AgentConnection {
     }
   }
 
-  async newSession(cwd: string): Promise<string> {
+  async newSession(cwd: string, mcpServers: McpServerConfig[] = []): Promise<string> {
     const connection = this.requireConnection()
-    const result = await connection.newSession({ cwd, mcpServers: [] })
+    const result = await connection.newSession({ cwd, mcpServers: toAcpMcpServers(mcpServers) })
     // Seed the pane's confirmed config state from what the session already advertises
     // instead of discarding it. Emit only when the agent actually returned the field:
     // an absent `configOptions` means the agent has no config surface (the reducer's
@@ -252,9 +258,9 @@ class AgentConnectionImpl implements AgentConnection {
     return result.sessionId
   }
 
-  async loadSession(sessionId: string, cwd: string): Promise<void> {
+  async loadSession(sessionId: string, cwd: string, mcpServers: McpServerConfig[] = []): Promise<void> {
     const connection = this.requireConnection()
-    const result = await connection.loadSession({ sessionId, cwd, mcpServers: [] })
+    const result = await connection.loadSession({ sessionId, cwd, mcpServers: toAcpMcpServers(mcpServers) })
     // A resumed session returns the same initial config snapshot as a fresh one.
     // Preserve it so model and reasoning selectors retain their confirmed state.
     if (result.configOptions != null) {
@@ -380,7 +386,11 @@ class AgentConnectionImpl implements AgentConnection {
       })
       return { outcome: toAcpOutcome(outcome) }
     } finally {
-      this.emit({ kind: "status", status: "working" })
+      // A transport close cancels the controller's permission promise. Do not let
+      // that cancellation overwrite its terminal error with a stale working state.
+      if (!this.closing && !this.transportFailed) {
+        this.emit({ kind: "status", status: "working" })
+      }
     }
   }
 

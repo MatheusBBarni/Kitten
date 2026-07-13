@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Build the clarification dialog and keyboard workflow"
 type: frontend
 complexity: high
@@ -26,10 +26,10 @@ Build the dedicated terminal modal that consumes the active clarification projec
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Render a session-attributed clarification dialog.
-- [ ] 7.2 Add dedicated keyboard commands and hints.
-- [ ] 7.3 Implement single, multi, text, and cancellation outcomes.
-- [ ] 7.4 Prove focus isolation and one-answer behavior.
+- [x] 7.1 Render a session-attributed clarification dialog.
+- [x] 7.2 Add dedicated keyboard commands and hints.
+- [x] 7.3 Implement single, multi, text, and cancellation outcomes.
+- [x] 7.4 Prove focus isolation and one-answer behavior.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -59,12 +59,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Single-select arrows, digit, and Enter return exactly one stable option.
-  - [ ] Multi-select Space toggles without settling and Enter returns all selected values.
-  - [ ] Text input receives printable keys and submits only its text value.
-  - [ ] Escape resolves one cancellation; duplicate keys, shell chords, help, and composer input do not leak through.
+  - [x] Single-select arrows, digit, and Enter return exactly one stable option.
+  - [x] Multi-select Space toggles without settling and Enter returns all selected values.
+  - [x] Text input receives printable keys and submits only its text value.
+  - [x] Escape resolves one cancellation; duplicate keys, shell chords, help, and composer input do not leak through.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

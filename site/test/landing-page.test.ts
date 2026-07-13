@@ -125,6 +125,27 @@ describe("showcase landing page", () => {
     expect(renderedHtml).not.toMatch(/tabindex="-1"/);
   });
 
+  test("renders a truthful star fallback with config-driven runtime hooks", () => {
+    expect(renderedHtml).toContain("data-star-control");
+    expect(renderedHtml).toContain(
+      `data-repo-owner="${escapeHtml(showcaseConfig.repository.owner)}"`,
+    );
+    expect(renderedHtml).toContain(
+      `data-repo-name="${escapeHtml(showcaseConfig.repository.name)}"`,
+    );
+    expect(renderedHtml).toContain('data-star-status="unavailable"');
+    expect(renderedHtml).toContain("data-star-status-text");
+    expect(renderedHtml).toContain(
+      escapeHtml(showcaseConfig.repository.star.fallbackText),
+    );
+    expect(renderedHtml).toMatch(
+      /data-star-status-text[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/,
+    );
+    expect(renderedHtml).toContain(
+      `href="${escapeHtml(showcaseConfig.repository.url)}"`,
+    );
+  });
+
   test("keeps product claims and install paths out of component markup", async () => {
     const componentFiles = (await readdir(componentRoot)).filter((file) =>
       file.endsWith(".astro"),

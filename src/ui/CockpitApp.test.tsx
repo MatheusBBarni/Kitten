@@ -297,6 +297,31 @@ describe("CockpitApp layout", () => {
 
     await destroyMounted(renderer)
   })
+
+  it("reacts to a newly created conversation becoming available", async () => {
+    const runtimes: AgentRuntimeState[] = [
+      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", cwd: "/workspace/kitten", ready: false, error: "Starting" },
+      readyRuntimes()[1]!,
+    ]
+    const controller = createFakeController({ runtimes })
+    const { renderer, waitForFrame } = await renderCockpitApp(controller)
+
+    await waitForFrame((frame) => frame.includes("This agent is not ready."))
+    runtimes[0] = {
+      sessionId: "claude-code",
+      providerKind: "claude-code",
+      displayName: "Claude Code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      ready: true,
+      acpSessionId: "fresh-claude",
+    }
+    await actAsync(() => controller.store.setConversationAvailability("claude-code", { kind: "ready" }))
+
+    const ready = await waitForFrame((frame) => frame.includes(WELCOME_GREETING))
+    expect(ready).not.toContain("This agent is not ready.")
+    await destroyMounted(renderer)
+  })
 })
 
 describe("CockpitApp resize", () => {

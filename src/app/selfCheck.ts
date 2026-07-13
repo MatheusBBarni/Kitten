@@ -19,6 +19,7 @@ import { CodeRenderable, getTreeSitterClient, type BaseRenderable, type Captured
 
 import { createAgentConnection, type AgentConnection } from "../agent/agentConnection.ts"
 import { loadAppConfig, resolveSessions } from "../config/configLoader.ts"
+import { resolveMcpServers } from "../config/mcpResolver.ts"
 import type { AgentConfig, AppConfig, DomainSessionEvent } from "../core/types.ts"
 import { selfCheckElement } from "../ui/main.tsx"
 import { createSessionController } from "./controller.ts"
@@ -110,6 +111,7 @@ export async function runReloadConfirmationProbe(
 ): Promise<ReloadProbeResult[]> {
   const createConnection = deps.createConnection ?? ((agent) => createAgentConnection({ config: agent }))
   const awaitReplay = deps.awaitReplay ?? awaitReplayWithTimeout
+  const mcpServers = resolveMcpServers(config.mcpServers).resolved
   const reports: ReloadProbeResult[] = []
 
   for (const { seed, spawn } of resolveSessions(config)) {
@@ -137,7 +139,7 @@ export async function runReloadConfirmationProbe(
         continue
       }
 
-      const sessionId = await creator.newSession(seed.cwd)
+      const sessionId = await creator.newSession(seed.cwd, mcpServers)
       await creator.prompt(sessionId, [{ type: "text", text: RELOAD_PROBE_PROMPT }])
       await disposeQuietly(creator)
       creator = null
@@ -170,7 +172,7 @@ export async function runReloadConfirmationProbe(
         resolveHistory()
       })
 
-      await loader.loadSession(sessionId, seed.cwd)
+      await loader.loadSession(sessionId, seed.cwd, mcpServers)
       replayedHistory ||= await awaitReplay(historySignal)
       reports.push(
         replayedHistory

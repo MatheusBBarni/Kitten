@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add rename and active-work close dialogs"
 type: frontend
 complexity: medium
@@ -28,11 +28,11 @@ Provide a single modal slot for safe tab renaming and explicit active-work close
 </requirements>
 
 ## Subtasks
-- [ ] 9.1 Add discriminated tab-dialog state to the existing overlay model.
-- [ ] 9.2 Render rename interaction with normalization, confirmation, and cancellation behavior.
-- [ ] 9.3 Render status-aware close choices with stated consequences.
-- [ ] 9.4 Preserve approval priority, keyboard ownership, and focus restoration.
-- [ ] 9.5 Verify target identity and no-input-leak behavior across modal transitions.
+- [x] 9.1 Add discriminated tab-dialog state to the existing overlay model.
+- [x] 9.2 Render rename interaction with normalization, confirmation, and cancellation behavior.
+- [x] 9.3 Render status-aware close choices with stated consequences.
+- [x] 9.4 Preserve approval priority, keyboard ownership, and focus restoration.
+- [x] 9.5 Verify target identity and no-input-leak behavior across modal transitions.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Reference the TechSpec’s **Close Policy**, **Idempotent Teardown State Machine
 
 ## Tests
 - Unit tests:
-  - [ ] Rename pre-fills the current name, trims valid input, and refuses whitespace-only confirmation.
-  - [ ] Idle close uses the direct close outcome; active statuses expose exactly Background, Cancel deliberately, and Keep open.
-  - [ ] Keep open and Escape leave lifecycle/runtime state unchanged; Background has no ACP effect.
-  - [ ] Dialog state is immutable, target-bound, mutually exclusive, and included in the open-overlay selector.
-  - [ ] Approval over a tab dialog blocks tab-dialog input and retains the original dialog state safely.
+  - [x] Rename pre-fills the current name, trims valid input, and refuses whitespace-only confirmation.
+  - [x] Idle close uses the direct close outcome; active statuses expose exactly Background, Cancel deliberately, and Keep open.
+  - [x] Keep open and Escape leave lifecycle/runtime state unchanged; Background has no ACP effect.
+  - [x] Dialog state is immutable, target-bound, mutually exclusive, and included in the open-overlay selector.
+  - [x] Approval over a tab dialog blocks tab-dialog input and retains the original dialog state safely.
 - Integration tests:
-  - [ ] A mounted dialog prevents prompt, shell, and global tab-key leakage until it closes.
-  - [ ] A close choice affects the captured SessionId even if another tab becomes selected before confirmation.
+  - [x] A mounted dialog prevents prompt, shell, and global tab-key leakage until it closes.
+  - [x] A close choice affects the captured SessionId even if another tab becomes selected before confirmation.
 - Test coverage target: >=80%
 - All tests must pass
 

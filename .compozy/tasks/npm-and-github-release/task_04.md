@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "PR-title Conventional-Commit lint workflow"
 type: infra
 complexity: low
@@ -29,10 +29,10 @@ This task enforces Conventional-Commit PR titles so the automation always has cl
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add `.github/workflows/pr-title.yml` running the semantic-PR action
-- [ ] 4.2 Configure the allowed types and the `!` breaking marker
-- [ ] 4.3 Pin the action to a specific version
-- [ ] 4.4 Document the squash-merge + PR-title convention (README/CONTRIBUTING note)
+- [x] 4.1 Add `.github/workflows/pr-title.yml` running the semantic-PR action
+- [x] 4.2 Configure the allowed types and the `!` breaking marker
+- [x] 4.3 Pin the action to a specific version
+- [x] 4.4 Document the squash-merge + PR-title convention (README/CONTRIBUTING note)
 
 ## Implementation Details
 New `.github/workflows/pr-title.yml`.
@@ -58,11 +58,11 @@ The repo's "Default to PR title for squash merge commits" setting is a manual Gi
 
 ## Tests
 - Unit tests:
-  - [ ] the workflow file parses as valid YAML and triggers on `pull_request` (opened, edited, synchronize)
-  - [ ] the allowed-types list includes `feat` and `fix` and the config permits the `!` breaking marker
-  - [ ] the action is pinned to a specific version (not a floating tag)
+  - [x] the workflow file parses as valid YAML and triggers on `pull_request` (opened, edited, synchronize)
+  - [x] the allowed-types list includes `feat` and `fix` and the config permits the `!` breaking marker
+  - [x] the action is pinned to a specific version (not a floating tag)
 - Integration tests:
-  - [ ] (CI-observable) a PR titled `chore: x` passes the check and a PR titled `nonsense` fails it (documented as a one-time observed acceptance)
+  - [x] (CI-observable) a PR titled `chore: x` passes the check and a PR titled `nonsense` fails it (documented as a one-time observed acceptance)
 - Test coverage target: >=80%
 - All tests must pass
 

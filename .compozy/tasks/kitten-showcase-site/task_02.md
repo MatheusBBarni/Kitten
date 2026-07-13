@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add showcase config model as the source of truth for copy, claims, and links
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Create a single, typed config module that holds the launch content and verified 
 
 ## Subtasks
 
-- [ ] 02.01 Define a config schema and exported object for install command, proof section, requirements, FAQ, and repo metadata.
-- [ ] 02.02 Add explicit constant(s) for `repoOwner`, `repoName`, and install verification source.
-- [ ] 02.03 Export typed values for hero, proof, requirements, and FAQ content consumed by `index.astro`.
-- [ ] 02.04 Add a lightweight config validation/test file that verifies one primary install route exists.
-- [ ] 02.05 Provide placeholder-safe defaults for any optional fields to avoid runtime crashes during render.
+- [x] 02.01 Define a config schema and exported object for install command, proof section, requirements, FAQ, and repo metadata.
+- [x] 02.02 Add explicit constant(s) for `repoOwner`, `repoName`, and install verification source.
+- [x] 02.03 Export typed values for hero, proof, requirements, and FAQ content consumed by `index.astro`.
+- [x] 02.04 Add a lightweight config validation/test file that verifies one primary install route exists.
+- [x] 02.05 Provide placeholder-safe defaults for any optional fields to avoid runtime crashes during render.
 
 ## Implementation Details
 
@@ -69,12 +69,12 @@ This task maps directly to TechSpec "Core Interfaces" and "Data Models" sections
 ## Tests
 
 - Unit tests:
-  - [ ] `primaryInstallCmd` must be present and non-empty.
-  - [ ] Configuration must expose exactly one `source: "verified-route"` entry.
-  - [ ] Repo metadata fields (`repoOwner`, `repoName`) must be non-empty strings.
+  - [x] `primaryInstallCmd` must be present and non-empty.
+  - [x] Configuration must expose exactly one `source: "verified-route"` entry.
+  - [x] Repo metadata fields (`repoOwner`, `repoName`) must be non-empty strings.
 - Integration tests:
-  - [ ] Build-time import test confirms every rendered section has corresponding config data in dev/CI compile.
-  - [ ] Render smoke test fails if config is missing a required field used by page sections.
+  - [x] Build-time import test confirms every rendered section has corresponding config data in dev/CI compile.
+  - [x] Render smoke test fails if config is missing a required field used by page sections.
 - Test coverage target: >=80%
 - All tests must pass
 

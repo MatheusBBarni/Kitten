@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Suspend settings modal handler during clarification preemption"
 type: frontend
 complexity: medium
@@ -26,10 +26,10 @@ Make SettingsView unmount its keyboard-owning dialog while a clarification is ac
 </requirements>
 
 ## Subtasks
-- [ ] 10.1 Extend the settings self-gate.
-- [ ] 10.2 Preserve settings state during clarification.
-- [ ] 10.3 Add keyboard ownership regressions.
-- [ ] 10.4 Verify normal resumption after settlement.
+- [x] 10.1 Extend the settings self-gate.
+- [x] 10.2 Preserve settings state during clarification.
+- [x] 10.3 Add keyboard ownership regressions.
+- [x] 10.4 Verify normal resumption after settlement.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -55,12 +55,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Settings is hidden while its store slot remains open during clarification.
-  - [ ] Arrow, reset, and Escape cannot change theme or close settings during preemption.
-  - [ ] After clarification settlement settings reappears and retains its prior state.
-  - [ ] Shell-level Escape resolves clarification rather than settings.
+  - [x] Settings is hidden while its store slot remains open during clarification.
+  - [x] Arrow, reset, and Escape cannot change theme or close settings during preemption.
+  - [x] After clarification settlement settings reappears and retains its prior state.
+  - [x] Shell-level Escape resolves clarification rather than settings.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

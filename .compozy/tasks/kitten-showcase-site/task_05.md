@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add live GitHub star count integration with resilient fallback
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Implement the runtime GitHub star display so the page shows an accurate support 
 
 ## Subtasks
 
-- [ ] 05.01 Implement `site/src/scripts/star-count.ts` with fetch + parse + state update logic.
-- [ ] 05.02 Add `data-*` hooks in `site/src/components/SiteControls.astro` for dataset-driven runtime updates.
-- [ ] 05.03 Update site config/metadata integration with repo owner/name values used by the API call.
-- [ ] 05.04 Add visible fallback text that is explicit and never defaults to `0`.
-- [ ] 05.05 Add minimal request-throttle guard so only one request is triggered per render context.
+- [x] 05.01 Implement `site/src/scripts/star-count.ts` with fetch + parse + state update logic.
+- [x] 05.02 Add `data-*` hooks in `site/src/components/SiteControls.astro` for dataset-driven runtime updates.
+- [x] 05.03 Update site config/metadata integration with repo owner/name values used by the API call.
+- [x] 05.04 Add visible fallback text that is explicit and never defaults to `0`.
+- [x] 05.05 Add minimal request-throttle guard so only one request is triggered per render context.
 
 ## Implementation Details
 
@@ -69,11 +69,11 @@ This task follows TechSpec API endpoint and integration requirements for star pr
 ## Tests
 
 - Unit tests:
-  - [ ] Successful response path parses `stargazers_count` and updates label.
-- [ ] Error response path keeps fallback text and preserves repo link.
-  - [ ] Rate-limit/error simulation still renders explicit nonzero fallback and no crash.
+  - [x] Successful response path parses `stargazers_count` and updates label.
+- [x] Error response path keeps fallback text and preserves repo link.
+  - [x] Rate-limit/error simulation still renders explicit nonzero fallback and no crash.
 - Integration tests:
-  - [ ] Browser/page smoke renders fallback quickly before API resolution.
+  - [x] Browser/page smoke renders fallback quickly before API resolution.
   - [ ] Manual network-blocked run keeps control readable and clickable.
 - Test coverage target: >=80%
 - All tests must pass

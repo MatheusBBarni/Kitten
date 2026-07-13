@@ -59,6 +59,7 @@ class ActiveRunWriter implements RunWriter {
   private readonly onError: (error: unknown) => void
   private latestState: AppState | undefined
   private lastHandoffBundle: HandoffBundle | null = null
+  private observedRestorationBundle: HandoffBundle | null | undefined
   private timer: TimerHandle | undefined
   private unsubscribe: Unsubscribe | undefined
   private dirty = false
@@ -111,6 +112,13 @@ class ActiveRunWriter implements RunWriter {
 
   private observe(state: AppState): void {
     this.latestState = state
+    // A restored run's fallback context is not displayed as a hand-off overlay.
+    // Track its lifecycle separately so the first autosave keeps it, while an
+    // explicit start-new-run transition to null clears the old context.
+    if (this.observedRestorationBundle !== state.restorationBundle) {
+      this.observedRestorationBundle = state.restorationBundle
+      this.lastHandoffBundle = state.restorationBundle
+    }
     if (state.overlays.handoffPreview !== null) {
       this.lastHandoffBundle = state.overlays.handoffPreview.bundle
     }

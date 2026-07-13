@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Pure Prompt-History Reducer"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Create the protocol-free state transitions that make prompt recall deterministic
 
 ## Subtasks
 
-- [ ] 1.1 Define the immutable prompt-history state and navigation result contract described by the TechSpec’s Core Interfaces section.
-- [ ] 1.2 Add bounded recording with adjacent-duplicate collapse and a reset recall cursor.
-- [ ] 1.3 Add previous and next navigation behavior, including the clear-after-newest transition.
-- [ ] 1.4 Expose selection helpers that let later layers consume history without duplicating transition logic.
-- [ ] 1.5 Add exhaustive pure-state regression coverage.
+- [x] 1.1 Define the immutable prompt-history state and navigation result contract described by the TechSpec’s Core Interfaces section.
+- [x] 1.2 Add bounded recording with adjacent-duplicate collapse and a reset recall cursor.
+- [x] 1.3 Add previous and next navigation behavior, including the clear-after-newest transition.
+- [x] 1.4 Expose selection helpers that let later layers consume history without duplicating transition logic.
+- [x] 1.5 Add exhaustive pure-state regression coverage.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Create the isolated core policy described in the TechSpec’s **Core Interfaces*
 ## Tests
 
 - Unit tests:
-  - [ ] Recording two different strings retains them oldest-to-newest and clears the recall cursor.
-  - [ ] Recording the same text twice consecutively leaves exactly one entry.
-  - [ ] Recording 51 distinct prompts evicts only the oldest entry and retains the newest 50.
-  - [ ] Previous navigation starts at the newest entry, reaches the oldest entry, and remains there on another previous command.
-  - [ ] Next navigation walks toward the newest entry, then returns an empty string and leaves recall mode.
-  - [ ] Unicode and multiline prompt text round-trips unchanged and input state references remain immutable.
+  - [x] Recording two different strings retains them oldest-to-newest and clears the recall cursor.
+  - [x] Recording the same text twice consecutively leaves exactly one entry.
+  - [x] Recording 51 distinct prompts evicts only the oldest entry and retains the newest 50.
+  - [x] Previous navigation starts at the newest entry, reaches the oldest entry, and remains there on another previous command.
+  - [x] Next navigation walks toward the newest entry, then returns an empty string and leaves recall mode.
+  - [x] Unicode and multiline prompt text round-trips unchanged and input state references remain immutable.
 - Integration tests:
-  - [ ] A record followed by previous/next calls uses the complete transition path and returns the expected selected text at every step.
+  - [x] A record followed by previous/next calls uses the complete transition path and returns the expected selected text at every step.
 - Test coverage target: >=80%
 - All tests must pass
 

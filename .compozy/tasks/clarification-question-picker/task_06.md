@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Project clarification interactions through actions, store, and selectors"
 type: backend
 complexity: high
@@ -26,10 +26,10 @@ Connect the coordinator to a dedicated UI-facing clarification projection and re
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add the clarification overlay projection.
-- [ ] 6.2 Bind adapter callbacks to the controller coordinator.
-- [ ] 6.3 Expose the dedicated response action.
-- [ ] 6.4 Add immutable store and selector coverage.
+- [x] 6.1 Add the clarification overlay projection.
+- [x] 6.2 Bind adapter callbacks to the controller coordinator.
+- [x] 6.3 Expose the dedicated response action.
+- [x] 6.4 Add immutable store and selector coverage.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -62,12 +62,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Active clarification appears with session attribution and closes only for the matching request.
-  - [ ] Wrong or duplicate response does not settle or advance another request.
-  - [ ] Clarification open alone makes selectHasOpenOverlay true.
-  - [ ] Store changes preserve unrelated overlay and session identities.
+  - [x] Active clarification appears with session attribution and closes only for the matching request.
+  - [x] Wrong or duplicate response does not settle or advance another request.
+  - [x] Clarification open alone makes selectHasOpenOverlay true.
+  - [x] Store changes preserve unrelated overlay and session identities.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

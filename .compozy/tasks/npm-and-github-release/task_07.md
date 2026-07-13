@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Node launcher and package.json restructure"
 type: infra
 complexity: high
@@ -30,11 +30,11 @@ This task adds `bin/kitten.mjs`, restructures `package.json` from shipping raw T
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Add `bin/kitten.mjs` (resolve platform binary + exec + loud failure)
-- [ ] 7.2 Restructure `package.json` `bin`/`files`/`optionalDependencies`, drop the Bun-only shape
-- [ ] 7.3 Promote `npx kitten` to the README hero + version-stamped install note
-- [ ] 7.4 Add a local-pack Bun-free install test (pack shim + host platform pkg, install to temp, run under `node`)
-- [ ] 7.5 Confirm no install scripts are present
+- [x] 7.1 Add `bin/kitten.mjs` (resolve platform binary + exec + loud failure)
+- [x] 7.2 Restructure `package.json` `bin`/`files`/`optionalDependencies`, drop the Bun-only shape
+- [x] 7.3 Promote `npx kitten` to the README hero + version-stamped install note
+- [x] 7.4 Add a local-pack Bun-free install test (pack shim + host platform pkg, install to temp, run under `node`)
+- [x] 7.5 Confirm no install scripts are present
 
 ## Implementation Details
 New `bin/kitten.mjs`; modify `package.json` per the TechSpec "Data Models" (main-package shape); finalize `README.md` (hero) started in task_02.
@@ -64,12 +64,12 @@ See the TechSpec "Core Interfaces" (launcher) and ADR-001.
 
 ## Tests
 - Unit tests:
-  - [ ] the launcher maps `darwin`/`linux` x `arm64`/`x64` to the correct `@kitten/<slug>` name
-  - [ ] on an unsupported platform/arch it prints the Release URL and exits non-zero
-  - [ ] `package.json` `bin` points at `bin/kitten.mjs`, `files` is `["bin"]`, and `optionalDependencies` exact-pins the four `@kitten/<slug>` packages
-  - [ ] the package declares no install scripts (`scripts` has no `postinstall`/`preinstall`)
+  - [x] the launcher maps `darwin`/`linux` x `arm64`/`x64` to the correct `@kitten/<slug>` name
+  - [x] on an unsupported platform/arch it prints the Release URL and exits non-zero
+  - [x] `package.json` `bin` points at `bin/kitten.mjs`, `files` is `["bin"]`, and `optionalDependencies` exact-pins the four `@kitten/<slug>` packages
+  - [x] the package declares no install scripts (`scripts` has no `postinstall`/`preinstall`)
 - Integration tests:
-  - [ ] local-pack: `npm pack` the shim + host platform package, install into a temp dir, run the installed `kitten` under `node` (not bun) and assert `--version` prints the package version and `--self-check` prints `SELF-CHECK OK`
+  - [x] local-pack: `npm pack` the shim + host platform package, install into a temp dir, run the installed `kitten` under `node` (not bun) and assert `--version` prints the package version and `--self-check` prints `SELF-CHECK OK`
 - Test coverage target: >=80%
 - All tests must pass
 

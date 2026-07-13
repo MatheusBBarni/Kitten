@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Integrate workspace state into AppStore and selectors"
 type: refactor
 complexity: high
@@ -28,11 +28,11 @@ Move selection, lifecycle, and tab-oriented derived state into the AppStore whil
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Replace independent focused-session ownership with workspace selection.
-- [ ] 2.2 Add atomic store mutations for workspace lifecycle and dynamic execution slices.
-- [ ] 2.3 Extend focus and overlay state for an empty workspace without invalid agent references.
-- [ ] 2.4 Produce stable tab, background, duplicate-label, shared-workspace, and attention selectors.
-- [ ] 2.5 Verify streaming isolation, attention acknowledgement, and modal precedence.
+- [x] 2.1 Replace independent focused-session ownership with workspace selection.
+- [x] 2.2 Add atomic store mutations for workspace lifecycle and dynamic execution slices.
+- [x] 2.3 Extend focus and overlay state for an empty workspace without invalid agent references.
+- [x] 2.4 Produce stable tab, background, duplicate-label, shared-workspace, and attention selectors.
+- [x] 2.5 Verify streaming isolation, attention acknowledgement, and modal precedence.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Follow the TechSpec’s **Focus Authority and Empty Workspace**, **Attention Rul
 
 ## Tests
 - Unit tests:
-  - [ ] Seeded, dynamic, and empty stores retain valid workspace selection and pane state.
-  - [ ] Rename/background/reopen operations preserve the associated `SessionState` reference.
-  - [ ] Execution transitions create attention epochs without clearing status; selection acknowledges only the current epoch.
-  - [ ] Visible/background/attention selectors order and filter conversations correctly while duplicate names and shared CWDs remain deterministic.
-  - [ ] Unrelated streamed session updates preserve unrelated tab selector identities.
+  - [x] Seeded, dynamic, and empty stores retain valid workspace selection and pane state.
+  - [x] Rename/background/reopen operations preserve the associated `SessionState` reference.
+  - [x] Execution transitions create attention epochs without clearing status; selection acknowledges only the current epoch.
+  - [x] Visible/background/attention selectors order and filter conversations correctly while duplicate names and shared CWDs remain deterministic.
+  - [x] Unrelated streamed session updates preserve unrelated tab selector identities.
 - Integration tests:
-  - [ ] A background conversation’s approval remains attributed to its original SessionId while a different tab is selected.
-  - [ ] Open overlays suppress global focus changes and retain their captured target identity.
+  - [x] A background conversation’s approval remains attributed to its original SessionId while a different tab is selected.
+  - [x] Open overlays suppress global focus changes and retain their captured target identity.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build core showcase landing page sections and single-page layout
 type: frontend
 complexity: high

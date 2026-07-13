@@ -22,6 +22,7 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
+import { resolveMcpServers } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
@@ -457,6 +458,9 @@ interface AgentRuntime {
 export async function createSessionController(options: SessionControllerOptions): Promise<SessionController> {
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
+  // Resolve once per cockpit boot so every fresh, restored, and dynamically added
+  // session receives the same validated stdio server list.
+  const mcpServers = resolveMcpServers(options.config.mcpServers).resolved
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
@@ -754,7 +758,7 @@ export async function createSessionController(options: SessionControllerOptions)
       const captureSeed = connection.onUpdate((event) => {
         if (event.kind === "config_options") seededConfig = event
       })
-      const acpSessionId = await connection.newSession(seed.cwd)
+      const acpSessionId = await connection.newSession(seed.cwd, mcpServers)
       captureSeed()
       // Bind the slice before subscribing: `startSession` resets the transcript, so
       // an event that arrived first would be thrown away.
@@ -831,7 +835,7 @@ export async function createSessionController(options: SessionControllerOptions)
     })
     let acpSessionId: string
     try {
-      acpSessionId = await connection.newSession(seed.cwd)
+      acpSessionId = await connection.newSession(seed.cwd, mcpServers)
     } finally {
       captureSeed()
     }
@@ -895,7 +899,7 @@ export async function createSessionController(options: SessionControllerOptions)
         connection.onPermission((request) => enqueuePermission(previous, request))
         connection.onClarification((payload) => enqueueClarification(previous, payload))
         try {
-          await connection.loadSession(acpSessionId, seed.cwd)
+          await connection.loadSession(acpSessionId, seed.cwd, mcpServers)
           store.setRestoration(seed.id, "live")
         } catch (error) {
           unsubscribe()

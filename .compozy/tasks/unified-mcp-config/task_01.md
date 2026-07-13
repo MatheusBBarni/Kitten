@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: MCP config - domain type, schema, and normalization
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This is the foundation every other MCP task builds on, and it enforces the stdio
 </requirements>
 
 ## Subtasks
-- [ ] 01.1 Define `McpServerConfig` in `types.ts` and add the `mcpServers` field to `AppConfig`.
-- [ ] 01.2 Add a strict, stdio-only `mcpServers` map schema to `USER_CONFIG_SCHEMA`.
-- [ ] 01.3 Normalize the name-keyed map into `McpServerConfig[]` with the name from each key.
-- [ ] 01.4 Default to an empty list and merge in `defaultAppConfig()` / `mergeAppConfig()`.
-- [ ] 01.5 Reject remote-transport entries with a descriptive `ConfigError`.
+- [x] 01.1 Define `McpServerConfig` in `types.ts` and add the `mcpServers` field to `AppConfig`.
+- [x] 01.2 Add a strict, stdio-only `mcpServers` map schema to `USER_CONFIG_SCHEMA`.
+- [x] 01.3 Normalize the name-keyed map into `McpServerConfig[]` with the name from each key.
+- [x] 01.4 Default to an empty list and merge in `defaultAppConfig()` / `mergeAppConfig()`.
+- [x] 01.5 Reject remote-transport entries with a descriptive `ConfigError`.
 
 ## Implementation Details
 Modify `src/core/types.ts` (add the type and the `AppConfig` field) and `src/config/configLoader.ts` (schema, normalization, default, merge).
@@ -62,13 +62,13 @@ Follow the existing strict-schema and `ConfigError` conventions in `configLoader
 
 ## Tests
 - Unit tests:
-  - [ ] Parsing a config with two named stdio servers yields a two-element `mcpServers` list with names lifted from the keys ("github", "linear").
-  - [ ] An entry containing a `url` field (remote) throws `ConfigError` naming that server.
-  - [ ] An unknown key inside a server entry is rejected by the strict schema with `ConfigError`.
-  - [ ] A config omitting `mcpServers` yields an empty list (default).
-  - [ ] `mergeAppConfig` keeps the user-provided `mcpServers` over the empty default.
+  - [x] Parsing a config with two named stdio servers yields a two-element `mcpServers` list with names lifted from the keys ("github", "linear").
+  - [x] An entry containing a `url` field (remote) throws `ConfigError` naming that server.
+  - [x] An unknown key inside a server entry is rejected by the strict schema with `ConfigError`.
+  - [x] A config omitting `mcpServers` yields an empty list (default).
+  - [x] `mergeAppConfig` keeps the user-provided `mcpServers` over the empty default.
 - Integration tests:
-  - [ ] `loadAppConfig` against a temp file with a name-keyed `mcpServers` map returns the normalized list.
+  - [x] `loadAppConfig` against a temp file with a name-keyed `mcpServers` map returns the normalized list.
 - Test coverage target: >=80%
 - All tests must pass
 

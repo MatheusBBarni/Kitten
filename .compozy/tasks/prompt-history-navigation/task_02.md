@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Integrate History into Session State and Selectors"
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Make prompt history an immutable, per-session state slice owned exclusively by K
 
 ## Subtasks
 
-- [ ] 2.1 Add the history contract from task 1 to session state defaults and the domain event vocabulary.
-- [ ] 2.2 Route prompt-history events through the existing session reducer without weakening its exhaustive handling.
-- [ ] 2.3 Verify store event application preserves unaffected session identity and selector stability.
-- [ ] 2.4 Add a narrow selector for the history state consumed by the composer.
-- [ ] 2.5 Verify session replacement produces a fresh empty history without retaining prior prompts.
+- [x] 2.1 Add the history contract from task 1 to session state defaults and the domain event vocabulary.
+- [x] 2.2 Route prompt-history events through the existing session reducer without weakening its exhaustive handling.
+- [x] 2.3 Verify store event application preserves unaffected session identity and selector stability.
+- [x] 2.4 Add a narrow selector for the history state consumed by the composer.
+- [x] 2.5 Verify session replacement produces a fresh empty history without retaining prior prompts.
 
 ## Implementation Details
 
@@ -70,13 +70,13 @@ Follow the TechSpec’s **Data Models**, **System Architecture**, and **Impact A
 ## Tests
 
 - Unit tests:
-  - [ ] A new session starts with no entries and no active recall cursor.
-  - [ ] A prompt-history event changes only the addressed session while the other session keeps reference identity.
-  - [ ] Unrelated status, transcript, shell, and preference changes keep the history selector reference stable.
-  - [ ] Each record, previous, and next event delegates to the task-01 transition behavior.
+  - [x] A new session starts with no entries and no active recall cursor.
+  - [x] A prompt-history event changes only the addressed session while the other session keeps reference identity.
+  - [x] Unrelated status, transcript, shell, and preference changes keep the history selector reference stable.
+  - [x] Each record, previous, and next event delegates to the task-01 transition behavior.
 - Integration tests:
-  - [ ] Applying history events through `AppStore.applyEvent` updates the focused session selector without changing another session.
-  - [ ] `startSession` or a new-run replacement recreates the session with an empty history slice.
+  - [x] Applying history events through `AppStore.applyEvent` updates the focused session selector without changing another session.
+  - [x] `startSession` or a new-run replacement recreates the session with an empty history slice.
 - Test coverage target: >=80%
 - All tests must pass
 

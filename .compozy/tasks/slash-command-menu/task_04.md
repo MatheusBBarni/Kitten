@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Menu navigation keymap and footer hint"
 type: frontend
 complexity: medium
@@ -28,10 +28,10 @@ Keeping the menu's keys and the footer copy in the single keymap table honors th
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Define the `MenuCommand` union and `MENU_KEYMAP` entries with plain navigation keys.
-- [ ] 4.2 Add `matchMenuCommand` via the existing `makeMatcher`.
-- [ ] 4.3 Extend `KEYMAP_HINT` to include the hand-off and `/` menu.
-- [ ] 4.4 Update `keymap.test.ts` for the new keymap and hint.
+- [x] 4.1 Define the `MenuCommand` union and `MENU_KEYMAP` entries with plain navigation keys.
+- [x] 4.2 Add `matchMenuCommand` via the existing `makeMatcher`.
+- [x] 4.3 Extend `KEYMAP_HINT` to include the hand-off and `/` menu.
+- [x] 4.4 Update `keymap.test.ts` for the new keymap and hint.
 
 ## Implementation Details
 Mirror the modal-keymap pattern (`SESSIONS_KEYMAP` + `matchSessionsCommand` + its hint constant).
@@ -59,11 +59,11 @@ See the TechSpec "System Architecture > Component Overview" (menu keymap + foote
 
 ## Tests
 - Unit tests:
-  - [ ] `MENU_KEYMAP` exposes exactly the expected menu commands and each command appears once (uniqueness).
-  - [ ] `matchMenuCommand` returns the next-item command for a Down key and `null` for an unmapped key (e.g. a bare letter).
-  - [ ] `KEYMAP_HINT` contains the hand-off chord (`^T`) and the `/` menu marker.
+  - [x] `MENU_KEYMAP` exposes exactly the expected menu commands and each command appears once (uniqueness).
+  - [x] `matchMenuCommand` returns the next-item command for a Down key and `null` for an unmapped key (e.g. a bare letter).
+  - [x] `KEYMAP_HINT` contains the hand-off chord (`^T`) and the `/` menu marker.
 - Integration tests:
-  - [ ] None at this layer - the keymap is a pure table; armed dispatch through it is exercised by task_07's interaction tests.
+  - [x] None at this layer - the keymap is a pure table; armed dispatch through it is exercised by task_07's interaction tests.
 - Test coverage target: >=80%
 - All tests must pass
 

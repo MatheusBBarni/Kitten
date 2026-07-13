@@ -26,7 +26,10 @@ export type ShowcaseConfig = {
   readonly proof: ShowcaseSection & {
     readonly videoUrl: string | null;
     readonly posterUrl: string | null;
+    readonly posterAlt: string;
+    readonly captionsUrl: string | null;
     readonly fallbackLabel: string;
+    readonly reducedMotionLabel: string;
     readonly accessibleDescription: string;
     readonly steps: readonly {
       readonly label: string;
@@ -95,7 +98,9 @@ export function validateShowcaseConfig(
     ["proof.id", config.proof.id],
     ["proof.heading", config.proof.heading],
     ["proof.body", config.proof.body],
+    ["proof.posterAlt", config.proof.posterAlt],
     ["proof.fallbackLabel", config.proof.fallbackLabel],
+    ["proof.reducedMotionLabel", config.proof.reducedMotionLabel],
     ["proof.accessibleDescription", config.proof.accessibleDescription],
     ["install.id", config.install.id],
     ["install.heading", config.install.heading],
@@ -213,9 +218,14 @@ export const showcaseConfig = defineShowcaseConfig({
     body:
       "The launch demonstration follows the real prepare, review and trim, confirm, and continue flow.",
     videoUrl: null,
-    posterUrl: null,
+    posterUrl: "./proof/kitten-reviewed-handoff-poster.svg",
+    posterAlt:
+      "A terminal-style preview representing a reviewed handoff between two coding agents.",
+    captionsUrl: null,
     fallbackLabel:
       "The handoff recording is being prepared. The steps below describe the same reviewed flow.",
+    reducedMotionLabel:
+      "Reduced motion is enabled. The recording only plays when you use its controls.",
     accessibleDescription:
       "A developer prepares a bounded handoff, reviews and trims its context, explicitly confirms it, and then watches the other agent continue the task.",
     steps: [

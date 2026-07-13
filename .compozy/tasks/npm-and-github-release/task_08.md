@@ -1,12 +1,12 @@
 ---
-status: pending
+status: completed
 title: "Atomic OIDC-provenance publish and post-publish npx smoke"
 type: infra
 complexity: high
 dependencies:
-  - task_05
-  - task_06
-  - task_07
+    - task_05
+    - task_06
+    - task_07
 ---
 
 # Task 08: Atomic OIDC-provenance publish and post-publish npx smoke
@@ -33,10 +33,10 @@ It publishes the four platform packages then the main shim (exact-pinned) via `n
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Add the `publish` job gated on `release_created`, `needs:` all builds
-- [ ] 8.2 Publish platform packages first, main shim last, exact-pinned
-- [ ] 8.3 Switch to `npm publish --provenance` under OIDC; remove the static `NPM_TOKEN`; document the bootstrap
-- [ ] 8.4 Add the post-publish `npx --self-check` smoke matrix (Bun-free)
+- [x] 8.1 Add the `publish` job gated on `release_created`, `needs:` all builds
+- [x] 8.2 Publish platform packages first, main shim last, exact-pinned
+- [x] 8.3 Switch to `npm publish --provenance` under OIDC; remove the static `NPM_TOKEN`; document the bootstrap
+- [x] 8.4 Add the post-publish `npx --self-check` smoke matrix (Bun-free)
 - [ ] 8.5 Verify provenance is attached and the version matches across channels
 
 ## Implementation Details
@@ -67,10 +67,10 @@ The Node/npm version floor is in the TechSpec "Technical Dependencies".
 
 ## Tests
 - Unit tests:
-  - [ ] the `publish` job `needs:` all four build jobs and carries `if: ...release_created`
-  - [ ] the publish step order lists the four `@kitten/<slug>` packages before the main shim
-  - [ ] the workflow declares `id-token: write` and references no `NPM_TOKEN` secret in steady state
-  - [ ] the `smoke` job runs `npx kitten@<tag> --self-check` across the four platforms in a Bun-free environment
+  - [x] the `publish` job `needs:` all four build jobs and carries `if: ...release_created`
+  - [x] the publish step order lists the four `@kitten/<slug>` packages before the main shim
+  - [x] the workflow declares `id-token: write` and references no `NPM_TOKEN` secret in steady state
+  - [x] the `smoke` job runs `npx kitten@<tag> --self-check` across the four platforms in a Bun-free environment
 - Integration tests:
   - [ ] (CI-observable acceptance) a release publishes all five packages with a provenance attestation (verifiable via `npm audit signatures`), the post-publish smoke is green on all four platforms, and `npx kitten --version` equals the released version
 - Test coverage target: >=80%

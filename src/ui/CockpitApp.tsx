@@ -35,6 +35,7 @@ import { encodeKey } from "../shell/keyEncoder.ts"
 import type { KeyboardCapability, Selector } from "../store/appStore.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import {
+  selectConversationAvailability,
   selectFocusedSessionId,
   selectHasOpenOverlay,
   selectIsShellFocused,
@@ -278,6 +279,11 @@ function CockpitFrame({
     [focusedSessionId],
   )
   const focusedRestoration = useAppSelector(focusedRestorationSelector)
+  const focusedAvailabilitySelector = useMemo(
+    () => selectConversationAvailability(focusedSessionId),
+    [focusedSessionId],
+  )
+  const focusedAvailability = useAppSelector(focusedAvailabilitySelector)
   const focused = focusedSessionId ? controller.runtime(focusedSessionId) : undefined
   const paneTitle = isShellFocused ? "Shell · focused" : "Kitten"
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
@@ -316,8 +322,8 @@ function CockpitFrame({
             <TabWorkspace />
             {focusedSessionId === null ? (
               <EmptyWorkspace />
-            ) : focused && !focused.ready && focusedRestoration !== "unavailable" ? (
-              <NotReadyNotice error={focused.error} />
+            ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
+              <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
             ) : (
               (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
             )}

@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: Readout surfaces - selfcheck and status strip
 type: frontend
 complexity: medium
 dependencies:
-  - task_02
-  - task_05
+    - task_02
+    - task_05
 ---
 
 # Task 06: Readout surfaces - selfcheck and status strip

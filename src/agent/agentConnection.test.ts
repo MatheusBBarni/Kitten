@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import type { CreateElicitationRequest, PermissionOption } from "@agentclientprotocol/sdk"
 
-import type { AgentConfig, ClarificationPayload, DomainSessionEvent, ResolvedAgentConfig } from "../core/types.ts"
+import type { AgentConfig, ClarificationPayload, DomainSessionEvent, McpServerConfig, ResolvedAgentConfig } from "../core/types.ts"
 import { startMockAgent, type MockAgentOptions } from "../../test/mockAgent.ts"
 import {
   createAgentConnection,
@@ -22,6 +22,9 @@ import { KITTEN_VERSION } from "../version.ts"
  */
 
 const CONFIG: AgentConfig = { id: "claude-code", displayName: "Claude", command: "unused", args: [], env: {} }
+const MCP_SERVERS: McpServerConfig[] = [
+  { name: "github", command: "/opt/bin/github-mcp", args: ["--stdio"], env: { TOKEN: "secret" } },
+]
 const SUPPORTED_CONFIG: ResolvedAgentConfig = {
   ...CONFIG,
   clarificationCapability: {
@@ -197,6 +200,25 @@ describe("connect / session lifecycle", () => {
     await conn.dispose()
   })
 
+  it("provisions resolved MCP servers for fresh and restored ACP sessions", async () => {
+    const { conn, mock } = await connected({ canLoadSession: true })
+
+    await conn.newSession("/repo", MCP_SERVERS)
+    await conn.loadSession("sess-7", "/repo", MCP_SERVERS)
+
+    const expectedServers = [
+      {
+        name: "github",
+        command: "/opt/bin/github-mcp",
+        args: ["--stdio"],
+        env: [{ name: "TOKEN", value: "secret" }],
+      },
+    ]
+    expect(mock.newSessionRequests).toEqual([{ cwd: "/repo", mcpServers: expectedServers }])
+    expect(mock.loadSessionRequests).toEqual([{ sessionId: "sess-7", cwd: "/repo", mcpServers: expectedServers }])
+    await conn.dispose()
+  })
+
   it("forwards loadSession to the ACP agent with the stored session and working directory", async () => {
     const { conn, mock } = await connected({ canLoadSession: true })
 
@@ -345,6 +367,57 @@ describe("permission round-trip", () => {
     const sessionId = await conn.newSession("/tmp")
     await conn.prompt(sessionId, [{ type: "text", text: "edit" }])
     expect(mock.permissionOutcomes).toEqual([{ outcome: "cancelled" }])
+    await conn.dispose()
+  })
+
+  it("keeps the terminal error after a transport close cancels a pending permission", async () => {
+    let fireClose: ((info: { code: number | null }) => void) | undefined
+    let releasePermission!: () => void
+    let releasePrompt!: () => void
+    const permissionGate = new Promise<void>((resolve) => {
+      releasePermission = resolve
+    })
+    const promptGate = new Promise<void>((resolve) => {
+      releasePrompt = resolve
+    })
+    const pair = createInMemoryTransportPair()
+    startMockAgent(pair.agent, {
+      onPrompt: async (_request, ctx) => {
+        await ctx.requestPermission({ toolCallId: "t1", title: "Write", kind: "edit", status: "pending" }, [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+        ])
+        await promptGate
+        return "end_turn" as const
+      },
+    })
+    const events: DomainSessionEvent[] = []
+    const conn = createAgentConnection({
+      config: CONFIG,
+      transport: () => ({
+        stream: pair.client,
+        onClose: (cb) => {
+          fireClose = cb
+        },
+        dispose: async () => {},
+      }),
+    })
+    conn.onUpdate((event) => events.push(event))
+    conn.onPermission(async () => {
+      await permissionGate
+      return { outcome: "cancelled" }
+    })
+    await conn.connect()
+    const sessionId = await conn.newSession("/repo")
+    const prompt = conn.prompt(sessionId, [{ type: "text", text: "edit" }])
+    await waitFor(() => lastStatus(events) === "awaiting_approval")
+
+    fireClose!({ code: 1 })
+    releasePermission()
+    await waitFor(() => lastStatus(events) === "error")
+    expect(lastStatus(events)).toBe("error")
+
+    releasePrompt()
+    await prompt
     await conn.dispose()
   })
 })

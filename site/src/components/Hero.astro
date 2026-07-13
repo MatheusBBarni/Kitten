@@ -10,12 +10,15 @@ const { section, install } = Astro.props;
 ---
 
 <section
+  class="hero-shell"
   id={section.id}
   aria-labelledby={`${section.id}-heading`}
   data-section-key={section.id}
 >
-  <p>{section.eyebrow}</p>
+  <p class="eyebrow">{section.eyebrow}</p>
   <h1 id={`${section.id}-heading`}>{section.heading}</h1>
-  <p>{section.body}</p>
-  <a href={`#${install.id}`}>{section.primaryCtaLabel}</a>
+  <p class="hero-lede">{section.body}</p>
+  <a class="button button-primary" href={`#${install.id}`}>
+    {section.primaryCtaLabel}
+  </a>
 </section>

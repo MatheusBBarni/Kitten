@@ -15,10 +15,21 @@ const { repository, hero, install } = Astro.props;
   <a
     href={repository.url}
     aria-label={repository.star.accessibleLabel}
+    data-star-control
     data-repo-owner={repository.owner}
     data-repo-name={repository.name}
+    data-star-loading-text={repository.star.loadingText}
+    data-star-fallback-text={repository.star.fallbackText}
+    data-star-fallback-label={repository.star.accessibleLabel}
     data-star-status="unavailable"
   >
-    {repository.star.fallbackText}
+    <span
+      data-star-status-text
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >{repository.star.fallbackText}</span>
   </a>
 </div>
+
+<script src="../scripts/star-count.ts"></script>

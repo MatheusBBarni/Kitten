@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Upgrade Sessions overlay for overflow and background work"
 type: frontend
 complexity: medium
@@ -28,11 +28,11 @@ Evolve the existing Sessions overlay into the universal overflow, background-wor
 </requirements>
 
 ## Subtasks
-- [ ] 11.1 Present ordered Visible and Background conversation rows with accessible lifecycle cues.
-- [ ] 11.2 Route selection, reopen, and attention actions through ControllerActions.
-- [ ] 11.3 Keep off-screen rows reachable with deterministic keyboard scrolling.
-- [ ] 11.4 Preserve modal precedence, Escape behavior, and non-leaking keyboard ownership.
-- [ ] 11.5 Protect shared SessionCard consumers from misleading lifecycle changes.
+- [x] 11.1 Present ordered Visible and Background conversation rows with accessible lifecycle cues.
+- [x] 11.2 Route selection, reopen, and attention actions through ControllerActions.
+- [x] 11.3 Keep off-screen rows reachable with deterministic keyboard scrolling.
+- [x] 11.4 Preserve modal precedence, Escape behavior, and non-leaking keyboard ownership.
+- [x] 11.5 Protect shared SessionCard consumers from misleading lifecycle changes.
 
 ## Implementation Details
 
@@ -67,14 +67,14 @@ Reference the TechSpec’s **UI and Input Design**, **Attention Rules**, and **P
 
 ## Tests
 - Unit tests:
-  - [ ] Visible and Background rows render in workspace order with lifecycle, attention, duplicate-name, and non-color cues.
-  - [ ] Enter selects Visible rows and reopens/selects Background rows without creating a new runtime.
-  - [ ] Attention jump includes Background, excludes Closed, ranks states correctly, and advances deterministically.
-  - [ ] Arrow navigation, scrolling, footer hints, Escape, and overlay key suppression behave at narrow/long boundaries.
-  - [ ] Approval presence suppresses overlay action dispatch and shared SessionCard behavior remains valid for handoff candidates.
+  - [x] Visible and Background rows render in workspace order with lifecycle, attention, duplicate-name, and non-color cues.
+  - [x] Enter selects Visible rows and reopens/selects Background rows without creating a new runtime.
+  - [x] Attention jump includes Background, excludes Closed, ranks states correctly, and advances deterministically.
+  - [x] Arrow navigation, scrolling, footer hints, Escape, and overlay key suppression behave at narrow/long boundaries.
+  - [x] Approval presence suppresses overlay action dispatch and shared SessionCard behavior remains valid for handoff candidates.
 - Integration tests:
-  - [ ] A narrow fleet with hidden tabs reaches every Visible/Background entry through the overlay.
-  - [ ] An approval originating in background work remains attributed correctly after direct attention routing.
+  - [x] A narrow fleet with hidden tabs reaches every Visible/Background entry through the overlay.
+  - [x] An approval originating in background work remains attributed correctly after direct attention routing.
 - Test coverage target: >=80%
 - All tests must pass
 

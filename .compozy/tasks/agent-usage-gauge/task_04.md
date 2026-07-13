@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "selectSessionHeadroom selector"
 type: backend
 complexity: low
@@ -29,9 +29,9 @@ This is the single derived value both UI surfaces read.
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Implement the curried headroom selector reading `SessionState.usage`.
-- [ ] 4.2 Return `null` for the unknown cases (absent usage, `size <= 0`).
-- [ ] 4.3 Add selector tests for value, unknown, and re-render isolation.
+- [x] 4.1 Implement the curried headroom selector reading `SessionState.usage`.
+- [x] 4.2 Return `null` for the unknown cases (absent usage, `size <= 0`).
+- [x] 4.3 Add selector tests for value, unknown, and re-render isolation.
 
 ## Implementation Details
 Add the selector to `src/store/selectors.ts` next to `selectSessionStatus`, using the existing `Selector` type; consumers memoize the curried call per `sessionId`.
@@ -54,11 +54,11 @@ See TechSpec "Core Interfaces" for the signature and the rounding rule; do not d
 
 ## Tests
 - Unit tests:
-  - [ ] Usage `{ used: 124000, size: 200000 }` yields `38` (rounded remaining percent).
-  - [ ] No usage yields `null`; usage with `size: 0` yields `null`.
-  - [ ] `used === size` yields `0` (not `null`).
+  - [x] Usage `{ used: 124000, size: 200000 }` yields `38` (rounded remaining percent).
+  - [x] No usage yields `null`; usage with `size: 0` yields `null`.
+  - [x] `used === size` yields `0` (not `null`).
 - Integration tests:
-  - [ ] After a usage event for agent A, `selectSessionHeadroom(B)` returns the same value and B's session slice keeps referential identity (isolation).
+  - [x] After a usage event for agent A, `selectSessionHeadroom(B)` returns the same value and B's session slice keeps referential identity (isolation).
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "formatHeadroom pure display helper"
 type: frontend
 complexity: low
@@ -28,10 +28,10 @@ It is shared by both surfaces so they never disagree, and it is neutral — no c
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Define `HEADROOM_UNKNOWN` and the display return type.
-- [ ] 5.2 Implement the percent label plus fixed-width filled/track cell computation.
-- [ ] 5.3 Handle `null` and out-of-range inputs safely.
-- [ ] 5.4 Add unit tests across representative percentages and the unknown case.
+- [x] 5.1 Define `HEADROOM_UNKNOWN` and the display return type.
+- [x] 5.2 Implement the percent label plus fixed-width filled/track cell computation.
+- [x] 5.3 Handle `null` and out-of-range inputs safely.
+- [x] 5.4 Add unit tests across representative percentages and the unknown case.
 
 ## Implementation Details
 Create a new pure module `src/ui/headroom.ts` (there is no existing bar/percentage utility in the codebase).
@@ -55,11 +55,11 @@ Keep it free of palette and color logic — the UI applies colors from the theme
 
 ## Tests
 - Unit tests:
-  - [ ] `formatHeadroom(38, 5)` returns label `"38%"` with 2 filled of 5 cells.
-  - [ ] `formatHeadroom(0, 5)` returns 0 filled cells; `formatHeadroom(100, 5)` returns 5 filled cells.
-  - [ ] `formatHeadroom(null)` returns label `HEADROOM_UNKNOWN` ("—") with 0 filled cells.
-  - [ ] Out-of-range input clamps: `formatHeadroom(130, 5)` fills all cells; a negative percent fills none; neither throws.
-  - [ ] The default cell count applies when `cells` is omitted.
+  - [x] `formatHeadroom(38, 5)` returns label `"38%"` with 2 filled of 5 cells.
+  - [x] `formatHeadroom(0, 5)` returns 0 filled cells; `formatHeadroom(100, 5)` returns 5 filled cells.
+  - [x] `formatHeadroom(null)` returns label `HEADROOM_UNKNOWN` ("—") with 0 filled cells.
+  - [x] Out-of-range input clamps: `formatHeadroom(130, 5)` fills all cells; a negative percent fills none; neither throws.
+  - [x] The default cell count applies when `cells` is omitted.
 - Integration tests:
   - [ ] The helper's output is consumed correctly by the status strip and handoff preview (verified in tasks 06 and 07).
 - Test coverage target: >=80%

@@ -312,6 +312,31 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
+  it("persists restored fallback context on the first autosave and clears it for a new run", () => {
+    const store = seededStore()
+    const runStore = recordingRunStore()
+    const timer = controlledTimer()
+    store.setRestorationBundle(HANDOFF_BUNDLE)
+    const writer = createRunWriter({
+      enabled: true,
+      runStore,
+      projectCwd: "/work/kitten",
+      runId: "restored-run",
+      now: () => 1_000,
+      setTimer: timer.setTimer,
+      clearTimer: timer.clearTimer,
+    })
+
+    writer.watch(store)
+    timer.flush()
+    expect(runStore.records.at(-1)?.handoffBundle).toEqual(HANDOFF_BUNDLE)
+
+    store.setRestorationBundle(null)
+    timer.flush()
+    expect(runStore.records.at(-1)?.handoffBundle).toBeNull()
+    writer.dispose()
+  })
+
   it("does not subscribe or save when disabled", () => {
     const state = seededStore().getState()
     let subscribeCalls = 0

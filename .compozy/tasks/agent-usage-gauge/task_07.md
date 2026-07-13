@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Handoff-preview target headroom line"
 type: frontend
 complexity: medium
@@ -31,10 +31,10 @@ The line reads "unknown" honestly when the target agent reports nothing.
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Add a memoized target-headroom selector to the handoff dialog.
-- [ ] 7.2 Render the target-headroom line after the redaction notice.
-- [ ] 7.3 Render the unknown marker when the target has no usage.
-- [ ] 7.4 Add preview frame tests for known and unknown target headroom and the row budget.
+- [x] 7.1 Add a memoized target-headroom selector to the handoff dialog.
+- [x] 7.2 Render the target-headroom line after the redaction notice.
+- [x] 7.3 Render the unknown marker when the target has no usage.
+- [x] 7.4 Add preview frame tests for known and unknown target headroom and the row budget.
 
 ## Implementation Details
 Modify `src/ui/HandoffPreview.tsx`: the target agent is already resolved for the dialog title; insert a `<text>` line after the redaction notice and before the Summary heading, reading the target's headroom via a memoized selector and formatting it with `formatHeadroom`.
@@ -59,11 +59,11 @@ Consumes `selectSessionHeadroom` (task_04) and `formatHeadroom` (task_05). See T
 
 ## Tests
 - Unit tests:
-  - [ ] The preview composes the target headroom line via `formatHeadroom` from the target's selector value.
+  - [x] The preview composes the target headroom line via `formatHeadroom` from the target's selector value.
 - Integration tests:
-  - [ ] Opening the preview when the target (Codex) has usage `{ used: 36000, size: 200000 }` shows a target-headroom line reading `82%`.
-  - [ ] Opening the preview when the target has no usage shows `—` on that line.
-  - [ ] After adding the line, the dialog still fits a 24-row terminal with the send hint and action visible.
+  - [x] Opening the preview when the target (Codex) has usage `{ used: 36000, size: 200000 }` shows a target-headroom line reading `82%`.
+  - [x] Opening the preview when the target has no usage shows `—` on that line.
+  - [x] After adding the line, the dialog still fits a 24-row terminal with the send hint and action visible.
 - Test coverage target: >=80%
 - All tests must pass
 

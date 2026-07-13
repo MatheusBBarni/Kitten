@@ -23,6 +23,7 @@ import type {
   ClarificationPayload,
   ConfigOption,
   DomainSessionEvent,
+  McpServerConfig,
   ProviderKind,
   SessionId,
   ShellEvent,
@@ -264,6 +265,7 @@ interface StubConnection extends AgentConnection {
   readonly prompts: Array<{ sessionId: string; blocks: PromptBlock[] }>
   readonly cancels: string[]
   readonly newSessionCwds: string[]
+  readonly newSessionMcpServers: McpServerConfig[][]
   readonly loadSessionCalls: Array<{ sessionId: string; cwd: string }>
   /** Every `setSessionConfigOption` call the controller made, in order. */
   readonly configCalls: Array<{ sessionId: string; configId: string; value: string }>
@@ -347,6 +349,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
   const cancels: string[] = []
   const newSessionCwds: string[] = []
+  const newSessionMcpServers: McpServerConfig[][] = []
   const loadSessionCalls: Array<{ sessionId: string; cwd: string }> = []
   const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
@@ -363,6 +366,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     prompts,
     cancels,
     newSessionCwds,
+    newSessionMcpServers,
     loadSessionCalls,
     configCalls,
     isDisposed: () => disposed,
@@ -372,8 +376,9 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
       if (options.connectThrows !== undefined) throw options.connectThrows
       return options.ready ?? { ready: true, protocolVersion: 1, canLoadSession: false }
     },
-    async newSession(cwd) {
+    async newSession(cwd, mcpServers = []) {
       newSessionCwds.push(cwd)
+      newSessionMcpServers.push(mcpServers)
       if (options.newSessionThrows !== undefined) throw options.newSessionThrows
       // Mirror the adapter: an agent that advertises config at session start emits it
       // as a `config_options` event during `newSession`, before the controller binds
@@ -744,6 +749,23 @@ describe("createSessionController - startup", () => {
     ])
     expect(controller.isReady("claude-code")).toBe(true)
 
+    await controller.dispose()
+  })
+
+  it("provisions the shared resolved MCP list into every configured session", async () => {
+    const mcp: McpServerConfig = {
+      name: "fixture",
+      command: process.execPath,
+      args: ["--stdio"],
+      env: { FIXTURE: "enabled" },
+    }
+    const { controller, connections } = await controllerWithStubs({}, {
+      config: { ...APP_CONFIG, mcpServers: [mcp] },
+    })
+
+    const expected = [{ ...mcp, command: process.execPath }]
+    expect(connections["claude-code"].newSessionMcpServers).toEqual([expected])
+    expect(connections.codex.newSessionMcpServers).toEqual([expected])
     await controller.dispose()
   })
 

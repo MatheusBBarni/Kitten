@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Implement safe per-tab close and permission teardown"
 type: refactor
 complexity: high
@@ -28,11 +28,11 @@ Implement the safety-critical close path for a single conversation without affec
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Define the per-conversation close lifecycle and idempotent outcome contract.
-- [ ] 5.2 Preserve active-work choices without silent cancellation.
-- [ ] 5.3 Settle only owned permission requests and retain approval attribution.
-- [ ] 5.4 Prevent late events and repeated close requests from changing removed state.
-- [ ] 5.5 Surface retryable unavailable state when teardown cannot complete.
+- [x] 5.1 Define the per-conversation close lifecycle and idempotent outcome contract.
+- [x] 5.2 Preserve active-work choices without silent cancellation.
+- [x] 5.3 Settle only owned permission requests and retain approval attribution.
+- [x] 5.4 Prevent late events and repeated close requests from changing removed state.
+- [x] 5.5 Surface retryable unavailable state when teardown cannot complete.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Follow the TechSpec’s **Close Policy** and **Idempotent Teardown State Machine
 
 ## Tests
 - Unit tests:
-  - [ ] Idle close disposes only the targeted runtime, removes execution/workspace state after success, and chooses the correct next focus.
-  - [ ] Working/awaiting-approval close sends targeted cancellation only for that conversation; error/finished close never sends a spurious turn cancel.
-  - [ ] Background and keep-open outcomes leave ACP, subscriptions, and lifecycle untouched as specified.
-  - [ ] Double-close calls share a result and issue cancellation/disposal at most once.
-  - [ ] Teardown failure retains lifecycle, marks finite unavailable state, and leaves siblings usable.
+  - [x] Idle close disposes only the targeted runtime, removes execution/workspace state after success, and chooses the correct next focus.
+  - [x] Working/awaiting-approval close sends targeted cancellation only for that conversation; error/finished close never sends a spurious turn cancel.
+  - [x] Background and keep-open outcomes leave ACP, subscriptions, and lifecycle untouched as specified.
+  - [x] Double-close calls share a result and issue cancellation/disposal at most once.
+  - [x] Teardown failure retains lifecycle, marks finite unavailable state, and leaves siblings usable.
 - Integration tests:
-  - [ ] Closing a tab with a visible or queued permission resolves only its own request and preserves FIFO handling for other sessions.
-  - [ ] Late stream/permission events after close cannot mutate the removed conversation or target the selected sibling.
+  - [x] Closing a tab with a visible or queued permission resolves only its own request and preserves FIFO handling for other sessions.
+  - [x] Late stream/permission events after close cannot mutate the removed conversation or target the selected sibling.
 - Test coverage target: >=80%
 - All tests must pass
 

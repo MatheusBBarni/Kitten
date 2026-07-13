@@ -264,6 +264,18 @@ bun run build:local   # quick local binary build
 Pull request titles must follow Conventional Commits, for example `feat: add session search` or `fix!: remove a legacy option`.
 The repository uses squash merge, with **Default to PR title for squash merge commits** enabled in GitHub, so the linted PR title becomes the commit that release-please reads from `main`.
 
+### One-time npm Trusted Publishing bootstrap
+
+The five package names must exist before npm can trust this repository's release workflow. For the first release only:
+
+1. Make the GitHub repository public and confirm that the maintainer controls both the `@kitten` npm scope and the existing unscoped `kitten` package. Do not publish any platform package until the main name is secured.
+2. Use one short-lived, package-scoped npm access token to publish `@kitten/darwin-arm64`, `@kitten/darwin-x64`, `@kitten/linux-x64`, and `@kitten/linux-arm64` from one successful four-platform build, then publish `kitten` last at the same version.
+3. Revoke that token immediately. Do not add it to `.github/workflows/release.yml` or repository secrets.
+4. In npm's package settings for all five packages, configure a Trusted Publisher for repository `MatheusBBarni/Kitten` and workflow `release.yml`.
+5. Use the normal release-please flow from then on. The publish job uses GitHub OIDC with npm provenance and has no npm registry secret.
+
+After a real release, the four-platform smoke job checks `npx kitten@<version> --self-check`, version parity, and `npm audit signatures` against the published packages.
+
 ## Project structure
 
 - `src/agent` — ACP adapter boundary

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Explicit-session discovery action and controller wiring"
 type: backend
 complexity: medium

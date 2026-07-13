@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Emission-validation debug log for usage"
 type: backend
 complexity: low
@@ -30,10 +30,10 @@ This is the instrument-first validation from ADR-002, front-loaded to de-risk th
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add a content-free usage-seen logging function gated by the existing opt-in flag.
-- [ ] 3.2 Invoke it where a usage event is observed with provider identity available.
-- [ ] 3.3 Ensure it produces no output when the flag is off.
-- [ ] 3.4 Add tests for the gated, content-free behavior.
+- [x] 3.1 Add a content-free usage-seen logging function gated by the existing opt-in flag.
+- [x] 3.2 Invoke it where a usage event is observed with provider identity available.
+- [x] 3.3 Ensure it produces no output when the flag is off.
+- [x] 3.4 Add tests for the gated, content-free behavior.
 
 ## Implementation Details
 Hook where the usage event is observed with session/provider identity available — the controller's store subscription (`src/app/controller.ts`, the `connection.onUpdate((event) => store.applyEvent(seed.id, event))` line) or the connection layer — and reuse the opt-in `enabled` gate and content-free rules from `src/telemetry/recorder.ts`.
@@ -57,11 +57,11 @@ Log numbers and the provider only; never transcript text. See TechSpec "Monitori
 
 ## Tests
 - Unit tests:
-  - [ ] When enabled, a usage observation produces one record `{ evt: "usage_seen", provider: "claude-code", used: 124000, size: 200000 }` with no transcript-text field.
-  - [ ] When disabled (default), a usage observation produces no record.
-  - [ ] The record contains only `provider` plus numeric `used`/`size` (no content keys).
+  - [x] When enabled, a usage observation produces one record `{ evt: "usage_seen", provider: "claude-code", used: 124000, size: 200000 }` with no transcript-text field.
+  - [x] When disabled (default), a usage observation produces no record.
+  - [x] The record contains only `provider` plus numeric `used`/`size` (no content keys).
 - Integration tests:
-  - [ ] With logging enabled, dispatching a usage event through the store subscription invokes the logger once with the correct provider.
+  - [x] With logging enabled, dispatching a usage event through the store subscription invokes the logger once with the correct provider.
 - Test coverage target: >=80%
 - All tests must pass
 

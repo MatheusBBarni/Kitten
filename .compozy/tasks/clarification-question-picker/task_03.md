@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Complete clarification attention presentation and regression coverage"
 type: frontend
 complexity: medium
@@ -26,10 +26,10 @@ Finish the user-visible presentation of awaiting clarification through the share
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Set clarification attention priority.
-- [ ] 3.2 Add accessible status-strip vocabulary.
-- [ ] 3.3 Verify palette and sessions-overview presentation.
-- [ ] 3.4 Prove notifier behavior remains generic and deduplicated.
+- [x] 3.1 Set clarification attention priority.
+- [x] 3.2 Add accessible status-strip vocabulary.
+- [x] 3.3 Verify palette and sessions-overview presentation.
+- [x] 3.4 Prove notifier behavior remains generic and deduplicated.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -59,12 +59,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Next-needy selects clarification ahead of simultaneous approval, error, and finished sessions.
-  - [ ] Status strip renders question-mark clarification text with the matching palette tone.
-  - [ ] Sessions overview renders clarification plus one needs-you badge.
-  - [ ] Unfocused working-to-clarification alerts once; focused transitions and needy-to-needy transitions do not alert.
+  - [x] Next-needy selects clarification ahead of simultaneous approval, error, and finished sessions.
+  - [x] Status strip renders question-mark clarification text with the matching palette tone.
+  - [x] Sessions overview renders clarification plus one needs-you badge.
+  - [x] Unfocused working-to-clarification alerts once; focused transitions and needy-to-needy transitions do not alert.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

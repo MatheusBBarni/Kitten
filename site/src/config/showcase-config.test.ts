@@ -63,8 +63,11 @@ describe("showcase config", () => {
       faq: showcaseConfig.faq,
     });
     expect(proof.videoUrl).toBeNull();
-    expect(proof.posterUrl).toBeNull();
+    expect(proof.posterUrl).toBe("./proof/kitten-reviewed-handoff-poster.svg");
+    expect(proof.posterAlt.trim()).not.toBe("");
+    expect(proof.captionsUrl).toBeNull();
     expect(proof.fallbackLabel.trim()).not.toBe("");
+    expect(proof.reducedMotionLabel.trim()).not.toBe("");
     expect(proof.accessibleDescription.trim()).not.toBe("");
   });
 
