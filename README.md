@@ -7,22 +7,71 @@ If one agent stalls, you can hand its active task to the other with one action.
 
 ## Try Kitten
 
-From inside a git repository, run:
+The only route approved for launch verification is the source checkout. It requires Bun 1.3.5 or newer and starts Kitten inside the cloned Git repository:
 
 ```bash
-npx kitten
+git clone https://github.com/MatheusBBarni/Kitten.git && cd Kitten && bun install && bun start
 ```
 
-The first run downloads the prebuilt standalone binary for your platform, so it can take longer than a typical JavaScript CLI. Bun is not required.
+Do not use `npx kitten` for Kitten yet: the public npm name still belongs to an unrelated project. An npm or release installer becomes a supported route only after Kitten owns it publicly and the complete install path has been verified.
 
-For daily use, install Kitten globally:
+## Showcase Site
+
+The canonical showcase URL is [https://matheusbbarni.github.io/Kitten/](https://matheusbbarni.github.io/Kitten/). It becomes a public entry point only after the launch gate below passes. The static Astro project lives in `site/` and deploys through `.github/workflows/showcase-site.yml`.
+
+At launch, the showcase must have exactly one verified install CTA: the source-checkout command under [Try Kitten](#try-kitten). Keep `site/src/config/showcase-config.ts` and this README aligned, and do not add npm, curl, or release CTAs until that route is publicly available and freshly tested.
+
+### Launch gate
+
+Do not publish or announce the showcase until every item is checked:
+
+- [ ] **Repository visibility:** `gh repo view MatheusBBarni/Kitten --json visibility --jq .visibility` reports `PUBLIC`, and the repository CTA works without authentication.
+- [ ] **License presence:** an explicit open-source `LICENSE` or `LICENSE.md` is committed and GitHub detects it.
+- [ ] **Recording availability:** `site/src/config/showcase-config.ts` references a real 20–30 second handoff recording and captions; the referenced files exist and visibly cover prepare, review/trim, confirm, and continue. The poster-only fallback is not launch proof.
+- [ ] **Command verification:** the sole source-checkout command under [Try Kitten](#try-kitten) succeeds from a clean environment with the documented Bun and agent prerequisites.
+- [ ] **Claim review:** page copy matches released behavior and does not imply complete context transfer, automatic sending, or guaranteed secret removal.
+
+Before launch, at least 8 of 10 target developers should be able to explain the reviewed handoff after 30 seconds. The first 30-day review targets are at least 12 install-intent actions per 100 sessions, 40% proof engagement, 25 net-new GitHub stars, and no more than 20% of the first 20 substantive feedback items caused by unclear setup.
+
+### Smoke validation
+
+Build the isolated site, check its rendered sections and fallback asset, then run the browser-behavior contracts:
 
 ```bash
-npm i -g kitten
-kitten
+cd site
+bun install --frozen-lockfile
+bun run check
+bun run build
+bun run test:coverage
+test -f dist/index.html
+rg -n 'id="(hero|proof|install|requirements|faq)"' dist/index.html
+test -f public/proof/kitten-reviewed-handoff-poster.svg
+bun test test/landing-page.test.ts test/accessibility-motion.test.ts
+bun test src/scripts/copy-command.test.ts src/scripts/star-count.test.ts src/scripts/proof-media-state.test.ts src/scripts/proof-media.test.ts
 ```
 
-A successful install is version-stamped: `npx kitten --version` or `kitten --version` prints the exact installed package version. `kitten --self-check` ends with `SELF-CHECK OK` when the headless startup path is healthy.
+Serve the production artifact and verify the Pages base path from another terminal:
+
+```bash
+cd site
+bun run preview -- --host 127.0.0.1
+```
+
+```bash
+curl --fail http://127.0.0.1:4321/Kitten/
+```
+
+Complete these manual browser checks against the preview:
+
+- Activate the copy button with the keyboard and confirm the `aria-live` status reports success; with clipboard access blocked, confirm the command is selected for manual copying.
+- Block or fail the GitHub API request and confirm the star control keeps its repository link, shows the configured unavailable message, and never fabricates `0` stars.
+- Enable reduced motion and confirm proof video does not autoplay, pauses if the preference changes, retains native controls, and leaves the written handoff steps visible.
+
+### Maintenance and measurement
+
+V1 emits no automatic showcase telemetry: no analytics endpoint, event beacon, cookies, fingerprints, persistent identifiers, or third-party behavioral scripts. Kitten's application telemetry is separate, local, content-free, opt-in, and off by default.
+
+Until a separately reviewed post-launch instrumentation change exists, maintainers assess install intent and proof comprehension through launch feedback and public GitHub/release signals. Record the launch star baseline and aggregate the manual 30-day results without presenting them as per-visitor site analytics.
 
 ## Why this project exists
 
@@ -92,7 +141,7 @@ When an agent asks for approval, use:
 
 ## Requirements
 
-- Node.js with npm
+- Bun 1.3.5 or newer
 - Claude Code and Codex installed and authenticated
 - A git repository to launch Kitten from
 

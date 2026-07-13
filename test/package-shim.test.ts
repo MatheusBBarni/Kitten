@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { readFileSync } from "node:fs"
 
 import pkg from "../package.json" with { type: "json" }
+import { primaryInstallCmd } from "../site/src/config/showcase-config.ts"
 
 const README = readFileSync(new URL("../README.md", import.meta.url), "utf8")
 
@@ -33,10 +34,13 @@ describe("main npm package shim contract", () => {
     expect(pkg.scripts).not.toHaveProperty("postinstall")
   })
 
-  it("leads the README install story with npx, then the global channel and version check", () => {
+  it("does not promote the npm shim before the Kitten package route is public", () => {
     const firstShellCommand = README.match(/```bash\n([^\n]+)/)?.[1]
-    expect(firstShellCommand).toBe("npx kitten")
-    expect(README.indexOf("npm i -g kitten")).toBeGreaterThan(README.indexOf("npx kitten"))
-    expect(README).toContain("npx kitten --version")
+    const visitorInstallDocs = README.slice(0, README.indexOf("## Contributing"))
+
+    expect(firstShellCommand).toBe(primaryInstallCmd)
+    expect(visitorInstallDocs).not.toContain("npm i -g kitten")
+    expect(visitorInstallDocs).not.toContain("npx kitten --version")
+    expect(README).toContain("Do not use `npx kitten` for Kitten yet")
   })
 })
