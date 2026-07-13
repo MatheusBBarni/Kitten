@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { RGBA } from "@opentui/core"
+import { RGBA, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 import { Profiler } from "react"
@@ -29,11 +29,13 @@ import {
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
   PROMPT_WORKSPACE_TITLE,
+  MAX_SLASH_MENU_ROWS,
   PromptEditor,
   slashMenuRows,
   slashTokenAt,
 } from "./PromptEditor.tsx"
-import type { CockpitCommand } from "./keymap.ts"
+import { COCKPIT_COMMANDS, type CockpitCommand } from "./keymap.ts"
+import { SLASH_MENU_ID, SLASH_MENU_SCROLLBOX_ID } from "./SlashMenu.tsx"
 import { DARK_PALETTE } from "./theme.ts"
 
 /**
@@ -348,18 +350,51 @@ describe("PromptEditor slash commands", () => {
     expect(slashMenuRows("xyz", agentCommands)).toEqual([])
   })
 
-  it("opens with the Cockpit group first, hand-off on top, and agent commands below", async () => {
+  it("opens with the Cockpit group first and hand-off on top", async () => {
     const controller = createFakeController()
     seedAgentCommands(controller)
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff", "Agent commands", "/review")
+    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff")
 
-    expect(menu.indexOf("Cockpit")).toBeLessThan(menu.indexOf("Agent commands"))
     expect(menu.indexOf("/handoff")).toBeLessThan(menu.indexOf("/shell"))
     expect(menu).toContain("▸ /handoff")
     expect(selectHasOpenOverlay(controller.store.getState())).toBeFalse()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("caps a long command palette at a compact scrolling height", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "Cockpit")
+    const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
+    const scrollbox = setup.renderer.root.findDescendantById(SLASH_MENU_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(menu?.height).toBe(MAX_SLASH_MENU_ROWS)
+    expect(scrollbox?.height).toBe(menu!.height - 2)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("scrolls a compact command palette to off-screen agent commands", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "Cockpit", "▸ /handoff")
+    await actAsync(() => {
+      for (let index = 0; index < COCKPIT_COMMANDS.length; index++) {
+        setup.mockInput.pressArrow("down")
+      }
+    })
+
+    const scrolled = await frameWith(setup, "Agent commands", "▸ /review")
+    expect(scrolled).not.toContain("▸ /handoff")
 
     await destroyMounted(setup.renderer)
   })
@@ -458,7 +493,7 @@ describe("PromptEditor slash commands", () => {
     const baselineCommits = transcriptCommits
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "/handoff", "/review")
+    await frameWith(setup, "Commands", "Cockpit", "/handoff")
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
       setup.mockInput.pressArrow("down")

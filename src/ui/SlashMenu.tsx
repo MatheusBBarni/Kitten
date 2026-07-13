@@ -49,6 +49,12 @@ export const NO_COMMANDS_MATCH = "No commands match this filter."
 /** Stable identity for the row keyboard activation currently targets. */
 export const HIGHLIGHTED_COMMAND_ROW_ID = "slash-menu-highlighted-row"
 
+/** Stable identity for the menu viewport, including its border. */
+export const SLASH_MENU_ID = "slash-menu"
+
+/** Stable identity for the constrained list viewport. */
+export const SLASH_MENU_SCROLLBOX_ID = "slash-menu-list"
+
 /** OpenTUI otherwise reserves a row for a horizontal scrollbar. */
 const HIDDEN_HORIZONTAL_SCROLLBAR = { visible: false } as const
 
@@ -78,6 +84,7 @@ export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: Sla
 
   return (
     <box
+      id={SLASH_MENU_ID}
       style={{
         position: "absolute",
         left: 0,
@@ -89,7 +96,10 @@ export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: Sla
         backgroundColor: palette.surface,
         paddingLeft: 1,
         paddingRight: 1,
-        ...(constrained ? { height: viewportHeight } : {}),
+        // An absolutely positioned Yoga node with no height expands to its
+        // containing layout. Always provide the content-derived viewport so a
+        // short command list stays compact, while a long list remains capped.
+        height: viewportHeight,
         overflow: "hidden",
       }}
       title="Commands"
@@ -99,8 +109,12 @@ export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: Sla
         <text fg={palette.muted}>{NO_COMMANDS_MATCH}</text>
       ) : constrained ? (
         <scrollbox
+          id={SLASH_MENU_SCROLLBOX_ID}
           ref={attachScrollbox}
-          style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}
+          // `height: 100%` makes the ScrollBox viewport fill the bounded menu.
+          // Without it, the list's intrinsic height owns the scrollbar geometry,
+          // leaving the scrollbar only beside the tail of a long command list.
+          style={{ height: "100%", flexGrow: 1, flexShrink: 1, flexDirection: "column" }}
           scrollX={false}
           horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
         >

@@ -17,6 +17,7 @@ export const TAB_SELECTED_MARKER = "[selected]"
 export const TAB_MARKER = "[tab]"
 export const SHARED_WORKSPACE_LABEL = "shared"
 export const TAB_OVERFLOW_LABEL = "Sessions"
+export const NEW_TAB_LABEL = "+ New tab"
 
 const STATUS_CUES: Readonly<Record<SessionStatus, string>> = {
   idle: "idle",
@@ -32,6 +33,7 @@ export interface TabStripLayout {
   visible: WorkspaceConversationView[]
   hiddenCount: number
   overflowLabel: string | null
+  newTabVisible: boolean
 }
 
 /** The exact monochrome-readable label painted by one tab item. */
@@ -68,6 +70,7 @@ export function layoutTabStrip(
 ): TabStripLayout {
   const available = Math.max(width - 4, 1)
   let visible = [...tabs]
+  let newTabVisible = true
 
   while (visible.length > 0) {
     const hiddenCount = tabs.length - visible.length
@@ -75,21 +78,29 @@ export function layoutTabStrip(
     const used = visible.reduce((total, tab) => total + tabItemLabel(tab).length, 0)
       + Math.max(visible.length - 1, 0)
       + (overflow ? overflow.length + (visible.length > 0 ? 1 : 0) : 0)
-    if (used <= available) return { visible, hiddenCount, overflowLabel: overflow }
+      + (newTabVisible ? NEW_TAB_LABEL.length + (visible.length > 0 || overflow ? 1 : 0) : 0)
+    if (used <= available) return { visible, hiddenCount, overflowLabel: overflow, newTabVisible }
 
     const selected = tabs.find((tab) => tab.selected)
-    const removable = [...visible].reverse().find((tab) => tab.id !== selected?.id)
-    if (!removable) {
-      // At the tightest widths, keep the canonical reachability entry visible even
-      // when the selected tab cannot coexist with it on one row.
-      if (hiddenCount > 0 || backgroundCount > 0) visible = []
-      break
+    // The direct creation affordance is additive: never hide a still-reachable
+    // tab just to display it. `/new` stays available at every terminal width.
+    if (newTabVisible) {
+      newTabVisible = false
+      continue
     }
-    visible = visible.filter((tab) => tab.id !== removable.id)
+    const removable = [...visible].reverse().find((tab) => tab.id !== selected?.id)
+    if (removable) {
+      visible = visible.filter((tab) => tab.id !== removable.id)
+      continue
+    }
+    // At the tightest widths, keep the canonical reachability entry visible even
+    // when the selected tab cannot coexist with it on one row.
+    if (hiddenCount > 0 || backgroundCount > 0) visible = []
+    break
   }
 
   const hiddenCount = tabs.length - visible.length
-  return { visible, hiddenCount, overflowLabel: overflowLabel(hiddenCount, backgroundCount) }
+  return { visible, hiddenCount, overflowLabel: overflowLabel(hiddenCount, backgroundCount), newTabVisible }
 }
 
 export function TabWorkspace(): ReactNode {
@@ -104,6 +115,11 @@ export function TabWorkspace(): ReactNode {
     event.preventDefault()
     event.stopPropagation()
     controller.store.openSessions()
+  }, [controller])
+  const createConversation = useCallback((event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    void controller.actions.createConversation()
   }, [controller])
 
   if (tabs.length === 0) return null
@@ -121,6 +137,11 @@ export function TabWorkspace(): ReactNode {
       {layout.visible.map((tab) => (
         <TabItem key={tab.id} tab={tab} />
       ))}
+      {layout.newTabVisible ? (
+        <box style={{ height: 1, flexShrink: 0 }} onMouseDown={createConversation}>
+          <text fg={palette.accent} wrapMode="none">{NEW_TAB_LABEL}</text>
+        </box>
+      ) : null}
       {layout.overflowLabel ? (
         <box style={{ height: 1, flexShrink: 0 }} onMouseDown={openSessions}>
           <text fg={palette.accent} wrapMode="none">{layout.overflowLabel}</text>

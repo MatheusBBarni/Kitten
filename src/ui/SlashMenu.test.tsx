@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { MouseEvent, RGBA, type Renderable } from "@opentui/core"
+import { MouseEvent, RGBA, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -15,6 +15,8 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   HIGHLIGHTED_COMMAND_ROW_ID,
   NO_COMMANDS_MATCH,
+  SLASH_MENU_ID,
+  SLASH_MENU_SCROLLBOX_ID,
   SlashMenu,
   type MenuRow,
 } from "./SlashMenu.tsx"
@@ -63,12 +65,16 @@ describe("SlashMenu", () => {
   it("renders ordered source headers with cockpit shortcuts and agent hints", async () => {
     const setup = await renderMenu(0)
     const frame = setup.captureCharFrame()
+    const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
 
     expect(frame.indexOf("Cockpit")).toBeLessThan(frame.indexOf("Codex"))
     expect(frame).toContain(handoffRow.label)
     expect(frame).toContain(handoffRow.shortcut)
     expect(frame).toContain(reviewRow.label)
     expect(frame).toContain(reviewRow.hint!)
+    // Two headings, two rows, and the top/bottom border: the menu must hug
+    // its content rather than filling the available terminal height.
+    expect(menu?.height).toBe(6)
 
     await destroyMounted(setup.renderer)
   })
@@ -132,8 +138,15 @@ describe("SlashMenu", () => {
     )
 
     const frame = await setup.waitForFrame((value) => value.includes("/command-24"))
+    const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
+    const scrollbox = setup.renderer.root.findDescendantById(SLASH_MENU_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
     expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(10)
     expect(frame).not.toContain("਀")
+    expect(menu?.height).toBe(6)
+    // The ScrollBox itself fills the menu interior; OpenTUI reserves one of
+    // those rows inside its own viewport for scrollbar machinery.
+    expect(scrollbox?.height).toBe(menu!.height - 2)
+    expect(scrollbox?.viewport.height).toBe(scrollbox!.height - 1)
 
     await destroyMounted(setup.renderer)
   })

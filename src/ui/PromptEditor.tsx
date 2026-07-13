@@ -101,6 +101,9 @@ export const MIN_EDITOR_ROWS = 2
 /** How tall the editor may grow before it scrolls its own content. */
 export const MAX_EDITOR_ROWS = 8
 
+/** Keep command discovery compact; longer result sets scroll inside this viewport. */
+export const MAX_SLASH_MENU_ROWS = 16
+
 /** Clamp the editor's height to the lines its draft holds, within the budget. */
 function editorRows(lines: number): number {
   return Math.min(Math.max(lines, MIN_EDITOR_ROWS), MAX_EDITOR_ROWS)
@@ -896,7 +899,7 @@ function SelectedPromptEditor({
           <SlashMenu
             groups={menuGroups(matchingRows)}
             highlightedIndex={slashHighlight}
-            maxHeight={Math.max(terminalHeight - rows - 5, 1)}
+            maxHeight={Math.max(1, Math.min(MAX_SLASH_MENU_ROWS, terminalHeight - rows - 5))}
             onSelect={selectSlashMenuRow}
           />
         </box>

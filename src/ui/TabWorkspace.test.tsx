@@ -13,6 +13,7 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   layoutTabStrip,
   SHARED_WORKSPACE_LABEL,
+  NEW_TAB_LABEL,
   TAB_MARKER,
   TAB_OVERFLOW_LABEL,
   TAB_SELECTED_MARKER,
@@ -88,6 +89,7 @@ describe("TabWorkspace presentation", () => {
     expect(frame.indexOf("Session 1")).toBeLessThan(frame.indexOf("Session 5"))
     expect(frame).toContain(TAB_SELECTED_MARKER)
     expect(frame).toContain(TAB_MARKER)
+    expect(frame).toContain(NEW_TAB_LABEL)
     for (const cue of ["idle", "working", "approval", "error", "finished"]) expect(frame).toContain(cue)
 
     await destroyMounted(setup.renderer)
@@ -129,6 +131,7 @@ describe("TabWorkspace presentation", () => {
     expect(layout.hiddenCount).toBe(tabs.length - layout.visible.length)
     expect(layout.overflowLabel).toContain(TAB_OVERFLOW_LABEL)
     expect(layout.overflowLabel).toContain("bg 1")
+    expect(layout.newTabVisible).toBeFalse()
   })
 
   it("does not publish a tab-list change when only transcript content streams", () => {
@@ -140,6 +143,18 @@ describe("TabWorkspace presentation", () => {
 
     expect(notifications).toBe(0)
     stop()
+  })
+
+  it("creates a new tab from the visible tab-strip affordance", async () => {
+    const controller = createFakeController()
+    const setup = await renderStrip(controller)
+    const point = pointOf(setup.captureCharFrame(), NEW_TAB_LABEL)
+
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+    await setup.waitFor(() => controller.calls.createConversation === 1)
+
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("fake-created-1")
+    await destroyMounted(setup.renderer)
   })
 })
 
