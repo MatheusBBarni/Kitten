@@ -101,6 +101,7 @@ export function readyRuntimes(): AgentRuntimeState[] {
       cwd,
       ready: true,
       acpSessionId: "session-claude",
+      mcp: { loaded: [], skipped: [] },
     },
     {
       sessionId: "codex",
@@ -110,6 +111,7 @@ export function readyRuntimes(): AgentRuntimeState[] {
       cwd,
       ready: true,
       acpSessionId: "session-codex",
+      mcp: { loaded: [], skipped: [] },
     },
   ]
 }
@@ -202,6 +204,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
           cwd: source.cwd,
           ready: true,
           acpSessionId: `fake-acp-${created}`,
+          mcp: { loaded: [], skipped: [] },
         })
         return sessionId
       },

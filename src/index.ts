@@ -17,7 +17,7 @@ import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/cor
 import { join } from "node:path"
 
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
-import { formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
+import { formatMcpSelfCheckLine, formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
 import { configureTreeSitterWorker } from "./app/treeSitterWorker.ts"
 import { bannerVariant, markFirstRunSeen, readFirstRunSeen, type BannerVariant } from "./config/appState.ts"
 import { loadAppConfig, resolveSessions } from "./config/configLoader.ts"
@@ -610,11 +610,12 @@ if (import.meta.main) {
   const cliFlagHandled = dispatchCliFlags(process.argv)
   if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
     try {
-      const { frame, reloadProbe } = await runSelfCheck({
+      const { frame, reloadProbe, mcp } = await runSelfCheck({
         reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
       })
       const probeLines = reloadProbe.map(formatReloadProbeLine)
-      process.stdout.write(`${frame}\n${probeLines.length > 0 ? `${probeLines.join("\n")}\n` : ""}`)
+      const mcpLines = mcp.map(formatMcpSelfCheckLine)
+      process.stdout.write(`${frame}\n${mcpLines.concat(probeLines).map((line) => `${line}\n`).join("")}`)
       if (!reloadProbePassed(reloadProbe)) {
         process.stderr.write("SELF-CHECK FAILED: reload confirmation probe reported one or more failures\n")
         process.exit(1)

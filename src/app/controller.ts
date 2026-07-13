@@ -22,7 +22,7 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
-import { resolveMcpServers } from "../config/mcpResolver.ts"
+import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
@@ -97,9 +97,38 @@ export interface ControllerTelemetry extends ActionTelemetry {
  * `cwd` is the session's own working directory (ADR-005): it labels approvals and
  * feeds the per-session repo check the first-run gate runs.
  */
+/** The declared MCP servers this runtime received and the declarations skipped at boot. */
+export interface McpRuntimeReadout {
+  loaded: string[]
+  skipped: McpResolutionResult["skipped"]
+}
+
+/**
+ * Runtime fixtures created outside the controller predate MCP provisioning. The
+ * controller always supplies this field; optionality keeps external test doubles
+ * source-compatible while they migrate.
+ */
+type RuntimeMcpReadout = { mcp?: McpRuntimeReadout }
+
 export type AgentRuntimeState =
-  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; cwd: string; ready: true; acpSessionId: string }
-  | { sessionId: SessionId; providerKind: ProviderKind; displayName: string; title: string; cwd: string; ready: false; error: string }
+  | (RuntimeMcpReadout & {
+      sessionId: SessionId
+      providerKind: ProviderKind
+      displayName: string
+      title: string
+      cwd: string
+      ready: true
+      acpSessionId: string
+    })
+  | (RuntimeMcpReadout & {
+      sessionId: SessionId
+      providerKind: ProviderKind
+      displayName: string
+      title: string
+      cwd: string
+      ready: false
+      error: string
+    })
 
 /** The controller-owned shell boundary, including a legible degraded state. */
 export type ShellRuntimeState =
@@ -460,7 +489,12 @@ export async function createSessionController(options: SessionControllerOptions)
   const create = options.createConnection ?? defaultCreateConnection
   // Resolve once per cockpit boot so every fresh, restored, and dynamically added
   // session receives the same validated stdio server list.
-  const mcpServers = resolveMcpServers(options.config.mcpServers).resolved
+  const mcpResolution = resolveMcpServers(options.config.mcpServers)
+  const mcpServers = mcpResolution.resolved
+  const mcpReadout = (): McpRuntimeReadout => ({
+    loaded: mcpServers.map((server) => server.name),
+    skipped: mcpResolution.skipped.map((server) => ({ ...server })),
+  })
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
@@ -714,6 +748,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: false,
         error: config ? "Starting" : "Provider unavailable",
+        mcp: mcpReadout(),
       },
       connection: null,
       acpSessionId: null,
@@ -775,6 +810,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: true,
         acpSessionId,
+        mcp: mcpReadout(),
       }
       runtime.connection = connection
       runtime.acpSessionId = acpSessionId
@@ -806,6 +842,7 @@ export async function createSessionController(options: SessionControllerOptions)
       cwd: runtime.seed.cwd,
       ready: false,
       error,
+      mcp: mcpReadout(),
     }
     runtime.connection = null
     runtime.acpSessionId = null
@@ -929,6 +966,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: true,
         acpSessionId,
+        mcp: mcpReadout(),
       }
       previous.connection = connection
       previous.acpSessionId = acpSessionId
@@ -1050,6 +1088,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: runtime.seed.cwd,
         ready: false,
         error: errorMessage(error),
+        mcp: mcpReadout(),
       }
       store.setConversationTeardown(sessionId, "open")
       store.setConversationAvailability(sessionId, {

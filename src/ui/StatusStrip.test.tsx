@@ -19,6 +19,7 @@ import {
   BACKGROUND_STATUS_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
   FOCUS_MARKER,
+  MCP_STATUS_LABEL,
   RESUMED_RUN_LABEL,
   STATUS_LABELS,
   StatusStrip,
@@ -79,6 +80,19 @@ function paletteColor(hex: string): string {
 }
 
 describe("StatusStrip agent state", () => {
+  it("shows the focused session's loaded and skipped MCP declarations", async () => {
+    const [claude, codex] = readyRuntimes()
+    claude!.mcp = {
+      loaded: ["github"],
+      skipped: [{ name: "linear", reason: 'environment variable "LINEAR_TOKEN" is not set' }],
+    }
+    const setup = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 180)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`${MCP_STATUS_LABEL} +github; !linear (environment variable "LINEAR_TOKEN" is not set)`)
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders workspace and background state without consulting stale runtime or model slots", async () => {
     const store = createAppStore({
       seeds: [{ id: "background", providerKind: "codex", title: "Background", cwd: "/work" }],

@@ -3,7 +3,7 @@
 # Kitten installer (ADR-006).
 #
 # One-line install:
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/kitten/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash
 #
 # Downloads the standalone binary for the current platform plus the SHA256SUMS
 # manifest, verifies the binary's checksum against the manifest, and only then
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-REPO="${KITTEN_REPO:-OWNER/kitten}"
+REPO="${KITTEN_REPO:-MatheusBBarni/Kitten}"
 VERSION="${KITTEN_VERSION:-latest}"
 INSTALL_DIR="${KITTEN_INSTALL_DIR:-$HOME/.local/bin}"
 

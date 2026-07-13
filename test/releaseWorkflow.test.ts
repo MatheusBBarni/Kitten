@@ -178,7 +178,7 @@ describe("consolidated release workflow", () => {
 
   it("keeps ordinary pushes release-only and references no elevated or npm token", () => {
     expect(Object.keys(workflow.jobs)).toEqual(["release_please", "build", "attach", "publish", "smoke"])
-    expect(workflow.permissions).toEqual({ contents: "write" })
+    expect(workflow.permissions).toEqual({ contents: "write", issues: "write", "pull-requests": "write" })
     expect(source).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN|\bPAT\b|APP_TOKEN/i)
     expect(source).not.toContain("secrets.")
   })

@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
 
-import { createOfflineConnection, runSelfCheck } from "../src/app/selfCheck.ts"
+import { createOfflineConnection, formatMcpSelfCheckLine, runSelfCheck } from "../src/app/selfCheck.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, type FirstRunGuidanceOptions } from "../src/config/firstRun.ts"
 import {
@@ -251,6 +251,7 @@ describe("CLI metadata flags", () => {
     expect(writes[0]).toContain("npx kitten")
     expect(writes[0]).toContain("--self-check")
     expect(writes[0]).toContain("npm i -g kitten@latest")
+    expect(writes[0]).toContain("raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh")
     expect(exits).toEqual([0])
   })
 
@@ -321,5 +322,21 @@ describe("runSelfCheck", () => {
     expect(frame).toContain("Kitten")
     expect(highlights.markdownForeground).not.toBe(highlights.defaultForeground)
     expect(highlights.diffForeground).not.toBe(highlights.defaultForeground)
+  })
+
+  it("reports each skipped MCP declaration without leaking environment values", async () => {
+    const config = defaultAppConfig()
+    config.mcpServers = [{
+      name: "unavailable",
+      command: "/definitely/not/a/kitten-mcp-server",
+      args: [],
+      env: { TOKEN: "literal-secret-is-never-reported" },
+    }]
+    const { mcp } = await runSelfCheck({ loadConfig: async () => config, configureWorker: async () => null })
+
+    const line = formatMcpSelfCheckLine(mcp[0]!)
+    expect(line).toContain("unavailable")
+    expect(line).toContain('command not found: "/definitely/not/a/kitten-mcp-server"')
+    expect(line).not.toContain("literal-secret-is-never-reported")
   })
 })

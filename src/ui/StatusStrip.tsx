@@ -57,6 +57,9 @@ export const BACKGROUND_STATUS_LABEL = "background"
 /** Prefix for background conversations whose state still requires attention. */
 export const BACKGROUND_ATTENTION_LABEL = "needs attention"
 
+/** Compact label for the focused session's MCP provisioning result. */
+export const MCP_STATUS_LABEL = "mcp"
+
 const selectIsResumedRun: Selector<boolean> = (state) =>
   state.workspace.order.some((sessionId) => state.restoration[sessionId] !== null)
 
@@ -191,7 +194,27 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
           <span fg={palette.muted}>{"░".repeat(headroom.cells - headroom.filled)}</span>
         </>
       )}
+      {focused ? <McpStatus runtime={runtime} /> : null}
     </text>
+  )
+}
+
+/** Keep skipped declarations visible without exposing any resolved environment values. */
+function McpStatus({ runtime }: { runtime: AgentRuntimeState }): ReactNode {
+  const palette = usePalette()
+  const mcp = runtime.mcp
+  if (!mcp) return null
+  const loaded = mcp.loaded.length > 0 ? `+${mcp.loaded.join(",")}` : ""
+  const skipped = mcp.skipped.map(({ name, reason }) => `!${name} (${reason})`).join(", ")
+  if (!loaded && !skipped) return null
+
+  return (
+    <>
+      <span fg={palette.muted}>{` · ${MCP_STATUS_LABEL} `}</span>
+      {loaded ? <span fg={palette.status.finished}>{loaded}</span> : null}
+      {loaded && skipped ? <span fg={palette.muted}>; </span> : null}
+      {skipped ? <span fg={palette.status.error}>{skipped}</span> : null}
+    </>
   )
 }
 

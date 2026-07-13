@@ -736,6 +736,7 @@ describe("createSessionController - startup", () => {
         cwd: CWD,
         ready: true,
         acpSessionId: "codex-session",
+        mcp: { loaded: [], skipped: [] },
       },
       {
         sessionId: "claude-code",
@@ -745,6 +746,7 @@ describe("createSessionController - startup", () => {
         cwd: CWD,
         ready: true,
         acpSessionId: "claude-code-session",
+        mcp: { loaded: [], skipped: [] },
       },
     ])
     expect(controller.isReady("claude-code")).toBe(true)
@@ -766,6 +768,30 @@ describe("createSessionController - startup", () => {
     const expected = [{ ...mcp, command: process.execPath }]
     expect(connections["claude-code"].newSessionMcpServers).toEqual([expected])
     expect(connections.codex.newSessionMcpServers).toEqual([expected])
+    expect(controller.runtime("claude-code")?.mcp).toEqual({ loaded: ["fixture"], skipped: [] })
+    expect(controller.runtime("codex")?.mcp).toEqual({ loaded: ["fixture"], skipped: [] })
+    await controller.dispose()
+  })
+
+  it("keeps skipped MCP declarations visible while starting sessions without them", async () => {
+    const mcp: McpServerConfig = {
+      name: "unavailable",
+      command: "/definitely/not/a/kitten-mcp-server",
+      args: [],
+      env: {},
+    }
+    const { controller, connections } = await controllerWithStubs({}, {
+      config: { ...APP_CONFIG, mcpServers: [mcp] },
+    })
+
+    const expected = {
+      loaded: [],
+      skipped: [{ name: "unavailable", reason: 'command not found: "/definitely/not/a/kitten-mcp-server"' }],
+    }
+    expect(connections["claude-code"].newSessionMcpServers).toEqual([[]])
+    expect(connections.codex.newSessionMcpServers).toEqual([[]])
+    expect(controller.runtime("claude-code")?.mcp).toEqual(expected)
+    expect(controller.runtime("codex")?.mcp).toEqual(expected)
     await controller.dispose()
   })
 
@@ -1425,6 +1451,7 @@ describe("createSessionController - degraded startup", () => {
       cwd: CWD,
       ready: false,
       error: "not logged in",
+      mcp: { loaded: [], skipped: [] },
     })
     expect(controller.isReady("claude-code")).toBe(false)
     expect(controller.isReady("codex")).toBe(true)
