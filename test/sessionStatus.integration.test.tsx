@@ -30,6 +30,7 @@ const PROVIDERS: AppConfig["providers"] = {
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
   sessions: [],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
   persistenceEnabled: true,
   telemetryEnabled: false,

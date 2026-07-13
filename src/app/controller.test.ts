@@ -61,6 +61,7 @@ const PROVIDERS: AppConfig["providers"] = {
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
   sessions: [],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
   persistenceEnabled: true,
   telemetryEnabled: false,
@@ -310,6 +311,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
     { provider: "claude-code", cwd: FLEET_DIRS.beta, title: "Beta" },
     { provider: "codex", cwd: FLEET_DIRS.gamma, title: "Gamma" },
   ],
+  mcpServers: [],
   shell: APP_CONFIG.shell,
   persistenceEnabled: true,
   telemetryEnabled: false,
@@ -1277,6 +1279,7 @@ describe("createSessionController - multi-session fleet", () => {
     const config: AppConfig = {
       providers: PROVIDERS,
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      mcpServers: [],
       shell: APP_CONFIG.shell,
       persistenceEnabled: true,
       telemetryEnabled: false,
@@ -1299,6 +1302,7 @@ describe("createSessionController - multi-session fleet", () => {
     const config: AppConfig = {
       providers: PROVIDERS,
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      mcpServers: [],
       shell: APP_CONFIG.shell,
       persistenceEnabled: true,
       telemetryEnabled: false,
@@ -1376,6 +1380,7 @@ describe("actions - sendPrompt", () => {
       config: {
         providers: PROVIDERS,
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        mcpServers: [],
         shell: APP_CONFIG.shell,
         persistenceEnabled: true,
         telemetryEnabled: false,
@@ -2110,6 +2115,7 @@ describe("createSessionController - dispose", () => {
       config: {
         providers: PROVIDERS,
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+        mcpServers: [],
         shell: APP_CONFIG.shell,
         persistenceEnabled: true,
         telemetryEnabled: false,

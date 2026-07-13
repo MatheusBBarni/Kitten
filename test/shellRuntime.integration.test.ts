@@ -29,6 +29,7 @@ const CONTROLLER_CONFIG: AppConfig = {
     codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
   },
   sessions: [{ provider: "claude-code", cwd: process.cwd() }],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
   persistenceEnabled: true,
   telemetryEnabled: false,

@@ -432,6 +432,14 @@ export interface ProviderRecipe {
   env: Record<string, string>
 }
 
+/** A protocol-free stdio MCP server declaration shared by every agent session. */
+export interface McpServerConfig {
+  name: string
+  command: string
+  args: string[]
+  env: Record<string, string>
+}
+
 /**
  * A provider's spawn recipe paired with its own {@link ProviderKind}. This is the
  * shape the agent adapter layer spawns from: a {@link ProviderRecipe} plus the `id`
@@ -479,6 +487,7 @@ export interface ShellConfig {
 export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
   sessions: SessionDescriptor[]
+  mcpServers: McpServerConfig[]
   shell: ShellConfig
   persistenceEnabled: boolean
   telemetryEnabled: boolean

@@ -15,6 +15,7 @@ import {
   defaultAppConfig,
   findAgentConfig,
   loadAppConfig,
+  mergeAppConfig,
   parseAppConfig,
   resolveConfigPath,
   resolveSessions,
@@ -87,11 +88,85 @@ describe("defaults", () => {
     first.providers["claude-code"].args.push("--rogue")
     first.providers["claude-code"].env.ROGUE = "1"
     first.providers.codex.env.INITIAL_AGENT_MODE = "agent"
+    first.mcpServers.push({ name: "rogue", command: "rogue", args: [], env: {} })
 
     const second = defaultAppConfig()
     expect(second.providers["claude-code"].args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
     expect(second.providers["claude-code"].env).toEqual({})
     expect(second.providers.codex.env).toEqual({ INITIAL_AGENT_MODE: CODEX_YOLO_MODE })
+    expect(second.mcpServers).toEqual([])
+  })
+})
+
+describe("MCP server config", () => {
+  const namedServers = {
+    github: {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+    },
+    linear: {
+      type: "stdio" as const,
+      command: "/opt/bin/linear-mcp",
+      args: ["--stdio"],
+      env: {},
+    },
+  }
+
+  it("Should normalize two name-keyed stdio servers into the domain list", () => {
+    const config = parseAppConfig(JSON.stringify({ mcpServers: namedServers }))
+
+    expect(config.mcpServers).toEqual([
+      { name: "github", ...namedServers.github },
+      {
+        name: "linear",
+        command: namedServers.linear.command,
+        args: namedServers.linear.args,
+        env: namedServers.linear.env,
+      },
+    ])
+  })
+
+  it.each([
+    ["a url", { command: "remote", args: [], env: {}, url: "https://example.com/mcp" }],
+    ["a non-stdio type", { type: "http", command: "remote", args: [], env: {} }],
+  ])("Should reject %s transport and name the offending server", (_case, server) => {
+    const parse = () => parseAppConfig(JSON.stringify({ mcpServers: { github: server } }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/mcpServers\.github/)
+  })
+
+  it("Should reject an unknown key inside a server entry", () => {
+    const parse = () =>
+      parseAppConfig(
+        JSON.stringify({ mcpServers: { linear: { command: "linear-mcp", args: [], env: {}, enabled: true } } }),
+      )
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/mcpServers\.linear.*enabled/)
+  })
+
+  it("Should default to an empty MCP server list when the field is omitted", () => {
+    expect(parseAppConfig("{}").mcpServers).toEqual([])
+  })
+
+  it("Should keep and defensively copy user-provided MCP servers during merge", () => {
+    const user = { mcpServers: namedServers }
+    const config = mergeAppConfig(user)
+
+    expect(config.mcpServers.map((server) => server.name)).toEqual(["github", "linear"])
+    expect(config.mcpServers[0]!.args).not.toBe(namedServers.github.args)
+    expect(config.mcpServers[0]!.env).not.toBe(namedServers.github.env)
+  })
+
+  it("Should load and normalize name-keyed MCP servers from a real config file", async () => {
+    const path = await writeConfig(JSON.stringify({ mcpServers: namedServers }))
+
+    const config = await loadAppConfig({ path })
+
+    expect(config.mcpServers.map((server) => server.name)).toEqual(["github", "linear"])
+    expect(config.mcpServers[0]).toEqual({ name: "github", ...namedServers.github })
   })
 })
 
