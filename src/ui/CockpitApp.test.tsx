@@ -6,12 +6,14 @@
 import { describe, expect, it, spyOn } from "bun:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
+import { KeyEvent } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
+import { wireKeyboardCapability } from "../index.ts"
 import type {
   PersistedRunRecord,
   PersistedRunRecordV1,
@@ -33,7 +35,7 @@ import {
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
-import { HELP_ENTRIES, SHELL_EXIT_HINT } from "./keymap.ts"
+import { HELP_ENTRIES, SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
@@ -57,6 +59,21 @@ function expectNoOverflow(frame: string, width: number, height: number): void {
     expect([...row].length).toBe(width)
   }
   expect(frame).not.toContain("਀")
+}
+
+function keyEvent(name: string, options: { ctrl?: boolean; shift?: boolean; meta?: boolean; source?: "raw" | "kitty" } = {}): KeyEvent {
+  return new KeyEvent({
+    name,
+    ctrl: options.ctrl ?? false,
+    shift: options.shift ?? false,
+    meta: options.meta ?? false,
+    option: false,
+    sequence: "",
+    number: false,
+    raw: options.source === "kitty" ? `kitty:${name}` : name,
+    eventType: "press",
+    source: options.source ?? "raw",
+  })
 }
 
 async function renderCockpitApp(
@@ -192,7 +209,7 @@ describe("CockpitApp layout", () => {
     const strip = rows.at(-1) ?? ""
     expect(strip).toContain(`claude:— - ${STATUS_LABELS.idle}`)
     expect(strip).not.toContain("codex:—")
-    expect(strip).toContain("/help")
+    expect(strip).toContain(tabNavigationHint("unknown"))
 
     await destroyMounted(renderer)
   })
@@ -204,7 +221,7 @@ describe("CockpitApp layout", () => {
     const frame = captureCharFrame()
     expectNoOverflow(frame, 80, 24)
     expect(frame).toContain(WELCOME_KITTEN[0])
-    expect(frame).toContain("/help")
+    expect(frame).toContain(tabNavigationHint("unknown"))
 
     await destroyMounted(renderer)
   })
@@ -267,7 +284,7 @@ describe("CockpitApp resize", () => {
     await actAsync(() => {
       resize(64, 12)
     })
-    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(`/help`))
+    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(tabNavigationHint("unknown")))
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
@@ -307,7 +324,7 @@ describe("CockpitApp alternate-screen layout", () => {
       const alternateSize = shell.resizes.at(-1)!
       expect(runtime.bufferType()).toBe("alternate")
       expect(alternate).not.toContain(PROMPT_PLACEHOLDER)
-      expect(alternate).not.toContain("/help")
+      expect(alternate).not.toContain(tabNavigationHint("unknown"))
       expect(alternate).not.toContain(SHELL_EXIT_HINT)
       expect(alternateSize.rows).toBeGreaterThan(primarySize.rows)
 
@@ -339,6 +356,81 @@ describe("CockpitApp alternate-screen layout", () => {
 })
 
 describe("CockpitApp keymap", () => {
+  it("ignores the first Kitty tab chord, then dispatches one cyclic action per confirmed Kitty event", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+    const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    const stopObservation = wireKeyboardCapability(setup.renderer, () => controller.store.confirmKittyKeyboard())
+
+    try {
+      const first = keyEvent("l", { ctrl: true, source: "kitty" })
+      await actAsync(() => {
+        setup.renderer.keyInput.emit("keypress", first)
+      })
+      expect(controller.store.getState().keyboardCapability).toBe("kittyConfirmed")
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+      expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(first.defaultPrevented).toBe(false)
+
+      const next = keyEvent("l", { ctrl: true, source: "kitty" })
+      await actAsync(() => {
+        setup.renderer.keyInput.emit("keypress", next)
+      })
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+      expect(selectAdjacent).toHaveBeenCalledTimes(1)
+      expect(selectAdjacent).toHaveBeenLastCalledWith("next")
+      expect(next.defaultPrevented).toBe(true)
+
+      const previous = keyEvent("h", { ctrl: true, source: "kitty" })
+      await actAsync(() => {
+        setup.renderer.keyInput.emit("keypress", previous)
+      })
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+      expect(selectAdjacent).toHaveBeenCalledTimes(2)
+      expect(selectAdjacent).toHaveBeenLastCalledWith("previous")
+      expect(previous.defaultPrevented).toBe(true)
+    } finally {
+      stopObservation()
+      selectAdjacent.mockRestore()
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("rejects confirmed raw and modified tab lookalikes and stands down behind a modal", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+    const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+
+    try {
+      for (const event of [
+        keyEvent("l", { ctrl: true, source: "raw" }),
+        keyEvent("h", { ctrl: true, shift: true, source: "kitty" }),
+        keyEvent("l", { ctrl: true, meta: true, source: "kitty" }),
+        keyEvent("j", { ctrl: true, source: "kitty" }),
+      ]) {
+        await actAsync(() => {
+          setup.renderer.keyInput.emit("keypress", event)
+        })
+      }
+
+      await actAsync(() => controller.store.openSettings())
+      await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+      await actAsync(() => {
+        setup.renderer.keyInput.emit(
+          "keypress",
+          keyEvent("l", { ctrl: true, source: "kitty" }),
+        )
+      })
+
+      expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    } finally {
+      selectAdjacent.mockRestore()
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   it("forwards navigation and function keys while an alternate-screen app is active", async () => {
     const { controller, runtime, shell } = shellReadyController()
     const setup = await renderCockpitApp(controller)
@@ -450,6 +542,31 @@ describe("CockpitApp keymap", () => {
       expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x03])
       expect(setup.renderer.isDestroyed).toBe(false)
     } finally {
+      await destroyMounted(setup.renderer)
+      await runtime.dispose()
+    }
+  })
+
+  it("forwards shell-focused Ctrl+H and Ctrl+L as PTY bytes without tab navigation", async () => {
+    const { controller, runtime, shell } = shellReadyController()
+    const setup = await renderCockpitApp(controller)
+    const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+
+    try {
+      await runSlashCommand(setup, "shell")
+      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
+
+      await actAsync(() => {
+        setup.mockInput.pressKey("h", { ctrl: true })
+        setup.mockInput.pressKey("l", { ctrl: true })
+      })
+
+      expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x08, 0x0c])
+      expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(controller.store.getState().focusedPane).toEqual({ kind: "shell" })
+    } finally {
+      selectAdjacent.mockRestore()
       await destroyMounted(setup.renderer)
       await runtime.dispose()
     }

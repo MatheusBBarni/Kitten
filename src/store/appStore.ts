@@ -111,6 +111,9 @@ export interface Preferences {
 /** Whether a restored session is promptable or only its saved context remains. */
 export type RestorationMode = "live" | "unavailable"
 
+/** Renderer-observed keyboard support. This state is deliberately never persisted. */
+export type KeyboardCapability = "unknown" | "kittyConfirmed"
+
 /** The pane that currently owns keyboard input (ADR-005). */
 export type FocusedPane =
   | { kind: "agent"; sessionId: SessionId }
@@ -162,6 +165,8 @@ export interface AppState {
   workspace: WorkspaceState
   /** Ephemeral action feedback for valid empty-workspace states. */
   workspaceNotice: WorkspaceNotice | null
+  /** Ephemeral terminal-input capability, promoted only by the renderer boundary. */
+  keyboardCapability: KeyboardCapability
   focusedPane: FocusedPane
   shell: ShellState
   preferences: Preferences
@@ -218,6 +223,8 @@ export interface AppStore {
   setConversationAvailability(sessionId: SessionId, availability: ConversationAvailability): void
   setConversationTeardown(sessionId: SessionId, teardownState: TeardownState): void
   setWorkspaceNotice(notice: WorkspaceNotice | null): void
+  /** Record the first observed Kitty-protocol key event. Idempotent after confirmation. */
+  confirmKittyKeyboard(): void
   /** Move keyboard focus to a session. Focusing the focused session is a no-op. */
   setFocus(sessionId: SessionId): void
   /** Move keyboard focus to an agent or the shell. Reapplying the same pane is a no-op. */
@@ -304,6 +311,7 @@ class AppStoreImpl implements AppStore {
       sessions,
       workspace,
       workspaceNotice: null,
+      keyboardCapability: "unknown",
       focusedPane: workspace.selectedVisibleId
         ? { kind: "agent", sessionId: workspace.selectedVisibleId }
         : { kind: "workspace" },
@@ -491,6 +499,11 @@ class AppStoreImpl implements AppStore {
         ? { kind: "agent", sessionId: workspace.selectedVisibleId }
         : { kind: "workspace" },
     })
+  }
+
+  confirmKittyKeyboard(): void {
+    if (this.state.keyboardCapability === "kittyConfirmed") return
+    this.commit({ ...this.state, keyboardCapability: "kittyConfirmed" })
   }
 
   backgroundConversation(sessionId: SessionId): void {

@@ -12,7 +12,7 @@ import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
+import { SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
 import {
   RESUMED_RUN_LABEL,
   STATUS_LABELS,
@@ -123,9 +123,21 @@ describe("StatusStrip model identity and discovery", () => {
     expect(claude).toContain("claude:opus:high - idle")
     expect(claude).not.toContain("codex:gpt-5.6-terra")
     expect(claude).not.toContain("codex:gpt-5.6-terra:ultra")
-    expect(claude).toContain(KEYMAP_HINT)
+    expect(claude).toContain(tabNavigationHint("unknown"))
     expect(claude).not.toContain("^T hand off")
     expect(claude).not.toContain("^R resume")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("switches from the sessions attention fallback to direct tab chords after Kitty confirmation", async () => {
+    const controller = createFakeController()
+    const setup = await renderStrip(controller, 100, models)
+
+    expect(setup.captureCharFrame()).toContain(tabNavigationHint("unknown"))
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+    const confirmed = await setup.waitForFrame((frame) => frame.includes(tabNavigationHint("kittyConfirmed")))
+    expect(confirmed).not.toContain(tabNavigationHint("unknown"))
 
     await destroyMounted(setup.renderer)
   })
@@ -179,7 +191,7 @@ describe("StatusStrip model identity and discovery", () => {
     const setup = await renderStrip(controller)
 
     expect(setup.captureCharFrame()).toContain(SHELL_EXIT_HINT)
-    expect(setup.captureCharFrame()).not.toContain(KEYMAP_HINT)
+    expect(setup.captureCharFrame()).not.toContain(tabNavigationHint("unknown"))
 
     await destroyMounted(setup.renderer)
   })

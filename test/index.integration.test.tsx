@@ -11,12 +11,13 @@ import type { AgentConnection, PromptBlock } from "../src/agent/agentConnection.
 import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
-import { createCockpitRenderer, createCockpitSession, main } from "../src/index.ts"
+import { createCockpitRenderer, createCockpitSession, main, wireKeyboardCapability } from "../src/index.ts"
 import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
 import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
+import { tabNavigationHint } from "../src/ui/keymap.ts"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted, settleMountedHighlights } from "./reactTui.ts"
@@ -221,10 +222,10 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       const resumed = await setup.waitForFrame(
-        (frame) => frame.includes("resumed") && frame.includes("/help") && frame.includes("restored codex from stored-codex"),
+        (frame) => frame.includes("resumed") && frame.includes(tabNavigationHint("unknown")) && frame.includes("restored codex from stored-codex"),
       )
       expect(resumed).toContain("resumed")
-      expect(resumed).toContain("/help")
+      expect(resumed).toContain(tabNavigationHint("unknown"))
       expect(resumed).not.toContain("/new")
       expect(resumed).toContain("restored codex from stored-codex")
 
@@ -351,6 +352,36 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
       await booted?.closed
       await runtime.dispose()
+    }
+  })
+
+  it("promotes Kitty capability on the first mounted chord and navigates only on the next event", async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false, kittyKeyboard: true })
+    const controller = createFakeController()
+    let booted: Awaited<ReturnType<typeof main>> | undefined
+
+    try {
+      await actAsync(async () => {
+        booted = await main({
+          createRenderer: async () => setup.renderer,
+          createController: async () => controller,
+          loadConfig: async () => defaultAppConfig(),
+          onExit: () => {},
+          wireNotifier: () => {},
+        })
+      })
+      await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING))
+
+      await actAsync(() => setup.mockInput.pressKey("l", { ctrl: true }))
+      expect(controller.store.getState().keyboardCapability).toBe("kittyConfirmed")
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+      await setup.waitForFrame((frame) => frame.includes(tabNavigationHint("kittyConfirmed")))
+
+      await actAsync(() => setup.mockInput.pressKey("l", { ctrl: true }))
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    } finally {
+      if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
+      await booted?.closed
     }
   })
 
@@ -556,11 +587,15 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     expect(renderer.isDestroyed).toBe(true)
   })
 
-  it("createCockpitRenderer forwards exitOnCtrlC through its factory", async () => {
+  it("createCockpitRenderer requests Kitty disambiguation and alternate keys while preserving renderer options", async () => {
     const { renderer } = await createTestRenderer({ width: 40, height: 10 })
-    let seenConfig: { exitOnCtrlC?: boolean } | undefined
+    let seenConfig: {
+      exitOnCtrlC?: boolean
+      targetFps?: number
+      useKittyKeyboard?: { disambiguate?: boolean; alternateKeys?: boolean } | null
+    } | undefined
 
-    const factory = (async (config: { exitOnCtrlC?: boolean }) => {
+    const factory = (async (config: typeof seenConfig) => {
       seenConfig = config
       return renderer
     }) as unknown as Parameters<typeof createCockpitRenderer>[0]
@@ -569,8 +604,31 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
 
     expect(result).toBe(renderer)
     expect(seenConfig?.exitOnCtrlC).toBe(false)
+    expect(seenConfig?.targetFps).toBe(30)
+    expect(seenConfig?.useKittyKeyboard).toEqual({ disambiguate: true, alternateKeys: true })
 
     // No React root was mounted on this renderer, so a plain destroy is fine.
     renderer.destroy()
+  })
+
+  it("promotes capability only for Kitty-source renderer events and detaches cleanly", async () => {
+    const kitty = await createTestRenderer({ width: 40, height: 10, kittyKeyboard: true })
+    const raw = await createTestRenderer({ width: 40, height: 10, kittyKeyboard: false })
+    let confirmations = 0
+    const stopKitty = wireKeyboardCapability(kitty.renderer, () => confirmations++)
+    wireKeyboardCapability(raw.renderer, () => confirmations++)
+
+    raw.mockInput.pressKey("a")
+    expect(confirmations).toBe(0)
+
+    kitty.mockInput.pressKey("a")
+    expect(confirmations).toBe(1)
+
+    stopKitty()
+    kitty.mockInput.pressKey("b")
+    expect(confirmations).toBe(1)
+
+    kitty.renderer.destroy()
+    raw.renderer.destroy()
   })
 })

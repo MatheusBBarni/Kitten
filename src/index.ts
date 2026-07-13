@@ -85,7 +85,25 @@ export function createCockpitRenderer(factory: typeof createCliRenderer = create
   return factory({
     exitOnCtrlC: false,
     targetFps: 30,
+    useKittyKeyboard: {
+      disambiguate: true,
+      alternateKeys: true,
+    },
   })
+}
+
+/** Promote keyboard capability only after the renderer parses a Kitty-source event. */
+export function wireKeyboardCapability(renderer: CliRenderer, onKittyConfirmed: () => void): () => void {
+  const onKeypress = (key: KeyEvent): void => {
+    if (key.source === "kitty") onKittyConfirmed()
+  }
+
+  renderer.keyInput.on("keypress", onKeypress)
+  const stop = (): void => {
+    renderer.keyInput.off("keypress", onKeypress)
+  }
+  renderer.once("destroy", stop)
+  return stop
 }
 
 /** Route Ctrl+C at the renderer boundary without stealing it from the focused shell. */
@@ -363,6 +381,8 @@ export interface MainDeps {
   onBlocked?: (report: FirstRunReport) => void
   /** How the attention notifier is wired; defaults to {@link wireAttentionNotifier}. */
   wireNotifier?: (renderer: CliRenderer, store: AppStore) => void
+  /** How renderer key events promote ephemeral Kitty capability; injectable for lifecycle tests. */
+  wireKeyboardCapability?: (renderer: CliRenderer, onKittyConfirmed: () => void) => void
 }
 
 /** What {@link main} hands back so a caller (or a test) can inspect the booted app. */
@@ -503,6 +523,9 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
   // Wire the attention notifier alongside telemetry: it watches the same store and
   // reads terminal focus from the renderer. Best-effort, so it never blocks the mount.
   ;(deps.wireNotifier ?? wireAttentionNotifier)(renderer, controller.store)
+  ;(deps.wireKeyboardCapability ?? wireKeyboardCapability)(renderer, () => {
+    controller.store.confirmKittyKeyboard()
+  })
   wireCtrlCRouting(renderer, controller)
 
   disposeBootBanner?.()

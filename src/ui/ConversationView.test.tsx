@@ -20,6 +20,7 @@ import {
   START_FRESH_LABEL,
 } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
+import { tabNavigationHint } from "./keymap.ts"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
@@ -444,7 +445,7 @@ describe("ConversationView streaming", () => {
     expect(settled).toContain("ping")
     expect(settled).toContain("Hello, world.")
     expect(settled.match(/Hello, world\./g)).toHaveLength(1)
-    expect(settled).toContain("/help")
+    expect(settled).toContain(tabNavigationHint("unknown"))
     expect(settled).not.toContain("Claude Code")
 
     await destroyMounted(renderer)

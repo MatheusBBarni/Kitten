@@ -42,6 +42,7 @@ import type {
   FocusedPane,
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
+  KeyboardCapability,
   ModelSelectOverlay,
   RestorationMode,
   SettingsOverlay,
@@ -71,6 +72,10 @@ export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
 /** Ephemeral empty-workspace action feedback. */
 export const selectWorkspaceNotice: Selector<WorkspaceNotice | null> = (state) =>
   state.workspaceNotice
+
+/** Renderer-confirmed keyboard capability used by conditional matching and help. */
+export const selectKeyboardCapability: Selector<KeyboardCapability> = (state) =>
+  state.keyboardCapability
 
 /** The pane that currently owns keyboard input. */
 export const selectFocusedPane: Selector<FocusedPane> = (state) => state.focusedPane

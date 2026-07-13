@@ -32,12 +32,13 @@ import type { SessionController } from "../app/controller.ts"
 import { composeHandoffBlocks, createHandoffEdits, createHandoffFlow } from "../app/handoff.ts"
 import type { BannerVariant } from "../config/appState.ts"
 import { encodeKey } from "../shell/keyEncoder.ts"
-import type { Selector } from "../store/appStore.ts"
+import type { KeyboardCapability, Selector } from "../store/appStore.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import {
   selectFocusedSessionId,
   selectHasOpenOverlay,
   selectIsShellFocused,
+  selectKeyboardCapability,
   selectRestoration,
 } from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
@@ -52,7 +53,7 @@ import { ShellPane } from "./ShellPane.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
-import { HELP_ENTRIES, matchCommand, type CockpitCommand } from "./keymap.ts"
+import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
@@ -116,6 +117,7 @@ function CockpitFrame({
   const [externalRunNotice, setExternalRunNotice] = useState<ExternalRunNotice | null>(null)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
+  const keyboardCapability = useAppSelector(selectKeyboardCapability)
   const shellBufferType = useShellBufferType()
   const shellCommandCount = useAppSelector(selectShellCommandCount)
   const shellActivationRecorded = useRef(false)
@@ -173,6 +175,12 @@ function CockpitFrame({
           setHelpOpen(false)
           controller.store.openSessions()
           return
+        case "previous-tab":
+          controller.store.selectAdjacentConversation("previous")
+          return
+        case "next-tab":
+          controller.store.selectAdjacentConversation("next")
+          return
         case "resume-session":
           setHelpOpen(false)
           recorder?.resumePickerOpened()
@@ -226,7 +234,7 @@ function CockpitFrame({
     (key: KeyEvent) => {
       if (overlayOpen) return
 
-      const command = matchCommand(key)
+      const command = matchCommand(key, keyboardCapability)
       const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
 
       if (command === "toggle-shell") {
@@ -248,9 +256,15 @@ function CockpitFrame({
         const bytes = encodeKey(key)
         if (!bytes || !controller.shell.ready) return
         controller.shell.runtime.write(bytes)
+        return
+      }
+
+      if (command === "previous-tab" || command === "next-tab") {
+        key.preventDefault()
+        runCockpitCommand(command)
       }
     },
-    [controller, helpOpen, overlayOpen, runCockpitCommand],
+    [controller, helpOpen, keyboardCapability, overlayOpen, runCockpitCommand],
   )
   useKeyboard(onKey)
 
@@ -305,7 +319,7 @@ function CockpitFrame({
 
       {shellFullHeight ? null : <StatusStrip />}
 
-      {helpOpen ? <HelpOverlay /> : null}
+      {helpOpen ? <HelpOverlay capability={keyboardCapability} /> : null}
 
       <SessionsOverlay />
 
@@ -361,9 +375,6 @@ function NotReadyNotice({ error }: { error: string }): ReactNode {
   )
 }
 
-/** Widest chord in the table, so the description column lines up under any binding. */
-const KEYS_COLUMN_WIDTH = Math.max(...HELP_ENTRIES.map((entry) => entry.keys.length)) + 2
-
 /**
  * The help panel: an absolutely-positioned overlay rendered straight from the
  * keymap table, so it can never describe a binding the shell does not have.
@@ -371,8 +382,10 @@ const KEYS_COLUMN_WIDTH = Math.max(...HELP_ENTRIES.map((entry) => entry.keys.len
  * Escape appears twice, and in precedence order: while the panel is open it closes
  * the panel, and only once the panel is gone does it reach the editor.
  */
-export function HelpOverlay(): ReactNode {
+export function HelpOverlay({ capability = "unknown" }: { capability?: KeyboardCapability }): ReactNode {
   const palette = usePalette()
+  const entries = helpEntries(capability)
+  const keysColumnWidth = Math.max(...entries.map((entry) => entry.keys.length)) + 2
   return (
     <box
       style={{
@@ -390,9 +403,9 @@ export function HelpOverlay(): ReactNode {
       title={HELP_TITLE}
       titleColor={palette.accent}
     >
-      {HELP_ENTRIES.map((entry) => (
+      {entries.map((entry) => (
         <text key={entry.description}>
-          <span fg={palette.accent}>{entry.keys.padEnd(KEYS_COLUMN_WIDTH)}</span>
+          <span fg={palette.accent}>{entry.keys.padEnd(keysColumnWidth)}</span>
           <span fg={palette.text}>{entry.description}</span>
         </text>
       ))}

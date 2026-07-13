@@ -11,6 +11,7 @@ import {
   selectFocusedPane,
   selectHasOpenOverlay,
   selectIsFocused,
+  selectKeyboardCapability,
   selectRestoration,
   selectRestorationBundle,
   selectSessionPicker,
@@ -79,6 +80,7 @@ describe("createAppStore", () => {
     expect(state.workspace.selectedVisibleId).toBe("claude-code")
     expect(state.focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
     expect(state.shell).toEqual(createShellState())
+    expect(selectKeyboardCapability(state)).toBe("unknown")
     expect(state.overlays).toEqual({
       approval: null,
       handoffPreview: null,
@@ -92,6 +94,25 @@ describe("createAppStore", () => {
     expect(state.restoration).toEqual({ "claude-code": null, codex: null })
     expect(state.restorationBundle).toBeNull()
     expect(state.preferences).toEqual({ theme: "auto" })
+  })
+
+  it("promotes Kitty keyboard capability once without disturbing durable workspace state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    let notifications = 0
+    store.subscribe(() => notifications++)
+
+    store.confirmKittyKeyboard()
+
+    const confirmed = store.getState()
+    expect(selectKeyboardCapability(confirmed)).toBe("kittyConfirmed")
+    expect(confirmed.workspace).toBe(before.workspace)
+    expect(confirmed.sessions).toBe(before.sessions)
+    expect(notifications).toBe(1)
+
+    store.confirmKittyKeyboard()
+    expect(store.getState()).toBe(confirmed)
+    expect(notifications).toBe(1)
   })
 
   it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {

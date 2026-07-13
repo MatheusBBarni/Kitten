@@ -21,6 +21,8 @@
 
 import type { KeyBinding as TextareaKeyBinding } from "@opentui/core"
 
+import type { KeyboardCapability } from "../store/appStore.ts"
+
 /**
  * The subset of an OpenTUI `KeyEvent` a binding inspects.
  *
@@ -32,6 +34,7 @@ export interface CockpitKey {
   readonly ctrl: boolean
   readonly shift: boolean
   readonly meta: boolean
+  readonly source?: "raw" | "kitty"
 }
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
@@ -48,6 +51,8 @@ export type CockpitCommand =
   | "open-settings"
   | "toggle-help"
   | "close-help"
+  | "previous-tab"
+  | "next-tab"
 
 /** Every intent the model/effort selector handles while it is on screen. */
 export type ModelSelectCommand = "prev-option" | "next-option" | "prev-tab" | "next-tab" | "confirm" | "cancel"
@@ -96,6 +101,8 @@ export interface HelpEntry {
 export interface KeyBinding<Command extends string = CockpitCommand> extends HelpEntry {
   readonly command: Command
   readonly matches: (key: CockpitKey) => boolean
+  /** Persistent renderer confirmation required in addition to the current event predicate. */
+  readonly requiresKittyConfirmation?: boolean
 }
 
 /** One visible, slash-first cockpit operation. */
@@ -127,6 +134,11 @@ function ctrl(name: string): (key: CockpitKey) => boolean {
   return (key) => key.name === name && key.ctrl && !key.meta && !key.shift
 }
 
+/** A disambiguated Ctrl chord from the Kitty parser path, never legacy raw input. */
+function kittyCtrl(name: string): (key: CockpitKey) => boolean {
+  return (key) => key.source === "kitty" && ctrl(name)(key)
+}
+
 /** Match when any one of the supplied predicates claims the key. */
 function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: CockpitKey) => boolean {
   return (key) => predicates.some((predicate) => predicate(key))
@@ -144,6 +156,8 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "switch-focus", name: "switch", description: "Switch focus to the other agent" },
   { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
   { command: "sessions", name: "sessions", description: "Show every session and jump to one that needs you" },
+  { command: "previous-tab", name: "previous-tab", description: "Select the previous visible conversation" },
+  { command: "next-tab", name: "next-tab", description: "Select the next visible conversation" },
   { command: "resume-session", name: "resume", description: "Find and resume a saved run for this project" },
   { command: "start-new-run", name: "new", description: "Start a new run with fresh agent sessions" },
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
@@ -157,6 +171,20 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
  * F2 is the terminal-level fallback for keyboards that cannot report Ctrl+`.
  */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
+  {
+    command: "previous-tab",
+    keys: "Ctrl+H",
+    description: "Move to the previous visible tab when Kitty input is confirmed",
+    matches: kittyCtrl("h"),
+    requiresKittyConfirmation: true,
+  },
+  {
+    command: "next-tab",
+    keys: "Ctrl+L",
+    description: "Move to the next visible tab when Kitty input is confirmed",
+    matches: kittyCtrl("l"),
+    requiresKittyConfirmation: true,
+  },
   {
     command: "toggle-shell",
     keys: "Ctrl+` / F2",
@@ -525,11 +553,20 @@ export const SETTINGS_KEYMAP: readonly KeyBinding<SettingsCommand>[] = [
  * overlay prints its own hint instead (`APPROVAL_HINT`, `HANDOFF_HINT`), in the one
  * state where its keys work.
  */
-export const HELP_ENTRIES: readonly HelpEntry[] = [
-  ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
-  { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
-  ...EDITOR_KEYMAP,
-]
+export function helpEntries(capability: KeyboardCapability): readonly HelpEntry[] {
+  const directTabBindings = capability === "kittyConfirmed"
+    ? COCKPIT_KEYMAP.filter((entry) => entry.command === "previous-tab" || entry.command === "next-tab")
+    : []
+  return [
+    ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
+    ...directTabBindings.map(({ keys, description }) => ({ keys, description })),
+    { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
+    ...EDITOR_KEYMAP,
+  ]
+}
+
+/** Legacy-safe default retained for non-reactive consumers and tests. */
+export const HELP_ENTRIES: readonly HelpEntry[] = helpEntries("unknown")
 
 /** Read a display label from the same binding row dispatch uses. */
 function bindingKeys<Command extends string>(keymap: readonly KeyBinding<Command>[], command: Command): string {
@@ -550,6 +587,13 @@ export const NEW_RUN_KEY_HINT = commandSlash("start-new-run")
 
 /** The one quiet, always-visible discovery affordance in the status strip. */
 export const KEYMAP_HINT = commandSlash("toggle-help")
+
+/** Direct-chord discovery after confirmation, otherwise the universal sessions/attention path. */
+export function tabNavigationHint(capability: KeyboardCapability): string {
+  return capability === "kittyConfirmed"
+    ? `${bindingKeys(COCKPIT_KEYMAP, "previous-tab")}/${bindingKeys(COCKPIT_KEYMAP, "next-tab")} tabs`
+    : `${commandSlash("sessions")} → n next attention`
+}
 
 /** The always-available way back from terminal ownership, shown while the shell has focus. */
 export const SHELL_EXIT_HINT = `${bindingKeys(COCKPIT_KEYMAP, "toggle-shell")} exit shell`
@@ -604,8 +648,10 @@ export const HANDOFF_EDIT_HINT = "Esc returns to the bundle"
 /** Build the "first binding whose predicate matches, else null" lookup a keymap needs. */
 function makeMatcher<Command extends string>(
   keymap: readonly KeyBinding<Command>[],
-): (key: CockpitKey) => Command | null {
-  return (key) => keymap.find((binding) => binding.matches(key))?.command ?? null
+): (key: CockpitKey, capability?: KeyboardCapability) => Command | null {
+  return (key, capability = "unknown") => keymap.find((binding) =>
+    (!binding.requiresKittyConfirmation || capability === "kittyConfirmed") && binding.matches(key)
+  )?.command ?? null
 }
 
 /** The command a keypress maps to, or `null` when the shell does not claim it. */

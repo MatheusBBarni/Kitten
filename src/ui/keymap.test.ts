@@ -18,6 +18,7 @@ import {
   HANDOFF_HINT,
   HANDOFF_KEYMAP,
   HELP_ENTRIES,
+  helpEntries,
   KEYMAP_HINT,
   matchApprovalCommand,
   matchCommand,
@@ -40,6 +41,7 @@ import {
   SHELL_HINT,
   SETTINGS_HINT,
   SETTINGS_KEYMAP,
+  tabNavigationHint,
   type CockpitKey,
 } from "./keymap.ts"
 
@@ -73,12 +75,36 @@ describe("matchCommand", () => {
     expect(matchCommand(key("`", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("escape", { meta: true }))).toBeNull()
   })
+
+  it("matches adjacent-tab chords only after Kitty confirmation and on a current Kitty event", () => {
+    const previous = key("h", { ctrl: true, source: "kitty" })
+    const next = key("l", { ctrl: true, source: "kitty" })
+
+    expect(matchCommand(previous, "unknown")).toBeNull()
+    expect(matchCommand(next, "unknown")).toBeNull()
+    expect(matchCommand(previous, "kittyConfirmed")).toBe("previous-tab")
+    expect(matchCommand(next, "kittyConfirmed")).toBe("next-tab")
+    expect(matchCommand(key("h", { ctrl: true, source: "raw" }), "kittyConfirmed")).toBeNull()
+    expect(matchCommand(key("l", { ctrl: true, source: "raw" }), "kittyConfirmed")).toBeNull()
+  })
+
+  it("rejects printable, modified, and unrelated Kitty events for adjacent navigation", () => {
+    for (const event of [
+      key("h", { source: "kitty" }),
+      key("l", { source: "kitty" }),
+      key("h", { ctrl: true, shift: true, source: "kitty" }),
+      key("l", { ctrl: true, meta: true, source: "kitty" }),
+      key("j", { ctrl: true, source: "kitty" }),
+    ]) {
+      expect(matchCommand(event, "kittyConfirmed")).toBeNull()
+    }
+  })
 })
 
 describe("COCKPIT_KEYMAP", () => {
-  it("retains only the terminal-level shell chord and help dismissal", () => {
+  it("registers each conditional tab chord plus the terminal-level shell and help bindings once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["toggle-shell", "close-help"])
+    expect(commands).toEqual(["previous-tab", "next-tab", "toggle-shell", "close-help"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -105,6 +131,8 @@ describe("COCKPIT_COMMANDS", () => {
       ["switch-focus", "switch"],
       ["hand-off", "handoff"],
       ["sessions", "sessions"],
+      ["previous-tab", "previous-tab"],
+      ["next-tab", "next-tab"],
       ["resume-session", "resume"],
       ["start-new-run", "new"],
       ["clear-run", "clear"],
@@ -214,6 +242,18 @@ describe("HELP_ENTRIES", () => {
   it("gives each entry its own description, since the panel keys on it", () => {
     const descriptions = HELP_ENTRIES.map((entry) => entry.description)
     expect(new Set(descriptions).size).toBe(descriptions.length)
+  })
+
+  it("shows Kitty tab chords only after confirmation and otherwise advertises the sessions attention fallback", () => {
+    const unknown = helpEntries("unknown").map((entry) => entry.keys)
+    const confirmed = helpEntries("kittyConfirmed").map((entry) => entry.keys)
+
+    expect(unknown).not.toContain("Ctrl+H")
+    expect(unknown).not.toContain("Ctrl+L")
+    expect(confirmed).toContain("Ctrl+H")
+    expect(confirmed).toContain("Ctrl+L")
+    expect(tabNavigationHint("unknown")).toBe("/sessions → n next attention")
+    expect(tabNavigationHint("kittyConfirmed")).toBe("Ctrl+H/Ctrl+L tabs")
   })
 
   it("uses slash names for every cockpit action and leaves legacy chords absent", () => {

@@ -17,11 +17,12 @@ import {
   selectAgentModel,
   selectFocusedSessionId,
   selectIsShellFocused,
+  selectKeyboardCapability,
   selectSessionModel,
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
-import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
+import { SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
 import { usePalette, type StatusTone } from "./theme.ts"
 
 /** User-facing run-state vocabulary; awaiting approval is explicitly the user's turn. */
@@ -71,6 +72,7 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
   const runtimes = controller.runtimes()
   const resumed = useAppSelector(selectIsResumedRun)
   const shellFocused = useAppSelector(selectIsShellFocused)
+  const keyboardCapability = useAppSelector(selectKeyboardCapability)
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
   const focusedRuntime = runtimes.find((runtime) => runtime.sessionId === focusedSessionId)
 
@@ -95,7 +97,7 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
               <span fg={palette.status.finished}>{RESUMED_RUN_LABEL}</span>
             </text>
           ) : null}
-          <text fg={palette.accent}>{shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT}</text>
+          <text fg={palette.accent}>{shellFocused ? SHELL_EXIT_HINT : tabNavigationHint(keyboardCapability)}</text>
         </box>
       </box>
     </box>
