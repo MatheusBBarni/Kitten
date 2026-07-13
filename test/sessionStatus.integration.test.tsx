@@ -91,9 +91,9 @@ describe("session status integration (end_turn -> finished)", () => {
     // The store reflects the terminal stop reason: the turn ended, your move.
     expect(controller.store.getState().sessions.codex!.status).toBe("finished")
 
-    // The focused session's status is part of the compact provider:model summary.
+    // Both runtime chips stay visible while the selected session is marked finished.
     const frame = await waitForFrame((f) => f.includes(`codex:— - ${STATUS_LABELS.finished}`))
-    expect(frame).not.toContain(`claude:— - ${STATUS_LABELS.idle}`)
+    expect(frame).toContain(`claude:— - ${STATUS_LABELS.idle}`)
     expect(frame).not.toContain("Claude Code:")
     expect(frame).not.toContain("Codex:")
 

@@ -206,10 +206,10 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain("[selected] Claude Code")
     expect(frame).toContain("[tab] Codex")
 
-    // The strip keeps the focused provider, model, and status in one bottom row.
+    // The strip keeps both agents' status/headroom visible and the focused model detailed.
     const strip = rows.at(-1) ?? ""
     expect(strip).toContain(`claude:— - ${STATUS_LABELS.idle}`)
-    expect(strip).not.toContain("codex:—")
+    expect(strip).toContain(`codex:— - ${STATUS_LABELS.idle} —`)
     expect(strip).toContain(tabNavigationHint("unknown"))
 
     await destroyMounted(renderer)

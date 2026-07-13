@@ -13,10 +13,12 @@ import type { AgentRuntimeState } from "../app/controller.ts"
 import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
+import { HEADROOM_UNKNOWN } from "./headroom.ts"
 import { SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
 import {
   BACKGROUND_STATUS_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
+  FOCUS_MARKER,
   RESUMED_RUN_LABEL,
   STATUS_LABELS,
   StatusStrip,
@@ -25,6 +27,13 @@ import {
 import { DARK_PALETTE, type StatusTone } from "./theme.ts"
 
 const HEIGHT = 1
+
+function expectNoOverflow(frame: string, width: number): void {
+  const rows = frame.replace(/\n$/, "").split("\n")
+  expect(rows).toHaveLength(HEIGHT)
+  expect([...rows[0]!]).toHaveLength(width)
+  expect(frame).not.toContain("਀")
+}
 
 const HIDDEN_SELECTORS: StatusSlotSelectors = {
   model: () => () => null,
@@ -103,16 +112,18 @@ describe("StatusStrip agent state", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("renders only the focused status beside the provider and model", async () => {
+  it("renders both agent statuses and moves the focus marker", async () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller)
 
     expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS.idle}`)
-    expect(setup.captureCharFrame()).not.toContain("codex:—")
+    expect(setup.captureCharFrame()).toContain(`codex:— - ${STATUS_LABELS.idle}`)
+    expect(setup.captureCharFrame()).toContain(`${FOCUS_MARKER} claude:`)
 
     await actAsync(() => controller.actions.switchFocus())
-    const codex = await setup.waitForFrame((frame) => frame.includes(`codex:— - ${STATUS_LABELS.idle}`))
-    expect(codex).not.toContain("claude:—")
+    const codex = await setup.waitForFrame((frame) => frame.includes(`${FOCUS_MARKER} codex:`))
+    expect(codex).toContain(`claude:— - ${STATUS_LABELS.idle}`)
+    expect(codex).not.toContain(`${FOCUS_MARKER} claude:`)
 
     await destroyMounted(setup.renderer)
   })
@@ -146,6 +157,77 @@ describe("StatusStrip agent state", () => {
   })
 })
 
+describe("StatusStrip headroom", () => {
+  it("composes focus, name, status, percent, and a neutral fixed-width bar in order", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("▸ claude:— - idle 38% █░░")
+    expect(foregroundOf(setup, "█")).toBe(paletteColor(DARK_PALETTE.text))
+    expect(foregroundOf(setup, "░░")).toBe(paletteColor(DARK_PALETTE.muted))
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows honest unknown headroom for absent usage on the other agent", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("claude:— - idle 38% █░░")
+    expect(frame).toContain(`codex:— - idle ${HEADROOM_UNKNOWN}`)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows unknown rather than reported usage for a not-ready runtime", async () => {
+    const [claude, codex] = readyRuntimes()
+    const runtimes: AgentRuntimeState[] = [claude!, { ...codex!, ready: false, error: "codex unavailable" }]
+    const controller = createFakeController({ runtimes })
+    controller.store.applyEvent("codex", { kind: "usage", used: 100_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`codex:— - ${STATUS_LABELS.not_ready} ${HEADROOM_UNKNOWN}`)
+    expect(frame).not.toContain("codex:— - not ready 50%")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps both populated chips and the discovery hint within exactly 80 columns", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.applyEvent("codex", { kind: "usage", used: 50_000, size: 200_000 })
+    const setup = await renderStrip(controller, 80)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("claude:— - idle 38% █░░")
+    expect(frame).toContain("codex:— - idle 75% ██░")
+    expect(frame).toContain(tabNavigationHint("unknown"))
+    expectNoOverflow(frame, 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not change the other agent's chip output for a Claude-only usage event", async () => {
+    const controller = createFakeController()
+    const setup = await renderStrip(controller)
+    expect(setup.captureCharFrame()).toContain(`codex:— - idle ${HEADROOM_UNKNOWN}`)
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    })
+    const frame = await setup.waitForFrame((value) => value.includes("38%"))
+    expect(frame).toContain(`codex:— - idle ${HEADROOM_UNKNOWN}`)
+    expect(frame).not.toContain("codex:— - idle 38%")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
 describe("StatusStrip model identity and discovery", () => {
   const models = slotSelectors({
     model: { "claude-code": "opus", codex: "gpt-5.6-terra" },
@@ -157,8 +239,8 @@ describe("StatusStrip model identity and discovery", () => {
     const claude = setup.captureCharFrame()
 
     expect(claude).toContain("claude:opus:high - idle")
+    expect(claude).toContain("codex:— - idle")
     expect(claude).not.toContain("codex:gpt-5.6-terra")
-    expect(claude).not.toContain("codex:gpt-5.6-terra:ultra")
     expect(claude).toContain(tabNavigationHint("unknown"))
     expect(claude).not.toContain("^T hand off")
     expect(claude).not.toContain("^R resume")
@@ -178,15 +260,17 @@ describe("StatusStrip model identity and discovery", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("changes the compact model readout with focus", async () => {
+  it("moves the compact model readout with focus while retaining both chips", async () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller, 100, models)
 
     await actAsync(() => controller.actions.switchFocus("codex"))
-    const codex = await setup.waitForFrame((frame) => frame.includes("codex:gpt-5.6-terra:ultra - idle"))
+    const codex = await setup.waitForFrame((frame) => frame.includes(`${FOCUS_MARKER} codex:gpt-5.6-terra:ultra - idle`))
 
-    expect(codex).not.toContain("claude:opus")
+    expect(codex).toContain("claude:— - idle")
     expect(codex).not.toContain("claude:opus:high")
+    expect(codex).toContain(`${FOCUS_MARKER} codex:`)
+    expect(codex).not.toContain(`${FOCUS_MARKER} claude:`)
 
     await destroyMounted(setup.renderer)
   })
