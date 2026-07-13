@@ -219,6 +219,8 @@ export const selectSessionOrder: Selector<SessionId[]> = (state) => state.worksp
 export interface SessionListItem {
   id: SessionId
   title: string
+  /** Display label with deterministic duplicate-name disambiguation. */
+  label: string
   providerKind: ProviderKind
   /** The session's own working directory (ADR-005). The overview card shows it. */
   cwd: string
@@ -226,6 +228,10 @@ export interface SessionListItem {
   /** Whether this session's status is one the developer must act on (ADR-006). */
   needsAttention: boolean
   lifecycle: "visible" | "background"
+  /** Whether this Visible conversation is the workspace selection. */
+  selected: boolean
+  /** Whether the current attention epoch has already been visited. */
+  attentionSeen: boolean
 }
 
 /**
@@ -251,14 +257,21 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
     const session = state.sessions[id]!
     const conversation = state.workspace.conversations[id]
     if (!session || !conversation) return []
+    const duplicate = duplicatePosition(state, id)
     return [{
       id,
       title: conversation.displayName,
+      label:
+        duplicate.count > 1
+          ? `${conversation.displayName} (${duplicate.index})`
+          : conversation.displayName,
       providerKind: session.providerKind,
       cwd: session.cwd,
       status: session.status,
       needsAttention: needsAttention(session.status),
       lifecycle: conversation.lifecycle,
+      selected: state.workspace.selectedVisibleId === id,
+      attentionSeen: conversation.attention.seen,
     }]
   })
   sessionListCache.set(state, list)

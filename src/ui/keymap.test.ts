@@ -431,7 +431,7 @@ describe("SESSIONS_KEYMAP", () => {
       if (binding.command === "jump-next-needy") continue
       expect(SESSIONS_HINT).toContain(binding.keys)
     }
-    expect(SESSIONS_HINT).toContain("n next needy")
+    expect(SESSIONS_HINT).toContain("n next attention")
   })
 })
 

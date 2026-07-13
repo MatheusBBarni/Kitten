@@ -426,7 +426,7 @@ export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
   {
     command: "jump-next-needy",
     keys: "n",
-    description: "Jump to the next session that needs you",
+    description: "Jump to the next conversation needing attention",
     matches: plain("n"),
   },
   {
@@ -650,7 +650,7 @@ export const HANDOFF_HINT = "↑↓ move  Space keep/drop  m model/effort  e edi
 export const HANDOFF_CONFIG_HINT = "↑↓ move  Enter set target option  Esc back"
 
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
-export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
+export const SESSIONS_HINT = "↑↓ move  Enter jump  n next attention  Esc close"
 
 /** The hint printed inside the saved-run picker while its filter owns text input. */
 export const SESSION_PICKER_HINT =

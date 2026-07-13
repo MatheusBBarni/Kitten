@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
+import type { ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -12,7 +13,15 @@ import { createAppStore } from "../store/appStore.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import { SESSIONS_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
-import { NEEDS_YOU_LABEL, SESSION_MARKER, SESSIONS_TITLE } from "./SessionsOverlay.tsx"
+import {
+  BACKGROUND_LABEL,
+  NEEDS_YOU_LABEL,
+  SELECTED_LABEL,
+  SESSION_MARKER,
+  SESSIONS_SCROLLBOX_ID,
+  SESSIONS_TITLE,
+  VISIBLE_LABEL,
+} from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { WELCOME_GREETING } from "./WelcomeBanner.tsx"
 
@@ -26,7 +35,7 @@ import { WELCOME_GREETING } from "./WelcomeBanner.tsx"
  */
 
 const WIDTH = 80
-const HEIGHT = 24
+const HEIGHT = 30
 
 /** Typed at the modal overview; must never reach the composer beneath it. */
 const DRAFT_MARKER = "zzq"
@@ -39,8 +48,8 @@ const FLEET: SessionSeed[] = [
 ]
 
 /** A ready runtime per seed, so the shell mounts a live cockpit over the fleet. */
-function fleetRuntimes(): AgentRuntimeState[] {
-  return FLEET.map((seed) => ({
+function runtimesFor(seeds: readonly SessionSeed[]): AgentRuntimeState[] {
+  return seeds.map((seed) => ({
     sessionId: seed.id,
     providerKind: seed.providerKind,
     displayName: PROVIDER_DISPLAY_NAMES[seed.providerKind],
@@ -53,7 +62,11 @@ function fleetRuntimes(): AgentRuntimeState[] {
 
 /** A fake controller over the three-session fleet, focused on the first session. */
 function fleetController(): FakeController {
-  return createFakeController({ store: createAppStore({ seeds: FLEET }), runtimes: fleetRuntimes() })
+  return controllerFor(FLEET)
+}
+
+function controllerFor(seeds: readonly SessionSeed[]): FakeController {
+  return createFakeController({ store: createAppStore({ seeds: [...seeds] }), runtimes: runtimesFor(seeds) })
 }
 
 /** Set a session's live status the way the reducer does. */
@@ -61,10 +74,13 @@ function setStatus(controller: FakeController, sessionId: SessionId, status: Ses
   controller.store.applyEvent(sessionId, { kind: "status", status })
 }
 
-async function renderCockpit(controller: FakeController): Promise<TestRendererSetup> {
+async function renderCockpit(
+  controller: FakeController,
+  dimensions: { width: number; height: number } = { width: WIDTH, height: HEIGHT },
+): Promise<TestRendererSetup> {
   const setup = await testRender(<CockpitApp controller={controller} />, {
-    width: WIDTH,
-    height: HEIGHT,
+    width: dimensions.width,
+    height: dimensions.height,
     kittyKeyboard: true,
   })
   await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING))
@@ -157,6 +173,27 @@ describe("SessionsOverlay card list", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("renders workspace-order lifecycle, selection, attention, and duplicate-name cues without color", async () => {
+    const controller = fleetController()
+    for (const id of ["a", "b", "c"]) controller.store.renameConversation(id, "Work")
+    controller.store.backgroundConversation("b")
+    setStatus(controller, "b", "awaiting_approval")
+    const setup = await renderCockpit(controller)
+
+    const frame = await openOverview(setup)
+    const lines = frame.split("\n")
+    const rowOf = (label: string): number => lines.findIndex((line) => line.includes(label))
+
+    expect(rowOf("Work (1)")).toBeLessThan(rowOf("Work (2)"))
+    expect(rowOf("Work (2)")).toBeLessThan(rowOf("Work (3)"))
+    expect(frame).toContain(VISIBLE_LABEL)
+    expect(frame).toContain(BACKGROUND_LABEL)
+    expect(frame).toContain(SELECTED_LABEL)
+    expect(frame).toContain(NEEDS_YOU_LABEL)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("marks the first card highlighted and moves the marker with the arrows", async () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)
@@ -176,6 +213,34 @@ describe("SessionsOverlay card list", () => {
     // The marker left the first card once it moved to the second.
     expect(moved.split("\n").find((l) => l.includes("Alpha"))).not.toContain(SESSION_MARKER)
 
+    await destroyMounted(setup.renderer)
+  })
+
+  it("scrolls a long narrow fleet so every arrow-selected row and the footer remain reachable", async () => {
+    const seeds = Array.from({ length: 12 }, (_, index): SessionSeed => ({
+      id: `scroll-${index}`,
+      providerKind: index % 2 === 0 ? "claude-code" : "codex",
+      title: `Target ${index}`,
+      cwd: `/work/${index}`,
+    }))
+    const controller = controllerFor(seeds)
+    const setup = await renderCockpit(controller, { width: 46, height: 16 })
+    await actAsync(() => controller.store.openSessions())
+    await setup.waitForFrame((frame) => frame.includes("n next attention") && frame.includes("Esc close"))
+    const scrollbox = setup.renderer.root.findDescendantById(SESSIONS_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await setup.waitFor(() => scrollbox!.scrollHeight > scrollbox!.viewport.height)
+    await actAsync(() => {
+      for (let index = 1; index < seeds.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    const frame = await setup.waitForFrame((value) =>
+      value.split("\n").some((line) => line.includes("Target 11") && line.includes(SESSION_MARKER)),
+    )
+
+    expect(frame).toContain("n next attention")
+    expect(frame).toContain("Esc close")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
     await destroyMounted(setup.renderer)
   })
 })
@@ -238,7 +303,7 @@ describe("SessionsOverlay routing", () => {
     })
     await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
 
-    expect(controller.calls.jumpToNextNeedy).toBe(1)
+    expect(controller.calls.jumpToNextAttention).toBe(1)
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("c")
 
     await destroyMounted(setup.renderer)
@@ -255,7 +320,7 @@ describe("SessionsOverlay routing", () => {
     await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
 
     // The action fired but found no candidate, so focus stayed put.
-    expect(controller.calls.jumpToNextNeedy).toBe(1)
+    expect(controller.calls.jumpToNextAttention).toBe(1)
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
 
     await destroyMounted(setup.renderer)
@@ -274,7 +339,7 @@ describe("SessionsOverlay routing", () => {
     // Focus never moved, and no routing action fired.
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.calls.jumpToNextNeedy).toBe(0)
+    expect(controller.calls.jumpToNextAttention).toBe(0)
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     // The composer took the keyboard back: typing now lands in the prompt.

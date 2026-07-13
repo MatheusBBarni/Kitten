@@ -282,7 +282,35 @@ describe("selectSessionList", () => {
     expect(list.map((item) => item.id)).toEqual(["a", "b", "c"])
     expect(list.map((item) => item.status)).toEqual(["idle", "finished", "idle"])
     expect(list.map((item) => item.needsAttention)).toEqual([false, true, false])
-    expect(list[0]).toMatchObject({ id: "a", title: "A", providerKind: "claude-code" })
+    expect(list[0]).toMatchObject({
+      id: "a",
+      title: "A",
+      label: "A",
+      providerKind: "claude-code",
+      lifecycle: "visible",
+      selected: true,
+      attentionSeen: true,
+    })
+  })
+
+  it("exposes background lifecycle and duplicate labels in workspace order", () => {
+    const store = fleetStore()
+    store.renameConversation("a", "Work")
+    store.renameConversation("b", "Work")
+    store.backgroundConversation("b")
+
+    expect(selectSessionList(store.getState()).map(({ id, label, lifecycle }) => ({ id, label, lifecycle }))).toEqual([
+      { id: "a", label: "Work (1)", lifecycle: "visible" },
+      { id: "b", label: "Work (2)", lifecycle: "background" },
+      { id: "c", label: "C", lifecycle: "visible" },
+    ])
+  })
+
+  it("excludes a Closed conversation from the universal session list", () => {
+    const store = fleetStore()
+    store.removeSession("b")
+
+    expect(selectSessionList(store.getState()).map((item) => item.id)).toEqual(["a", "c"])
   })
 
   it("carries each session's working directory, so the overview can label its card", () => {

@@ -10,7 +10,7 @@ import { createAppStore } from "../store/appStore.ts"
 import { selectVisibleTabs, type WorkspaceConversationView } from "../store/selectors.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
+import { SESSION_MARKER, SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import {
   layoutTabStrip,
   SHARED_WORKSPACE_LABEL,
@@ -186,8 +186,14 @@ describe("mounted cockpit tab integration", () => {
 
     const point = pointOf(narrow, TAB_OVERFLOW_LABEL)
     await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
-    const overlay = await setup.waitForFrame((frame) => frame.includes(SESSIONS_TITLE) && frame.includes("Session 4"))
-    for (const seed of seeds) expect(overlay).toContain(seed.title)
+    await setup.waitForFrame((frame) => frame.includes(SESSIONS_TITLE) && frame.includes("Session 1"))
+    await actAsync(() => {
+      for (let index = 1; index < seeds.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    const overlay = await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes("Session 4") && line.includes(SESSION_MARKER)),
+    )
+    expect(overlay).toContain("Esc close")
 
     await destroyMounted(setup.renderer)
   })
