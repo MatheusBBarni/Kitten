@@ -41,6 +41,7 @@ import {
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import {
   COCKPIT_COMMANDS,
+  COCKPIT_KEYMAP,
   matchMenuCommand,
   PROMPT_KEY_BINDINGS,
   type CockpitCommand,
@@ -123,10 +124,10 @@ export function slashMenuRows(filter: string, agentCommands: readonly AvailableC
   const cockpitRows: MenuRow[] = COCKPIT_COMMANDS
     .filter((command) => matches(command.name, command.description))
     .map((command) => ({
-      source: "kitten" as const,
+      source: "cockpit" as const,
       command: command.command,
-      name: command.name,
-      description: command.description,
+      label: `/${command.name}`,
+      shortcut: COCKPIT_KEYMAP.find((binding) => binding.command === command.command)?.keys ?? `/${command.name}`,
     }))
   const agentRows: MenuRow[] = agentCommands
     .map((command) => ({ ...command, name: command.name.replace(/^\/+/, "") }))
@@ -134,7 +135,7 @@ export function slashMenuRows(filter: string, agentCommands: readonly AvailableC
     .map((command) => ({
       source: "agent" as const,
       name: command.name,
-      description: command.description,
+      label: `/${command.name}`,
       ...(command.hint ? { hint: command.hint } : {}),
     }))
 
@@ -142,10 +143,10 @@ export function slashMenuRows(filter: string, agentCommands: readonly AvailableC
 }
 
 function menuGroups(rows: readonly MenuRow[]): SlashMenuGroup[] {
-  const kitten = rows.filter((row): row is Extract<MenuRow, { source: "kitten" }> => row.source === "kitten")
+  const cockpit = rows.filter((row): row is Extract<MenuRow, { source: "cockpit" }> => row.source === "cockpit")
   const agent = rows.filter((row): row is Extract<MenuRow, { source: "agent" }> => row.source === "agent")
   return [
-    ...(kitten.length > 0 ? [{ source: "Kitten", rows: kitten }] : []),
+    ...(cockpit.length > 0 ? [{ source: "Cockpit", rows: cockpit }] : []),
     ...(agent.length > 0 ? [{ source: "Agent commands", rows: agent }] : []),
   ]
 }
@@ -250,13 +251,13 @@ function SelectedPromptEditor({
     void controller.actions.sendPrompt(text)
   }, [controller, ready, restorationContextOpen])
 
-  const selectMenuRow = useCallback((): void => {
+  const selectMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current
     if (!editor || !armedMenu) return
-    const row = matchingRows[highlighted]
+    const row = selectedRow ?? matchingRows[highlighted]
     if (!row) return
 
-    if (row.source === "kitten") {
+    if (row.source === "cockpit") {
       editor.setSelection(armedMenu.start, armedMenu.end)
       editor.deleteSelection()
       setMenu(null)
