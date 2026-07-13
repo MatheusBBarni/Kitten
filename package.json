@@ -13,10 +13,10 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@kitten/darwin-arm64": "0.0.0",
-    "@kitten/darwin-x64": "0.0.0",
-    "@kitten/linux-arm64": "0.0.0",
-    "@kitten/linux-x64": "0.0.0"
+    "@kitten/darwin-arm64": "0.2.0",
+    "@kitten/darwin-x64": "0.2.0",
+    "@kitten/linux-arm64": "0.2.0",
+    "@kitten/linux-x64": "0.2.0"
   },
   "scripts": {
     "start": "bun run src/index.ts",
