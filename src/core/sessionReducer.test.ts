@@ -39,6 +39,7 @@ describe("createSessionState", () => {
       usage: undefined,
       configOptions: [],
       commands: [],
+      promptHistory: { entries: [], cursor: null },
     })
   })
 
@@ -52,6 +53,57 @@ describe("createSessionState", () => {
 
   it("defaults usage to unknown", () => {
     expect(initial().usage).toBeUndefined()
+  })
+
+  it("defaults prompt history to no entries and no active recall cursor", () => {
+    expect(initial().promptHistory).toEqual({ entries: [], cursor: null })
+  })
+})
+
+describe("prompt history events", () => {
+  it("delegates record, previous, and next transitions to the prompt-history policy", () => {
+    const recorded = sessionReducer(initial(), {
+      kind: "prompt_history",
+      action: "record",
+      text: "inspect the reducer",
+    })
+    const recalled = sessionReducer(recorded, { kind: "prompt_history", action: "previous" })
+    const cleared = sessionReducer(recalled, { kind: "prompt_history", action: "next" })
+
+    expect(recorded.promptHistory).toEqual({ entries: ["inspect the reducer"], cursor: null })
+    expect(recalled.promptHistory).toEqual({ entries: ["inspect the reducer"], cursor: 0 })
+    expect(cleared.promptHistory).toEqual({ entries: ["inspect the reducer"], cursor: null })
+  })
+
+  it("changes only prompt history and preserves every unrelated reference", () => {
+    const before = fold([
+      { kind: "user_message", messageId: "u1", text: "existing turn" },
+      { kind: "plan", entries: [{ content: "Existing plan", status: "in_progress" }] },
+      { kind: "commands", commands: [{ name: "review", description: "Review changes" }] },
+    ])
+
+    const after = sessionReducer(before, {
+      kind: "prompt_history",
+      action: "record",
+      text: "new prompt",
+    })
+
+    expect(after).toEqual({
+      ...before,
+      promptHistory: { entries: ["new prompt"], cursor: null },
+    })
+    expect(after.turns).toBe(before.turns)
+    expect(after.plan).toBe(before.plan)
+    expect(after.commands).toBe(before.commands)
+    expect(after.configOptions).toBe(before.configOptions)
+    expect(after.referencedFiles).toBe(before.referencedFiles)
+    expect(after.pendingDiffs).toBe(before.pendingDiffs)
+  })
+
+  it("returns the same session for a prompt-history no-op", () => {
+    const before = initial()
+
+    expect(sessionReducer(before, { kind: "prompt_history", action: "next" })).toBe(before)
   })
 })
 

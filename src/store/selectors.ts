@@ -16,6 +16,7 @@
 
 import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
 import { attentionConversationIds } from "../core/workspace.ts"
+import type { PromptHistoryState } from "../core/promptHistory.ts"
 import type {
   AvailableCommand,
   ConfigOption,
@@ -64,6 +65,7 @@ const EMPTY_COMMANDS: AvailableCommand[] = []
 const EMPTY_PENDING_DIFFS: PendingDiff[] = []
 const EMPTY_REFERENCED_FILES = new Map<string, "read" | "edited">()
 const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
+const EMPTY_PROMPT_HISTORY: PromptHistoryState = { entries: [], cursor: null }
 
 /** The active conversation, retained while the shell owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
@@ -161,6 +163,12 @@ export const selectSessionTurns =
   (sessionId: SessionId | null): Selector<Turn[]> =>
   (state) =>
     (sessionId ? state.sessions[sessionId]?.turns : undefined) ?? EMPTY_TURNS
+
+/** One session's composer history; unrelated session/store updates retain its reference. */
+export const selectSessionPromptHistory =
+  (sessionId: SessionId | null): Selector<PromptHistoryState> =>
+  (state) =>
+    (sessionId ? state.sessions[sessionId]?.promptHistory : undefined) ?? EMPTY_PROMPT_HISTORY
 
 /** One session's most recent plan. */
 export const selectSessionPlan =

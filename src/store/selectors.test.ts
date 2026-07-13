@@ -15,6 +15,7 @@ import {
   selectRestoration,
   selectSessionPendingDiffs,
   selectSessionPlan,
+  selectSessionPromptHistory,
   selectSessionCommands,
   selectSessionReferencedFiles,
   selectSessionState,
@@ -280,6 +281,61 @@ describe("per-agent session selectors", () => {
     expect(selectSessionCommands("claude-code")(after)).toBe(selectSessionCommands("claude-code")(before))
     expect(selectSessionStatus("claude-code")(after)).toBe(selectSessionStatus("claude-code")(before))
     expect(selectSessionTurns("claude-code")(after)).not.toBe(selectSessionTurns("claude-code")(before))
+  })
+})
+
+describe("selectSessionPromptHistory", () => {
+  it("projects the addressed session history and stays stable across unrelated updates", () => {
+    const store = createAppStore()
+    const selectHistory = selectSessionPromptHistory("claude-code")
+    const initialHistory = selectHistory(store.getState())
+
+    expect(initialHistory).toEqual({ entries: [], cursor: null })
+
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "m1",
+      textDelta: "streamed output",
+    })
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/kitten" })
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+
+    store.setThemePreference("dark")
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+  })
+
+  it("changes only for history events in the selected session", () => {
+    const store = createAppStore()
+    const selectClaudeHistory = selectSessionPromptHistory("claude-code")
+    const before = selectClaudeHistory(store.getState())
+
+    store.applyEvent("codex", { kind: "prompt_history", action: "record", text: "codex only" })
+    expect(selectClaudeHistory(store.getState())).toBe(before)
+
+    store.applyEvent("claude-code", {
+      kind: "prompt_history",
+      action: "record",
+      text: "claude only",
+    })
+    expect(selectClaudeHistory(store.getState())).toEqual({
+      entries: ["claude only"],
+      cursor: null,
+    })
+    expect(selectClaudeHistory(store.getState())).not.toBe(before)
+  })
+
+  it("returns one stable empty fallback when no session is selected", () => {
+    const selectHistory = selectSessionPromptHistory(null)
+    const first = selectHistory(createAppStore().getState())
+    const second = selectHistory(createAppStore({ seeds: [] }).getState())
+
+    expect(first).toEqual({ entries: [], cursor: null })
+    expect(second).toBe(first)
   })
 })
 

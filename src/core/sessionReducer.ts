@@ -11,6 +11,7 @@
  * can never drift from the transcript.
  */
 
+import { createPromptHistoryState, promptHistoryReducer } from "./promptHistory.ts"
 import type {
   DomainSessionEvent,
   PendingDiff,
@@ -46,6 +47,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     usage: undefined,
     configOptions: [],
     commands: [],
+    promptHistory: createPromptHistoryState(),
   }
 }
 
@@ -90,6 +92,11 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       // Agents advertise a complete command set. The newest update wins without
       // changing transcript, status, or any derived fields.
       return { ...state, commands: event.commands }
+
+    case "prompt_history": {
+      const promptHistory = promptHistoryReducer(state.promptHistory, event)
+      return promptHistory === state.promptHistory ? state : { ...state, promptHistory }
+    }
 
     default:
       return assertNever(event)

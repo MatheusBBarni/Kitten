@@ -10,6 +10,8 @@
  * Type shapes follow the TechSpec "Data Models" and "Core Interfaces" sections.
  */
 
+import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
+
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
  * own identity (ADR-004). Two sessions can share a `ProviderKind`; each still gets
@@ -365,6 +367,8 @@ export interface SessionState {
   configOptions: ConfigOption[]
   /** The latest complete slash-command list advertised for this session. */
   commands: AvailableCommand[]
+  /** Current-run composer submissions and recall position, private to this session. */
+  promptHistory: PromptHistoryState
 }
 
 /** One semantically bounded shell command and its captured raw output. */
@@ -414,6 +418,7 @@ export type DomainSessionEvent =
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
+  | PromptHistoryEvent
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic

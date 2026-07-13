@@ -17,6 +17,7 @@ import {
   selectRestorationBundle,
   selectSessionPicker,
   selectShell,
+  selectSessionPromptHistory,
   selectSessionStatus,
   selectSessionTurns,
   selectTabDialogOverlay,
@@ -154,6 +155,35 @@ describe("createAppStore", () => {
 })
 
 describe("applyEvent", () => {
+  it("routes prompt history to the addressed session and preserves the other session identity", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const focusedHistories = trackSelector(store, selectSessionPromptHistory("claude-code"))
+    const otherHistories = trackSelector(store, selectSessionPromptHistory("codex"))
+
+    expect(before.workspace.selectedVisibleId).toBe("claude-code")
+
+    store.applyEvent("claude-code", {
+      kind: "prompt_history",
+      action: "record",
+      text: "remember this",
+    })
+    store.applyEvent("claude-code", { kind: "prompt_history", action: "previous" })
+
+    const after = store.getState()
+    expect(selectSessionPromptHistory("claude-code")(after)).toEqual({
+      entries: ["remember this"],
+      cursor: 0,
+    })
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+    expect(selectSessionPromptHistory("codex")(after)).toBe(before.sessions.codex!.promptHistory)
+    expect(focusedHistories).toEqual([
+      { entries: ["remember this"], cursor: null },
+      { entries: ["remember this"], cursor: 0 },
+    ])
+    expect(otherHistories).toEqual([])
+  })
+
   it("routes commands through the reducer to only the addressed session", () => {
     const store = createAppStore()
     const before = store.getState()
@@ -277,6 +307,22 @@ describe("startSession", () => {
     const state = store.getState()
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex", "session-2")))
     expect(state.sessions["claude-code"]).toBe(claudeBefore)
+  })
+
+  it("recreates the addressed session with empty prompt history", () => {
+    const store = createAppStore()
+    store.applyEvent("codex", {
+      kind: "prompt_history",
+      action: "record",
+      text: "prior run prompt",
+    })
+    const priorHistory = selectSessionPromptHistory("codex")(store.getState())
+
+    store.startSession("codex", "session-new-run")
+
+    const freshHistory = selectSessionPromptHistory("codex")(store.getState())
+    expect(freshHistory).toEqual({ entries: [], cursor: null })
+    expect(freshHistory).not.toBe(priorHistory)
   })
 })
 
