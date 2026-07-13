@@ -7,6 +7,7 @@ import type { DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, Session
 import { createAppStore, defaultSessionSeeds, type AppStore, type AppState } from "./appStore.ts"
 import {
   selectApprovalOverlay,
+  selectActiveModal,
   selectHandoffPreview,
   selectFocusedPane,
   selectHasOpenOverlay,
@@ -18,6 +19,7 @@ import {
   selectShell,
   selectSessionStatus,
   selectSessionTurns,
+  selectTabDialogOverlay,
   selectSettingsOverlay,
   selectThemePreference,
 } from "./selectors.ts"
@@ -1041,5 +1043,29 @@ describe("workspace lifecycle integration", () => {
       sessionId: "claude-code",
     })
     expect(store.getState().overlays.approval?.sessionId).toBe("codex")
+  })
+
+  it("immutably opens, replaces, and closes the one tab-dialog slot under aggregate gating", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+
+    store.openTabDialog({ kind: "rename", sessionId: "claude-code" })
+    const renamed = store.getState()
+    expect(renamed).not.toBe(initial)
+    expect(renamed.sessions).toBe(initial.sessions)
+    expect(renamed.workspace).toBe(initial.workspace)
+    expect(selectTabDialogOverlay(renamed)).toEqual({ kind: "rename", sessionId: "claude-code" })
+    expect(selectHasOpenOverlay(renamed)).toBe(true)
+    expect(selectActiveModal(renamed)).toEqual({ kind: "tab-dialog", sessionId: "claude-code" })
+
+    store.openTabDialog({ kind: "close", sessionId: "codex" })
+    const replaced = store.getState()
+    expect(replaced.overlays.tabDialog).toEqual({ kind: "close", sessionId: "codex" })
+    expect(replaced.overlays.approval).toBeNull()
+
+    store.removeSession("codex")
+    const closed = store.getState()
+    expect(closed.overlays.tabDialog).toBeNull()
+    expect(selectHasOpenOverlay(closed)).toBe(false)
   })
 })

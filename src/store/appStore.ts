@@ -472,6 +472,10 @@ class AppStoreImpl implements AppStore {
       ...this.state,
       sessions,
       workspace,
+      overlays:
+        this.state.overlays.tabDialog?.sessionId === sessionId
+          ? { ...this.state.overlays, tabDialog: null }
+          : this.state.overlays,
       restoration,
       focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })

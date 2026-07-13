@@ -63,6 +63,9 @@ export type MenuCommand = "prev-option" | "next-option" | "confirm" | "dismiss"
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
+/** Every intent the rename/close tab dialog handles while it owns the modal slot. */
+export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "cancel"
+
 /** Every intent the settings overlay handles while it is on screen. */
 export type SettingsCommand = "prev-option" | "next-option" | "switch-tab" | "reset-to-default" | "close"
 
@@ -298,6 +301,34 @@ export const APPROVAL_KEYMAP: readonly KeyBinding<ApprovalCommand>[] = [
     command: "cancel",
     keys: "Esc",
     description: "Dismiss the request without deciding",
+    matches: plain("escape"),
+  },
+]
+
+/** Rename uses Enter/Escape; close-choice dialogs additionally use the arrow rows. */
+export const TAB_DIALOG_KEYMAP: readonly KeyBinding<TabDialogCommand>[] = [
+  {
+    command: "prev-choice",
+    keys: "↑",
+    description: "Highlight the previous close choice",
+    matches: plain("up"),
+  },
+  {
+    command: "next-choice",
+    keys: "↓",
+    description: "Highlight the next close choice",
+    matches: plain("down"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Confirm the rename or highlighted close choice",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Close the dialog without changing the conversation",
     matches: plain("escape"),
   },
 ]
@@ -606,6 +637,12 @@ export const RESUME_KEY_HINT = commandSlash("resume-session")
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
 
+/** The hint printed while the rename input owns ordinary text keys. */
+export const TAB_RENAME_HINT = "Enter rename  Esc keep current name"
+
+/** The hint printed while an idle or active close decision owns the keyboard. */
+export const TAB_CLOSE_HINT = "↑↓ move  Enter choose  Esc keep open"
+
 /** The hint printed inside the hand-off preview while the developer curates the bundle. */
 export const HANDOFF_HINT = "↑↓ move  Space keep/drop  m model/effort  e edit  Enter send  Esc cancel"
 
@@ -662,6 +699,9 @@ export const matchMenuCommand = makeMatcher(MENU_KEYMAP)
 
 /** The overlay command a keypress maps to, or `null` when the overlay does not claim it. */
 export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)
+
+/** The rename/close dialog command a keypress maps to, or `null` for input text. */
+export const matchTabDialogCommand = makeMatcher(TAB_DIALOG_KEYMAP)
 
 /** The preview command a keypress maps to, or `null` when the preview does not claim it. */
 export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)

@@ -54,6 +54,7 @@ import { ShellPane } from "./ShellPane.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
+import { TabDialog } from "./TabDialog.tsx"
 import { TabWorkspace } from "./TabWorkspace.tsx"
 import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -341,6 +342,8 @@ function CockpitFrame({
       <ModelSelect />
 
       <SettingsView />
+
+      <TabDialog />
 
       {/* Last, so a pending permission request paints over anything else on screen. */}
       <ApprovalPrompt />
