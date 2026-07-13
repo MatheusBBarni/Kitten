@@ -1,6 +1,6 @@
 {
   "name": "kitten",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "description": "Kitten - Cross-Agent Hand-off Cockpit: a terminal cockpit that hands a live coding task between AI agents over ACP.",
   "type": "module",
   "bin": {
