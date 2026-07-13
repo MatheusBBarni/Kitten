@@ -8,9 +8,7 @@ import { createSessionController, type AgentRuntimeState } from "../src/app/cont
 import type { AgentConfig, AppConfig, ProviderKind, SessionSeed } from "../src/core/types.ts"
 import { createAppStore } from "../src/store/appStore.ts"
 import { CockpitApp } from "../src/ui/CockpitApp.tsx"
-import { CockpitProvider } from "../src/ui/cockpitContext.tsx"
 import { SESSION_MARKER } from "../src/ui/SessionsOverlay.tsx"
-import { STATUS_LABELS, StatusStrip } from "../src/ui/StatusStrip.tsx"
 import { createFakeController } from "./fakeController.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "./mockAgent.ts"
 import { actAsync, destroyMounted } from "./reactTui.ts"
@@ -18,9 +16,9 @@ import { actAsync, destroyMounted } from "./reactTui.ts"
 /**
  * Integration: a real `AgentConnection` wired over the ndjson wire framing to an
  * in-process mock ACP agent, driven through the controller, so a genuine `end_turn`
- * prompt turn decides the session status the store and the strip show. This exercises
+ * prompt turn decides the session status the store and visible tab show. This exercises
  * the adapter's stop-reason mapping (ADR-006) end to end - the store must read
- * `finished`, and the status strip must paint the `finished` label for that session.
+ * `finished`, and the visible workspace must paint that state for the session.
  */
 
 const PROVIDERS: AppConfig["providers"] = {
@@ -65,7 +63,7 @@ function connectionToMockAgent(
 }
 
 describe("session status integration (end_turn -> finished)", () => {
-  it("drives a mock session to end_turn and renders the finished label in the strip", async () => {
+  it("drives a mock session to end_turn and renders the finished state in its visible tab", async () => {
     const connections: Record<ProviderKind, AgentConnection> = {
       "claude-code": endTurnConnection({ id: "claude-code", ...PROVIDERS["claude-code"] }),
       codex: endTurnConnection({ id: "codex", ...PROVIDERS.codex }),
@@ -76,12 +74,11 @@ describe("session status integration (end_turn -> finished)", () => {
       createConnection: (config) => connections[config.id],
     })
 
-    const { renderer, waitForFrame } = await testRender(
-      <CockpitProvider controller={controller}>
-        <StatusStrip />
-      </CockpitProvider>,
-      { width: 80, height: 3 },
-    )
+    const { renderer, waitForFrame } = await testRender(<CockpitApp controller={controller} />, {
+      width: 80,
+      height: 20,
+      kittyKeyboard: true,
+    })
     await waitForFrame((frame) => frame.includes("codex:—"))
 
     await actAsync(async () => {
@@ -91,9 +88,10 @@ describe("session status integration (end_turn -> finished)", () => {
     // The store reflects the terminal stop reason: the turn ended, your move.
     expect(controller.store.getState().sessions.codex!.status).toBe("finished")
 
-    // Both runtime chips stay visible while the selected session is marked finished.
-    const frame = await waitForFrame((f) => f.includes(`codex:— - ${STATUS_LABELS.finished}`))
-    expect(frame).toContain(`claude:— - ${STATUS_LABELS.idle}`)
+    // The selected tab owns execution state; the footer remains provider-only.
+    const frame = await waitForFrame((f) => f.includes("Codex · finished"))
+    expect(frame).toContain("codex:—")
+    expect(frame).not.toContain("claude:—")
     expect(frame).not.toContain("Claude Code:")
     expect(frame).not.toContain("Codex:")
 

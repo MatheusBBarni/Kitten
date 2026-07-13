@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Harden boot/readiness and instrument the integrated flow"
 type: refactor
 complexity: high

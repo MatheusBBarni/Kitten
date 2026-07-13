@@ -319,6 +319,25 @@ export function runtimeSetup(state: AgentRuntimeState, insideRepo?: (cwd: string
   )
 }
 
+/**
+ * Reconcile the legacy "one ready runtime" gate with Session Tabs restoration.
+ *
+ * Fresh startup failures remain blocking. An empty workspace, or one whose remaining
+ * descriptors are unavailable only because restore/provider resolution failed, is a
+ * valid product surface with recovery affordances and must be allowed to mount.
+ */
+export function applyWorkspaceBootPolicy(report: FirstRunReport, store: AppStore): FirstRunReport {
+  if (!report.insideRepo || report.anyReady) return report
+  const workspace = store.getState().workspace
+  const restoreUnavailable = workspace.order.every((sessionId) => {
+    const availability = workspace.conversations[sessionId]?.availability
+    return availability?.kind === "unavailable" &&
+      (availability.reasonCode === "restore-unavailable" || availability.reasonCode === "provider-unavailable")
+  })
+  if (!restoreUnavailable) return report
+  return { ...report, gaps: [], blocked: false }
+}
+
 /** Print first-run guidance to stderr. */
 export function printFirstRunGuidance(report: FirstRunReport, options?: FirstRunGuidanceOptions): void {
   for (const line of formatFirstRunReport(report, options)) process.stderr.write(`${line}\n`)
@@ -407,7 +426,8 @@ interface PreparedCockpitSession {
  * Two first-run gates run before the cockpit mounts. The repo requirement is checked
  * first and costs nothing: outside a repository Kitten refuses to launch, so no
  * renderer is created and no agent is spawned. After the agents come up, boot stops
- * again if none is ready, since a cockpit with two dead agents can do no useful work;
+ * again if a fresh workspace has no ready runtime. Empty and restore-unavailable
+ * Session Tabs workspaces remain mountable so users can recover or create work;
  * either way the user gets the exact reason instead of an inert screen. When a gate
  * blocks, `main` returns `null` rather than a booted cockpit.
  *
@@ -498,10 +518,13 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
 
   // Readiness gate: with no agent ready, restore the terminal and explain the gaps
   // rather than mounting a cockpit that cannot respond.
-  const report = buildFirstRunReport({
-    insideRepo: true,
-    agents: controller.runtimes().map((state) => runtimeSetup(state, checkRepo)),
-  })
+  const report = applyWorkspaceBootPolicy(
+    buildFirstRunReport({
+      insideRepo: true,
+      agents: controller.runtimes().map((state) => runtimeSetup(state, checkRepo)),
+    }),
+    controller.store,
+  )
   if (report.blocked) {
     disposeBootBanner?.()
     renderer.destroy()

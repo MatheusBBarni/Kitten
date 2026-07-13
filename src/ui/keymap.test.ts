@@ -153,7 +153,6 @@ describe("COCKPIT_COMMANDS", () => {
     expect(COCKPIT_COMMANDS.map(({ command, name }) => [command, name])).toEqual([
       ["toggle-shell", "shell"],
       ["run-externally", "copy"],
-      ["switch-focus", "switch"],
       ["hand-off", "handoff"],
       ["sessions", "sessions"],
       ["previous-tab", "previous-tab"],
@@ -228,10 +227,10 @@ describe("MENU_KEYMAP", () => {
 })
 
 describe("KEYMAP_HINT", () => {
-  it("advertises the hand-off chord and slash menu on one line", () => {
-    expect(KEYMAP_HINT).toContain("^T hand-off")
-    expect(KEYMAP_HINT).toContain("/ menu")
-    expect(KEYMAP_HINT).not.toContain("\n")
+  it("keeps the fixed footer to the help entry point", () => {
+    expect(KEYMAP_HINT).toBe("/help")
+    expect(KEYMAP_HINT).not.toContain("hand-off")
+    expect(KEYMAP_HINT).not.toContain("menu")
   })
 })
 

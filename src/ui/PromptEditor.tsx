@@ -26,6 +26,7 @@
  */
 
 import type { EditBufferRenderable, KeyEvent, TextareaRenderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { AvailableCommand, SessionId } from "../core/types.ts"
@@ -65,11 +66,8 @@ import {
 import { SlashMenu, type MenuRow, type SlashMenuGroup } from "./SlashMenu.tsx"
 import { usePalette } from "./theme.ts"
 
-/** The composer's frame title while the focused agent can accept a prompt. */
-export const PROMPT_TITLE = "Prompt"
-
-/** The composer's frame title while the focused agent cannot accept anything. */
-export const PROMPT_DISABLED_TITLE = "Prompt (agent unavailable)"
+/** The composer's only visible title is a temporary prompt-history position. */
+export const PROMPT_HISTORY_TITLE = "History"
 
 /** The empty-editor hint while the focused agent is ready. */
 export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc interrupts"
@@ -77,8 +75,8 @@ export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc int
 /** The empty-editor hint while the focused agent is not ready. */
 export const PROMPT_DISABLED_PLACEHOLDER = "Switch to a ready agent to send a prompt"
 
-/** The composer's frame title when the workspace has no selected Visible conversation. */
-export const PROMPT_WORKSPACE_TITLE = "Prompt (select a conversation)"
+/** The empty-workspace title is explicit without occupying the composer label. */
+export const PROMPT_WORKSPACE_TITLE = "Select a conversation"
 
 /** Empty-workspace feedback shown in place of an editable input. */
 export const PROMPT_WORKSPACE_PLACEHOLDER = "Select a visible conversation to send a prompt"
@@ -291,6 +289,7 @@ function SelectedPromptEditor({
 }): ReactNode {
   const controller = useController()
   const palette = usePalette()
+  const { height: terminalHeight } = useTerminalDimensions()
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
@@ -887,14 +886,19 @@ function SelectedPromptEditor({
       }}
       title={
         ready && promptHistory.cursor !== null
-          ? `${PROMPT_TITLE} · History ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
-          : ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE
+          ? `${PROMPT_HISTORY_TITLE} ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
+          : undefined
       }
-      titleColor={ready ? palette.accent : palette.status.not_ready}
+      titleColor={palette.accent}
     >
       {armedSlashMenu ? (
         <box style={{ position: "absolute", left: 0, right: 0, bottom: rows + 2, zIndex: 1 }}>
-          <SlashMenu groups={menuGroups(matchingRows)} highlightedIndex={slashHighlight} onSelect={selectSlashMenuRow} />
+          <SlashMenu
+            groups={menuGroups(matchingRows)}
+            highlightedIndex={slashHighlight}
+            maxHeight={Math.max(terminalHeight - rows - 5, 1)}
+            onSelect={selectSlashMenuRow}
+          />
         </box>
       ) : fileCompletion ? (
         <box

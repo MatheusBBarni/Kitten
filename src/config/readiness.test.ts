@@ -272,4 +272,25 @@ describe("checkAllAgentsReadiness", () => {
     expect(results).toHaveLength(2)
     expect(results.every((result) => result.ready)).toBe(true)
   })
+
+  it("Should dispose every created probe when a sibling fails before connection creation", async () => {
+    const created: Array<ReturnType<typeof stubConnection>> = []
+    const results = await checkAllAgentsReadiness(APP_CONFIG, {
+      binaryExists: alwaysInstalled,
+      createConnection: (config) => {
+        if (config.id === "codex") throw new Error("provider construction failed")
+        const probe = stubConnection(async () => ({
+          ready: true,
+          protocolVersion: SUPPORTED_PROTOCOL_VERSION,
+          canLoadSession: false,
+        }))
+        created.push(probe)
+        return probe.connection
+      },
+    })
+
+    expect(results.map((result) => result.ready)).toEqual([true, false])
+    expect(created).toHaveLength(1)
+    expect(created.every((probe) => probe.disposed())).toBe(true)
+  })
 })

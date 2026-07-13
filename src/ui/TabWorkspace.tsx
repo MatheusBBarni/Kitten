@@ -136,7 +136,7 @@ function TabItem({ tab }: { tab: WorkspaceConversationView }): ReactNode {
   const onMouseDown = useCallback((event: MouseEvent): void => {
     event.preventDefault()
     event.stopPropagation()
-    controller.actions.selectConversation(tab.id)
+    controller.actions.selectConversation(tab.id, { source: "mouse" })
   }, [controller, tab.id])
 
   return (

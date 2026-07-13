@@ -6,8 +6,9 @@
  * already-decided interaction state beside the active textarea.
  */
 
-import type { MouseEvent } from "@opentui/core"
-import type { ReactNode } from "react"
+import type { MouseEvent, ScrollBoxRenderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/react"
+import { useCallback, useEffect, useRef, type ReactNode } from "react"
 
 import type { CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -36,6 +37,8 @@ export interface SlashMenuGroup {
 export interface SlashMenuProps {
   groups: readonly SlashMenuGroup[]
   highlightedIndex: number
+  /** A definite viewport cap supplied by the composer, so the menu never paints above the screen. */
+  maxHeight: number
   /** Passed through by the owner so keyboard and future pointer activation share one action. */
   onSelect: (row: MenuRow) => void
 }
@@ -46,11 +49,32 @@ export const NO_COMMANDS_MATCH = "No commands match this filter."
 /** Stable identity for the row keyboard activation currently targets. */
 export const HIGHLIGHTED_COMMAND_ROW_ID = "slash-menu-highlighted-row"
 
+/** OpenTUI otherwise reserves a row for a horizontal scrollbar. */
+const HIDDEN_HORIZONTAL_SCROLLBAR = { visible: false } as const
+
 /** A stateless grouped command list; PromptEditor handles all activation. */
-export function SlashMenu({ groups, highlightedIndex, onSelect }: SlashMenuProps): ReactNode {
+export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: SlashMenuProps): ReactNode {
   const palette = usePalette()
+  const { height: terminalHeight } = useTerminalDimensions()
   const rowCount = groups.reduce((count, group) => count + group.rows.length, 0)
+  const scrollbox = useRef<ScrollBoxRenderable | null>(null)
+  // Group headings and the surrounding border are real rows. The definite height is
+  // what turns the list into a viewport rather than letting absolute positioning draw
+  // past the top of the terminal.
+  const intrinsicHeight = rowCount === 0 ? 3 : rowCount + groups.length + 2
+  const viewportHeight = Math.max(1, Math.min(intrinsicHeight, maxHeight, terminalHeight))
+  const constrained = intrinsicHeight > viewportHeight
   let offset = 0
+  const attachScrollbox = useCallback((node: ScrollBoxRenderable | null): void => {
+    scrollbox.current = node
+  }, [])
+
+  useEffect(() => {
+    // ScrollBox calculates child positions during its native layout pass. Deferring one
+    // task makes the initial highlighted command visible as well as later arrow moves.
+    const timer = setTimeout(() => scrollbox.current?.scrollChildIntoView(HIGHLIGHTED_COMMAND_ROW_ID), 0)
+    return () => clearTimeout(timer)
+  }, [highlightedIndex])
 
   return (
     <box
@@ -65,6 +89,7 @@ export function SlashMenu({ groups, highlightedIndex, onSelect }: SlashMenuProps
         backgroundColor: palette.surface,
         paddingLeft: 1,
         paddingRight: 1,
+        ...(constrained ? { height: viewportHeight } : {}),
         overflow: "hidden",
       }}
       title="Commands"
@@ -72,6 +97,27 @@ export function SlashMenu({ groups, highlightedIndex, onSelect }: SlashMenuProps
     >
       {rowCount === 0 ? (
         <text fg={palette.muted}>{NO_COMMANDS_MATCH}</text>
+      ) : constrained ? (
+        <scrollbox
+          ref={attachScrollbox}
+          style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}
+          scrollX={false}
+          horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
+        >
+          {groups.map((group) => {
+            const groupOffset = offset
+            offset += group.rows.length
+            return (
+              <SlashMenuGroupView
+                key={group.source}
+                group={group}
+                highlightedIndex={highlightedIndex}
+                offset={groupOffset}
+                onSelect={onSelect}
+              />
+            )
+          })}
+        </scrollbox>
       ) : (
         groups.map((group) => {
           const groupOffset = offset
@@ -136,8 +182,12 @@ function SlashMenuRow({
   }
 
   return (
-    <box style={{ height: 1, flexShrink: 0 }}>
-      <text id={highlighted ? HIGHLIGHTED_COMMAND_ROW_ID : undefined} onMouseDown={activate}>
+    <box
+      id={highlighted ? HIGHLIGHTED_COMMAND_ROW_ID : undefined}
+      style={{ height: 1, flexShrink: 0 }}
+      onMouseDown={activate}
+    >
+      <text>
         <span fg={palette.accent}>{highlighted ? "▸" : " "}</span>
         <span fg={highlighted ? palette.text : palette.muted}>{` ${row.label}`}</span>
         {row.source === "cockpit" ? <span fg={palette.muted}>{`  ${row.shortcut}`}</span> : null}

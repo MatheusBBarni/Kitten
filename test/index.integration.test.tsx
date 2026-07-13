@@ -16,7 +16,7 @@ import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
-import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
+import { EMPTY_TRANSCRIPT_HINT, RESTORATION_LIVE_LABEL } from "../src/ui/ConversationView.tsx"
 import { KEYMAP_HINT } from "../src/ui/keymap.ts"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
@@ -180,7 +180,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     }
   })
 
-  it("boots fake agents from the newest persisted run and exposes the start-new-run escape hatch", async () => {
+  it("boots fake agents from the newest persisted run and exposes the new-conversation escape hatch", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-resume-"))
     const setup = await createTestRenderer({ width: 100, height: 24 })
     const cwd = process.cwd()
@@ -223,9 +223,9 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       const resumed = await setup.waitForFrame(
-        (frame) => frame.includes("resumed") && frame.includes(KEYMAP_HINT) && frame.includes("restored codex from stored-codex"),
+        (frame) => frame.includes(RESTORATION_LIVE_LABEL) && frame.includes(KEYMAP_HINT) && frame.includes("restored codex from stored-codex"),
       )
-      expect(resumed).toContain("resumed")
+      expect(resumed).toContain(RESTORATION_LIVE_LABEL)
       expect(resumed).toContain(KEYMAP_HINT)
       expect(resumed).not.toContain("/new")
       expect(resumed).toContain("restored codex from stored-codex")
@@ -238,9 +238,14 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
       await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/new"))
       await actAsync(() => setup.mockInput.pressEnter())
-      const fresh = await setup.waitForFrame((frame) => !frame.includes("resumed"))
+      const fresh = await setup.waitForFrame(
+        (frame) => !frame.includes(RESTORATION_LIVE_LABEL) && !frame.includes("restored codex from stored-codex"),
+      )
       expect(fresh).not.toContain("restored codex from stored-codex")
-      expect(freshStarts.filter((start) => start.generation === 2)).toHaveLength(2)
+      expect(freshStarts.filter((start) => start.generation === 2)).toEqual([
+        { id: "codex", cwd, generation: 2 },
+      ])
+      expect(booted?.controller.store.getState().workspace.order).toHaveLength(3)
     } finally {
       if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
       await booted?.closed
@@ -584,6 +589,27 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       await expect(boot).rejects.toThrow(configError)
     })
     expect(renderer.isDestroyed).toBe(true)
+  })
+
+  it("disposes a prepared dynamic controller when worker setup fails", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const controller = createFakeController()
+    const workerError = new Error("tree-sitter worker setup failed")
+
+    await actAsync(async () => {
+      const boot = main({
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        configureTreeSitterWorker: async () => {
+          throw workerError
+        },
+        loadConfig: async () => defaultAppConfig(),
+      })
+      await expect(boot).rejects.toThrow(workerError)
+    })
+
+    expect(renderer.isDestroyed).toBe(true)
+    expect(controller.calls.dispose).toBe(1)
   })
 
   it("createCockpitRenderer requests Kitty disambiguation and alternate keys while preserving renderer options", async () => {

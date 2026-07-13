@@ -16,6 +16,7 @@ import {
   wantsVersion,
 } from "../src/index.ts"
 import type { AgentRuntimeState } from "../src/app/controller.ts"
+import { createAppStore } from "../src/store/appStore.ts"
 import { KITTEN_VERSION } from "../src/version.ts"
 import { createFakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted } from "./reactTui.ts"
@@ -101,6 +102,84 @@ describe("main() readiness gate", () => {
     expect(reported?.blocked).toBe(true)
     expect(reported?.gaps).toEqual(["Claude Code: command not found.", "Codex: not authenticated."])
     expect(markCalls).toBe(0)
+  })
+
+  it("mounts a valid empty workspace without treating it as a failed fixed fleet", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const controller = createFakeController({
+      store: createAppStore({ seeds: [] }),
+      runtimes: [],
+    })
+    let blocked = 0
+
+    let result: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      result = await main({
+        checkRepo: () => true,
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        loadConfig: async () => defaultAppConfig(),
+        readFirstRunSeen: () => true,
+        onBlocked: () => blocked++,
+        onExit: () => {},
+        wireNotifier: () => {},
+      })
+    })
+
+    expect(result).not.toBeNull()
+    expect(blocked).toBe(0)
+    expect(renderer.isDestroyed).toBe(false)
+
+    await destroyMounted(renderer)
+    await result?.closed
+    expect(controller.calls.dispose).toBe(1)
+  })
+
+  it("mounts one restore-unavailable conversation so recovery remains reachable", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const store = createAppStore({
+      seeds: [{ id: "restored", providerKind: "codex", title: "Restored", cwd: process.cwd() }],
+      selectedVisibleId: "restored",
+    })
+    store.setConversationAvailability("restored", {
+      kind: "unavailable",
+      reasonCode: "restore-unavailable",
+      retryable: true,
+    })
+    const controller = createFakeController({
+      store,
+      runtimes: [{
+        sessionId: "restored",
+        providerKind: "codex",
+        displayName: "Codex",
+        title: "Restored",
+        cwd: process.cwd(),
+        ready: false,
+        error: "history unavailable",
+      }],
+    })
+    let blocked = 0
+
+    let result: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      result = await main({
+        checkRepo: () => true,
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        loadConfig: async () => defaultAppConfig(),
+        readFirstRunSeen: () => true,
+        onBlocked: () => blocked++,
+        onExit: () => {},
+        wireNotifier: () => {},
+      })
+    })
+
+    expect(result).not.toBeNull()
+    expect(blocked).toBe(0)
+    expect(store.getState().workspace.selectedVisibleId).toBe("restored")
+
+    await destroyMounted(renderer)
+    await result?.closed
   })
 })
 

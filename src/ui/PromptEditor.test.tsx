@@ -26,10 +26,8 @@ import {
 } from "./FileSelector.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
-  PROMPT_DISABLED_TITLE,
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
-  PROMPT_TITLE,
   PROMPT_WORKSPACE_TITLE,
   PromptEditor,
   slashMenuRows,
@@ -67,8 +65,8 @@ async function renderEditor(
     { width: 64, height, kittyKeyboard: true },
   )
   await setup.waitForFrame((frame) =>
-    frame.includes(PROMPT_TITLE) ||
-    frame.includes(PROMPT_DISABLED_TITLE) ||
+    frame.includes(PROMPT_PLACEHOLDER) ||
+    frame.includes(PROMPT_DISABLED_PLACEHOLDER) ||
     frame.includes(PROMPT_WORKSPACE_TITLE),
   )
   return setup
@@ -174,6 +172,7 @@ describe("PromptEditor presentation", () => {
     const contentLine = frame.split("\n").find((line) => line.includes(PROMPT_PLACEHOLDER))
 
     expect(frame).toContain("╭")
+    expect(frame).not.toContain("Prompt")
     expect(contentLine).toBeDefined()
     expect(contentLine).toContain(PROMPT_CHEVRON)
     expect(contentLine!.indexOf(PROMPT_CHEVRON)).toBeGreaterThan(contentLine!.indexOf("│") + 1)
@@ -455,7 +454,7 @@ describe("PromptEditor slash commands", () => {
       </CockpitProvider>,
       { width: 64, height: 32, kittyKeyboard: true },
     )
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
     const baselineCommits = transcriptCommits
 
     await type(setup, "/")
@@ -738,7 +737,7 @@ describe("PromptEditor @ file completion", () => {
     runtimes[0]!.ready = true
     await actAsync(() => controller.actions.switchFocus("codex"))
     await actAsync(() => controller.actions.switchFocus("claude-code"))
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE) && !frame.includes(PROMPT_DISABLED_TITLE))
+    await setup.waitForFrame((frame) => frame.includes("@src/a.ts") && !frame.includes(PROMPT_DISABLED_PLACEHOLDER))
     await pressEnter(setup)
     expect(sentText(controller)).toBe("@src/a.ts ")
 
@@ -953,7 +952,7 @@ describe("PromptEditor readiness gate", () => {
     const setup = await renderEditor(controller)
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain(PROMPT_DISABLED_TITLE)
+    expect(frame).not.toContain("Prompt")
     expect(frame).toContain(PROMPT_DISABLED_PLACEHOLDER)
     expect(foregroundOf(setup, "╭")).toBe(paletteColor(DARK_PALETTE.status.not_ready))
 
@@ -975,7 +974,7 @@ describe("PromptEditor readiness gate", () => {
     await actAsync(() => {
       controller.actions.switchFocus("codex")
     })
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    await setup.waitForFrame((frame) => frame.includes("ping") && !frame.includes(PROMPT_DISABLED_PLACEHOLDER))
 
     await pressEnter(setup)
     expect(sentText(controller)).toBe("ping")

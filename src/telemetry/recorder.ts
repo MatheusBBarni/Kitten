@@ -129,6 +129,14 @@ export type TelemetryEventType =
   | "clarification_preempted"
   | "clarification_resumed"
   | "clarification_session_loss_cancelled"
+  | "tab_created"
+  | "tab_selected"
+  | "tab_backgrounded"
+  | "tab_close_confirmed"
+  | "tab_close_kept_open"
+  | "tab_restore"
+  | "tab_attention_seen"
+  | "tab_switch_latency_ms"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
 export type ClarificationCapabilityStatus = "supported" | "unsupported"
@@ -175,6 +183,22 @@ export type ResumeLiveCount = 0 | 1 | 2
 export interface SessionResumedInput {
   mode: ResumeMode
   liveCount: ResumeLiveCount
+}
+
+/** Closed, content-free dimensions for Session Tabs product telemetry. */
+export type TabCreationSource = "inherited" | "default"
+export type TabSelectionSource = "mouse" | "kitty_chord" | "sessions_fallback" | "attention_jump" | "model_select"
+export type TabCloseOutcome = "cancel" | "idle_close"
+export type TabRestoreCountBucket = "zero" | "one" | "two_to_four" | "five_or_more"
+export type TabSwitchLatencyBucket = "under_200ms" | "200_to_499ms" | "500_to_999ms" | "1s_or_more"
+export type TabAttentionStatus = "awaiting_approval" | "error" | "finished"
+export type TabLifecycle = "visible" | "background"
+
+/** Exact restore facts accepted by the recorder before it reduces them to buckets. */
+export interface TabRestoreInput {
+  visibleCount: number
+  backgroundCount: number
+  unavailableCount: number
 }
 
 /**
@@ -233,6 +257,16 @@ export interface TelemetryRecord {
   lossReason?: ClarificationSessionLossReason
   /** Provider classification is safe only as Kitten's closed provider enum. */
   provider?: ProviderKind
+  /** Closed Session Tabs dimensions; none can contain user or adapter content. */
+  creationSource?: TabCreationSource
+  selectionSource?: TabSelectionSource
+  tabCloseOutcome?: TabCloseOutcome
+  visibleCountBucket?: TabRestoreCountBucket
+  backgroundCountBucket?: TabRestoreCountBucket
+  unavailableCountBucket?: TabRestoreCountBucket
+  switchLatencyBucket?: TabSwitchLatencyBucket
+  attentionStatus?: TabAttentionStatus
+  lifecycle?: TabLifecycle
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -343,6 +377,22 @@ export interface TelemetryRecorder {
   sessionResumed(input: SessionResumedInput): void
   /** Record one pane that could not restore live. */
   resumePaneUnavailable(sessionId: SessionId): void
+  /** A fresh conversation was created from an inherited or default provider recipe. */
+  tabCreated(provider: ProviderKind, source: TabCreationSource): void
+  /** A user-directed selection was accepted; starts the private render-settle clock. */
+  tabSelectionStarted(source: TabSelectionSource): void
+  /** The selected workspace committed to the rendered tree; records only a bucket. */
+  tabSelectionSettled(): void
+  /** A visible conversation was deliberately kept running in the background. */
+  tabBackgrounded(): void
+  /** A close reached one of the two approved destructive outcomes. */
+  tabCloseConfirmed(outcome: TabCloseOutcome): void
+  /** The active-work close dialog resolved without changing lifecycle. */
+  tabCloseKeptOpen(): void
+  /** A restored workspace settled; exact counts are reduced before recording. */
+  tabRestore(input: TabRestoreInput): void
+  /** One approval/error/finished attention epoch was visited. */
+  tabAttentionSeen(status: TabAttentionStatus, lifecycle: TabLifecycle): void
   /** Start the picker-open-to-interactive clock before opening its store slot. */
   resumePickerOpened(): void
   /** Close the picker clock after its interactive tree commits. */
@@ -405,6 +455,14 @@ const NOOP_RECORDER: TelemetryRecorder = {
   resumeLoadStarted() {},
   sessionResumed() {},
   resumePaneUnavailable() {},
+  tabCreated() {},
+  tabSelectionStarted() {},
+  tabSelectionSettled() {},
+  tabBackgrounded() {},
+  tabCloseConfirmed() {},
+  tabCloseKeptOpen() {},
+  tabRestore() {},
+  tabAttentionSeen() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
   watch() {
@@ -451,6 +509,10 @@ interface AgentWatch {
    * is not both needy and unfocused. Idle-fleet time accrues over this window.
    */
   idleFleetSince: number | null
+  /** Last workspace attention epoch observed, used only to detect unseen -> seen. */
+  seenAttentionSequence: number
+  seenAttentionSeen: boolean
+  attentionLifecycle: TabLifecycle
 }
 
 interface ClarificationWatch {
@@ -472,6 +534,7 @@ class ActiveRecorder implements TelemetryRecorder {
   private resumeLoadStartedAt: number | null = null
   private resumePickerOpenedAt: number | null = null
   private resumeFirstActionArmed = false
+  private pendingTabSwitch: { source: TabSelectionSource; startedAt: number } | null = null
   private readonly promptSubmissionCounts = new Map<SessionId, number>()
   private readonly watches = new Map<SessionId, AgentWatch>()
   private readonly agentRefs = new Map<SessionId, number>()
@@ -690,6 +753,52 @@ class ActiveRecorder implements TelemetryRecorder {
     this.record({ type: "resume_pane_unavailable", agent: sessionId })
   }
 
+  tabCreated(provider: ProviderKind, creationSource: TabCreationSource): void {
+    this.record({ type: "tab_created", provider, creationSource })
+  }
+
+  tabSelectionStarted(selectionSource: TabSelectionSource): void {
+    const startedAt = this.now()
+    this.record({ type: "tab_selected", selectionSource }, startedAt)
+    this.pendingTabSwitch = { source: selectionSource, startedAt }
+  }
+
+  tabSelectionSettled(): void {
+    const pending = this.pendingTabSwitch
+    if (!pending) return
+    this.pendingTabSwitch = null
+    this.record({
+      type: "tab_switch_latency_ms",
+      selectionSource: pending.source,
+      switchLatencyBucket: bucketTabSwitchLatency(this.now() - pending.startedAt),
+    })
+  }
+
+  tabBackgrounded(): void {
+    this.record({ type: "tab_backgrounded" })
+  }
+
+  tabCloseConfirmed(tabCloseOutcome: TabCloseOutcome): void {
+    this.record({ type: "tab_close_confirmed", tabCloseOutcome })
+  }
+
+  tabCloseKeptOpen(): void {
+    this.record({ type: "tab_close_kept_open" })
+  }
+
+  tabRestore(input: TabRestoreInput): void {
+    this.record({
+      type: "tab_restore",
+      visibleCountBucket: bucketTabRestoreCount(input.visibleCount),
+      backgroundCountBucket: bucketTabRestoreCount(input.backgroundCount),
+      unavailableCountBucket: bucketTabRestoreCount(input.unavailableCount),
+    })
+  }
+
+  tabAttentionSeen(attentionStatus: TabAttentionStatus, lifecycle: TabLifecycle): void {
+    this.record({ type: "tab_attention_seen", attentionStatus, lifecycle })
+  }
+
   resumePickerOpened(): void {
     this.resumePickerOpenedAt = this.now()
   }
@@ -706,6 +815,7 @@ class ActiveRecorder implements TelemetryRecorder {
     const initial = store.getState()
     for (const sessionId of initial.workspace.order) {
       const session = initial.sessions[sessionId]!
+      const conversation = initial.workspace.conversations[sessionId]!
       const watch = this.watchFor(sessionId)
       watch.seenAcpSessionId = session.acpSessionId
       watch.seenTurns = session.turns.length
@@ -713,6 +823,9 @@ class ActiveRecorder implements TelemetryRecorder {
       const needy = needsAttention(session.status)
       watch.neededSince = needy ? this.now() : null
       watch.idleFleetSince = needy && initial.workspace.selectedVisibleId !== sessionId ? this.now() : null
+      watch.seenAttentionSequence = conversation.attention.sequence
+      watch.seenAttentionSeen = conversation.attention.seen
+      watch.attentionLifecycle = conversation.lifecycle
     }
     return store.subscribe((state) => {
       for (const sessionId of state.workspace.order) {
@@ -735,6 +848,7 @@ class ActiveRecorder implements TelemetryRecorder {
         this.processEffortChange(sessionId, session.configOptions)
         this.processSession(sessionId, session.turns)
         this.processAttention(sessionId, session.status, state.workspace.selectedVisibleId === sessionId)
+        this.processTabAttention(state.workspace.conversations[sessionId]!, watch)
       }
     })
   }
@@ -786,6 +900,34 @@ class ActiveRecorder implements TelemetryRecorder {
     }
   }
 
+  /** Emit only the approved attention visit edge, with no conversation identity. */
+  private processTabAttention(
+    conversation: {
+      lifecycle: TabLifecycle
+      attention: { status: SessionStatus; seen: boolean; sequence: number }
+    },
+    watch: AgentWatch,
+  ): void {
+    const attention = conversation.attention
+    if (
+      attention.sequence !== watch.seenAttentionSequence &&
+      !attention.seen &&
+      isTabAttentionStatus(attention.status)
+    ) {
+      watch.attentionLifecycle = conversation.lifecycle
+    }
+    if (
+      attention.sequence === watch.seenAttentionSequence &&
+      !watch.seenAttentionSeen &&
+      attention.seen &&
+      isTabAttentionStatus(attention.status)
+    ) {
+      this.tabAttentionSeen(attention.status, watch.attentionLifecycle)
+    }
+    watch.seenAttentionSequence = attention.sequence
+    watch.seenAttentionSeen = attention.seen
+  }
+
   private handleTurn(sessionId: SessionId, watch: AgentWatch, turn: { kind: string; text?: string }): void {
     if (turn.kind === "user") {
       this.resolveEffortRetention(sessionId, watch)
@@ -828,6 +970,9 @@ class ActiveRecorder implements TelemetryRecorder {
         reexplanationArmed: false,
         neededSince: null,
         idleFleetSince: null,
+        seenAttentionSequence: 0,
+        seenAttentionSeen: true,
+        attentionLifecycle: "visible",
       }
       this.watches.set(sessionId, watch)
     }
@@ -882,6 +1027,28 @@ function bucketClarificationDuration(durationMs: number): ClarificationDurationB
   if (durationMs < 30_000) return "5_to_30s"
   if (durationMs < 120_000) return "30_to_120s"
   return "over_120s"
+}
+
+/** Reduce exact restore counts to the only cardinalities written to tab telemetry. */
+export function bucketTabRestoreCount(count: number): TabRestoreCountBucket {
+  const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+  if (normalized === 0) return "zero"
+  if (normalized === 1) return "one"
+  if (normalized <= 4) return "two_to_four"
+  return "five_or_more"
+}
+
+/** Keep the PRD's 200 ms success boundary explicit without writing exact timings. */
+export function bucketTabSwitchLatency(durationMs: number): TabSwitchLatencyBucket {
+  const normalized = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0
+  if (normalized < 200) return "under_200ms"
+  if (normalized < 500) return "200_to_499ms"
+  if (normalized < 1_000) return "500_to_999ms"
+  return "1s_or_more"
+}
+
+function isTabAttentionStatus(status: SessionStatus): status is TabAttentionStatus {
+  return status === "awaiting_approval" || status === "error" || status === "finished"
 }
 
 /** Read an effort's current value from the generic, adapter-owned option surface. */

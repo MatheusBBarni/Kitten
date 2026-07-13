@@ -114,9 +114,15 @@ function SessionsDialog(): ReactNode {
     if (!target) return
     // The universal fallback can reopen background work as well as select a visible tab.
     if (target.lifecycle === "background") {
-      controller.actions.reopenConversation(target.id, { viaOverview: true })
+      controller.actions.reopenConversation(target.id, {
+        viaOverview: true,
+        source: "sessions_fallback",
+      })
     } else {
-      controller.actions.selectConversation(target.id, { viaOverview: true })
+      controller.actions.selectConversation(target.id, {
+        viaOverview: true,
+        source: "sessions_fallback",
+      })
     }
   }, [clamped, controller, sessions])
 

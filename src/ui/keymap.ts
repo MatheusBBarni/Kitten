@@ -41,7 +41,6 @@ export interface CockpitKey {
 export type CockpitCommand =
   | "toggle-shell"
   | "run-externally"
-  | "switch-focus"
   | "hand-off"
   | "sessions"
   | "resume-session"
@@ -166,15 +165,14 @@ function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: Co
 export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "toggle-shell", name: "shell", description: "Focus the integrated shell" },
   { command: "run-externally", name: "copy", description: "Copy the latest shell command for an external terminal" },
-  { command: "switch-focus", name: "switch", description: "Switch focus to the other agent" },
   { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
   { command: "sessions", name: "sessions", description: "Show every session and jump to one that needs you" },
   { command: "previous-tab", name: "previous-tab", description: "Select the previous visible conversation" },
   { command: "next-tab", name: "next-tab", description: "Select the next visible conversation" },
   { command: "resume-session", name: "resume", description: "Find and resume a saved run for this project" },
-  { command: "start-new-run", name: "new", description: "Start a new run with fresh agent sessions" },
+  { command: "start-new-run", name: "new", description: "Create a new conversation with the selected provider" },
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
-  { command: "model-select", name: "model", description: "Choose an agent model and reasoning effort" },
+  { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
   { command: "open-settings", name: "settings", description: "Open Kitten settings" },
   { command: "toggle-help", name: "help", description: "Show every Kitten command" },
 ]
@@ -681,7 +679,7 @@ function commandSlash(command: Exclude<CockpitCommand, "close-help">): string {
 export const NEW_RUN_KEY_HINT = commandSlash("start-new-run")
 
 /** The one quiet, always-visible discovery affordance in the status strip. */
-export const KEYMAP_HINT = `${bindingKeys(COCKPIT_KEYMAP, "hand-off").replace("Ctrl+", "^")} hand-off  / menu  ${commandSlash("toggle-help")}`
+export const KEYMAP_HINT = commandSlash("toggle-help")
 
 /** Direct-chord discovery after confirmation, otherwise the universal sessions/attention path. */
 export function tabNavigationHint(capability: KeyboardCapability): string {
@@ -725,7 +723,7 @@ export const SESSION_PICKER_HINT =
   "Type filter  ↑↓ move  Space preview  Enter resume  Ctrl+D delete  Ctrl+A clear all  Esc cancel"
 
 /** The hint printed inside the model/effort selector, where those keys are the only live ones. */
-export const MODEL_SELECT_HINT = "↑↓ move  Tab/Shift+Tab switch agent  Enter apply  Esc close"
+export const MODEL_SELECT_HINT = "↑↓ choose model  Tab/Shift+Tab choose provider  Enter apply  Esc close"
 
 /** The hint printed inside settings, derived from the modal's binding table. */
 export const SETTINGS_HINT = `${bindingKeys(SETTINGS_KEYMAP, "prev-option")}${bindingKeys(

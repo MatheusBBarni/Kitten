@@ -15,6 +15,8 @@ import {
   createJsonlFileSink,
   createTelemetryRecorder,
   createUsageSeenJsonlFileSink,
+  bucketTabRestoreCount,
+  bucketTabSwitchLatency,
   logUsageSeen,
   recordReadiness,
   resolveTelemetryPath,
@@ -116,6 +118,14 @@ describe("opt-in gating", () => {
     recorder.resumeLoadStarted()
     recorder.resumePaneUnavailable("codex")
     recorder.sessionResumed({ mode: "picker", liveCount: 1 })
+    recorder.tabCreated("codex", "inherited")
+    recorder.tabSelectionStarted("mouse")
+    recorder.tabSelectionSettled()
+    recorder.tabBackgrounded()
+    recorder.tabCloseConfirmed("cancel")
+    recorder.tabCloseKeptOpen()
+    recorder.tabRestore({ visibleCount: 2, backgroundCount: 1, unavailableCount: 0 })
+    recorder.tabAttentionSeen("finished", "background")
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -136,6 +146,122 @@ describe("opt-in gating", () => {
     recorder.fileSelectorQueryRendered("codex", "results", 2)
     recorder.fileSelectorSelected("codex", 25)
     recorder.fileSelectorCorrected("codex")
+    recorder.tabCreated("codex", "default")
+    recorder.tabSelectionStarted("kitty_chord")
+    recorder.tabSelectionSettled()
+    recorder.tabRestore({ visibleCount: 0, backgroundCount: 0, unavailableCount: 0 })
+  })
+})
+
+describe("Session Tabs telemetry", () => {
+  it("records only fixed enums and coarse buckets in the approved order", () => {
+    const sink = memorySink()
+    const clock = fakeClock(10)
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "run-tabs",
+    })
+
+    recorder.tabCreated("codex", "inherited")
+    recorder.tabSelectionStarted("sessions_fallback")
+    clock.advance(275)
+    recorder.tabSelectionSettled()
+    recorder.tabBackgrounded()
+    recorder.tabCloseConfirmed("idle_close")
+    recorder.tabCloseKeptOpen()
+    recorder.tabRestore({ visibleCount: 4, backgroundCount: 1, unavailableCount: 8 })
+    recorder.tabAttentionSeen("awaiting_approval", "background")
+
+    expect(sink.records).toEqual([
+      { type: "tab_created", provider: "codex", creationSource: "inherited", at: 10, sessionRef: "run-tabs" },
+      { type: "tab_selected", selectionSource: "sessions_fallback", at: 10, sessionRef: "run-tabs" },
+      {
+        type: "tab_switch_latency_ms",
+        selectionSource: "sessions_fallback",
+        switchLatencyBucket: "200_to_499ms",
+        at: 285,
+        sessionRef: "run-tabs",
+      },
+      { type: "tab_backgrounded", at: 285, sessionRef: "run-tabs" },
+      { type: "tab_close_confirmed", tabCloseOutcome: "idle_close", at: 285, sessionRef: "run-tabs" },
+      { type: "tab_close_kept_open", at: 285, sessionRef: "run-tabs" },
+      {
+        type: "tab_restore",
+        visibleCountBucket: "two_to_four",
+        backgroundCountBucket: "one",
+        unavailableCountBucket: "five_or_more",
+        at: 285,
+        sessionRef: "run-tabs",
+      },
+      {
+        type: "tab_attention_seen",
+        attentionStatus: "awaiting_approval",
+        lifecycle: "background",
+        at: 285,
+        sessionRef: "run-tabs",
+      },
+    ])
+
+    const allowlist = new Set([
+      "type",
+      "at",
+      "sessionRef",
+      "provider",
+      "creationSource",
+      "selectionSource",
+      "switchLatencyBucket",
+      "tabCloseOutcome",
+      "visibleCountBucket",
+      "backgroundCountBucket",
+      "unavailableCountBucket",
+      "attentionStatus",
+      "lifecycle",
+    ])
+    for (const record of sink.records) {
+      expect(Object.keys(record).every((key) => allowlist.has(key))).toBe(true)
+      expect(record.agent).toBeUndefined()
+    }
+  })
+
+  it("uses stable count and latency boundaries", () => {
+    expect([0, 1, 2, 4, 5].map(bucketTabRestoreCount)).toEqual([
+      "zero",
+      "one",
+      "two_to_four",
+      "two_to_four",
+      "five_or_more",
+    ])
+    expect([0, 199, 200, 499, 500, 999, 1_000].map(bucketTabSwitchLatency)).toEqual([
+      "under_200ms",
+      "under_200ms",
+      "200_to_499ms",
+      "200_to_499ms",
+      "500_to_999ms",
+      "500_to_999ms",
+      "1s_or_more",
+    ])
+  })
+
+  it("derives an attention visit without recording the conversation identity", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    store.backgroundConversation("codex")
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42 })
+    recorder.watch(store)
+
+    store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
+    store.reopenConversation("codex")
+
+    const attention = sink.records.filter((record) => record.type === "tab_attention_seen")
+    expect(attention).toEqual([
+      expect.objectContaining({
+        attentionStatus: "awaiting_approval",
+        lifecycle: "background",
+      }),
+    ])
+    expect(attention[0]!.agent).toBeUndefined()
   })
 })
 

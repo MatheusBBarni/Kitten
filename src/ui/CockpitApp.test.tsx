@@ -41,6 +41,7 @@ import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
 import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.tsx"
+import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
@@ -231,10 +232,10 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain("[selected] Claude Code")
     expect(frame).toContain("[tab] Codex")
 
-    // The strip keeps both agents' status/headroom visible and the focused model detailed.
+    // The strip keeps selected-provider context only; live work is transcript-local.
     const strip = rows.at(-1) ?? ""
-    expect(strip).toContain(`claude:— - ${STATUS_LABELS.idle}`)
-    expect(strip).toContain(`codex:— - ${STATUS_LABELS.idle} —`)
+    expect(strip).toContain("claude:—")
+    expect(strip).not.toContain("codex:")
     expect(strip).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
@@ -339,7 +340,7 @@ describe("CockpitApp resize", () => {
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
-    expect(lines(shrunk).at(-1)).toContain(STATUS_LABELS.idle)
+    expect(lines(shrunk).at(-1)).toContain("claude:—")
 
     await actAsync(() => {
       resize(120, 40)
@@ -347,7 +348,7 @@ describe("CockpitApp resize", () => {
     const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(WELCOME_GREETING))
 
     expectNoOverflow(grown, 120, 40)
-    expect(lines(grown).at(-1)).toContain(STATUS_LABELS.idle)
+    expect(lines(grown).at(-1)).toContain("claude:—")
 
     await destroyMounted(renderer)
   })
@@ -411,6 +412,7 @@ describe("CockpitApp keymap", () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
     const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    const switchFocus = spyOn(controller.actions, "switchFocus")
     const stopObservation = wireKeyboardCapability(setup.renderer, () => controller.store.confirmKittyKeyboard())
 
     try {
@@ -421,6 +423,7 @@ describe("CockpitApp keymap", () => {
       expect(controller.store.getState().keyboardCapability).toBe("kittyConfirmed")
       expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
       expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(switchFocus).not.toHaveBeenCalled()
       expect(first.defaultPrevented).toBe(false)
 
       const next = keyEvent("l", { ctrl: true, source: "kitty" })
@@ -428,8 +431,10 @@ describe("CockpitApp keymap", () => {
         setup.renderer.keyInput.emit("keypress", next)
       })
       expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
-      expect(selectAdjacent).toHaveBeenCalledTimes(1)
-      expect(selectAdjacent).toHaveBeenLastCalledWith("next")
+      expect(switchFocus).toHaveBeenLastCalledWith(undefined, {
+        direction: "next",
+        source: "kitty_chord",
+      })
       expect(next.defaultPrevented).toBe(true)
 
       const previous = keyEvent("h", { ctrl: true, source: "kitty" })
@@ -437,14 +442,69 @@ describe("CockpitApp keymap", () => {
         setup.renderer.keyInput.emit("keypress", previous)
       })
       expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
-      expect(selectAdjacent).toHaveBeenCalledTimes(2)
-      expect(selectAdjacent).toHaveBeenLastCalledWith("previous")
+      expect(switchFocus).toHaveBeenLastCalledWith(undefined, {
+        direction: "previous",
+        source: "kitty_chord",
+      })
       expect(previous.defaultPrevented).toBe(true)
     } finally {
       stopObservation()
+      switchFocus.mockRestore()
       selectAdjacent.mockRestore()
       await destroyMounted(setup.renderer)
     }
+  })
+
+  it("routes Ctrl+T through the shared dispatcher and closes help after hand-off begins", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", {
+      kind: "user_message",
+      messageId: "handoff-source",
+      text: "Carry this context to the other agent",
+    })
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "help")
+    await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
+
+    const handoffKey = keyEvent("t", { ctrl: true })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", handoffKey)
+    })
+
+    expect(handoffKey.defaultPrevented).toBe(true)
+    expect(controller.store.getState().overlays.handoffPreview).not.toBeNull()
+    expect(await setup.waitForFrame((frame) => frame.includes("Hand off -") && !frame.includes(HELP_TITLE))).not.toContain(HELP_TITLE)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens sessions through the shared dispatcher and closes help first", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "help")
+    await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
+    await runSlashCommand(setup, "sessions")
+
+    expect(controller.store.getState().overlays.sessions).toBe(true)
+    const sessions = await setup.waitForFrame((frame) => frame.includes(SESSIONS_TITLE) && !frame.includes(HELP_TITLE))
+    expect(sessions).not.toContain(HELP_TITLE)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("toggles help through the shared dispatcher", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "help")
+    await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
+    await runSlashCommand(setup, "help")
+
+    expect(await setup.waitForFrame((frame) => !frame.includes(HELP_TITLE))).not.toContain(HELP_TITLE)
+
+    await destroyMounted(setup.renderer)
   })
 
   it("rejects confirmed raw and modified tab lookalikes and stands down behind a modal", async () => {
@@ -714,17 +774,16 @@ describe("CockpitApp keymap", () => {
     }
   })
 
-  it("switches the focused agent through /switch", async () => {
+  it("leaves retired /switch text with the focused provider", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
 
     await runSlashCommand(setup, "switch")
+    await setup.waitFor(() => controller.calls.sendPrompt.length === 1)
 
-    expect(controller.calls.switchFocus).toEqual([undefined])
-    // The action really moved focus, reflected by the compact inline summary.
-    const frame = await setup.waitForFrame((f) => f.includes(`codex:— - ${STATUS_LABELS.idle}`))
-    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
-    expect(frame).toContain("Kitten")
+    expect(controller.calls.switchFocus).toEqual([])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(controller.calls.sendPrompt[0]).toEqual({ input: "/switch", sessionId: undefined })
 
     await destroyMounted(setup.renderer)
   })
@@ -747,14 +806,15 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("starts fresh agent sessions through /new", async () => {
+  it("creates a fresh visible conversation through /new", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
 
     await runSlashCommand(setup, "new")
-    await setup.waitFor(() => controller.calls.startNewRun === 1)
+    await setup.waitFor(() => controller.calls.createConversation === 1)
 
-    expect(controller.calls.startNewRun).toBe(1)
+    expect(controller.calls.createConversation).toBe(1)
+    expect(controller.calls.startNewRun).toBe(0)
 
     await destroyMounted(setup.renderer)
   })

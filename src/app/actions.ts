@@ -85,12 +85,26 @@ export interface FileSelectorTelemetry {
   fileSelectorCorrected(sessionId: SessionId): void
 }
 
+/** Closed Session Tabs dimensions accepted by the UI-facing telemetry facade. */
+export type TabCreationSource = "inherited" | "default"
+export type TabSelectionSource = "mouse" | "kitty_chord" | "sessions_fallback" | "attention_jump" | "model_select"
+
+export interface TabTelemetry {
+  tabCreated(provider: "claude-code" | "codex", source: TabCreationSource): void
+  tabSelectionStarted(source: TabSelectionSource): void
+  tabBackgrounded(): void
+  tabCloseConfirmed(outcome: "cancel" | "idle_close"): void
+  tabCloseKeptOpen(): void
+}
+
 /**
  * The recorder surface actions drive. Switch telemetry is optional so focused action
  * unit tests can keep injecting only the focus counter; the real recorder implements
  * both slices.
  */
-export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry>
+export type ActionTelemetry = FocusTelemetry & Partial<
+  SwitchTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & TabTelemetry
+>
 
 /** The default when no recorder is injected: record nothing. */
 const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
@@ -99,6 +113,10 @@ const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
 export interface SwitchFocusOptions {
   /** True when the switch came through `/sessions` rather than a direct `/switch`. */
   viaOverview?: boolean
+  /** Approved tab-navigation source. Omit for legacy focus switches. */
+  source?: TabSelectionSource
+  /** Adjacent direction when `switchFocus` is called without an explicit id. */
+  direction?: "previous" | "next"
 }
 
 /** The explicit lifecycle outcome selected by tab-management UI. */
@@ -291,6 +309,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     const after = store.getState().workspace.selectedVisibleId
     if (after !== before && after !== null) {
       recorder.focusSwitch(after, options?.viaOverview === true)
+      if (options?.source) recorder.tabSelectionStarted?.(options.source)
       refreshBranch(after)
     }
   }
@@ -301,6 +320,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     const after = store.getState().workspace.selectedVisibleId
     if (after !== before && after === sessionId) {
       recorder.focusSwitch(after, options?.viaOverview === true)
+      if (options?.source) recorder.tabSelectionStarted?.(options.source)
       refreshBranch(after)
     }
   }
@@ -309,8 +329,11 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     const target = selectNextNeedy(focused() ?? null)(store.getState())
     if (!target) return
     const lifecycle = store.getState().workspace.conversations[target]?.lifecycle
-    if (lifecycle === "background") reopenConversation(target, { viaOverview: true })
-    else selectConversation(target, { viaOverview: true })
+    if (lifecycle === "background") {
+      reopenConversation(target, { viaOverview: true, source: "attention_jump" })
+    } else {
+      selectConversation(target, { viaOverview: true, source: "attention_jump" })
+    }
   }
 
   function recordComposerPrompt(text: string, requestedSessionId?: SessionId): void {
@@ -354,8 +377,16 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
   return {
     async createConversation(): Promise<SessionId | null> {
+      const creationSource: TabCreationSource = store.getState().workspace.selectedVisibleId
+        ? "inherited"
+        : "default"
       try {
-        return await createConversation()
+        const sessionId = await createConversation()
+        if (sessionId) {
+          const provider = store.getState().sessions[sessionId]?.providerKind
+          if (provider) recorder.tabCreated?.(provider, creationSource)
+        }
+        return sessionId
       } catch {
         return null
       }
@@ -368,14 +399,27 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     selectConversation,
 
     backgroundConversation(sessionId): void {
+      const before = store.getState().workspace.conversations[sessionId]?.lifecycle
       store.backgroundConversation(sessionId)
+      if (
+        before === "visible" &&
+        store.getState().workspace.conversations[sessionId]?.lifecycle === "background"
+      ) {
+        recorder.tabBackgrounded?.()
+      }
     },
 
     reopenConversation,
 
     async closeConversation(sessionId, choice): Promise<CloseConversationResult> {
       try {
-        return await closeConversation(sessionId, choice)
+        const result = await closeConversation(sessionId, choice)
+        if (result.outcome === "backgrounded") recorder.tabBackgrounded?.()
+        else if (result.outcome === "kept-open") recorder.tabCloseKeptOpen?.()
+        else if (result.outcome === "closed") {
+          recorder.tabCloseConfirmed?.(choice === "cancel" ? "cancel" : "idle_close")
+        }
+        return result
       } catch (error) {
         onError(sessionId, error)
         return { outcome: "teardown-failed" }
@@ -478,8 +522,12 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       const target =
         sessionId ??
         (current
-          ? nextSessionId(visible, current)
-          : visible[0])
+          ? options?.direction === "previous"
+            ? previousSessionId(visible, current)
+            : nextSessionId(visible, current)
+          : options?.direction === "previous"
+            ? visible.at(-1)
+            : visible[0])
       if (!target) return
       selectConversation(target, options)
     },
@@ -532,6 +580,13 @@ export function nextSessionId(order: readonly SessionId[], current: SessionId): 
   if (order.length === 0) return current
   const index = order.indexOf(current)
   return order[(index + 1) % order.length]!
+}
+
+/** The previous session in display order, wrapping around. */
+export function previousSessionId(order: readonly SessionId[], current: SessionId): SessionId {
+  if (order.length === 0) return current
+  const index = order.indexOf(current)
+  return order[(index - 1 + order.length) % order.length]!
 }
 
 /** The transcript text for a multi-block prompt: one block per line. */

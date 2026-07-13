@@ -89,60 +89,43 @@ Until a separately reviewed post-launch instrumentation change exists, maintaine
 
 ## Why this project exists
 
-Context handoff between AI agents is usually manual: copy transcripts, pull file lists, guess what matters, and hope nothing gets lost.  
-Kitten does the heavy lifting by bundling only the useful slices and giving you a chance to review them first.
+Handing work from one coding agent to another usually means copying a transcript, finding the relevant files, and hoping you did not leave out the one detail that matters. Kitten prepares a focused handoff instead, then leaves the final decision with you.
 
-## What gets bundled
+## How handoffs work
 
-- recent chat excerpts
-- files that were touched
-- pending diffs
+When you start a handoff, Kitten collects a bounded transcript excerpt, relevant file references, pending diffs, and any captured shell context. The sessions stay live throughout, so the receiving agent can continue from the context you explicitly choose to send.
 
-Both agent sessions stay live. Once a handoff is sent, the receiving agent continues from the same moment, not from scratch.
+1. Press `Ctrl+T` to start a handoff. If more than one other session is ready, choose the destination first.
+2. Review the preview. Move through files and diffs with the arrow keys, use `Space` to keep or drop an item, `e` to edit the summary, and `m` to set the target model or reasoning effort.
+3. Press `Enter` to send the curated bundle and focus the destination, or `Esc` to cancel without sending anything.
 
-## How handoff works
+Kitten redacts recognised credentials before showing the preview. Review is still the final safeguard: redaction reduces risk, but it is not a promise that every secret has been found.
 
-Press `Ctrl+T`.
+## Everyday controls
 
-Kitten builds a bounded handoff bundle for the focused agent and opens it in a preview overlay before sending.
-
-In the preview you can:
-
-- move through files and diffs with the arrow keys
-- remove items with `Space`
-- edit the summary with `e`
-- send with `Enter` (sends to the other agent and switches focus)
-- cancel with `Esc` (sends nothing)
-
-The destination is always the unfocused agent, so handoff and handback are the same path in reverse.
-
-Secrets are redacted during bundle creation. The preview gives you a second chance to double-check before anything leaves your current session.
-
-## Keybindings
-
-| Key | Command | Action |
-| --- | --- | --- |
-| `Ctrl+O` | `/switch` | Focus the other agent |
-| `Ctrl+T` | `/handoff` | Start a handoff |
-| <code>Ctrl+&grave;</code> / <code>F2</code> | `/shell` | Focus the integrated shell |
-| `Enter` | (no command) | Send the prompt to the focused agent |
-| `Shift+Enter` | (no command) | Insert a newline in prompt input |
-| `Esc` | (no command) | Interrupt the focused agent |
-| `F1` | `/help` | Toggle help panel |
+| Key | What it does |
+| --- | --- |
+| `Ctrl+T` | Start a reviewed handoff |
+| <code>Ctrl+&grave;</code> / `F2` | Focus or leave the integrated shell |
+| `Ctrl+H` / `Ctrl+L` | Select the previous or next visible conversation when Kitty keyboard input is available |
+| `/` | Open and filter the command menu |
+| `@` | Find and add a repository file reference to the prompt |
+| `Enter` / `Shift+Enter` | Send the prompt / insert a newline |
+| `↑` / `↓` | Recall prompts at multiline editing boundaries |
+| `Esc` | Interrupt the focused agent while it is working |
 
 ## Slash commands
 
-In the prompt, type `/` to open the command menu and run Kitten actions directly.  
-You can also type the command directly and press `Enter`.
+Type `/` in the prompt to filter the command menu, or write the full command and press `Enter`.
 
 - `/help` — Show all available Kitten commands.
 - `/shell` — Focus the integrated shell.
 - `/copy` — Copy the latest shell command for an external terminal.
-- `/switch` — Switch focus to the other agent.
 - `/handoff` — Build and send a handoff summary to the other agent.
 - `/sessions` — Show all sessions and jump to one that needs you.
+- `/previous-tab` and `/next-tab` — Select the adjacent visible conversation.
 - `/resume` — Find and resume a saved run for this project.
-- `/new` — Start a new run with fresh agent sessions.
+- `/new` — Create a new conversation, or recover an unavailable restored context when one is selected.
 - `/clear` — Clear this run and restart with fresh sessions.
 - `/model` — Choose an agent model and reasoning effort.
 - `/settings` — Open Kitten settings.

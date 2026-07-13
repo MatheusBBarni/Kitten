@@ -297,6 +297,126 @@ describe("telemetry over a scripted hand-off session", () => {
   })
 })
 
+describe("Session Tabs telemetry over the action and store seams", () => {
+  it("records model-selector tab changes as user-directed selection and latency events", () => {
+    const records: TelemetryRecord[] = []
+    let tabClock = 1_000
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => tabClock,
+      sessionRef: "tabs-model-select",
+    })
+    const store = createAppStore()
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder,
+    })
+
+    actions.selectConversation("codex", { source: "model_select" })
+    tabClock += 125
+    recorder.tabSelectionSettled()
+
+    const tabs = records.filter((record) => record.type.startsWith("tab_"))
+    expect(tabs).toEqual([
+      { type: "tab_selected", selectionSource: "model_select", at: 1_000, sessionRef: "tabs-model-select" },
+      {
+        type: "tab_switch_latency_ms",
+        selectionSource: "model_select",
+        switchLatencyBucket: "under_200ms",
+        at: 1_125,
+        sessionRef: "tabs-model-select",
+      },
+    ])
+  })
+
+  it("keeps lifecycle ordering and a strict content-free payload allowlist", async () => {
+    const records: TelemetryRecord[] = []
+    let tabClock = 1_000
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => tabClock,
+      sessionRef: "tabs-run",
+    })
+    const store = createAppStore()
+    recorder.watch(store)
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder,
+      async createConversation() {
+        store.addSession({
+          id: "private-session-id",
+          providerKind: "claude-code",
+          title: "Private display name",
+          cwd: "/private/customer/path",
+        }, { availability: { kind: "ready" } })
+        return "private-session-id"
+      },
+      async closeConversation(sessionId, choice) {
+        if (choice === "keep-open") return { outcome: "kept-open" }
+        store.removeSession(sessionId)
+        return { outcome: "closed" }
+      },
+    })
+
+    const created = await actions.createConversation()
+    actions.selectConversation("claude-code", { source: "mouse" })
+    tabClock += 250
+    recorder.tabSelectionSettled()
+    actions.backgroundConversation(created!)
+    store.applyEvent(created!, { kind: "status", status: "finished" })
+    actions.jumpToNextAttention()
+    tabClock += 50
+    recorder.tabSelectionSettled()
+    await actions.closeConversation(created!, "keep-open")
+    store.applyEvent(created!, { kind: "status", status: "idle" })
+    await actions.closeConversation(created!, "close")
+
+    const tabs = records.filter((record) => record.type.startsWith("tab_"))
+    expect(tabs.map((record) => record.type)).toEqual([
+      "tab_created",
+      "tab_selected",
+      "tab_switch_latency_ms",
+      "tab_backgrounded",
+      "tab_attention_seen",
+      "tab_selected",
+      "tab_switch_latency_ms",
+      "tab_close_kept_open",
+      "tab_close_confirmed",
+    ])
+    expect(tabs[2]).toMatchObject({ switchLatencyBucket: "200_to_499ms", selectionSource: "mouse" })
+    expect(tabs[4]).toMatchObject({ attentionStatus: "finished", lifecycle: "background" })
+    expect(tabs[5]).toMatchObject({ selectionSource: "attention_jump" })
+    expect(tabs.at(-1)).toMatchObject({ tabCloseOutcome: "idle_close" })
+
+    const allowed = new Set([
+      "type",
+      "at",
+      "sessionRef",
+      "provider",
+      "creationSource",
+      "selectionSource",
+      "switchLatencyBucket",
+      "attentionStatus",
+      "lifecycle",
+      "tabCloseOutcome",
+    ])
+    for (const record of tabs) {
+      expect(Object.keys(record).every((key) => allowed.has(key))).toBe(true)
+      expect(record.agent).toBeUndefined()
+    }
+    const serialized = JSON.stringify(tabs)
+    expect(serialized).not.toContain("private-session-id")
+    expect(serialized).not.toContain("Private display name")
+    expect(serialized).not.toContain("/private/customer/path")
+  })
+})
+
 describe("clarification lifecycle over controller and local JSONL", () => {
   it("writes an ordered mixed-form lifecycle without request or answer content", async () => {
     const dir = mkdtempSync(join(tmpdir(), "kitten-clarification-telemetry-int-"))

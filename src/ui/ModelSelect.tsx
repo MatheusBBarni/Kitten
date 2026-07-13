@@ -147,13 +147,10 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const sessions = useAppSelector(selectSessionList)
 
-  // Tabs represent session instances, not provider kinds: several sessions can share
-  // a provider recipe, and each one can advertise a different live model/effort set.
-  const tabs = useMemo(() => modelSelectTabs(sessions), [sessions])
-  const [selectedTabId, setSelectedTabId] = useState<SessionId>(overlay.sessionId)
-  const sessionId = tabs.some((tab) => tab.sessionId === selectedTabId)
-    ? selectedTabId
-    : tabs.find((tab) => tab.sessionId === overlay.sessionId)?.sessionId ?? overlay.sessionId
+  // The selector is the only place a provider is chosen. Restrict its tabs to visible
+  // conversations so a background task cannot be focused accidentally.
+  const tabs = useMemo(() => modelSelectTabs(sessions.filter((session) => session.lifecycle === "visible")), [sessions])
+  const sessionId = overlay.sessionId
 
   // The raw slice is referentially stable across unrelated updates; filter to the
   // allowlist here and memoize so a fresh array does not thrash the render.
@@ -217,10 +214,14 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
       )
       const next = tabs[(currentIndex + direction + tabs.length) % tabs.length]
       if (!next) return
-      setSelectedTabId(next.sessionId)
-      setSelected(0)
+      // `selectConversation` rightly refuses focus changes beneath an overlay. Close
+      // this selector for the synchronous hand-off, then immediately reopen it for
+      // the newly selected provider so the modal never leaks input to the composer.
+      controller.store.closeModelSelect()
+      controller.actions.selectConversation(next.sessionId, { source: "model_select" })
+      controller.store.openModelSelect({ sessionId: next.sessionId })
     },
-    [sessionId, tabs],
+    [controller, sessionId, tabs],
   )
 
   const onKey = useCallback(

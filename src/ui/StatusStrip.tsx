@@ -17,11 +17,9 @@ import {
   selectAgentModel,
   selectBackgroundWork,
   selectFocusedSessionId,
-  selectIsFocused,
   selectIsShellFocused,
   selectSessionHeadroom,
   selectSessionModel,
-  selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { formatHeadroom } from "./headroom.ts"
@@ -38,9 +36,6 @@ export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
   error: "error",
   not_ready: "not ready",
 }
-
-/** Textual boot-state marker; color is deliberately not its only signal. */
-export const RESUMED_RUN_LABEL = "resumed"
 
 /** The selected agent's marker; unfocused chips reserve the same single cell. */
 export const FOCUS_MARKER = "▸"
@@ -59,9 +54,6 @@ export const BACKGROUND_ATTENTION_LABEL = "needs attention"
 
 /** Compact label for the focused session's MCP provisioning result. */
 export const MCP_STATUS_LABEL = "mcp"
-
-const selectIsResumedRun: Selector<boolean> = (state) =>
-  state.workspace.order.some((sessionId) => state.restoration[sessionId] !== null)
 
 /** Selector factories consumed by the bar; injectable so delegated model slots can be exercised in isolation. */
 export interface StatusSlotSelectors {
@@ -90,7 +82,6 @@ export interface StatusStripProps {
 /** Focused provider, model, effort, and run state. */
 export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripProps): ReactNode {
   const palette = usePalette()
-  const resumed = useAppSelector(selectIsResumedRun)
   const shellFocused = useAppSelector(selectIsShellFocused)
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
 
@@ -110,15 +101,10 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
           {focusedSessionId === null ? (
             <WorkspaceStatusSummary />
           ) : (
-            <AgentStatusSummaries selectors={selectors} />
+            <SelectedAgentStatus sessionId={focusedSessionId} selectors={selectors} />
           )}
         </box>
         <box style={{ flexDirection: "row", flexShrink: 0, gap: 2, overflow: "hidden" }}>
-          {resumed ? (
-            <text style={{ flexShrink: 0 }}>
-              <span fg={palette.status.finished}>{RESUMED_RUN_LABEL}</span>
-            </text>
-          ) : null}
           <text fg={palette.accent}>{shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT}</text>
         </box>
       </box>
@@ -126,12 +112,11 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
   )
 }
 
-/** Resolve runtime-bound chips only after workspace selection is known real. */
-function AgentStatusSummaries({ selectors }: { selectors: StatusSlotSelectors }): ReactNode {
+/** Resolve only the selected runtime: other providers do not belong in the fixed footer. */
+function SelectedAgentStatus({ sessionId, selectors }: { sessionId: string; selectors: StatusSlotSelectors }): ReactNode {
   const controller = useController()
-  return controller.runtimes().map((runtime) => (
-    <AgentStatusChip key={runtime.sessionId} runtime={runtime} selectors={selectors} />
-  ))
+  const runtime = controller.runtime(sessionId)
+  return runtime ? <AgentStatusChip runtime={runtime} selectors={selectors} /> : null
 }
 
 /** Empty-workspace feedback that never reads model, effort, status, or runtime state. */
@@ -161,40 +146,31 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
   const modelSelector = useMemo(() => selectors.model(runtime.sessionId), [selectors.model, runtime.sessionId])
   const effortSelector = useMemo(() => selectors.effort(runtime.sessionId), [selectors.effort, runtime.sessionId])
   const configOptionsSelector = useMemo(() => selectAgentConfigOptions(runtime.sessionId), [runtime.sessionId])
-  const statusSelector = useMemo(() => selectSessionStatus(runtime.sessionId), [runtime.sessionId])
-  const focusSelector = useMemo(() => selectIsFocused(runtime.sessionId), [runtime.sessionId])
   const headroomSelector = useMemo(() => selectSessionHeadroom(runtime.sessionId), [runtime.sessionId])
   const model = useAppSelector(modelSelector)
   const effort = useAppSelector(effortSelector)
   const configOptions = useAppSelector(configOptionsSelector)
-  const status = useAppSelector(statusSelector)
-  const focused = useAppSelector(focusSelector)
   const selectedHeadroom = useAppSelector(headroomSelector)
-  // Keep the current session-tabs contract: detailed configuration belongs only
-  // to the selected chip, while every chip still carries status and headroom.
-  const displayModel = focused ? displayModelName(configOptions, model) : null
-  const displayEffort = focused ? displayEffortName(configOptions, effort) : null
+  const displayModel = displayModelName(configOptions, model)
+  const displayEffort = displayEffortName(configOptions, effort)
   const provider = runtime.providerKind === "claude-code" ? "claude" : "codex"
-  const tone: StatusTone = runtime.ready ? status : "not_ready"
-  const headroom = formatHeadroom(runtime.ready ? selectedHeadroom : null, STATUS_STRIP_HEADROOM_CELLS)
+  const headroom = formatHeadroom(selectedHeadroom, STATUS_STRIP_HEADROOM_CELLS)
 
   return (
     <text style={{ flexShrink: 0 }} wrapMode="none">
-      <span fg={focused ? palette.accent : palette.muted}>{focused ? FOCUS_MARKER : " "}</span>
-      <span fg={focused ? palette.text : palette.muted}> </span>
+      <span fg={palette.accent}>{FOCUS_MARKER}</span>
+      <span fg={palette.text}> </span>
       <span fg={palette.accent}>{`${provider}:`}</span>
       <span fg={displayModel === null ? palette.muted : palette.text}>{displayModel ?? "—"}</span>
       {displayEffort === null ? null : <span fg={palette.muted}>{`:${displayEffort}`}</span>}
-      <span fg={palette.muted}> - </span>
-      <span fg={palette.status[tone]}>{STATUS_LABELS[tone]}</span>
       <span fg={palette.text}>{` ${headroom.label}`}</span>
-      {selectedHeadroom === null || !runtime.ready ? null : (
+      {selectedHeadroom === null ? null : (
         <>
           <span fg={palette.text}>{` ${"█".repeat(headroom.filled)}`}</span>
           <span fg={palette.muted}>{"░".repeat(headroom.cells - headroom.filled)}</span>
         </>
       )}
-      {focused ? <McpStatus runtime={runtime} /> : null}
+      <McpStatus runtime={runtime} />
     </text>
   )
 }

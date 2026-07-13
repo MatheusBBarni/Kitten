@@ -39,7 +39,7 @@ async function renderMenu(
 ): Promise<TestRendererSetup> {
   const setup = await testRender(
     <CockpitProvider controller={createFakeController()}>
-      <SlashMenu groups={groups} highlightedIndex={highlightedIndex} onSelect={onSelect} />
+      <SlashMenu groups={groups} highlightedIndex={highlightedIndex} maxHeight={12} onSelect={onSelect} />
     </CockpitProvider>,
     { width: 64, height: 12, useMouse: true },
   )
@@ -85,7 +85,7 @@ describe("SlashMenu", () => {
   it("shows an explicit empty state", async () => {
     const setup = await testRender(
       <CockpitProvider controller={createFakeController()}>
-        <SlashMenu groups={[]} highlightedIndex={0} onSelect={() => {}} />
+        <SlashMenu groups={[]} highlightedIndex={0} maxHeight={8} onSelect={() => {}} />
       </CockpitProvider>,
       { width: 64, height: 8 },
     )
@@ -109,6 +109,31 @@ describe("SlashMenu", () => {
 
     expect(selected).toEqual([reviewRow])
     expect(selected[0]).toBe(reviewRow)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("constrains a long command list to its viewport and scrolls the highlighted row into view", async () => {
+    const longRows: MenuRow[] = Array.from({ length: 24 }, (_, index) => ({
+      source: "agent" as const,
+      name: `command-${index + 1}`,
+      label: `/command-${index + 1}`,
+    }))
+    const setup = await testRender(
+      <CockpitProvider controller={createFakeController()}>
+        <SlashMenu
+          groups={[{ source: "Agent commands", rows: longRows }]}
+          highlightedIndex={23}
+          maxHeight={6}
+          onSelect={() => {}}
+        />
+      </CockpitProvider>,
+      { width: 48, height: 10 },
+    )
+
+    const frame = await setup.waitForFrame((value) => value.includes("/command-24"))
+    expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(10)
+    expect(frame).not.toContain("਀")
 
     await destroyMounted(setup.renderer)
   })
