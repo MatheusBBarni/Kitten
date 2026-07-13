@@ -154,6 +154,17 @@ describe("createAppStore", () => {
 })
 
 describe("applyEvent", () => {
+  it("applies usage to the target session while preserving the other session slice", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+
+    const after = store.getState()
+    expect(after.sessions["claude-code"]!.usage).toEqual({ used: 124_000, size: 200_000 })
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+  })
+
   it("updates only the target agent's slice and leaves the other untouched", () => {
     const store = createAppStore()
     const before = store.getState()

@@ -36,6 +36,7 @@ describe("createSessionState", () => {
       referencedFiles: new Map(),
       pendingDiffs: [],
       plan: [],
+      usage: undefined,
       configOptions: [],
       commands: [],
     })
@@ -47,6 +48,58 @@ describe("createSessionState", () => {
 
   it("defaults commands to an empty array", () => {
     expect(initial().commands).toEqual([])
+  })
+
+  it("defaults usage to unknown", () => {
+    expect(initial().usage).toBeUndefined()
+  })
+})
+
+describe("usage", () => {
+  it("sets raw usage without changing unrelated session fields", () => {
+    const before = fold([
+      { kind: "user_message", messageId: "u1", text: "inspect usage" },
+      { kind: "status", status: "working" },
+      { kind: "plan", entries: [{ content: "Measure context", status: "in_progress" }] },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "Edit gauge",
+          status: "pending",
+          locations: ["src/gauge.ts"],
+          diff: { path: "src/gauge.ts", unified: "@@ -1 +1 @@" },
+        },
+      },
+    ])
+
+    const after = sessionReducer(before, { kind: "usage", used: 124_000, size: 200_000 })
+
+    expect(after.usage).toEqual({ used: 124_000, size: 200_000 })
+    expect(after.turns).toBe(before.turns)
+    expect(after.status).toBe(before.status)
+    expect(after.plan).toBe(before.plan)
+    expect(after.referencedFiles).toBe(before.referencedFiles)
+    expect(after.pendingDiffs).toBe(before.pendingDiffs)
+  })
+
+  it("replaces the prior usage value wholesale", () => {
+    const first = fold([{ kind: "usage", used: 124_000, size: 200_000 }])
+
+    const second = sessionReducer(first, { kind: "usage", used: 80_000, size: 160_000 })
+
+    expect(second.usage).toEqual({ used: 80_000, size: 160_000 })
+    expect(second.usage).not.toBe(first.usage)
+  })
+
+  it("does not mutate the input state", () => {
+    const before = initial()
+
+    const after = sessionReducer(before, { kind: "usage", used: 124_000, size: 200_000 })
+
+    expect(after).not.toBe(before)
+    expect(before.usage).toBeUndefined()
   })
 })
 

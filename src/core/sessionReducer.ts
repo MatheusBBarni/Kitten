@@ -43,6 +43,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     referencedFiles: new Map(),
     pendingDiffs: [],
     plan: [],
+    usage: undefined,
     configOptions: [],
     commands: [],
   }
@@ -70,6 +71,10 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
     case "status":
       // Status changes never touch turns or derived fields.
       return { ...state, status: event.status }
+
+    case "usage":
+      // Usage updates replace only the latest raw context-window fact.
+      return { ...state, usage: { used: event.used, size: event.size } }
 
     case "branch":
       // Branch refreshes replace only the off-render-path git value. A blank

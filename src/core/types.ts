@@ -322,6 +322,14 @@ export interface SessionSeed {
   acpSessionId?: string
 }
 
+/** Raw context-window usage reported by an agent. */
+export interface SessionUsage {
+  /** Tokens currently in the agent's context window. */
+  used: number
+  /** Total context-window size in tokens. */
+  size: number
+}
+
 /**
  * The full state of one session, and the sole thing the reducer writes.
  *
@@ -347,6 +355,8 @@ export interface SessionState {
   pendingDiffs: PendingDiff[]
   /** The agent's most recently reported plan, if any. */
   plan: PlanEntry[]
+  /** Raw agent-reported context usage; undefined until the first report. */
+  usage?: SessionUsage
   /**
    * The full set of config options the agent has advertised for this session
    * (ADR-003), replaced wholesale on every `config_options` event because the
@@ -400,6 +410,7 @@ export type DomainSessionEvent =
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
+  | { kind: "usage"; used: number; size: number }
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
