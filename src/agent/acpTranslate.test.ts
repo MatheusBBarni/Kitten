@@ -3,8 +3,14 @@ import { describe, expect, it } from "bun:test"
 import type { SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
 
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
-import type { DomainSessionEvent } from "../core/types.ts"
-import { toUnifiedDiff, translateAvailableCommand, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import type { DomainSessionEvent, McpServerConfig } from "../core/types.ts"
+import {
+  toAcpMcpServers,
+  toUnifiedDiff,
+  translateAvailableCommand,
+  translateSessionUpdate,
+  translateToolCall,
+} from "./acpTranslate.ts"
 
 /**
  * Unit tests for the pure ACP → domain translator. These assert that every
@@ -17,6 +23,45 @@ const asToolCall = (event: DomainSessionEvent | null): Extract<DomainSessionEven
   if (event?.kind !== "tool_call") throw new Error(`expected tool_call event, got ${event?.kind}`)
   return event
 }
+
+describe("toAcpMcpServers", () => {
+  it("maps a resolved domain server to the ACP stdio shape", () => {
+    const servers: McpServerConfig[] = [
+      { name: "gh", command: "/abs/npx", args: ["-y", "x"], env: { A: "1", B: "2" } },
+    ]
+
+    expect(toAcpMcpServers(servers)).toEqual([
+      {
+        name: "gh",
+        command: "/abs/npx",
+        args: ["-y", "x"],
+        env: [
+          { name: "A", value: "1" },
+          { name: "B", value: "2" },
+        ],
+      },
+    ])
+  })
+
+  it("returns an empty array for empty input", () => {
+    expect(toAcpMcpServers([])).toEqual([])
+  })
+
+  it("maps an empty env map to an empty env array", () => {
+    const servers: McpServerConfig[] = [{ name: "local", command: "/abs/local", args: [], env: {} }]
+
+    expect(toAcpMcpServers(servers)).toEqual([{ name: "local", command: "/abs/local", args: [], env: [] }])
+  })
+
+  it("preserves the input server order", () => {
+    const servers: McpServerConfig[] = [
+      { name: "first", command: "/abs/first", args: [], env: {} },
+      { name: "second", command: "/abs/second", args: ["serve"], env: {} },
+    ]
+
+    expect(toAcpMcpServers(servers).map((server) => server.name)).toEqual(["first", "second"])
+  })
+})
 
 describe("translateSessionUpdate: messages", () => {
   it("maps agent_message_chunk to an agent_message carrying the textDelta", () => {

@@ -15,6 +15,7 @@ import type {
   AvailableCommand as AcpAvailableCommand,
   ContentBlock,
   Diff,
+  McpServer,
   PlanEntry as AcpPlanEntry,
   SessionConfigOption,
   SessionConfigSelectGroup,
@@ -31,11 +32,22 @@ import type {
   ConfigOption,
   ConfigSelectOption,
   DomainSessionEvent,
+  McpServerConfig,
   PlanEntry,
   ToolCallDiff,
   ToolCallKind,
   ToolCallUpdate,
 } from "../core/types.ts"
+
+/** Map resolved domain MCP servers to the ACP stdio wire shape. */
+export function toAcpMcpServers(servers: McpServerConfig[]): McpServer[] {
+  return servers.map((server) => ({
+    name: server.name,
+    command: server.command,
+    args: server.args,
+    env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+  }))
+}
 
 /**
  * Translate one ACP `SessionUpdate` into a domain event, or `null` for variants
