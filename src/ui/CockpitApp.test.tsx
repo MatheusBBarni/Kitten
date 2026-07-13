@@ -28,6 +28,7 @@ import {
   type TelemetryRecorder,
 } from "../telemetry/recorder.ts"
 import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
+import { CLARIFICATION_TITLE } from "./ClarificationPrompt.tsx"
 import {
   CockpitApp,
   EXTERNAL_RUN_COPIED_PREFIX,
@@ -157,6 +158,30 @@ function openApproval(controller: FakeController): void {
       sessionId: "claude-code",
       toolCall: { toolCallId: "approval-1", kind: "other", title: "Approve action" },
       options: [{ optionId: "reject", name: "Reject", kind: "reject_once" }],
+    },
+  })
+}
+
+/** Open the real top-priority clarification projection over a local modal. */
+function openClarification(controller: FakeController): void {
+  controller.store.openClarification({
+    requestId: "clarification-settings-shell",
+    generation: 1,
+    sessionId: "codex",
+    title: "Codex",
+    cwd: "/workspace/kitten",
+    payload: {
+      prompt: "Choose a boundary",
+      fields: [{
+        id: "boundary",
+        label: "Boundary",
+        mode: "single",
+        required: true,
+        options: [
+          { id: "controller", label: "Controller" },
+          { id: "store", label: "Store" },
+        ],
+      }],
     },
   })
 }
@@ -894,6 +919,34 @@ describe("CockpitApp keymap", () => {
     const approval = await setup.waitForFrame((frame) => frame.includes(APPROVAL_TITLE) && !frame.includes(SETTINGS_TITLE))
     expect(approval).toContain("Approve action")
     expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("routes shell Escape to clarification and resumes unchanged settings", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "settings")
+    await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+      openClarification(controller)
+    })
+    await setup.waitForFrame((frame) => frame.includes(CLARIFICATION_TITLE))
+
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification).toEqual([{
+      requestId: "clarification-settings-shell",
+      generation: 1,
+      outcome: { kind: "cancelled" },
+    }])
+    expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(controller.store.getState().preferences.theme).toBe("light")
+    expect(await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain("Light")
 
     await destroyMounted(setup.renderer)
   })
