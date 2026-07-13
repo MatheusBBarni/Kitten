@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Extend content-free clarification telemetry and notification coverage"
 type: backend
 complexity: high
@@ -26,10 +26,10 @@ Record clarification lifecycle outcomes through Kitten’s opt-in, local, conten
 </requirements>
 
 ## Subtasks
-- [ ] 11.1 Define closed clarification telemetry events.
-- [ ] 11.2 Emit lifecycle facts from the coordinator.
-- [ ] 11.3 Add privacy and timing regression coverage.
-- [ ] 11.4 Verify notification behavior stays generic and content-free.
+- [x] 11.1 Define closed clarification telemetry events.
+- [x] 11.2 Emit lifecycle facts from the coordinator.
+- [x] 11.3 Add privacy and timing regression coverage.
+- [x] 11.4 Verify notification behavior stays generic and content-free.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -60,12 +60,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Enabled telemetry records one ordered lifecycle with coarse duration and mixed-form flags.
-  - [ ] Disabled telemetry remains empty.
-  - [ ] Serialized telemetry excludes all request and answer content.
-  - [ ] Unfocused clarification transition alerts once while focused or already-needy transitions do not alert.
+  - [x] Enabled telemetry records one ordered lifecycle with coarse duration and mixed-form flags.
+  - [x] Disabled telemetry remains empty.
+  - [x] Serialized telemetry excludes all request and answer content.
+  - [x] Unfocused clarification transition alerts once while focused or already-needy transitions do not alert.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

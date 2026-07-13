@@ -1,10 +1,194 @@
 import { describe, expect, it } from "bun:test"
 
-import type { SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
+import type { ElicitationSchema, SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
 
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
-import type { DomainSessionEvent } from "../core/types.ts"
-import { toUnifiedDiff, translateAvailableCommand, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import type { ClarificationPayload, DomainSessionEvent, McpServerConfig } from "../core/types.ts"
+import {
+  toAcpElicitationOutcome,
+  toAcpMcpServers,
+  toUnifiedDiff,
+  translateCommand,
+  translateElicitationForm,
+  translateSessionUpdate,
+  translateToolCall,
+} from "./acpTranslate.ts"
+
+describe("elicitation form translation", () => {
+  const schema = (value: ElicitationSchema): ElicitationSchema => value
+
+  it("normalizes text, single-select, and string-array multi-select fields", () => {
+    expect(
+      translateElicitationForm(
+        "Choose the implementation shape",
+        schema({
+          type: "object",
+          required: ["strategy", "targets", "notes"],
+          properties: {
+            notes: { type: "string", title: "Notes", description: "Add context" },
+            strategy: {
+              type: "string",
+              title: "Strategy",
+              oneOf: [
+                { const: "safe", title: "Safe", description: "Smallest change" },
+                { const: "fast", title: "Fast" },
+              ],
+            },
+            targets: {
+              type: "array",
+              title: "Targets",
+              items: {
+                anyOf: [
+                  { const: "tests", title: "Tests" },
+                  { const: "docs", title: "Docs", description: "Update guidance" },
+                ],
+              },
+            },
+            optional: { type: "string", enum: ["alpha", "beta"] },
+          },
+        }),
+      ),
+    ).toEqual({
+      prompt: "Choose the implementation shape",
+      fields: [
+        { id: "notes", label: "Notes", description: "Add context", required: true, mode: "text" },
+        {
+          id: "strategy",
+          label: "Strategy",
+          required: true,
+          mode: "single",
+          options: [
+            { id: "safe", label: "Safe", description: "Smallest change" },
+            { id: "fast", label: "Fast" },
+          ],
+        },
+        {
+          id: "targets",
+          label: "Targets",
+          required: true,
+          mode: "multi",
+          options: [
+            { id: "tests", label: "Tests" },
+            { id: "docs", label: "Docs", description: "Update guidance" },
+          ],
+        },
+        {
+          id: "optional",
+          label: "optional",
+          required: false,
+          mode: "single",
+          options: [
+            { id: "alpha", label: "alpha" },
+            { id: "beta", label: "beta" },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("normalizes string-array enum items", () => {
+    expect(
+      translateElicitationForm("Pick", {
+        properties: {
+          choices: { type: "array", items: { type: "string", enum: ["one", "two"] } },
+        },
+      }),
+    ).toEqual({
+      prompt: "Pick",
+      fields: [
+        {
+          id: "choices",
+          label: "choices",
+          required: false,
+          mode: "multi",
+          options: [
+            { id: "one", label: "one" },
+            { id: "two", label: "two" },
+          ],
+        },
+      ],
+    })
+  })
+
+  it.each([
+    ["empty prompt", "", { properties: { note: { type: "string" } } }],
+    ["empty properties", "Ask", { properties: {} }],
+    ["unknown required field", "Ask", { required: ["missing"], properties: { note: { type: "string" } } }],
+    ["unsupported number", "Ask", { properties: { count: { type: "number" } } }],
+    ["empty enum", "Ask", { properties: { choice: { type: "string", enum: [] } } }],
+    ["duplicate enum", "Ask", { properties: { choice: { type: "string", enum: ["x", "x"] } } }],
+    ["ambiguous string choices", "Ask", { properties: { choice: { type: "string", enum: ["x"], oneOf: [{ const: "x", title: "X" }] } } }],
+    ["constrained text", "Ask", { properties: { note: { type: "string", minLength: 1 } } }],
+    ["non-string array", "Ask", { properties: { choice: { type: "array", items: { type: "number" } } } }],
+    ["unbounded array", "Ask", { properties: { choice: { type: "array", items: { type: "string", enum: ["x"] }, maxItems: 1 } } }],
+  ])("rejects malformed or unsupported schema: %s", (_label, message, rawSchema) => {
+    expect(translateElicitationForm(message, rawSchema as ElicitationSchema)).toBeNull()
+  })
+})
+
+describe("elicitation outcome translation", () => {
+  const payload: ClarificationPayload = {
+    prompt: "Choose",
+    fields: [
+      {
+        id: "strategy",
+        label: "Strategy",
+        required: true,
+        mode: "single",
+        options: [
+          { id: "safe", label: "Safe" },
+          { id: "fast", label: "Fast" },
+        ],
+      },
+      {
+        id: "targets",
+        label: "Targets",
+        required: true,
+        mode: "multi",
+        options: [
+          { id: "tests", label: "Tests" },
+          { id: "docs", label: "Docs" },
+        ],
+      },
+      { id: "notes", label: "Notes", required: false, mode: "text" },
+    ],
+  }
+
+  it("maps one valid answered outcome to ACP accept content", () => {
+    expect(
+      toAcpElicitationOutcome(payload, {
+        kind: "answered",
+        values: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it small" },
+      }),
+    ).toEqual({
+      action: "accept",
+      content: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it small" },
+    })
+  })
+
+  it("maps cancellation directly to ACP cancel", () => {
+    expect(toAcpElicitationOutcome(payload, { kind: "cancelled" })).toEqual({ action: "cancel" })
+  })
+
+  it.each([
+    ["missing required", { strategy: "safe" }],
+    ["unknown field", { strategy: "safe", targets: ["tests"], extra: "no" }],
+    ["wrong single type", { strategy: ["safe"], targets: ["tests"] }],
+    ["unknown single option", { strategy: "other", targets: ["tests"] }],
+    ["wrong multi type", { strategy: "safe", targets: "tests" }],
+    ["unknown multi option", { strategy: "safe", targets: ["other"] }],
+    ["duplicate multi option", { strategy: "safe", targets: ["tests", "tests"] }],
+    ["empty required multi", { strategy: "safe", targets: [] }],
+    ["undefined optional value", { strategy: "safe", targets: ["tests"], notes: undefined }],
+  ])("terminally cancels invalid submitted values: %s", (_label, values) => {
+    expect(
+      toAcpElicitationOutcome(payload, {
+        kind: "answered",
+        values: values as Record<string, string | string[]>,
+      }),
+    ).toEqual({ action: "cancel" })
+  })
+})
 
 /**
  * Unit tests for the pure ACP → domain translator. These assert that every
@@ -17,6 +201,45 @@ const asToolCall = (event: DomainSessionEvent | null): Extract<DomainSessionEven
   if (event?.kind !== "tool_call") throw new Error(`expected tool_call event, got ${event?.kind}`)
   return event
 }
+
+describe("toAcpMcpServers", () => {
+  it("maps a resolved domain server to the ACP stdio shape", () => {
+    const servers: McpServerConfig[] = [
+      { name: "gh", command: "/abs/npx", args: ["-y", "x"], env: { A: "1", B: "2" } },
+    ]
+
+    expect(toAcpMcpServers(servers)).toEqual([
+      {
+        name: "gh",
+        command: "/abs/npx",
+        args: ["-y", "x"],
+        env: [
+          { name: "A", value: "1" },
+          { name: "B", value: "2" },
+        ],
+      },
+    ])
+  })
+
+  it("returns an empty array for empty input", () => {
+    expect(toAcpMcpServers([])).toEqual([])
+  })
+
+  it("maps an empty env map to an empty env array", () => {
+    const servers: McpServerConfig[] = [{ name: "local", command: "/abs/local", args: [], env: {} }]
+
+    expect(toAcpMcpServers(servers)).toEqual([{ name: "local", command: "/abs/local", args: [], env: [] }])
+  })
+
+  it("preserves the input server order", () => {
+    const servers: McpServerConfig[] = [
+      { name: "first", command: "/abs/first", args: [], env: {} },
+      { name: "second", command: "/abs/second", args: ["serve"], env: {} },
+    ]
+
+    expect(toAcpMcpServers(servers).map((server) => server.name)).toEqual(["first", "second"])
+  })
+})
 
 describe("translateSessionUpdate: messages", () => {
   it("maps agent_message_chunk to an agent_message carrying the textDelta", () => {
@@ -140,9 +363,33 @@ describe("translateSessionUpdate: plan, commands, and ignored variants", () => {
     { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } },
     { sessionUpdate: "current_mode_update", currentModeId: "code" },
     { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p1", content: "# plan" } },
-    { sessionUpdate: "usage_update", used: 100, size: 200000 },
+    { sessionUpdate: "plan_removed", planId: "p1" },
+    { sessionUpdate: "session_info_update", title: "Renamed session" },
   ])("returns null for the unsurfaced variant %o", (update) => {
     expect(translateSessionUpdate(update)).toBeNull()
+  })
+})
+
+describe("translateSessionUpdate: usage", () => {
+  it("maps usage_update to content-free domain counters", () => {
+    expect(translateSessionUpdate({ sessionUpdate: "usage_update", used: 36000, size: 200000 })).toEqual({
+      kind: "usage",
+      used: 36000,
+      size: 200000,
+    })
+  })
+
+  it("drops cost and metadata from usage_update", () => {
+    const event = translateSessionUpdate({
+      sessionUpdate: "usage_update",
+      used: 36000,
+      size: 200000,
+      cost: { amount: 0.25, currency: "USD", _meta: { billingTrace: "private" } },
+      _meta: { trace: "private" },
+    })
+
+    expect(event).toEqual({ kind: "usage", used: 36000, size: 200000 })
+    expect(Object.keys(event ?? {}).sort()).toEqual(["kind", "size", "used"])
   })
 })
 
@@ -169,17 +416,24 @@ describe("translateSessionUpdate: available commands", () => {
         { name: "test", description: "Run tests" },
       ],
     })
+    expect(event?.kind === "commands" && event.commands[1]?.hint).toBeUndefined()
   })
 
-  it("drops ACP metadata and an empty input hint", () => {
+  it("drops ACP metadata while preserving the advertised input hint", () => {
     expect(
-      translateAvailableCommand({
+      translateCommand({
         name: "status",
         description: "Show status",
         input: { hint: "", _meta: { internal: true } },
         _meta: { internal: true },
       }),
-    ).toEqual({ name: "status", description: "Show status" })
+    ).toEqual({ name: "status", description: "Show status", hint: "" })
+  })
+
+  it("translates an empty advertised command list into an empty commands event", () => {
+    expect(
+      translateSessionUpdate({ sessionUpdate: "available_commands_update", availableCommands: [] }),
+    ).toEqual({ kind: "commands", commands: [] })
   })
 
   it("flows an available-commands update through the reducer", () => {
@@ -365,7 +619,7 @@ describe("translateSessionUpdate: config options", () => {
 })
 
 describe("translation completeness", () => {
-  const FORBIDDEN_ACP_KEYS = ["_meta", "sessionUpdate", "rawInput", "rawOutput", "content", "annotations", "line"]
+  const FORBIDDEN_ACP_KEYS = ["_meta", "sessionUpdate", "rawInput", "rawOutput", "content", "annotations", "line", "cost"]
 
   const collectKeys = (value: unknown, keys: Set<string> = new Set()): Set<string> => {
     if (Array.isArray(value)) {
@@ -390,8 +644,29 @@ describe("translation completeness", () => {
       rawInput: { secret: "should-not-leak" },
       _meta: { trace: "abc" },
     }
-    const event = translateSessionUpdate({ ...acpToolCall, sessionUpdate: "tool_call" })
-    const keys = collectKeys(event)
+    const events = [
+      translateSessionUpdate({ ...acpToolCall, sessionUpdate: "tool_call" }),
+      translateSessionUpdate({
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "review",
+            description: "Review the current changes",
+            input: { hint: "[scope]", _meta: { trace: "nested" } },
+            _meta: { trace: "command" },
+          },
+        ],
+        _meta: { trace: "update" },
+      }),
+      translateSessionUpdate({
+        sessionUpdate: "usage_update",
+        used: 36000,
+        size: 200000,
+        cost: { amount: 0.25, currency: "USD" },
+        _meta: { trace: "abc" },
+      }),
+    ]
+    const keys = collectKeys(events)
     for (const forbidden of FORBIDDEN_ACP_KEYS) {
       expect(keys.has(forbidden)).toBe(false)
     }

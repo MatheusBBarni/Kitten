@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Guard selected-only workspace controls"
 type: frontend
 complexity: medium
@@ -28,11 +28,11 @@ Make composer, status, and model controls safe and understandable when no Visibl
 </requirements>
 
 ## Subtasks
-- [ ] 10.1 Gate composer submission and cancellation on real workspace selection.
-- [ ] 10.2 Present empty-workspace and background-work status safely.
-- [ ] 10.3 Gate model controls and related shortcuts on real selection.
-- [ ] 10.4 Preserve selected-session controls and feedback.
-- [ ] 10.5 Verify no selected-only API receives a fabricated identifier.
+- [x] 10.1 Gate composer submission and cancellation on real workspace selection.
+- [x] 10.2 Present empty-workspace and background-work status safely.
+- [x] 10.3 Gate model controls and related shortcuts on real selection.
+- [x] 10.4 Preserve selected-session controls and feedback.
+- [x] 10.5 Verify no selected-only API receives a fabricated identifier.
 
 ## Implementation Details
 
@@ -66,13 +66,13 @@ Apply the TechSpec’s **Focus Authority and Empty Workspace** section. The acti
 
 ## Tests
 - Unit tests:
-  - [ ] No selected session disables prompt/cancel and invokes no runtime, readiness, command, or action call.
-  - [ ] Status strip reports workspace/background state without stale model, effort, or turn status.
-  - [ ] Model commands and entry points leave their overlay closed when selection is null.
-  - [ ] Existing prompt, whitespace, Escape-cancel, model, and selected-session status behavior remains unchanged.
+  - [x] No selected session disables prompt/cancel and invokes no runtime, readiness, command, or action call.
+  - [x] Status strip reports workspace/background state without stale model, effort, or turn status.
+  - [x] Model commands and entry points leave their overlay closed when selection is null.
+  - [x] Existing prompt, whitespace, Escape-cancel, model, and selected-session status behavior remains unchanged.
 - Integration tests:
-  - [ ] A background-only/empty cockpit frame is stable, has no selected-only overlay, and cannot submit or target a stale session.
-  - [ ] Restoring a visible conversation re-enables controls only for that selected SessionId.
+  - [x] A background-only/empty cockpit frame is stable, has no selected-only overlay, and cannot submit or target a stale session.
+  - [x] Restoring a visible conversation re-enables controls only for that selected SessionId.
 - Test coverage target: >=80%
 - All tests must pass
 

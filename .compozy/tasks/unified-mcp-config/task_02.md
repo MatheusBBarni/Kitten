@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: MCP provisioning resolver - env references and command resolution
 type: backend
 complexity: medium
@@ -31,10 +31,10 @@ Centralizing both resolutions here gives a single, testable source for the loade
 </requirements>
 
 ## Subtasks
-- [ ] 02.1 Expand `${VAR}` references over env values using the injectable env map.
-- [ ] 02.2 Resolve each command to an absolute path via the injectable command resolver.
-- [ ] 02.3 Partition servers into `resolved` and `skipped` with structured reasons.
-- [ ] 02.4 Guarantee no throw on runtime-resolution failures (missing var, missing command).
+- [x] 02.1 Expand `${VAR}` references over env values using the injectable env map.
+- [x] 02.2 Resolve each command to an absolute path via the injectable command resolver.
+- [x] 02.3 Partition servers into `resolved` and `skipped` with structured reasons.
+- [x] 02.4 Guarantee no throw on runtime-resolution failures (missing var, missing command).
 
 ## Implementation Details
 Add a new pure module in `src/config` (for example `mcpResolver.ts`) plus its test.
@@ -61,14 +61,14 @@ Mirror the injectable-seam pattern used by `ReadinessOptions` (`binaryExists` de
 
 ## Tests
 - Unit tests:
-  - [ ] A server with env `{ TOKEN: "${GH}" }` and env map `{ GH: "abc" }` resolves to `{ TOKEN: "abc" }` and appears in `resolved`.
-  - [ ] A server referencing `${MISSING}` (absent from the env map) appears in `skipped` with a reason naming MISSING, and no error is thrown.
-  - [ ] A value `"${A}/${B}"` expands both references.
-  - [ ] A server whose command resolves via the injected resolver carries an absolute command in `resolved`.
-  - [ ] A server whose command cannot be resolved appears in `skipped` with a command-not-found reason.
-  - [ ] Mixed input (one resolvable, one unresolved-var) yields exactly one `resolved` and one `skipped`.
+  - [x] A server with env `{ TOKEN: "${GH}" }` and env map `{ GH: "abc" }` resolves to `{ TOKEN: "abc" }` and appears in `resolved`.
+  - [x] A server referencing `${MISSING}` (absent from the env map) appears in `skipped` with a reason naming MISSING, and no error is thrown.
+  - [x] A value `"${A}/${B}"` expands both references.
+  - [x] A server whose command resolves via the injected resolver carries an absolute command in `resolved`.
+  - [x] A server whose command cannot be resolved appears in `skipped` with a command-not-found reason.
+  - [x] Mixed input (one resolvable, one unresolved-var) yields exactly one `resolved` and one `skipped`.
 - Integration tests:
-  - [ ] With an injected env map and command resolver, a two-server list produces the expected `resolved`/`skipped` partition end to end.
+  - [x] With an injected env map and command resolver, a two-server list produces the expected `resolved`/`skipped` partition end to end.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -11,6 +11,7 @@
  * can never drift from the transcript.
  */
 
+import { createPromptHistoryState, promptHistoryReducer } from "./promptHistory.ts"
 import type {
   DomainSessionEvent,
   PendingDiff,
@@ -43,8 +44,10 @@ export function createSessionState(seed: SessionSeed): SessionState {
     referencedFiles: new Map(),
     pendingDiffs: [],
     plan: [],
+    usage: undefined,
     configOptions: [],
     commands: [],
+    promptHistory: createPromptHistoryState(),
   }
 }
 
@@ -71,6 +74,10 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       // Status changes never touch turns or derived fields.
       return { ...state, status: event.status }
 
+    case "usage":
+      // Usage updates replace only the latest raw context-window fact.
+      return { ...state, usage: { used: event.used, size: event.size } }
+
     case "branch":
       // Branch refreshes replace only the off-render-path git value. A blank
       // event clears the optional field so hide-when-absent selectors return null.
@@ -85,6 +92,11 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       // Agents advertise a complete command set. The newest update wins without
       // changing transcript, status, or any derived fields.
       return { ...state, commands: event.commands }
+
+    case "prompt_history": {
+      const promptHistory = promptHistoryReducer(state.promptHistory, event)
+      return promptHistory === state.promptHistory ? state : { ...state, promptHistory }
+    }
 
     default:
       return assertNever(event)

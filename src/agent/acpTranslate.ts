@@ -14,7 +14,9 @@
 import type {
   AvailableCommand as AcpAvailableCommand,
   ContentBlock,
+  CreateElicitationResponse,
   Diff,
+  McpServer,
   PlanEntry as AcpPlanEntry,
   SessionConfigOption,
   SessionConfigSelectGroup,
@@ -24,13 +26,19 @@ import type {
   ToolCallContent,
   ToolCallUpdate as AcpToolCallUpdate,
   ToolKind,
+  UsageUpdate,
 } from "@agentclientprotocol/sdk"
 
 import type {
   AvailableCommand,
+  ClarificationField,
+  ClarificationOption,
+  ClarificationOutcome,
+  ClarificationPayload,
   ConfigOption,
   ConfigSelectOption,
   DomainSessionEvent,
+  McpServerConfig,
   PlanEntry,
   ToolCallDiff,
   ToolCallKind,
@@ -38,8 +46,186 @@ import type {
 } from "../core/types.ts"
 
 /**
+ * Normalize the narrow ACP form subset Kitten can faithfully present in V1.
+ *
+ * The SDK validates the outer wire request before this function runs, but the
+ * experimental schema intentionally accepts future/custom variants and salvages
+ * some malformed optional fields. Revalidate the complete shape here so an
+ * unsupported construct can never leak into the protocol-free domain model.
+ */
+export function translateElicitationForm(message: string, schema: unknown): ClarificationPayload | null {
+  if (message.length === 0 || !isRecord(schema)) return null
+
+  const properties = schema.properties
+  if (!isRecord(properties) || Object.keys(properties).length === 0) return null
+
+  const required = normalizeRequired(schema.required, properties)
+  if (required === null) return null
+
+  const fields: ClarificationField[] = []
+  for (const [id, property] of Object.entries(properties)) {
+    if (id.length === 0 || !isRecord(property)) return null
+    const field = normalizeElicitationField(id, property, required.has(id))
+    if (field === null) return null
+    fields.push(field)
+  }
+
+  return { prompt: message, fields }
+}
+
+/**
+ * Map one protocol-free terminal outcome back to ACP, validating all submitted
+ * values first. Invalid values cancel the original request instead of returning
+ * content that does not satisfy the form Kitten displayed.
+ */
+export function toAcpElicitationOutcome(
+  payload: ClarificationPayload,
+  outcome: ClarificationOutcome,
+): CreateElicitationResponse {
+  if (outcome.kind === "cancelled") return { action: "cancel" }
+  if (!isRecord(outcome.values)) return { action: "cancel" }
+
+  const fields = new Map(payload.fields.map((field) => [field.id, field]))
+  for (const key of Object.keys(outcome.values)) {
+    if (!fields.has(key)) return { action: "cancel" }
+  }
+
+  const content: Record<string, string | string[]> = {}
+  for (const field of payload.fields) {
+    const present = Object.hasOwn(outcome.values, field.id)
+    if (!present) {
+      if (field.required) return { action: "cancel" }
+      continue
+    }
+    const value = outcome.values[field.id]
+    if (!isValidClarificationValue(field, value)) return { action: "cancel" }
+    content[field.id] = Array.isArray(value) ? [...value] : value
+  }
+
+  return { action: "accept", content }
+}
+
+function normalizeRequired(
+  raw: unknown,
+  properties: Record<string, unknown>,
+): Set<string> | null {
+  if (raw == null) return new Set()
+  if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string" || !Object.hasOwn(properties, id))) return null
+  const required = new Set(raw)
+  return required.size === raw.length ? required : null
+}
+
+function normalizeElicitationField(
+  id: string,
+  property: Record<string, unknown>,
+  required: boolean,
+): ClarificationField | null {
+  const label = optionalString(property.title)
+  const description = optionalString(property.description)
+  if (label === null || description === null) return null
+  const base = {
+    id,
+    label: label ?? id,
+    ...(description === undefined ? {} : { description }),
+    required,
+  }
+
+  if (property.type === "string") {
+    if (hasNonNull(property, "minLength", "maxLength", "pattern", "format", "default")) return null
+    const options = normalizeStringOptions(property)
+    if (options === null) return null
+    return options === undefined ? { ...base, mode: "text" } : { ...base, mode: "single", options }
+  }
+
+  if (property.type === "array") {
+    if (hasNonNull(property, "minItems", "maxItems", "default") || !isRecord(property.items)) return null
+    const options = normalizeMultiOptions(property.items)
+    return options === null ? null : { ...base, mode: "multi", options }
+  }
+
+  return null
+}
+
+function normalizeStringOptions(property: Record<string, unknown>): ClarificationOption[] | undefined | null {
+  const enumValues = property.enum
+  const oneOf = property.oneOf
+  const hasEnum = enumValues != null
+  const hasOneOf = oneOf != null
+  if (hasEnum && hasOneOf) return null
+  if (!hasEnum && !hasOneOf) return undefined
+  return hasEnum ? optionsFromEnum(enumValues) : optionsFromTitled(oneOf)
+}
+
+function normalizeMultiOptions(items: Record<string, unknown>): ClarificationOption[] | null {
+  const enumValues = items.enum
+  const anyOf = items.anyOf
+  const hasEnum = enumValues != null
+  const hasAnyOf = anyOf != null
+  if (hasEnum === hasAnyOf) return null
+  if (hasEnum && items.type !== "string") return null
+  return hasEnum ? optionsFromEnum(enumValues) : optionsFromTitled(anyOf)
+}
+
+function optionsFromEnum(raw: unknown): ClarificationOption[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.some((value) => typeof value !== "string" || value.length === 0)) {
+    return null
+  }
+  const values = raw as string[]
+  if (new Set(values).size !== values.length) return null
+  return values.map((value) => ({ id: value, label: value }))
+}
+
+function optionsFromTitled(raw: unknown): ClarificationOption[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  const options: ClarificationOption[] = []
+  for (const entry of raw) {
+    if (!isRecord(entry) || typeof entry.const !== "string" || entry.const.length === 0) return null
+    if (typeof entry.title !== "string" || entry.title.length === 0) return null
+    const description = optionalString(entry.description)
+    if (description === null) return null
+    options.push({
+      id: entry.const,
+      label: entry.title,
+      ...(description === undefined ? {} : { description }),
+    })
+  }
+  return new Set(options.map((option) => option.id)).size === options.length ? options : null
+}
+
+function isValidClarificationValue(field: ClarificationField, value: unknown): value is string | string[] {
+  if (field.mode === "text") return typeof value === "string" && (!field.required || value.length > 0)
+
+  const optionIds = new Set(field.options.map((option) => option.id))
+  if (field.mode === "single") return typeof value === "string" && optionIds.has(value)
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !optionIds.has(item))) return false
+  return new Set(value).size === value.length && (!field.required || value.length > 0)
+}
+
+function optionalString(value: unknown): string | undefined | null {
+  return value == null ? undefined : typeof value === "string" ? value : null
+}
+
+function hasNonNull(value: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.some((key) => value[key] != null)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Map resolved domain MCP servers to the ACP stdio wire shape. */
+export function toAcpMcpServers(servers: McpServerConfig[]): McpServer[] {
+  return servers.map((server) => ({
+    name: server.name,
+    command: server.command,
+    args: server.args,
+    env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+  }))
+}
+
+/**
  * Translate one ACP `SessionUpdate` into a domain event, or `null` for variants
- * Kitten does not surface in V1 (thoughts, plan deltas, mode/usage/session
+ * Kitten does not surface in V1 (thoughts, plan deltas, mode/session
  * notifications). Config and available-command updates are surfaced as their
  * protocol-free domain slices.
  * Returning `null` keeps the caller's dispatch loop trivial.
@@ -66,14 +252,15 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
       // and drop booleans (V1 renders select categories only, ADR-003/ADR-004).
       return { kind: "config_options", options: translateConfigOptions(update.configOptions) }
     case "available_commands_update":
-      return { kind: "commands", commands: update.availableCommands.map(translateAvailableCommand) }
+      return { kind: "commands", commands: update.availableCommands.map(translateCommand) }
+    case "usage_update":
+      return translateUsage(update)
     // Deliberately not surfaced in V1 (documented in the module header).
     case "agent_thought_chunk":
     case "plan_update":
     case "plan_removed":
     case "current_mode_update":
     case "session_info_update":
-    case "usage_update":
       return null
     default:
       // A new ACP update variant appeared; ignore it rather than leak it upward.
@@ -110,6 +297,11 @@ function translatePlanEntry(entry: AcpPlanEntry): PlanEntry {
   return { content: entry.content, priority: entry.priority, status: entry.status }
 }
 
+/** Copy only the content-free context counters; ACP cost and metadata stay at the boundary. */
+function translateUsage(update: UsageUpdate): Extract<DomainSessionEvent, { kind: "usage" }> {
+  return { kind: "usage", used: update.used, size: update.size }
+}
+
 /**
  * Translate an ACP `SessionConfigOption[]` into the domain {@link ConfigOption[]}.
  *
@@ -137,11 +329,11 @@ export function translateConfigOptions(options: SessionConfigOption[]): ConfigOp
  * Flatten ACP's extensible slash-command shape into the domain's small command
  * record. In particular, `_meta` never crosses the adapter boundary.
  */
-export function translateAvailableCommand(command: AcpAvailableCommand): AvailableCommand {
+export function translateCommand(command: AcpAvailableCommand): AvailableCommand {
   return {
     name: command.name,
     description: command.description,
-    ...(command.input?.hint ? { hint: command.input.hint } : {}),
+    hint: command.input?.hint,
   }
 }
 

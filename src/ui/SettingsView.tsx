@@ -7,8 +7,8 @@
  * never performs I/O.
  *
  * Like the other overlays, the component self-gates and mounts its keyboard listener
- * only while its slot is open. A pending approval outranks settings because an agent
- * blocked on permission must always receive the user's next decision first.
+ * only while its slot is open. Agent interactions outrank settings: clarification
+ * owns top priority, followed by a pending approval.
  */
 
 import type { KeyEvent } from "@opentui/core"
@@ -16,7 +16,12 @@ import { useKeyboard } from "@opentui/react"
 import { useCallback, type ReactNode } from "react"
 
 import type { ThemePreference } from "../core/types.ts"
-import { selectIsApprovalOpen, selectSettingsOverlay, selectThemePreference } from "../store/selectors.ts"
+import {
+  selectIsApprovalOpen,
+  selectIsClarificationOpen,
+  selectSettingsOverlay,
+  selectThemePreference,
+} from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { matchSettingsCommand, SETTINGS_HINT } from "./keymap.ts"
 import { PALETTES, usePalette } from "./theme.ts"
@@ -50,9 +55,10 @@ export function themePreferenceLabel(preference: ThemePreference): string {
 /** The overlay, or nothing. The shell may mount it unconditionally in task 10. */
 export function SettingsView(): ReactNode {
   const overlay = useAppSelector(selectSettingsOverlay)
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
 
-  if (!overlay || approvalOpen) return null
+  if (!overlay || clarificationOpen || approvalOpen) return null
   return <SettingsDialog />
 }
 

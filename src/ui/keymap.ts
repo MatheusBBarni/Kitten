@@ -21,6 +21,8 @@
 
 import type { KeyBinding as TextareaKeyBinding } from "@opentui/core"
 
+import type { KeyboardCapability } from "../store/appStore.ts"
+
 /**
  * The subset of an OpenTUI `KeyEvent` a binding inspects.
  *
@@ -32,6 +34,7 @@ export interface CockpitKey {
   readonly ctrl: boolean
   readonly shift: boolean
   readonly meta: boolean
+  readonly source?: "raw" | "kitty"
 }
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
@@ -48,15 +51,30 @@ export type CockpitCommand =
   | "open-settings"
   | "toggle-help"
   | "close-help"
+  | "previous-tab"
+  | "next-tab"
 
 /** Every intent the model/effort selector handles while it is on screen. */
 export type ModelSelectCommand = "prev-option" | "next-option" | "prev-tab" | "next-tab" | "confirm" | "cancel"
 
 /** Every intent the non-modal prompt slash menu handles while it is armed. */
-export type MenuCommand = "prev-option" | "next-option" | "confirm" | "dismiss"
+export type MenuCommand = "prev-item" | "next-item" | "confirm" | "dismiss"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
+
+/** Every intent the clarification dialog handles while it owns the keyboard. */
+export type ClarificationCommand =
+  | "prev-option"
+  | "next-option"
+  | "prev-field"
+  | "next-field"
+  | "toggle-option"
+  | "confirm"
+  | "cancel"
+
+/** Every intent the rename/close tab dialog handles while it owns the modal slot. */
+export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "cancel"
 
 /** Every intent the settings overlay handles while it is on screen. */
 export type SettingsCommand = "prev-option" | "next-option" | "switch-tab" | "reset-to-default" | "close"
@@ -96,6 +114,8 @@ export interface HelpEntry {
 export interface KeyBinding<Command extends string = CockpitCommand> extends HelpEntry {
   readonly command: Command
   readonly matches: (key: CockpitKey) => boolean
+  /** Persistent renderer confirmation required in addition to the current event predicate. */
+  readonly requiresKittyConfirmation?: boolean
 }
 
 /** One visible, slash-first cockpit operation. */
@@ -127,6 +147,11 @@ function ctrl(name: string): (key: CockpitKey) => boolean {
   return (key) => key.name === name && key.ctrl && !key.meta && !key.shift
 }
 
+/** A disambiguated Ctrl chord from the Kitty parser path, never legacy raw input. */
+function kittyCtrl(name: string): (key: CockpitKey) => boolean {
+  return (key) => key.source === "kitty" && ctrl(name)(key)
+}
+
 /** Match when any one of the supplied predicates claims the key. */
 function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: CockpitKey) => boolean {
   return (key) => predicates.some((predicate) => predicate(key))
@@ -144,6 +169,8 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "switch-focus", name: "switch", description: "Switch focus to the other agent" },
   { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
   { command: "sessions", name: "sessions", description: "Show every session and jump to one that needs you" },
+  { command: "previous-tab", name: "previous-tab", description: "Select the previous visible conversation" },
+  { command: "next-tab", name: "next-tab", description: "Select the next visible conversation" },
   { command: "resume-session", name: "resume", description: "Find and resume a saved run for this project" },
   { command: "start-new-run", name: "new", description: "Start a new run with fresh agent sessions" },
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
@@ -157,6 +184,26 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
  * F2 is the terminal-level fallback for keyboards that cannot report Ctrl+`.
  */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
+  {
+    command: "previous-tab",
+    keys: "Ctrl+H",
+    description: "Move to the previous visible tab when Kitty input is confirmed",
+    matches: kittyCtrl("h"),
+    requiresKittyConfirmation: true,
+  },
+  {
+    command: "next-tab",
+    keys: "Ctrl+L",
+    description: "Move to the next visible tab when Kitty input is confirmed",
+    matches: kittyCtrl("l"),
+    requiresKittyConfirmation: true,
+  },
+  {
+    command: "hand-off",
+    keys: "Ctrl+T",
+    description: "Open the curated hand-off flow",
+    matches: ctrl("t"),
+  },
   {
     command: "toggle-shell",
     keys: "Ctrl+` / F2",
@@ -205,21 +252,23 @@ export const PROMPT_KEY_BINDINGS: TextareaKeyBinding[] = [
  */
 export const EDITOR_KEYMAP: readonly HelpEntry[] = [
   { keys: "/", description: "Open and filter the command menu" },
+  { keys: "@", description: "Find and insert a repository file reference" },
   { keys: "Enter", description: "Send the prompt to the focused agent" },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt" },
+  { keys: "↑ / ↓", description: "Recall prompts at multiline editing boundaries" },
   { keys: "Esc", description: "Interrupt the agent while it is working" },
 ]
 
 /** Navigation captured only while the prompt-local slash menu is visible. */
 export const MENU_KEYMAP: readonly KeyBinding<MenuCommand>[] = [
   {
-    command: "prev-option",
+    command: "prev-item",
     keys: "↑ / Shift+Tab",
     description: "Highlight the previous command",
     matches: any(plain("up"), shiftPlain("tab")),
   },
   {
-    command: "next-option",
+    command: "next-item",
     keys: "↓ / Tab",
     description: "Highlight the next command",
     matches: any(plain("down"), plain("tab")),
@@ -270,6 +319,80 @@ export const APPROVAL_KEYMAP: readonly KeyBinding<ApprovalCommand>[] = [
     command: "cancel",
     keys: "Esc",
     description: "Dismiss the request without deciding",
+    matches: plain("escape"),
+  },
+]
+
+/** The clarification dialog's complete keyboard contract. */
+export const CLARIFICATION_KEYMAP: readonly KeyBinding<ClarificationCommand>[] = [
+  {
+    command: "prev-option",
+    keys: "↑",
+    description: "Highlight the previous clarification option",
+    matches: plain("up"),
+  },
+  {
+    command: "next-option",
+    keys: "↓",
+    description: "Highlight the next clarification option",
+    matches: plain("down"),
+  },
+  {
+    command: "prev-field",
+    keys: "Shift+Tab",
+    description: "Focus the previous clarification field",
+    matches: shiftPlain("tab"),
+  },
+  {
+    command: "next-field",
+    keys: "Tab",
+    description: "Focus the next clarification field",
+    matches: plain("tab"),
+  },
+  {
+    command: "toggle-option",
+    keys: "Space",
+    description: "Toggle the highlighted multi-select option",
+    matches: plain("space"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Submit the clarification response",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Cancel the clarification request",
+    matches: plain("escape"),
+  },
+]
+
+/** Rename uses Enter/Escape; close-choice dialogs additionally use the arrow rows. */
+export const TAB_DIALOG_KEYMAP: readonly KeyBinding<TabDialogCommand>[] = [
+  {
+    command: "prev-choice",
+    keys: "↑",
+    description: "Highlight the previous close choice",
+    matches: plain("up"),
+  },
+  {
+    command: "next-choice",
+    keys: "↓",
+    description: "Highlight the next close choice",
+    matches: plain("down"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Confirm the rename or highlighted close choice",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Close the dialog without changing the conversation",
     matches: plain("escape"),
   },
 ]
@@ -367,7 +490,7 @@ export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
   {
     command: "jump-next-needy",
     keys: "n",
-    description: "Jump to the next session that needs you",
+    description: "Jump to the next conversation needing attention",
     matches: plain("n"),
   },
   {
@@ -525,11 +648,20 @@ export const SETTINGS_KEYMAP: readonly KeyBinding<SettingsCommand>[] = [
  * overlay prints its own hint instead (`APPROVAL_HINT`, `HANDOFF_HINT`), in the one
  * state where its keys work.
  */
-export const HELP_ENTRIES: readonly HelpEntry[] = [
-  ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
-  { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
-  ...EDITOR_KEYMAP,
-]
+export function helpEntries(capability: KeyboardCapability): readonly HelpEntry[] {
+  const directTabBindings = capability === "kittyConfirmed"
+    ? COCKPIT_KEYMAP.filter((entry) => entry.command === "previous-tab" || entry.command === "next-tab")
+    : []
+  return [
+    ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
+    ...directTabBindings.map(({ keys, description }) => ({ keys, description })),
+    { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
+    ...EDITOR_KEYMAP,
+  ]
+}
+
+/** Legacy-safe default retained for non-reactive consumers and tests. */
+export const HELP_ENTRIES: readonly HelpEntry[] = helpEntries("unknown")
 
 /** Read a display label from the same binding row dispatch uses. */
 function bindingKeys<Command extends string>(keymap: readonly KeyBinding<Command>[], command: Command): string {
@@ -549,7 +681,14 @@ function commandSlash(command: Exclude<CockpitCommand, "close-help">): string {
 export const NEW_RUN_KEY_HINT = commandSlash("start-new-run")
 
 /** The one quiet, always-visible discovery affordance in the status strip. */
-export const KEYMAP_HINT = commandSlash("toggle-help")
+export const KEYMAP_HINT = `${bindingKeys(COCKPIT_KEYMAP, "hand-off").replace("Ctrl+", "^")} hand-off  / menu  ${commandSlash("toggle-help")}`
+
+/** Direct-chord discovery after confirmation, otherwise the universal sessions/attention path. */
+export function tabNavigationHint(capability: KeyboardCapability): string {
+  return capability === "kittyConfirmed"
+    ? `${bindingKeys(COCKPIT_KEYMAP, "previous-tab")}/${bindingKeys(COCKPIT_KEYMAP, "next-tab")} tabs`
+    : `${commandSlash("sessions")} → n next attention`
+}
 
 /** The always-available way back from terminal ownership, shown while the shell has focus. */
 export const SHELL_EXIT_HINT = `${bindingKeys(COCKPIT_KEYMAP, "toggle-shell")} exit shell`
@@ -562,6 +701,16 @@ export const RESUME_KEY_HINT = commandSlash("resume-session")
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
 
+/** The complete keyboard teaching surface shown only while clarification owns input. */
+export const CLARIFICATION_HINT =
+  `↑↓ move  Tab/Shift+Tab field/text  1-${MAX_DIGIT_OPTIONS} pick  Space toggle  Enter submit  Esc cancel request`
+
+/** The hint printed while the rename input owns ordinary text keys. */
+export const TAB_RENAME_HINT = "Enter rename  Esc keep current name"
+
+/** The hint printed while an idle or active close decision owns the keyboard. */
+export const TAB_CLOSE_HINT = "↑↓ move  Enter choose  Esc keep open"
+
 /** The hint printed inside the hand-off preview while the developer curates the bundle. */
 export const HANDOFF_HINT = "↑↓ move  Space keep/drop  m model/effort  e edit  Enter send  Esc cancel"
 
@@ -569,7 +718,7 @@ export const HANDOFF_HINT = "↑↓ move  Space keep/drop  m model/effort  e edi
 export const HANDOFF_CONFIG_HINT = "↑↓ move  Enter set target option  Esc back"
 
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
-export const SESSIONS_HINT = "↑↓ move  Enter jump  n next needy  Esc close"
+export const SESSIONS_HINT = "↑↓ move  Enter jump  n next attention  Esc close"
 
 /** The hint printed inside the saved-run picker while its filter owns text input. */
 export const SESSION_PICKER_HINT =
@@ -604,8 +753,10 @@ export const HANDOFF_EDIT_HINT = "Esc returns to the bundle"
 /** Build the "first binding whose predicate matches, else null" lookup a keymap needs. */
 function makeMatcher<Command extends string>(
   keymap: readonly KeyBinding<Command>[],
-): (key: CockpitKey) => Command | null {
-  return (key) => keymap.find((binding) => binding.matches(key))?.command ?? null
+): (key: CockpitKey, capability?: KeyboardCapability) => Command | null {
+  return (key, capability = "unknown") => keymap.find((binding) =>
+    (!binding.requiresKittyConfirmation || capability === "kittyConfirmed") && binding.matches(key)
+  )?.command ?? null
 }
 
 /** The command a keypress maps to, or `null` when the shell does not claim it. */
@@ -616,6 +767,12 @@ export const matchMenuCommand = makeMatcher(MENU_KEYMAP)
 
 /** The overlay command a keypress maps to, or `null` when the overlay does not claim it. */
 export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)
+
+/** The clarification command a keypress maps to, or null for focused text editing. */
+export const matchClarificationCommand = makeMatcher(CLARIFICATION_KEYMAP)
+
+/** The rename/close dialog command a keypress maps to, or `null` for input text. */
+export const matchTabDialogCommand = makeMatcher(TAB_DIALOG_KEYMAP)
 
 /** The preview command a keypress maps to, or `null` when the preview does not claim it. */
 export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)
@@ -639,6 +796,15 @@ export const matchSettingsCommand = makeMatcher(SETTINGS_KEYMAP)
  * which is not a trade worth making on a dialog this small.
  */
 export function approvalOptionIndex(key: CockpitKey): number | null {
+  return directOptionIndex(key)
+}
+
+/** The zero-based clarification option named by a plain digit, or null. */
+export function clarificationOptionIndex(key: CockpitKey): number | null {
+  return directOptionIndex(key)
+}
+
+function directOptionIndex(key: CockpitKey): number | null {
   if (key.ctrl || key.meta || key.shift || key.name.length !== 1) return null
   const digit = Number.parseInt(key.name, 10)
   if (!Number.isInteger(digit) || digit < 1 || digit > MAX_DIGIT_OPTIONS) return null

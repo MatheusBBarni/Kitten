@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "PromptEditor async @ selector integration and regressions"
 type: frontend
 complexity: high
@@ -29,12 +29,12 @@ Integrate the completed repository source, explicit-session action, telemetry fa
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Extend the PromptEditor completion state and lifecycle with the @ variant.
-- [ ] 6.2 Load, cache, filter, and invalidate explicit-session repository candidates.
-- [ ] 6.3 Render FileSelector and route menu navigation/selection without altering prompt-send behavior.
-- [ ] 6.4 Apply dismissal suppression and accepted-reference correction tracking.
-- [ ] 6.5 Emit content-free selector metrics through controller actions.
-- [ ] 6.6 Update the UI controller double and add mounted regression coverage.
+- [x] 6.1 Extend the PromptEditor completion state and lifecycle with the @ variant.
+- [x] 6.2 Load, cache, filter, and invalidate explicit-session repository candidates.
+- [x] 6.3 Render FileSelector and route menu navigation/selection without altering prompt-send behavior.
+- [x] 6.4 Apply dismissal suppression and accepted-reference correction tracking.
+- [x] 6.5 Emit content-free selector metrics through controller actions.
+- [x] 6.6 Update the UI controller double and add mounted regression coverage.
 
 ## Implementation Details
 
@@ -69,17 +69,17 @@ Follow TechSpec "System Architecture > Prompt-local completion", "Data Models", 
 
 ## Tests
 - Unit tests:
-  - [ ] A valid @ token starts one explicit-session discovery request and later query edits use the warm local list without another request.
-  - [ ] Ready results filter and highlight correctly; loading, empty, and unavailable states expose no selectable row or Enter interception.
-  - [ ] Selection inserts plain and quoted references with a trailing space and leaves `sendPrompt` untouched.
-  - [ ] Escape suppression survives continued typing in the same token and clears on trigger deletion, cursor departure, new token, and focus change.
-  - [ ] Pending reference edits emit exactly one content-free correction; submission clears pending tracking.
-  - [ ] Telemetry calls contain fixed facts only and include warm-query rendered timing.
+  - [x] A valid @ token starts one explicit-session discovery request and later query edits use the warm local list without another request.
+  - [x] Ready results filter and highlight correctly; loading, empty, and unavailable states expose no selectable row or Enter interception.
+  - [x] Selection inserts plain and quoted references with a trailing space and leaves `sendPrompt` untouched.
+  - [x] Escape suppression survives continued typing in the same token and clears on trigger deletion, cursor departure, new token, and focus change.
+  - [x] Pending reference edits emit exactly one content-free correction; submission clears pending tracking.
+  - [x] Telemetry calls contain fixed facts only and include warm-query rendered timing.
 - Integration tests:
-  - [ ] Arrow, Tab, Shift+Tab, Return, and keypad Enter select the highlighted path without sending; the following Enter submits the completed draft.
-  - [ ] Focus changes while a deferred old-session request is pending ignore its late result and require fresh discovery for the new session.
-  - [ ] A not-ready session can display discovery results but cannot submit the draft until readiness changes.
-  - [ ] Existing slash command selection, ! shell shortcut, Shift+Enter, and working-agent Escape interruption retain their current behavior.
+  - [x] Arrow, Tab, Shift+Tab, Return, and keypad Enter select the highlighted path without sending; the following Enter submits the completed draft.
+  - [x] Focus changes while a deferred old-session request is pending ignore its late result and require fresh discovery for the new session.
+  - [x] A not-ready session can display discovery results but cannot submit the draft until readiness changes.
+  - [x] Existing slash command selection, ! shell shortcut, Shift+Enter, and working-agent Escape interruption retain their current behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,10 +1,17 @@
 import { describe, expect, it } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { compileCommand, type BuildTarget } from "../scripts/build.ts"
+import {
+  artifactName,
+  compileCommand,
+  hostTarget,
+  writePlatformPackage,
+  type BuildTarget,
+} from "../scripts/build.ts"
 import { SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
+import pkg from "../package.json" with { type: "json" }
 
 /**
  * The ADR-006 acceptance test: a real `bun build --compile` artifact must boot
@@ -20,9 +27,9 @@ describe("compiled artifact self-check (ADR-006)", () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-artifact-"))
     const outfile = join(dir, "kitten")
     try {
-      const hostTarget: BuildTarget = { platform: "host", bunTarget: `bun-${process.platform}-${process.arch}` }
+      const hostBuildTarget: BuildTarget = { platform: "host", bunTarget: `bun-${process.platform}-${process.arch}` }
       // Reuse the release build's own command shape, minus the cross `--target` (host build).
-      const command = compileCommand(hostTarget, { outDir: dir }).filter((arg) => !arg.startsWith("--target="))
+      const command = compileCommand(hostBuildTarget, { outDir: dir }).filter((arg) => !arg.startsWith("--target="))
       const rebuilt = command.map((arg) => (arg === `${dir}/kitten-host` ? outfile : arg))
 
       const build = Bun.spawnSync(rebuilt, { stdout: "pipe", stderr: "pipe" })
@@ -37,8 +44,50 @@ describe("compiled artifact self-check (ADR-006)", () => {
       expect(stdout).toContain("Kitten")
       expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
       expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
+
+      const versionRun = Bun.spawnSync([outfile, "--version"], { stdout: "pipe", stderr: "pipe" })
+      expect(versionRun.exitCode).toBe(0)
+      expect(versionRun.stdout.toString()).toBe(`${pkg.version}\n`)
+      expect(versionRun.stderr.toString()).toBe("")
+
+      const helpRun = Bun.spawnSync([outfile, "--help"], { stdout: "pipe", stderr: "pipe" })
+      expect(helpRun.exitCode).toBe(0)
+      expect(helpRun.stdout.toString()).toStartWith("Examples:\n")
+      expect(helpRun.stdout.toString()).toContain("npx kitten")
+      expect(helpRun.stdout.toString()).toContain("--self-check")
+      expect(helpRun.stderr.toString()).toBe("")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
   }, 120_000)
+
+  it("generates a resolvable host platform package with the compiled binary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kitten-host-package-"))
+    try {
+      const target = hostTarget()
+      const outfile = join(dir, artifactName(target))
+      await Bun.write(outfile, "host-binary")
+      await chmod(outfile, 0o755)
+
+      const generated = await writePlatformPackage(
+        { target, outfile, sha256: "unused" },
+        pkg.version,
+        join(dir, "npm"),
+      )
+      const manifest = (await Bun.file(join(generated.dir, "package.json")).json()) as {
+        name: string
+        version: string
+        files: string[]
+      }
+      const binary = join(generated.dir, manifest.files[0]!)
+
+      expect(manifest.name).toBe(`@kitten/${target.platform}`)
+      expect(manifest.version).toBe(pkg.version)
+      expect(await Bun.file(binary).exists()).toBe(true)
+      expect(await Bun.file(binary).text()).toBe("host-binary")
+      expect((await stat(binary)).mode & 0o777).toBe(0o755)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

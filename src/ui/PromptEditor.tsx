@@ -26,9 +26,9 @@
  */
 
 import type { EditBufferRenderable, KeyEvent, TextareaRenderable } from "@opentui/core"
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { AvailableCommand } from "../core/types.ts"
+import type { AvailableCommand, SessionId } from "../core/types.ts"
 import {
   selectFocusedSessionId,
   selectHasOpenOverlay,
@@ -36,11 +36,28 @@ import {
   selectRestoration,
   selectRestorationBundle,
   selectSessionCommands,
+  selectSessionPromptHistory,
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
+import { FileSelector, type FileSelectorStatus } from "./FileSelector.tsx"
+import {
+  clearPendingFileReferencesOnSubmit,
+  fileTokenAt,
+  formatFileReference,
+  isFileTokenSuppressed,
+  rankFileMatches,
+  suppressFileToken,
+  updateFileTokenSuppression,
+  updatePendingFileReferences,
+  visibleFileMatches,
+  type FileToken,
+  type FileTokenSuppression,
+  type PendingFileReference,
+} from "./fileCompletion.ts"
 import {
   COCKPIT_COMMANDS,
+  COCKPIT_KEYMAP,
   matchMenuCommand,
   PROMPT_KEY_BINDINGS,
   type CockpitCommand,
@@ -59,6 +76,12 @@ export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc int
 
 /** The empty-editor hint while the focused agent is not ready. */
 export const PROMPT_DISABLED_PLACEHOLDER = "Switch to a ready agent to send a prompt"
+
+/** The composer's frame title when the workspace has no selected Visible conversation. */
+export const PROMPT_WORKSPACE_TITLE = "Prompt (select a conversation)"
+
+/** Empty-workspace feedback shown in place of an editable input. */
+export const PROMPT_WORKSPACE_PLACEHOLDER = "Select a visible conversation to send a prompt"
 
 /** The composer's visual prompt marker. */
 export const PROMPT_CHEVRON = "❯"
@@ -92,6 +115,45 @@ export interface SlashToken {
   filter: string
 }
 
+interface SlashCompletion {
+  readonly kind: "slash"
+  readonly token: SlashToken
+  readonly selected: number
+}
+
+interface FileCompletion {
+  readonly kind: "file"
+  readonly token: FileToken
+  readonly status: FileSelectorStatus
+  readonly paths: readonly string[]
+  readonly selected: number
+  readonly sessionId: SessionId
+  readonly generation: number
+  readonly openedAt: number
+  readonly revision: number
+}
+
+type PromptCompletion = SlashCompletion | FileCompletion | null
+
+interface ActiveFileInteraction {
+  readonly sessionId: SessionId
+  readonly tokenStart: number
+  readonly generation: number
+  readonly openedAt: number
+}
+
+interface FilePathCache {
+  readonly sessionId: SessionId
+  readonly paths: readonly string[]
+}
+
+interface PendingQueryRenderMetric {
+  readonly sessionId: SessionId
+  readonly revision: number
+  readonly state: "results" | "empty" | "unavailable"
+  readonly startedAt: number
+}
+
 /**
  * Return the slash token at the cursor, never one embedded in a URL, path, or word.
  * A second slash disarms completion so `/usr/bin` stays ordinary prompt text.
@@ -104,31 +166,36 @@ export function slashTokenAt(text: string, cursorOffset: number): SlashToken | n
   while (end < text.length && !/\s/.test(text[end]!)) end += 1
 
   const token = text.slice(start, end)
-  if (!token.startsWith("/") || token.indexOf("/", 1) !== -1) return null
+  if (cursor === start || !token.startsWith("/") || token.indexOf("/", 1) !== -1) return null
   return { start, end, filter: token.slice(1) }
 }
 
 /** Build the deterministic cockpit-first command rows, filtering a slash token. */
 export function slashMenuRows(filter: string, agentCommands: readonly AvailableCommand[]): MenuRow[] {
   const normalized = filter.trim().toLocaleLowerCase()
-  const matches = (name: string, description: string): boolean =>
-    normalized.length === 0 || name.toLocaleLowerCase().includes(normalized) || description.toLocaleLowerCase().includes(normalized)
+  const matches = (name: string): boolean =>
+    normalized.length === 0 || name.toLocaleLowerCase().startsWith(normalized)
 
-  const cockpitRows: MenuRow[] = COCKPIT_COMMANDS
-    .filter((command) => matches(command.name, command.description))
+  // The menu is a teaching surface: keep the product-defining hand-off visible at
+  // the top, then retain the registry's deterministic order for every other action.
+  const cockpitCommands = [...COCKPIT_COMMANDS].sort((left, right) =>
+    left.command === "hand-off" ? -1 : right.command === "hand-off" ? 1 : 0
+  )
+  const cockpitRows: MenuRow[] = cockpitCommands
+    .filter((command) => matches(command.name))
     .map((command) => ({
-      source: "kitten" as const,
+      source: "cockpit" as const,
       command: command.command,
-      name: command.name,
-      description: command.description,
+      label: `/${command.name}`,
+      shortcut: COCKPIT_KEYMAP.find((binding) => binding.command === command.command)?.keys ?? `/${command.name}`,
     }))
   const agentRows: MenuRow[] = agentCommands
     .map((command) => ({ ...command, name: command.name.replace(/^\/+/, "") }))
-    .filter((command) => command.name.length > 0 && matches(command.name, command.description))
+    .filter((command) => command.name.length > 0 && matches(command.name))
     .map((command) => ({
       source: "agent" as const,
       name: command.name,
-      description: command.description,
+      label: `/${command.name}`,
       ...(command.hint ? { hint: command.hint } : {}),
     }))
 
@@ -136,19 +203,94 @@ export function slashMenuRows(filter: string, agentCommands: readonly AvailableC
 }
 
 function menuGroups(rows: readonly MenuRow[]): SlashMenuGroup[] {
-  const kitten = rows.filter((row): row is Extract<MenuRow, { source: "kitten" }> => row.source === "kitten")
+  const cockpit = rows.filter((row): row is Extract<MenuRow, { source: "cockpit" }> => row.source === "cockpit")
   const agent = rows.filter((row): row is Extract<MenuRow, { source: "agent" }> => row.source === "agent")
   return [
-    ...(kitten.length > 0 ? [{ source: "Kitten", rows: kitten }] : []),
+    ...(cockpit.length > 0 ? [{ source: "Cockpit", rows: cockpit }] : []),
     ...(agent.length > 0 ? [{ source: "Agent commands", rows: agent }] : []),
   ]
 }
 
+/**
+ * Let OpenTUI perform vertical movement, then report whether its native cursor moved.
+ *
+ * OpenTUI 0.4.3 declares a boolean result here but its shipped renderable currently
+ * returns `true` even when the native editor clamps at a boundary. Comparing the
+ * native cursor offset before and after preserves wrapping behavior without teaching
+ * the composer how visual lines are calculated.
+ */
+function moveVertically(editor: TextareaRenderable, direction: "previous" | "next"): boolean {
+  const before = editor.visualCursor.offset
+  const reported = direction === "previous" ? editor.moveCursorUp() : editor.moveCursorDown()
+  return reported && editor.visualCursor.offset !== before
+}
+
+/** Identify the first accepted reference removed by the pure range update. */
+function correctedReferenceSession(
+  previous: readonly PendingFileReference[],
+  next: readonly PendingFileReference[],
+): SessionId | null {
+  const retained = new Map<string, number>()
+  for (const reference of next) {
+    const key = `${reference.sessionId}\u0000${reference.text}`
+    retained.set(key, (retained.get(key) ?? 0) + 1)
+  }
+  for (const reference of previous) {
+    const key = `${reference.sessionId}\u0000${reference.text}`
+    const count = retained.get(key) ?? 0
+    if (count === 0) return reference.sessionId
+    retained.set(key, count - 1)
+  }
+  return null
+}
+
 /** The multi-line prompt editor, bound to whichever agent currently has focus. */
 export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand?: (command: CockpitCommand) => void }): ReactNode {
+  const selectedSessionId = useAppSelector(selectFocusedSessionId)
+  return selectedSessionId === null
+    ? <WorkspacePromptEditor />
+    : <SelectedPromptEditor sessionId={selectedSessionId} onRunCommand={onRunCommand} />
+}
+
+/** A non-editable composer surface for the valid no-selection workspace state. */
+function WorkspacePromptEditor(): ReactNode {
+  const palette = usePalette()
+  return (
+    <box
+      borderStyle="rounded"
+      style={{
+        position: "relative",
+        flexShrink: 0,
+        flexDirection: "row",
+        gap: 1,
+        border: true,
+        borderColor: palette.status.not_ready,
+        backgroundColor: palette.surface,
+        paddingLeft: 1,
+        paddingRight: 1,
+        overflow: "hidden",
+      }}
+      title={PROMPT_WORKSPACE_TITLE}
+      titleColor={palette.status.not_ready}
+    >
+      <text fg={palette.status.not_ready}>{PROMPT_CHEVRON}</text>
+      <text style={{ height: MIN_EDITOR_ROWS, flexGrow: 1 }} fg={palette.muted}>
+        {PROMPT_WORKSPACE_PLACEHOLDER}
+      </text>
+    </box>
+  )
+}
+
+/** The editable composer for one real selected Visible conversation. */
+function SelectedPromptEditor({
+  sessionId: focusedSessionId,
+  onRunCommand,
+}: {
+  sessionId: SessionId
+  onRunCommand: (command: CockpitCommand) => void
+}): ReactNode {
   const controller = useController()
   const palette = usePalette()
-  const focusedSessionId = useAppSelector(selectFocusedSessionId)
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
@@ -156,6 +298,8 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
   const status = useAppSelector(statusSelector)
   const commandsSelector = useMemo(() => selectSessionCommands(focusedSessionId), [focusedSessionId])
   const agentCommands = useAppSelector(commandsSelector)
+  const historySelector = useMemo(() => selectSessionPromptHistory(focusedSessionId), [focusedSessionId])
+  const promptHistory = useAppSelector(historySelector)
 
   // Readiness is a boot-time fact about the connection, not a store slice: a session
   // whose handshake failed has no ACP session, so nothing may be sent to it.
@@ -171,20 +315,298 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
   const restorationContextOpen = restoration === "unavailable" && restorationBundle !== null
 
   const textarea = useRef<TextareaRenderable | null>(null)
+  const previousSession = useRef(focusedSessionId)
+  const recalledSession = useRef<SessionId | null>(null)
+  const focusedSession = useRef(focusedSessionId)
+  focusedSession.current = focusedSessionId
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
-  const [menu, setMenu] = useState<SlashToken & { selected: number } | null>(null)
+  const [completion, setCompletion] = useState<PromptCompletion>(null)
+  const completionRef = useRef<PromptCompletion>(null)
+  const fileCache = useRef<FilePathCache | null>(null)
+  const fileLoad = useRef<{ sessionId: SessionId; generation: number } | null>(null)
+  const fileRequestGeneration = useRef(0)
+  const fileRevision = useRef(0)
+  const activeFileInteraction = useRef<ActiveFileInteraction | null>(null)
+  const fileSuppression = useRef<FileTokenSuppression | null>(null)
+  const pendingFileReferences = useRef<readonly PendingFileReference[]>([])
+  const previousDraft = useRef("")
+  const acceptingFileReference = useRef(false)
+  const pendingQueryRenderMetric = useRef<PendingQueryRenderMetric | null>(null)
 
+  const commitCompletion = useCallback((next: PromptCompletion): void => {
+    completionRef.current = next
+    setCompletion(next)
+  }, [])
+
+  const slashCompletion = completion?.kind === "slash" ? completion : null
   const matchingRows = useMemo(
-    () => slashMenuRows(menu?.filter ?? "", agentCommands),
-    [agentCommands, menu?.filter],
+    () => slashMenuRows(slashCompletion?.token.filter ?? "", agentCommands),
+    [agentCommands, slashCompletion?.token.filter],
   )
-  const armedMenu = menu !== null && matchingRows.length > 0 ? menu : null
-  const highlighted = Math.min(armedMenu?.selected ?? 0, Math.max(matchingRows.length - 1, 0))
+  const armedSlashMenu = slashCompletion !== null && matchingRows.length > 0 ? slashCompletion : null
+  const slashHighlight = Math.min(armedSlashMenu?.selected ?? 0, Math.max(matchingRows.length - 1, 0))
+  const fileCompletion = completion?.kind === "file" ? completion : null
+  const armedFileMenu = fileCompletion?.status === "ready" && fileCompletion.paths.length > 0
+    ? fileCompletion
+    : null
+  const fileHighlight = Math.min(armedFileMenu?.selected ?? 0, Math.max((armedFileMenu?.paths.length ?? 0) - 1, 0))
 
   const syncRows = useCallback((editor = textarea.current): void => {
     if (!editor) return
     const next = editorRows(Math.max(editor.lineCount, editor.virtualLineCount))
     setRows((current) => (current === next ? current : next))
+  }, [])
+
+  const renderCachedFileToken = useCallback((
+    token: FileToken,
+    interaction: ActiveFileInteraction,
+    paths: readonly string[],
+    measureWarmQuery: boolean,
+  ): void => {
+    const visiblePaths = visibleFileMatches(rankFileMatches(paths, token.filter))
+    const status: FileSelectorStatus = visiblePaths.length > 0 ? "ready" : "empty"
+    const revision = ++fileRevision.current
+    if (measureWarmQuery) {
+      pendingQueryRenderMetric.current = {
+        sessionId: interaction.sessionId,
+        revision,
+        state: status === "ready" ? "results" : "empty",
+        startedAt: performance.now(),
+      }
+    }
+    commitCompletion({
+      kind: "file",
+      token,
+      status,
+      paths: visiblePaths,
+      selected: 0,
+      sessionId: interaction.sessionId,
+      generation: interaction.generation,
+      openedAt: interaction.openedAt,
+      revision,
+    })
+  }, [commitCompletion])
+
+  const beginFileCompletion = useCallback((token: FileToken): void => {
+    const current = completionRef.current
+    const active = activeFileInteraction.current
+    if (active?.sessionId === focusedSessionId && active.tokenStart === token.start) {
+      if (current?.kind === "file" && current.status === "loading") {
+        commitCompletion({ ...current, token, selected: 0 })
+        return
+      }
+      if (
+        current?.kind === "file"
+        && (current.status === "ready" || current.status === "empty")
+        && fileCache.current?.sessionId === focusedSessionId
+      ) {
+        renderCachedFileToken(token, active, fileCache.current.paths, true)
+        return
+      }
+      if (current?.kind === "file" && current.status === "unavailable") {
+        const revision = ++fileRevision.current
+        pendingQueryRenderMetric.current = {
+          sessionId: focusedSessionId,
+          revision,
+          state: "unavailable",
+          startedAt: performance.now(),
+        }
+        commitCompletion({ ...current, token, selected: 0, revision })
+        return
+      }
+    }
+
+    const openedAt = performance.now()
+    controller.actions.fileSelectorOpened(focusedSessionId)
+    const cached = fileCache.current
+    if (cached?.sessionId === focusedSessionId) {
+      const interaction: ActiveFileInteraction = {
+        sessionId: focusedSessionId,
+        tokenStart: token.start,
+        generation: fileRequestGeneration.current,
+        openedAt,
+      }
+      activeFileInteraction.current = interaction
+      renderCachedFileToken(token, interaction, cached.paths, true)
+      return
+    }
+
+    const inFlight = fileLoad.current
+    if (inFlight?.sessionId === focusedSessionId) {
+      const interaction: ActiveFileInteraction = {
+        sessionId: focusedSessionId,
+        tokenStart: token.start,
+        generation: inFlight.generation,
+        openedAt,
+      }
+      activeFileInteraction.current = interaction
+      commitCompletion({
+        kind: "file",
+        token,
+        status: "loading",
+        paths: [],
+        selected: 0,
+        sessionId: focusedSessionId,
+        generation: inFlight.generation,
+        openedAt,
+        revision: ++fileRevision.current,
+      })
+      return
+    }
+
+    const generation = ++fileRequestGeneration.current
+    const interaction: ActiveFileInteraction = {
+      sessionId: focusedSessionId,
+      tokenStart: token.start,
+      generation,
+      openedAt,
+    }
+    activeFileInteraction.current = interaction
+    fileLoad.current = { sessionId: focusedSessionId, generation }
+    commitCompletion({
+      kind: "file",
+      token,
+      status: "loading",
+      paths: [],
+      selected: 0,
+      sessionId: focusedSessionId,
+      generation,
+      openedAt,
+      revision: ++fileRevision.current,
+    })
+
+    const discoveryStartedAt = performance.now()
+    void controller.actions.listRepositoryFiles(focusedSessionId).then(
+      (result) => {
+        controller.actions.fileSelectorDiscovery(
+          focusedSessionId,
+          result.kind,
+          Math.max(0, performance.now() - discoveryStartedAt),
+        )
+        if (
+          focusedSession.current !== focusedSessionId
+          || fileRequestGeneration.current !== generation
+          || fileLoad.current?.generation !== generation
+        ) return
+
+        fileLoad.current = null
+        if (result.kind === "ready") fileCache.current = { sessionId: focusedSessionId, paths: result.paths }
+
+        const editor = textarea.current
+        const currentInteraction = activeFileInteraction.current
+        const currentToken = editor ? fileTokenAt(editor.plainText, editor.cursorOffset) : null
+        if (
+          !currentInteraction
+          || currentInteraction.sessionId !== focusedSessionId
+          || currentInteraction.generation !== generation
+          || currentToken?.start !== currentInteraction.tokenStart
+          || isFileTokenSuppressed(fileSuppression.current, currentToken)
+        ) return
+
+        if (result.kind === "ready") {
+          renderCachedFileToken(currentToken, currentInteraction, result.paths, false)
+          return
+        }
+        commitCompletion({
+          kind: "file",
+          token: currentToken,
+          status: "unavailable",
+          paths: [],
+          selected: 0,
+          sessionId: focusedSessionId,
+          generation,
+          openedAt: currentInteraction.openedAt,
+          revision: ++fileRevision.current,
+        })
+      },
+      () => {
+        controller.actions.fileSelectorDiscovery(
+          focusedSessionId,
+          "unavailable",
+          Math.max(0, performance.now() - discoveryStartedAt),
+        )
+        if (
+          focusedSession.current !== focusedSessionId
+          || fileRequestGeneration.current !== generation
+          || fileLoad.current?.generation !== generation
+        ) return
+        fileLoad.current = null
+
+        const editor = textarea.current
+        const currentInteraction = activeFileInteraction.current
+        const currentToken = editor ? fileTokenAt(editor.plainText, editor.cursorOffset) : null
+        if (
+          !currentInteraction
+          || currentInteraction.generation !== generation
+          || currentToken?.start !== currentInteraction.tokenStart
+          || isFileTokenSuppressed(fileSuppression.current, currentToken)
+        ) return
+        commitCompletion({
+          kind: "file",
+          token: currentToken,
+          status: "unavailable",
+          paths: [],
+          selected: 0,
+          sessionId: focusedSessionId,
+          generation,
+          openedAt: currentInteraction.openedAt,
+          revision: ++fileRevision.current,
+        })
+      },
+    )
+  }, [commitCompletion, controller, focusedSessionId, renderCachedFileToken])
+
+  useEffect(() => {
+    const metric = pendingQueryRenderMetric.current
+    if (
+      !metric
+      || !fileCompletion
+      || fileCompletion.sessionId !== metric.sessionId
+      || fileCompletion.revision !== metric.revision
+    ) return
+    pendingQueryRenderMetric.current = null
+    controller.actions.fileSelectorQueryRendered(
+      metric.sessionId,
+      metric.state,
+      Math.max(0, performance.now() - metric.startedAt),
+    )
+  }, [controller, fileCompletion])
+
+  // The textarea is deliberately shared across ordinary focus changes so an unsent
+  // draft survives. Recalled text is different: it belongs to one session. Clear it
+  // when entering an ordinary session, or restore the target session's own selected
+  // history entry when returning to a session that is still browsing.
+  useEffect(() => {
+    if (previousSession.current === focusedSessionId) return
+    previousSession.current = focusedSessionId
+    fileRequestGeneration.current += 1
+    fileCache.current = null
+    fileLoad.current = null
+    fileSuppression.current = null
+    activeFileInteraction.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
+
+    const editor = textarea.current
+    if (!editor) return
+    const recalled = promptHistory.cursor === null ? undefined : promptHistory.entries[promptHistory.cursor]
+    if (recalled !== undefined) {
+      editor.setText(recalled)
+      previousDraft.current = recalled
+      recalledSession.current = focusedSessionId
+      syncRows(editor)
+      return
+    }
+    if (recalledSession.current !== null) {
+      editor.clear()
+      previousDraft.current = ""
+      recalledSession.current = null
+      syncRows(editor)
+    }
+  }, [commitCompletion, focusedSessionId, promptHistory, syncRows])
+
+  useEffect(() => () => {
+    fileRequestGeneration.current += 1
   }, [])
 
   const submit = useCallback((): void => {
@@ -195,55 +617,148 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
     // A stray Enter on an empty or whitespace-only buffer must not start a turn.
     if (text.trim().length === 0) return
 
+    // Local acceptance owns history even if the asynchronous agent call later fails.
+    controller.actions.recordPromptHistory(text, focusedSessionId)
+    recalledSession.current = null
+    pendingFileReferences.current = clearPendingFileReferencesOnSubmit(pendingFileReferences.current).pending
+    activeFileInteraction.current = null
+    fileSuppression.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
+
     // Clear before awaiting: `sendPrompt` records the user's turn synchronously, so
     // the transcript already shows the message the composer just gave up.
+    acceptingFileReference.current = true
     editor.clear()
+    previousDraft.current = ""
+    acceptingFileReference.current = false
     setRows(MIN_EDITOR_ROWS)
     void controller.actions.sendPrompt(text)
-  }, [controller, ready, restorationContextOpen])
+  }, [commitCompletion, controller, focusedSessionId, ready, restorationContextOpen])
 
-  const selectMenuRow = useCallback((): void => {
+  const selectSlashMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current
-    if (!editor || !armedMenu) return
-    const row = matchingRows[highlighted]
+    if (!editor || !armedSlashMenu) return
+    const row = selectedRow ?? matchingRows[slashHighlight]
     if (!row) return
 
-    if (row.source === "kitten") {
-      editor.setSelection(armedMenu.start, armedMenu.end)
+    if (row.source === "cockpit") {
+      editor.setSelection(armedSlashMenu.token.start, armedSlashMenu.token.end)
       editor.deleteSelection()
-      setMenu(null)
+      commitCompletion(null)
       syncRows(editor)
       onRunCommand(row.command)
       return
     }
 
-    editor.setSelection(armedMenu.start, armedMenu.end)
+    editor.setSelection(armedSlashMenu.token.start, armedSlashMenu.token.end)
     editor.insertText(`/${row.name} `)
-    setMenu(null)
+    commitCompletion(null)
     syncRows(editor)
-  }, [armedMenu, highlighted, matchingRows, onRunCommand, syncRows])
+  }, [armedSlashMenu, commitCompletion, matchingRows, onRunCommand, slashHighlight, syncRows])
+
+  const selectFileMenuRow = useCallback((): void => {
+    const editor = textarea.current
+    if (!editor || !armedFileMenu) return
+    const path = armedFileMenu.paths[fileHighlight]
+    if (!path) return
+
+    const reference = formatFileReference(path)
+    acceptingFileReference.current = true
+    editor.setSelection(armedFileMenu.token.start, armedFileMenu.token.end)
+    editor.insertText(`${reference} `)
+    const nextDraft = editor.plainText
+    previousDraft.current = nextDraft
+    acceptingFileReference.current = false
+    pendingFileReferences.current = [
+      ...pendingFileReferences.current,
+      {
+        text: reference,
+        start: armedFileMenu.token.start,
+        end: armedFileMenu.token.start + reference.length,
+        sessionId: armedFileMenu.sessionId,
+      },
+    ]
+    controller.actions.fileSelectorSelected(
+      armedFileMenu.sessionId,
+      Math.max(0, performance.now() - armedFileMenu.openedAt),
+    )
+    activeFileInteraction.current = null
+    fileSuppression.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
+    syncRows(editor)
+  }, [armedFileMenu, commitCompletion, controller, fileHighlight, syncRows])
+
+  const moveCompletionSelection = useCallback((direction: "previous" | "next", lastIndex: number): void => {
+    const current = completionRef.current
+    if (!current) return
+    const selected = direction === "previous"
+      ? Math.max(current.selected - 1, 0)
+      : Math.min(current.selected + 1, Math.max(lastIndex, 0))
+    commitCompletion({ ...current, selected })
+  }, [commitCompletion])
 
   const onKeyDown = useCallback(
     (key: KeyEvent): void => {
-      if (armedMenu) {
-        const command = matchMenuCommand(key)
+      const command = matchMenuCommand(key)
+      if (fileCompletion && command === "dismiss") {
+        key.preventDefault()
+        fileSuppression.current = suppressFileToken(fileCompletion.token)
+        activeFileInteraction.current = null
+        pendingQueryRenderMetric.current = null
+        commitCompletion(null)
+        return
+      }
+      if (armedFileMenu && command !== null) {
+        key.preventDefault()
+        switch (command) {
+          case "prev-item":
+            moveCompletionSelection("previous", armedFileMenu.paths.length - 1)
+            return
+          case "next-item":
+            moveCompletionSelection("next", armedFileMenu.paths.length - 1)
+            return
+          case "confirm":
+            selectFileMenuRow()
+            return
+          case "dismiss":
+            return
+        }
+      }
+      if (armedSlashMenu) {
         if (command !== null) {
           key.preventDefault()
           switch (command) {
-            case "prev-option":
-              setMenu((current) => current ? { ...current, selected: Math.max(current.selected - 1, 0) } : current)
+            case "prev-item":
+              moveCompletionSelection("previous", matchingRows.length - 1)
               return
-            case "next-option":
-              setMenu((current) => current ? { ...current, selected: Math.min(current.selected + 1, Math.max(matchingRows.length - 1, 0)) } : current)
+            case "next-item":
+              moveCompletionSelection("next", matchingRows.length - 1)
               return
             case "confirm":
-              selectMenuRow()
+              selectSlashMenuRow()
               return
             case "dismiss":
-              setMenu(null)
+              commitCompletion(null)
               return
           }
         }
+      }
+      const verticalDirection = key.name === "up" ? "previous" : key.name === "down" ? "next" : null
+      const modified = key.ctrl || key.meta || key.shift || key.option || key.super || key.hyper
+      if (verticalDirection !== null && !modified) {
+        const editor = textarea.current
+        if (!editor) return
+        key.preventDefault()
+        if (moveVertically(editor, verticalDirection)) return
+
+        const selection = controller.actions.navigatePromptHistory(verticalDirection, focusedSessionId)
+        if (selection.text === null) return
+        editor.setText(selection.text)
+        recalledSession.current = selection.text === "" ? null : focusedSessionId
+        syncRows(editor)
+        return
       }
       if (key.name !== "escape" || key.ctrl || key.meta || key.shift) return
       // Escape only means "interrupt" when there is a turn to interrupt. Idle, it
@@ -252,7 +767,20 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
       key.preventDefault()
       void controller.actions.cancel()
     },
-    [armedMenu, controller, matchingRows.length, selectMenuRow, status],
+    [
+      armedFileMenu,
+      armedSlashMenu,
+      commitCompletion,
+      controller,
+      fileCompletion,
+      focusedSessionId,
+      matchingRows.length,
+      moveCompletionSelection,
+      selectFileMenuRow,
+      selectSlashMenuRow,
+      status,
+      syncRows,
+    ],
   )
 
   // Keep visual and input height in sync after both content and layout changes. A
@@ -260,23 +788,77 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
   const onContentChange = useCallback((): void => {
     const editor = textarea.current
     if (!editor) return
+    const text = editor.plainText
 
-    if (editor.plainText === "!" && editor.cursorOffset === 1) {
+    if (acceptingFileReference.current) {
+      previousDraft.current = text
+      syncRows(editor)
+      return
+    }
+
+    const priorPending = pendingFileReferences.current
+    const pendingUpdate = updatePendingFileReferences(previousDraft.current, text, priorPending)
+    if (pendingUpdate.corrected) {
+      const correctedSession = correctedReferenceSession(priorPending, pendingUpdate.pending)
+      if (correctedSession !== null) controller.actions.fileSelectorCorrected(correctedSession)
+    }
+    pendingFileReferences.current = pendingUpdate.pending
+    previousDraft.current = text
+
+    if (text === "!" && editor.cursorOffset === 1) {
+      acceptingFileReference.current = true
       editor.clear()
-      setMenu(null)
+      previousDraft.current = ""
+      acceptingFileReference.current = false
+      activeFileInteraction.current = null
+      fileSuppression.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
       syncRows(editor)
       onRunCommand("toggle-shell")
       return
     }
 
     syncRows(editor)
-    const token = slashTokenAt(editor.plainText, editor.cursorOffset)
-    if (token === null || slashMenuRows(token.filter, agentCommands).length === 0) {
-      setMenu(null)
+    const fileToken = fileTokenAt(text, editor.cursorOffset)
+    fileSuppression.current = updateFileTokenSuppression(fileSuppression.current, fileToken)
+    if (fileToken !== null && !isFileTokenSuppressed(fileSuppression.current, fileToken)) {
+      beginFileCompletion(fileToken)
       return
     }
-    setMenu({ ...token, selected: 0 })
-  }, [agentCommands, onRunCommand, syncRows])
+    if (completionRef.current?.kind === "file") {
+      activeFileInteraction.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
+    }
+
+    const slashToken = slashTokenAt(text, editor.cursorOffset)
+    if (slashToken === null || slashMenuRows(slashToken.filter, agentCommands).length === 0) {
+      commitCompletion(null)
+      return
+    }
+    commitCompletion({ kind: "slash", token: slashToken, selected: 0 })
+  }, [agentCommands, beginFileCompletion, commitCompletion, controller, onRunCommand, syncRows])
+
+  const onCursorChange = useCallback((): void => {
+    const editor = textarea.current
+    if (!editor) return
+    const token = fileTokenAt(editor.plainText, editor.cursorOffset)
+    fileSuppression.current = updateFileTokenSuppression(fileSuppression.current, token)
+    const current = completionRef.current
+    if (
+      current?.kind === "file"
+      && (
+        token === null
+        || token.start !== current.token.start
+        || isFileTokenSuppressed(fileSuppression.current, token)
+      )
+    ) {
+      activeFileInteraction.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
+    }
+  }, [commitCompletion])
 
   const onSizeChange = useCallback(
     function onSizeChange(this: EditBufferRenderable): void {
@@ -303,12 +885,34 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
         paddingBottom: 0,
         overflow: "visible",
       }}
-      title={ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE}
+      title={
+        ready && promptHistory.cursor !== null
+          ? `${PROMPT_TITLE} · History ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
+          : ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE
+      }
       titleColor={ready ? palette.accent : palette.status.not_ready}
     >
-      {armedMenu ? (
+      {armedSlashMenu ? (
         <box style={{ position: "absolute", left: 0, right: 0, bottom: rows + 2, zIndex: 1 }}>
-          <SlashMenu groups={menuGroups(matchingRows)} highlightedIndex={highlighted} onSelect={selectMenuRow} />
+          <SlashMenu groups={menuGroups(matchingRows)} highlightedIndex={slashHighlight} onSelect={selectSlashMenuRow} />
+        </box>
+      ) : fileCompletion ? (
+        <box
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: rows + 2,
+            zIndex: 1,
+            height: fileCompletion.status === "ready" ? fileCompletion.paths.length + 2 : 1,
+          }}
+        >
+          <FileSelector
+            key={`${fileCompletion.sessionId}:${fileCompletion.revision}`}
+            status={fileCompletion.status}
+            paths={fileCompletion.paths}
+            highlightedIndex={fileHighlight}
+          />
         </box>
       ) : null}
       <text fg={ready ? palette.accent : palette.status.not_ready}>{PROMPT_CHEVRON}</text>
@@ -328,6 +932,7 @@ export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand
         onSubmit={submit}
         onKeyDown={onKeyDown}
         onContentChange={onContentChange}
+        onCursorChange={onCursorChange}
         onSizeChange={onSizeChange}
       />
     </box>

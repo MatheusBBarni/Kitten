@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Status-strip headroom segment"
 type: frontend
 complexity: medium
@@ -31,11 +31,11 @@ This is the always-on, side-by-side signal, and it requires updating the exact 8
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add the memoized headroom selector to `AgentStatusChip`.
-- [ ] 6.2 Render the formatted percent plus bar segment using neutral palette tokens.
-- [ ] 6.3 Render the unknown marker for absent-usage and not-ready agents.
-- [ ] 6.4 Update the 80-column strip budget and no-overflow assertions for the new width.
-- [ ] 6.5 Add frame tests for known and unknown headroom rendering.
+- [x] 6.1 Add the memoized headroom selector to `AgentStatusChip`.
+- [x] 6.2 Render the formatted percent plus bar segment using neutral palette tokens.
+- [x] 6.3 Render the unknown marker for absent-usage and not-ready agents.
+- [x] 6.4 Update the 80-column strip budget and no-overflow assertions for the new width.
+- [x] 6.5 Add frame tests for known and unknown headroom rendering.
 
 ## Implementation Details
 Modify `src/ui/StatusStrip.tsx`: add a third memoized selector to `AgentStatusChip` and a `<span>` segment after the status span, reusing tokens from `src/ui/theme.ts` (fill vs `muted` track).
@@ -63,13 +63,13 @@ Consumes `selectSessionHeadroom` (task_04) and `formatHeadroom` (task_05). See T
 
 ## Tests
 - Unit tests:
-  - [ ] The chip composes the focus marker, name, status, and headroom segment in order for a ready agent with usage.
+  - [x] The chip composes the focus marker, name, status, and headroom segment in order for a ready agent with usage.
 - Integration tests:
-  - [ ] After `store.applyEvent(claudeId, { kind: "usage", used: 124000, size: 200000 })`, the strip frame shows `38%` and a partially-filled bar on Claude's chip.
-  - [ ] A Codex agent with no usage shows `—` (HEADROOM_UNKNOWN) in its chip.
-  - [ ] A not-ready agent shows `—`, not a number.
-  - [ ] With both chips populated, the strip stays within the updated 80-column budget and `expectNoOverflow` passes.
-  - [ ] A usage event for Claude does not change Codex's chip output.
+  - [x] After `store.applyEvent(claudeId, { kind: "usage", used: 124000, size: 200000 })`, the strip frame shows `38%` and a partially-filled bar on Claude's chip.
+  - [x] A Codex agent with no usage shows `—` (HEADROOM_UNKNOWN) in its chip.
+  - [x] A not-ready agent shows `—`, not a number.
+  - [x] With both chips populated, the strip stays within the updated 80-column budget and `expectNoOverflow` passes.
+  - [x] A usage event for Claude does not change Codex's chip output.
 - Test coverage target: >=80%
 - All tests must pass
 

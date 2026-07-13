@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Model session-tab workspace state and reducer"
 type: refactor
 complexity: high
@@ -28,11 +28,11 @@ Create the protocol-free workspace domain model that represents visible, backgro
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define workspace-owned state and event vocabulary for conversation lifecycle and attention.
-- [ ] 1.2 Establish valid empty-workspace, selection, and order invariants.
-- [ ] 1.3 Provide deterministic lifecycle and adjacent-navigation transitions.
-- [ ] 1.4 Represent attention acknowledgement without changing execution status.
-- [ ] 1.5 Cover invalid, repeated, and final-visible-removal transitions with pure tests.
+- [x] 1.1 Define workspace-owned state and event vocabulary for conversation lifecycle and attention.
+- [x] 1.2 Establish valid empty-workspace, selection, and order invariants.
+- [x] 1.3 Provide deterministic lifecycle and adjacent-navigation transitions.
+- [x] 1.4 Represent attention acknowledgement without changing execution status.
+- [x] 1.5 Cover invalid, repeated, and final-visible-removal transitions with pure tests.
 
 ## Implementation Details
 
@@ -62,12 +62,12 @@ Create the core workspace boundary described in the TechSpec’s **Data Models**
 
 ## Tests
 - Unit tests:
-  - [ ] Empty initialization keeps `selectedVisibleId` null and accepts Background-only state.
-  - [ ] Create, rename, select, cyclic previous/next, background, reopen, and close transitions produce the specified lifecycle and focus result.
-  - [ ] Attention ranks approval, error, and finished; selecting marks only the current epoch seen.
-  - [ ] Unknown IDs, invalid transitions, duplicate display names, and repeated events are safe no-ops with unchanged references.
+  - [x] Empty initialization keeps `selectedVisibleId` null and accepts Background-only state.
+  - [x] Create, rename, select, cyclic previous/next, background, reopen, and close transitions produce the specified lifecycle and focus result.
+  - [x] Attention ranks approval, error, and finished; selecting marks only the current epoch seen.
+  - [x] Unknown IDs, invalid transitions, duplicate display names, and repeated events are safe no-ops with unchanged references.
 - Integration tests:
-  - [ ] Apply workspace transitions alongside a `sessionReducer` fixture and confirm execution state/status remain unchanged.
+  - [x] Apply workspace transitions alongside a `sessionReducer` fixture and confirm execution state/status remain unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

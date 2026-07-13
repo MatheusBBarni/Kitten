@@ -34,6 +34,7 @@ import {
   EFFORT_CATEGORY,
   needsAttention,
   type ConfigOption,
+  type ProviderKind,
   type SessionId,
   type SessionStatus,
   type ThemePreference,
@@ -46,6 +47,37 @@ import {
   type EffortRetentionEvent,
 } from "../core/telemetryHeuristics.ts"
 import type { AppStore, Unsubscribe } from "../store/appStore.ts"
+
+/** The exact content-free debug record used to validate adapter usage emission. */
+export interface UsageSeenRecord {
+  evt: "usage_seen"
+  provider: ProviderKind
+  used: number
+  size: number
+}
+
+/** Injectable output boundary for the usage-emission debug log. */
+export interface UsageSeenSink {
+  write(record: UsageSeenRecord): void
+}
+
+/** Inputs copied field-by-field into a usage-emission debug record. */
+export type UsageSeenInput = Omit<UsageSeenRecord, "evt">
+
+/**
+ * Pure opt-in gate for usage-emission validation. Disabled is the default and does
+ * not construct a record, matching the recorder's existing opt-in discipline.
+ */
+export function createUsageSeenRecord(input: UsageSeenInput, enabled = false): UsageSeenRecord | null {
+  if (!enabled) return null
+  return { evt: "usage_seen", provider: input.provider, used: input.used, size: input.size }
+}
+
+/** Emit one structured debug record when the pure opt-in gate allows it. */
+export function logUsageSeen(input: UsageSeenInput, enabled = false, sink?: UsageSeenSink): void {
+  const record = createUsageSeenRecord(input, enabled)
+  if (record) sink?.write(record)
+}
 
 /** Every telemetry event Kitten records. Names match the TechSpec metric set. */
 export type TelemetryEventType =
@@ -82,6 +114,56 @@ export type TelemetryEventType =
   | "resume_first_action"
   | "resume_picker_interactive_ms"
   | "resume_load_usable_ms"
+  | "prompt_history_eligible"
+  | "prompt_history_recalled"
+  | "prompt_history_cleared"
+  | "prompt_history_edited_resend"
+  | "file_selector_opened"
+  | "file_selector_discovery"
+  | "file_selector_query_rendered"
+  | "file_selector_selected"
+  | "file_selector_corrected"
+  | "clarification_capability_classified"
+  | "clarification_presented"
+  | "clarification_settled"
+  | "clarification_preempted"
+  | "clarification_resumed"
+  | "clarification_session_loss_cancelled"
+
+/** Closed lifecycle values for structured-clarification telemetry. */
+export type ClarificationCapabilityStatus = "supported" | "unsupported"
+export type ClarificationCapabilityDiagnostic =
+  | "verified_recipe"
+  | "unknown_recipe"
+  | "recipe_overridden"
+  | "unverified_recipe"
+export type ClarificationTerminalKind = "answered" | "cancelled"
+export type ClarificationInteractionKind = "permission" | "clarification"
+export type ClarificationSessionLossReason =
+  | "connection_error"
+  | "session_replaced"
+  | "conversation_closed"
+  | "controller_disposed"
+export type ClarificationFieldCountBucket = "zero" | "one" | "two_to_three" | "four_or_more"
+export type ClarificationDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+/** Content-free presentation metadata; request/session identities are never serialized. */
+export interface ClarificationPresentedInput {
+  requestId: string
+  sessionId: SessionId
+  capability: ClarificationCapabilityStatus
+  focused: boolean
+  hasSingle: boolean
+  hasMulti: boolean
+  hasText: boolean
+  fieldCount: number
+}
+
+/** Closed discovery outcomes; no repository or query detail crosses this boundary. */
+export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
+
+/** Closed post-render states for the warm local-query latency metric. */
+export type FileSelectorRenderState = "results" | "empty" | "unavailable"
 
 /** The two entry points whose adoption the resume metrics compare. */
 export type ResumeMode = "picker" | "last-run"
@@ -124,6 +206,33 @@ export interface TelemetryRecord {
   liveCount?: ResumeLiveCount
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
+  /** Fixed file-discovery outcome; never a source error, path, or query. */
+  outcome?: FileSelectorDiscoveryOutcome
+  /** Fixed warm-query render state; never a candidate count or candidate content. */
+  state?: FileSelectorRenderState
+  /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
+  agentRef?: number
+  /** Closed structured-clarification capability state. */
+  capability?: ClarificationCapabilityStatus
+  /** Closed capability reason; never an adapter package, version, command, or recipe. */
+  diagnostic?: ClarificationCapabilityDiagnostic
+  /** Whether the requesting session was focused when its dialog was first projected. */
+  focused?: boolean
+  /** Terminal clarification result without selected values or text. */
+  terminalKind?: ClarificationTerminalKind
+  /** Non-exclusive form-shape flags; mixed forms may set several to true. */
+  hasSingle?: boolean
+  hasMulti?: boolean
+  hasText?: boolean
+  /** Coarse form size and latency buckets; exact counts and durations are not recorded. */
+  fieldCountBucket?: ClarificationFieldCountBucket
+  durationBucket?: ClarificationDurationBucket
+  /** The closed kind of interaction suspended or resumed by clarification priority. */
+  interactionKind?: ClarificationInteractionKind
+  /** The closed lifecycle reason for terminal cancellation on session loss. */
+  lossReason?: ClarificationSessionLossReason
+  /** Provider classification is safe only as Kitten's closed provider enum. */
+  provider?: ProviderKind
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -168,6 +277,51 @@ export interface TelemetryRecorder {
    * arms the content-free kept-change watch only for a confirmed value change.
    */
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+  /** Count an accepted composer submission and emit eligibility exactly at the second. */
+  promptHistorySubmitted(sessionId: SessionId): void
+  /** Record a successful history selection. */
+  promptHistoryRecalled(sessionId: SessionId): void
+  /** Record leaving the newest recalled entry for a blank composer. */
+  promptHistoryCleared(sessionId: SessionId): void
+  /** Record submission of a changed recalled entry. */
+  promptHistoryEditedResend(sessionId: SessionId): void
+  /** A valid file-selector token opened for the addressed session. */
+  fileSelectorOpened(sessionId: SessionId): void
+  /** Repository discovery settled with a fixed outcome and caller-owned duration. */
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void
+  /** A warm local query committed one fixed render state after the supplied duration. */
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void
+  /** One file reference was accepted after the supplied open-to-selection duration. */
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void
+  /** One pending accepted reference was edited through before submission. */
+  fileSelectorCorrected(sessionId: SessionId): void
+  /** A provider recipe was classified without recording any recipe identity. */
+  clarificationCapabilityClassified(
+    provider: ProviderKind,
+    capability: ClarificationCapabilityStatus,
+    diagnostic: ClarificationCapabilityDiagnostic,
+  ): void
+  /** A clarification dialog was first projected; starts its private latency clock. */
+  clarificationPresented(input: ClarificationPresentedInput): void
+  /** A projected clarification reached its first terminal outcome. */
+  clarificationSettled(requestId: string, terminalKind: ClarificationTerminalKind): void
+  /** Clarification priority suspended one active agent interaction. */
+  clarificationPreempted(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void
+  /** A previously suspended agent interaction became active again. */
+  clarificationResumed(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void
+  /** A clarification was terminally cancelled because its live session was lost. */
+  clarificationCancelledOnSessionLoss(
+    sessionId: SessionId,
+    lossReason: ClarificationSessionLossReason,
+  ): void
   /** A session completed its handshake and holds a live ACP session. */
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
@@ -229,6 +383,21 @@ const NOOP_RECORDER: TelemetryRecorder = {
   configWrite() {},
   configWriteError() {},
   recordSwitch() {},
+  promptHistorySubmitted() {},
+  promptHistoryRecalled() {},
+  promptHistoryCleared() {},
+  promptHistoryEditedResend() {},
+  fileSelectorOpened() {},
+  fileSelectorDiscovery() {},
+  fileSelectorQueryRendered() {},
+  fileSelectorSelected() {},
+  fileSelectorCorrected() {},
+  clarificationCapabilityClassified() {},
+  clarificationPresented() {},
+  clarificationSettled() {},
+  clarificationPreempted() {},
+  clarificationResumed() {},
+  clarificationCancelledOnSessionLoss() {},
   agentReady() {},
   agentUnready() {},
   focusSwitch() {},
@@ -284,6 +453,15 @@ interface AgentWatch {
   idleFleetSince: number | null
 }
 
+interface ClarificationWatch {
+  startedAt: number
+  agentRef: number
+  hasSingle: boolean
+  hasMulti: boolean
+  hasText: boolean
+  fieldCountBucket: ClarificationFieldCountBucket
+}
+
 class ActiveRecorder implements TelemetryRecorder {
   readonly enabled = true
   private readonly sink: TelemetrySink
@@ -294,7 +472,11 @@ class ActiveRecorder implements TelemetryRecorder {
   private resumeLoadStartedAt: number | null = null
   private resumePickerOpenedAt: number | null = null
   private resumeFirstActionArmed = false
+  private readonly promptSubmissionCounts = new Map<SessionId, number>()
   private readonly watches = new Map<SessionId, AgentWatch>()
+  private readonly agentRefs = new Map<SessionId, number>()
+  private readonly clarificationWatches = new Map<string, ClarificationWatch>()
+  private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
     this.sink = options.sink ?? createJsonlFileSink(resolveTelemetryPath())
@@ -361,6 +543,116 @@ class ActiveRecorder implements TelemetryRecorder {
     }
   }
 
+  promptHistorySubmitted(sessionId: SessionId): void {
+    const count = (this.promptSubmissionCounts.get(sessionId) ?? 0) + 1
+    this.promptSubmissionCounts.set(sessionId, count)
+    if (count === 2) this.record({ type: "prompt_history_eligible", agent: sessionId })
+  }
+
+  promptHistoryRecalled(sessionId: SessionId): void {
+    this.record({ type: "prompt_history_recalled", agent: sessionId })
+  }
+
+  promptHistoryCleared(sessionId: SessionId): void {
+    this.record({ type: "prompt_history_cleared", agent: sessionId })
+  }
+
+  promptHistoryEditedResend(sessionId: SessionId): void {
+    this.record({ type: "prompt_history_edited_resend", agent: sessionId })
+  }
+
+  fileSelectorOpened(sessionId: SessionId): void {
+    this.record({ type: "file_selector_opened", agent: sessionId })
+  }
+
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void {
+    this.record({ type: "file_selector_discovery", agent: sessionId, outcome, durationMs })
+  }
+
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void {
+    this.record({ type: "file_selector_query_rendered", agent: sessionId, state, durationMs })
+  }
+
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void {
+    this.record({ type: "file_selector_selected", agent: sessionId, durationMs })
+  }
+
+  fileSelectorCorrected(sessionId: SessionId): void {
+    this.record({ type: "file_selector_corrected", agent: sessionId })
+  }
+
+  clarificationCapabilityClassified(
+    provider: ProviderKind,
+    capability: ClarificationCapabilityStatus,
+    diagnostic: ClarificationCapabilityDiagnostic,
+  ): void {
+    this.record({ type: "clarification_capability_classified", provider, capability, diagnostic })
+  }
+
+  clarificationPresented(input: ClarificationPresentedInput): void {
+    if (this.clarificationWatches.has(input.requestId)) return
+    const at = this.now()
+    const watch: ClarificationWatch = {
+      startedAt: at,
+      agentRef: this.agentRef(input.sessionId),
+      hasSingle: input.hasSingle,
+      hasMulti: input.hasMulti,
+      hasText: input.hasText,
+      fieldCountBucket: bucketClarificationFieldCount(input.fieldCount),
+    }
+    this.clarificationWatches.set(input.requestId, watch)
+    this.record({
+      type: "clarification_presented",
+      agentRef: watch.agentRef,
+      capability: input.capability,
+      focused: input.focused,
+    }, at)
+  }
+
+  clarificationSettled(requestId: string, terminalKind: ClarificationTerminalKind): void {
+    const watch = this.clarificationWatches.get(requestId)
+    if (!watch) return
+    this.clarificationWatches.delete(requestId)
+    const at = this.now()
+    this.record({
+      type: "clarification_settled",
+      agentRef: watch.agentRef,
+      terminalKind,
+      hasSingle: watch.hasSingle,
+      hasMulti: watch.hasMulti,
+      hasText: watch.hasText,
+      fieldCountBucket: watch.fieldCountBucket,
+      durationBucket: bucketClarificationDuration(at - watch.startedAt),
+    }, at)
+  }
+
+  clarificationPreempted(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void {
+    this.record({ type: "clarification_preempted", agentRef: this.agentRef(sessionId), interactionKind })
+  }
+
+  clarificationResumed(sessionId: SessionId, interactionKind: ClarificationInteractionKind): void {
+    this.record({ type: "clarification_resumed", agentRef: this.agentRef(sessionId), interactionKind })
+  }
+
+  clarificationCancelledOnSessionLoss(
+    sessionId: SessionId,
+    lossReason: ClarificationSessionLossReason,
+  ): void {
+    this.record({
+      type: "clarification_session_loss_cancelled",
+      agentRef: this.agentRef(sessionId),
+      lossReason,
+    })
+  }
+
   agentReady(sessionId: SessionId): void {
     this.record({ type: "agent_ready", agent: sessionId })
   }
@@ -412,7 +704,7 @@ class ActiveRecorder implements TelemetryRecorder {
     // Prime the per-session state so pre-existing transcript is not replayed as new and
     // a session already needing the developer at subscribe time is still measured.
     const initial = store.getState()
-    for (const sessionId of initial.order) {
+    for (const sessionId of initial.workspace.order) {
       const session = initial.sessions[sessionId]!
       const watch = this.watchFor(sessionId)
       watch.seenAcpSessionId = session.acpSessionId
@@ -420,16 +712,17 @@ class ActiveRecorder implements TelemetryRecorder {
       watch.seenEffortValue = effortValue(session.configOptions)
       const needy = needsAttention(session.status)
       watch.neededSince = needy ? this.now() : null
-      watch.idleFleetSince = needy && initial.focusedSessionId !== sessionId ? this.now() : null
+      watch.idleFleetSince = needy && initial.workspace.selectedVisibleId !== sessionId ? this.now() : null
     }
     return store.subscribe((state) => {
-      for (const sessionId of state.order) {
+      for (const sessionId of state.workspace.order) {
         const session = state.sessions[sessionId]!
         const watch = this.watchFor(sessionId)
         // A rebound ACP session id means the slice was reset. Drop every stale timer and
         // arming silently and skip this commit: a restart is not the developer acting.
         if (session.acpSessionId !== watch.seenAcpSessionId) {
           watch.seenAcpSessionId = session.acpSessionId
+          this.promptSubmissionCounts.delete(sessionId)
           watch.seenTurns = session.turns.length
           watch.seenEffortValue = effortValue(session.configOptions)
           watch.awaitingResponseAt = null
@@ -441,7 +734,7 @@ class ActiveRecorder implements TelemetryRecorder {
         }
         this.processEffortChange(sessionId, session.configOptions)
         this.processSession(sessionId, session.turns)
-        this.processAttention(sessionId, session.status, state.focusedSessionId === sessionId)
+        this.processAttention(sessionId, session.status, state.workspace.selectedVisibleId === sessionId)
       }
     })
   }
@@ -541,9 +834,18 @@ class ActiveRecorder implements TelemetryRecorder {
     return watch
   }
 
+  private agentRef(sessionId: SessionId): number {
+    const existing = this.agentRefs.get(sessionId)
+    if (existing !== undefined) return existing
+    const created = this.nextAgentRef
+    this.nextAgentRef += 1
+    this.agentRefs.set(sessionId, created)
+    return created
+  }
+
   /** Stamp and write one event. The one place `at`/`sessionRef` are attached. */
-  private record(event: Omit<TelemetryRecord, "at" | "sessionRef">): void {
-    this.sink.write({ ...event, at: this.now(), sessionRef: this.sessionRef })
+  private record(event: Omit<TelemetryRecord, "at" | "sessionRef">, at = this.now()): void {
+    this.sink.write({ ...event, at, sessionRef: this.sessionRef })
   }
 
   /** Compare one store snapshot's confirmed effort to the prior snapshot. */
@@ -566,6 +868,20 @@ class ActiveRecorder implements TelemetryRecorder {
     if (effortChangeKept(events)) this.record({ type: "effort_change_kept", agent: sessionId })
     watch.effortRetention = null
   }
+}
+
+function bucketClarificationFieldCount(count: number): ClarificationFieldCountBucket {
+  if (count <= 0) return "zero"
+  if (count === 1) return "one"
+  if (count <= 3) return "two_to_three"
+  return "four_or_more"
+}
+
+function bucketClarificationDuration(durationMs: number): ClarificationDurationBucket {
+  if (durationMs < 5_000) return "under_5s"
+  if (durationMs < 30_000) return "5_to_30s"
+  if (durationMs < 120_000) return "30_to_120s"
+  return "over_120s"
 }
 
 /** Read an effort's current value from the generic, adapter-owned option surface. */
@@ -616,9 +932,18 @@ export function resolveTelemetryPath(env: Record<string, string | undefined> = p
  * juggling an async write queue on exit.
  */
 export function createJsonlFileSink(path: string): TelemetrySink {
+  return createLocalJsonlSink<TelemetryRecord>(path)
+}
+
+/** Local JSONL sink for the exact usage-emission debug record shape. */
+export function createUsageSeenJsonlFileSink(path: string): UsageSeenSink {
+  return createLocalJsonlSink<UsageSeenRecord>(path)
+}
+
+function createLocalJsonlSink<T>(path: string): { write(record: T): void } {
   mkdirSync(dirname(path), { recursive: true })
   return {
-    write(record: TelemetryRecord): void {
+    write(record: T): void {
       appendFileSync(path, `${JSON.stringify(record)}\n`)
     },
   }

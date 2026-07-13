@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add end-to-end clarification lifecycle regression coverage"
 type: test
 complexity: high
@@ -26,10 +26,10 @@ Add the in-memory ACP-to-UI-to-ACP regression suite that proves the assembled fe
 </requirements>
 
 ## Subtasks
-- [ ] 12.1 Extend the in-memory mock with scripted elicitation.
-- [ ] 12.2 Mount real adapter, controller, and cockpit lifecycle.
-- [ ] 12.3 Cover answer, cancellation, preemption, and loss flows.
-- [ ] 12.4 Preserve no-clarification regression coverage.
+- [x] 12.1 Extend the in-memory mock with scripted elicitation.
+- [x] 12.2 Mount real adapter, controller, and cockpit lifecycle.
+- [x] 12.3 Cover answer, cancellation, preemption, and loss flows.
+- [x] 12.4 Preserve no-clarification regression coverage.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -58,12 +58,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Mock form request opens a session-attributed dialog, submits selected/text values, clears the overlay, and completes the original prompt.
-  - [ ] Escape sends one cancellation and duplicate keys cannot settle another request.
-  - [ ] Clarification preempts permission and settings, then each resumes unchanged.
-  - [ ] Dispose or restoration cancels once, clears UI, and rejects stale replay; status is observable through the real attention surface.
+  - [x] Mock form request opens a session-attributed dialog, submits selected/text values, clears the overlay, and completes the original prompt.
+  - [x] Escape sends one cancellation and duplicate keys cannot settle another request.
+  - [x] Clarification preempts permission and settings, then each resumes unchanged.
+  - [x] Dispose or restoration cancels once, clears UI, and rejects stale replay; status is observable through the real attention surface.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

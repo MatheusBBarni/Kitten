@@ -11,14 +11,74 @@ describe("createFakeController", () => {
     const controller = createFakeController()
 
     expect(await controller.actions.sendPrompt("hello")).toBeNull()
+    controller.actions.fileSelectorOpened("codex")
+    controller.actions.fileSelectorDiscovery("codex", "ready", 18)
+    controller.actions.fileSelectorQueryRendered("codex", "results", 4)
+    controller.actions.fileSelectorSelected("codex", 240)
+    controller.actions.fileSelectorCorrected("codex")
     await controller.actions.cancel("codex")
     controller.actions.respondPermission({ outcome: "cancelled" })
+    controller.actions.respondClarification("clarification-1", 3, { kind: "cancelled" })
     await controller.dispose()
 
     expect(controller.calls.sendPrompt).toEqual([{ input: "hello", sessionId: undefined }])
+    expect(controller.calls.fileSelectorOpened).toEqual(["codex"])
+    expect(controller.calls.fileSelectorDiscovery).toEqual([{ sessionId: "codex", outcome: "ready", durationMs: 18 }])
+    expect(controller.calls.fileSelectorQueryRendered).toEqual([{ sessionId: "codex", state: "results", durationMs: 4 }])
+    expect(controller.calls.fileSelectorSelected).toEqual([{ sessionId: "codex", durationMs: 240 }])
+    expect(controller.calls.fileSelectorCorrected).toEqual(["codex"])
     expect(controller.calls.cancel).toEqual(["codex"])
     expect(controller.calls.respondPermission).toEqual([{ outcome: "cancelled" }])
+    expect(controller.calls.respondClarification).toEqual([{
+      requestId: "clarification-1",
+      generation: 3,
+      outcome: { kind: "cancelled" },
+    }])
     expect(controller.calls.dispose).toBe(1)
+  })
+
+  it("models the expanded lifecycle action boundary for UI tests", async () => {
+    const controller = createFakeController()
+    const created = await controller.actions.createConversation()
+    expect(created).toBe("fake-created-1")
+    expect(controller.isReady(created!)).toBe(true)
+
+    controller.actions.renameConversation(created!, "  Fresh tab  ")
+    controller.actions.backgroundConversation(created!)
+    controller.actions.reopenConversation(created!)
+    expect(controller.store.getState().workspace.conversations[created!]?.displayName).toBe("Fresh tab")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(created)
+
+    expect(await controller.actions.closeConversation(created!, "close")).toEqual({ outcome: "closed" })
+    expect(controller.runtime(created!)).toBeUndefined()
+    expect(controller.calls.createConversation).toBe(1)
+    expect(controller.calls.closeConversation).toEqual([{ sessionId: created!, choice: "close" }])
+  })
+
+  it("applies history actions through the real store contract selectors read", () => {
+    const controller = createFakeController()
+
+    controller.actions.recordPromptHistory("first")
+    controller.actions.recordPromptHistory("second", "codex")
+
+    expect(controller.actions.navigatePromptHistory("previous", "codex")).toEqual({
+      text: "second",
+      historyIndex: 0,
+      total: 1,
+    })
+    expect(controller.store.getState().sessions.codex!.promptHistory).toEqual({
+      entries: ["second"],
+      cursor: 0,
+    })
+    expect(controller.store.getState().sessions["claude-code"]!.promptHistory).toEqual({
+      entries: ["first"],
+      cursor: null,
+    })
+    expect(controller.calls.recordPromptHistory).toEqual([
+      { text: "first", sessionId: undefined },
+      { text: "second", sessionId: "codex" },
+    ])
+    expect(controller.calls.navigatePromptHistory).toEqual([{ direction: "previous", sessionId: "codex" }])
   })
 
   it("closes the approval slot on an answer, like the real controller does", () => {
@@ -35,15 +95,36 @@ describe("createFakeController", () => {
     expect(controller.store.getState().overlays.approval).toBeNull()
   })
 
+  it("closes only the matching clarification projection", () => {
+    const controller = createFakeController()
+    controller.store.openClarification({
+      requestId: "clarification-1",
+      generation: 4,
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose",
+        fields: [{ id: "choice", label: "Choice", mode: "text", required: true }],
+      },
+    })
+
+    controller.actions.respondClarification("missing", 4, { kind: "cancelled" })
+    expect(controller.store.getState().overlays.clarification?.requestId).toBe("clarification-1")
+
+    controller.actions.respondClarification("clarification-1", 4, { kind: "cancelled" })
+    expect(controller.store.getState().overlays.clarification).toBeNull()
+  })
+
   it("cycles focus in the store, like the real controller does", () => {
     const controller = createFakeController()
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     controller.actions.switchFocus()
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     controller.actions.switchFocus("claude-code")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(controller.calls.switchFocus).toEqual([undefined, "claude-code"])
   })
 

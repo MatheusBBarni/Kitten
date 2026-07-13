@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: Widen AgentConnection.newSession and update fakes
 type: backend
 complexity: medium
 dependencies:
-  - task_01
-  - task_03
+    - task_01
+    - task_03
 ---
 
 # Task 04: Widen AgentConnection.newSession and update fakes

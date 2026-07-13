@@ -30,8 +30,10 @@ import {
   redactionNotice,
   SHELL_HEADING,
   SUMMARY_HEADING,
+  TARGET_HEADROOM_LABEL,
   TARGET_CONFIG_HEADING,
 } from "./HandoffPreview.tsx"
+import { formatHeadroom, HEADROOM_UNKNOWN } from "./headroom.ts"
 import { CURRENT_MARK, EFFORT_HEADING, MID_SWITCH_WARNING, MODEL_HEADING, OTHER_MARK, ROW_MARKER, TARGET_MARK } from "./ModelSelect.tsx"
 import { APPROVAL_HINT, HANDOFF_CONFIG_HINT, HANDOFF_EDIT_HINT, HANDOFF_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -152,10 +154,10 @@ function seedShell(controller: FakeController): void {
   })
 }
 
-async function renderCockpit(controller: FakeController): Promise<TestRendererSetup> {
+async function renderCockpit(controller: FakeController, height = HEIGHT): Promise<TestRendererSetup> {
   const setup = await testRender(<CockpitApp controller={controller} />, {
     width: WIDTH,
-    height: HEIGHT,
+    height,
     kittyKeyboard: true,
   })
   await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
@@ -185,6 +187,32 @@ async function renderWithPreview(controller: FakeController, hyperlinks?: boolea
   if (hyperlinks !== undefined) setRendererCapabilities(setup.renderer, { hyperlinks })
   await handoff(setup)
   return setup
+}
+
+/** Open the real top-priority clarification overlay over the mounted preview. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "codex",
+      title: "Clarification owner",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
 }
 
 /** Every block's text, joined the way `sendPrompt` records the turn. */
@@ -334,6 +362,55 @@ describe("HandoffPreview visibility", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("shows the target's formatted headroom immediately after the redaction notice", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    controller.store.applyEvent("codex", { kind: "usage", used: 36_000, size: 200_000 })
+    const setup = await renderWithPreview(controller)
+
+    const display = formatHeadroom(82)
+    const expectedLine = `${TARGET_HEADROOM_LABEL}: ${display.label} ${"█".repeat(display.filled)}${"░".repeat(display.cells - display.filled)}`
+    const rows = setup.captureCharFrame().split("\n")
+    const noticeRow = rows.findIndex((row) => row.includes(redactionNotice(0)))
+    const headroomRow = rows.findIndex((row) => row.includes(expectedLine))
+    const summaryRow = rows.findIndex((row) => row.includes(SUMMARY_HEADING))
+
+    expect(headroomRow).toBe(noticeRow + 1)
+    expect(headroomRow).toBeLessThan(summaryRow)
+    expect(spanContaining(setup, TARGET_HEADROOM_LABEL)?.fg.toString()).toBe(paletteColor(DARK_PALETTE.muted))
+    expect(spanContaining(setup, display.label)?.fg.toString()).toBe(paletteColor(DARK_PALETTE.text))
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows honest unknown target headroom when the target has no usage", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    const setup = await renderWithPreview(controller)
+
+    expect(setup.captureCharFrame()).toContain(`${TARGET_HEADROOM_LABEL}: ${HEADROOM_UNKNOWN}`)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps the send action visible within a 24-row terminal", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    controller.store.applyEvent("codex", { kind: "usage", used: 36_000, size: 200_000 })
+    const setup = await renderCockpit(controller, 24)
+
+    const frame = await handoff(setup)
+    const rows = frame.replace(/\n$/, "").split("\n")
+    const hintRow = rows.findIndex((row) => row.includes(HANDOFF_HINT))
+
+    expect(rows).toHaveLength(24)
+    expect(hintRow).toBeGreaterThanOrEqual(0)
+    expect(hintRow).toBeLessThan(23)
+    expect(rows[hintRow]).toContain("Enter send")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("keeps the app stable and the preview closed when /handoff has an empty source", async () => {
     const controller = createFakeController()
     const setup = await renderCockpit(controller)
@@ -409,7 +486,7 @@ describe("HandoffPreview visibility", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await destroyMounted(setup.renderer)
   })
@@ -677,7 +754,7 @@ describe("HandoffPreview target configuration", () => {
 
     expect(controller.calls.setSessionConfigOption).toEqual([{ configId: "effort", value: "high", sessionId: "codex" }])
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     await destroyMounted(setup.renderer)
   })
@@ -696,7 +773,7 @@ describe("HandoffPreview outcome", () => {
     expect(controller.calls.sendPrompt).toHaveLength(1)
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     // The preview is gone and focus has moved to the receiving agent.
     const closed = await setup.waitForFrame((f) => !f.includes(HANDOFF_HINT))
@@ -717,7 +794,7 @@ describe("HandoffPreview outcome", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(setup.renderer)
@@ -767,7 +844,7 @@ describe("HandoffPreview outcome", () => {
     seed(controller, "codex")
     controller.store.setFocus("codex")
     const setup = await renderCockpit(controller)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
 
     const frame = await handoff(setup)
     expect(frame).toContain(handoffTitleFor("Codex", "Claude Code"))
@@ -777,13 +854,70 @@ describe("HandoffPreview outcome", () => {
     })
 
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("claude-code")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await destroyMounted(setup.renderer)
   })
 })
 
 describe("HandoffPreview modality", () => {
+  it("preserves curation and blocks send, discard, and edit while clarification owns input", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    controller.store.applyEvent("codex", { kind: "config_options", options: targetConfigOptions() })
+    const setup = await renderWithPreview(controller)
+    const suspendedPreview = controller.store.getState().overlays.handoffPreview
+
+    // Establish local state that cannot be reconstructed from the store: select and
+    // drop the second file before clarification preempts the mounted preview.
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(`${ITEM_MARKER} ${KEPT_BOX} src/app.ts (edited)`))
+    await actAsync(async () => {
+      await setup.mockInput.typeText(" ")
+    })
+    await setup.waitForFrame((frame) => frame.includes(`${ITEM_MARKER} ${DROPPED_BOX} src/app.ts (edited)`))
+
+    await openClarification(controller, "clarification-preview-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(async () => {
+      setup.mockInput.pressKey("e")
+      setup.mockInput.pressKey("m")
+      setup.mockInput.pressArrow("up")
+      await setup.mockInput.typeText(" ")
+      setup.mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification).toHaveLength(1)
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.store.getState().overlays.handoffPreview).toBe(suspendedPreview)
+    const resumed = await setup.waitForFrame((frame) => frame.includes(HANDOFF_HINT))
+    expect(resumed).toContain(`${ITEM_MARKER} ${DROPPED_BOX} src/app.ts (edited)`)
+    expect(resumed).not.toContain(HANDOFF_EDIT_HINT)
+    expect(resumed).not.toContain(HANDOFF_CONFIG_HINT)
+
+    await openClarification(controller, "clarification-preview-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.store.getState().overlays.handoffPreview).toBe(suspendedPreview)
+
+    // The same preview resumes and performs its unchanged action with the preemption-
+    // era curation still applied.
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect(sentText(controller)).not.toContain("- src/app.ts (edited)")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("keeps every key from the shell and the prompt editor while it is open", async () => {
     const controller = createFakeController()
     seed(controller, "claude-code")
@@ -796,7 +930,7 @@ describe("HandoffPreview modality", () => {
 
     // Neither the global shell chord nor the prompt command reached through the preview.
     expect(controller.store.getState().focusedPane.kind).toBe("agent")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it lands,
@@ -866,6 +1000,7 @@ const APP_CONFIG: AppConfig = {
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   },
   sessions: [],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
   persistenceEnabled: true,
   telemetryEnabled: false,
@@ -997,7 +1132,7 @@ describe("integration - hand-off across two mock agents", () => {
 
     // The source agent was prompted once, by the user, and never by the hand-off.
     expect(claude.agent.prompts).toHaveLength(1)
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     expect(controller.store.getState().sessions.codex!.turns).toHaveLength(1)
 
     await destroyMounted(setup.renderer)

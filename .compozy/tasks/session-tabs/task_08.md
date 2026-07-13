@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render tab strip and empty workspace"
 type: frontend
 complexity: high
@@ -28,11 +28,11 @@ Add the primary Session Tabs surface: a single-row tab strip above the active wo
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Render visible tab items from narrow selector-derived view models.
-- [ ] 8.2 Add accessible selected, status, duplicate-name, and shared-workspace presentation.
-- [ ] 8.3 Route mouse selection and overflow activation through ControllerActions.
-- [ ] 8.4 Preserve single-row behavior across narrow and resized terminal layouts.
-- [ ] 8.5 Provide the empty-workspace primary action and background-work entry.
+- [x] 8.1 Render visible tab items from narrow selector-derived view models.
+- [x] 8.2 Add accessible selected, status, duplicate-name, and shared-workspace presentation.
+- [x] 8.3 Route mouse selection and overflow activation through ControllerActions.
+- [x] 8.4 Preserve single-row behavior across narrow and resized terminal layouts.
+- [x] 8.5 Provide the empty-workspace primary action and background-work entry.
 
 ## Implementation Details
 
@@ -67,14 +67,14 @@ Use the TechSpec’s **UI and Input Design**, **Focus Authority and Empty Worksp
 
 ## Tests
 - Unit tests:
-  - [ ] Visible tabs render in workspace order with non-color selected/working/approval/error/finished cues.
-  - [ ] Duplicate display names and shared CWDs receive deterministic visible disambiguation/cues.
-  - [ ] Mouse down selects exactly one target through ControllerActions and does not directly change store state.
-  - [ ] Narrow widths retain a single row, expose an overflow entry, and do not wrap tab items.
-  - [ ] Empty workspace exposes New Conversation, background-work access, and a no-provider notice after a null creation result.
+  - [x] Visible tabs render in workspace order with non-color selected/working/approval/error/finished cues.
+  - [x] Duplicate display names and shared CWDs receive deterministic visible disambiguation/cues.
+  - [x] Mouse down selects exactly one target through ControllerActions and does not directly change store state.
+  - [x] Narrow widths retain a single row, expose an overflow entry, and do not wrap tab items.
+  - [x] Empty workspace exposes New Conversation, background-work access, and a no-provider notice after a null creation result.
 - Integration tests:
-  - [ ] A mounted cockpit swaps the selected transcript while background conversations remain live.
-  - [ ] Resize and overflow interactions keep every conversation reachable without layout overflow.
+  - [x] A mounted cockpit swaps the selected transcript while background conversations remain live.
+  - [x] Resize and overflow interactions keep every conversation reachable without layout overflow.
 - Test coverage target: >=80%
 - All tests must pass
 

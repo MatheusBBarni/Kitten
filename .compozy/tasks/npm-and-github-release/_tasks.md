@@ -4,7 +4,7 @@
 
 | # | Title | Status | Complexity | Dependencies |
 |---|-------|--------|------------|--------------|
-| 01 | Self-describing version: version module, `--version`/`--help`, ACP clientInfo | pending | medium | - |
+| 01 | Self-describing version: version module, `--version`/`--help`, ACP clientInfo | completed | medium | - |
 | 02 | Honest install: installer slug fix, README rewrite, CI resolve-check | pending | medium | - |
 | 03 | release-please config and version-floor manifest | pending | low | - |
 | 04 | PR-title Conventional-Commit lint workflow | pending | low | - |

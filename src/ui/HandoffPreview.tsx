@@ -40,8 +40,9 @@ import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from
 import type { HandoffFlow } from "../app/handoff.ts"
 import type { ConfigOption, PendingDiff, ShellCommandRecord } from "../core/types.ts"
 import type { HandoffPreviewOverlay } from "../store/appStore.ts"
-import { selectHandoffPreview, selectIsApprovalOpen } from "../store/selectors.ts"
+import { selectHandoffPreview, selectIsApprovalOpen, selectIsClarificationOpen, selectSessionHeadroom } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
+import { formatHeadroom } from "./headroom.ts"
 import { CURRENT_MARK, ModelEffortControl, modelEffortValueRows, TARGET_MARK, type ModelEffortValueRow } from "./ModelSelect.tsx"
 import { Markdown } from "./Markdown.tsx"
 import { HANDOFF_CONFIG_HINT, HANDOFF_EDIT_HINT, HANDOFF_HINT, matchHandoffCommand, matchModelSelectCommand } from "./keymap.ts"
@@ -61,6 +62,7 @@ export function redactionNotice(count: number): string {
 
 /** Section headings, in the order the developer reads them. */
 export const SUMMARY_HEADING = "Summary"
+export const TARGET_HEADROOM_LABEL = "Target headroom"
 export const TARGET_CONFIG_HEADING = "Target model & reasoning effort"
 export const FILES_HEADING = "Referenced files"
 export const DIFFS_HEADING = "Pending diffs"
@@ -103,9 +105,13 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
   const palette = usePalette()
   const renderer = useRenderer()
   const { height } = useTerminalDimensions()
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
 
   const { bundle, sourceSessionId, targetSessionId, targetConfigOptions } = overlay
+  const targetHeadroomSelector = useMemo(() => selectSessionHeadroom(targetSessionId), [targetSessionId])
+  const selectedTargetHeadroom = useAppSelector(targetHeadroomSelector)
+  const targetHeadroom = formatHeadroom(selectedTargetHeadroom)
   const shellCommands = bundle.shell?.commands ?? []
   const shellOffset = bundle.files.length + bundle.pendingDiffs.length
   const itemCount = shellOffset + shellCommands.length
@@ -187,6 +193,10 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification owns top modal priority. Stand down before preventDefault or any
+      // local curation so this exact mounted preview can resume with its draft intact.
+      if (clarificationOpen) return
+
       // A permission request blocks an agent mid-turn. It outranks a bundle that is
       // waiting on nothing but the developer, so hand it the keyboard whole.
       if (approvalOpen) return
@@ -256,7 +266,7 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
           return
       }
     },
-    [approvalOpen, chooseTargetConfig, clampedTargetSelected, editing, editingTargetConfig, flow, itemCount, selected, send, targetRows, toggle],
+    [approvalOpen, chooseTargetConfig, clarificationOpen, clampedTargetSelected, editing, editingTargetConfig, flow, itemCount, selected, send, targetRows, toggle],
   )
   useKeyboard(onKey)
 
@@ -289,6 +299,16 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
     >
       <text style={{ flexShrink: 0 }} fg={bundle.redactionCount > 0 ? palette.accent : palette.muted}>
         {redactionNotice(bundle.redactionCount)}
+      </text>
+      <text style={{ flexShrink: 0 }}>
+        <span fg={palette.muted}>{`${TARGET_HEADROOM_LABEL}: `}</span>
+        <span fg={palette.text}>{targetHeadroom.label}</span>
+        {selectedTargetHeadroom === null ? null : (
+          <>
+            <span fg={palette.text}>{` ${"█".repeat(targetHeadroom.filled)}`}</span>
+            <span fg={palette.muted}>{"░".repeat(targetHeadroom.cells - targetHeadroom.filled)}</span>
+          </>
+        )}
       </text>
 
       <SectionHeading>{TARGET_CONFIG_HEADING}</SectionHeading>

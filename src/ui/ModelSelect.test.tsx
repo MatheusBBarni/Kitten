@@ -18,6 +18,7 @@ import {
   type ProviderKind,
   type SessionId,
 } from "../core/types.ts"
+import { createAppStore } from "../store/appStore.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import {
   CURRENT_MARK,
@@ -131,7 +132,7 @@ async function openSelector(
   controller: { store: FakeController["store"] },
 ): Promise<string> {
   await actAsync(() => {
-    controller.store.openModelSelect({ sessionId: controller.store.getState().focusedSessionId })
+    controller.store.openModelSelect({ sessionId: controller.store.getState().workspace.selectedVisibleId! })
   })
   return setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_HINT))
 }
@@ -143,7 +144,76 @@ async function renderWithSelector(controller: FakeController): Promise<TestRende
   return setup
 }
 
+/** Open the real top-priority clarification overlay over the mounted selector. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
+}
+
 describe("ModelSelect visibility and content", () => {
+  it("keeps the overlay closed when no visible conversation is selected", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "background", providerKind: "codex", title: "Background", cwd: "/work" }],
+      selectedVisibleId: "background",
+    })
+    store.backgroundConversation("background")
+    const controller = createFakeController({ store, runtimes: [] })
+    const setup = await testRender(<CockpitApp controller={controller} />, {
+      width: WIDTH,
+      height: HEIGHT,
+      kittyKeyboard: true,
+    })
+
+    await actAsync(() => controller.store.openModelSelect({ sessionId: "background" }))
+    await setup.renderOnce()
+
+    expect(controller.store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(controller.store.getState().overlays.modelSelect).toBeNull()
+    expect(setup.captureCharFrame()).not.toContain(MODEL_SELECT_HINT)
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("closes an already-open overlay when the final visible selection disappears", async () => {
+    const controller = createFakeController()
+    const setup = await renderWithSelector(controller)
+
+    expect(controller.store.getState().overlays.modelSelect).toEqual({ sessionId: "claude-code" })
+    await actAsync(() => {
+      controller.store.backgroundConversation("claude-code")
+      controller.store.backgroundConversation("codex")
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.modelSelect === null)
+    const closed = await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
+
+    expect(controller.store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(closed).not.toContain(MODEL_SELECT_HINT)
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders nothing until the selector is opened", async () => {
     const controller = createFakeController()
     seedOptions(controller, "claude-code", configOptions())
@@ -411,6 +481,62 @@ describe("ModelSelect mid-conversation confirm", () => {
 })
 
 describe("ModelSelect dismissal and modality", () => {
+  it("preserves navigation and confirmation state until clarification settles", async () => {
+    const controller = createFakeController()
+    seedOptions(controller, "claude-code", configOptions("opus", "high"))
+    seedOptions(controller, "codex", codexConfigOptions())
+    seedTurn(controller, "claude-code")
+    const setup = await renderWithSelector(controller)
+    const suspendedSelector = controller.store.getState().overlays.modelSelect
+
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(`${ROW_MARKER} ${OTHER_MARK} Sonnet`))
+
+    await openClarification(controller, "clarification-model-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressArrow("up")
+      setup.mockInput.pressTab()
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.clarification === null)
+
+    expect(controller.calls.respondClarification).toHaveLength(1)
+    expect(controller.calls.setSessionConfigOption).toHaveLength(0)
+    expect(controller.store.getState().overlays.modelSelect).toBe(suspendedSelector)
+    const resumedList = await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor("Claude")))
+    expect(resumedList).toContain(`${ROW_MARKER} ${OTHER_MARK} Sonnet`)
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_CONFIRM_HINT))
+
+    await openClarification(controller, "clarification-model-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.clarification === null)
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(controller.calls.setSessionConfigOption).toHaveLength(0)
+    expect(controller.store.getState().overlays.modelSelect).toBe(suspendedSelector)
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_CONFIRM_HINT))
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_HINT) && !frame.includes(MODEL_SELECT_CONFIRM_HINT))
+    expect(controller.calls.setSessionConfigOption).toEqual([
+      { configId: "model", value: "sonnet", sessionId: "claude-code" },
+    ])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("closes on Escape and changes nothing", async () => {
     const controller = createFakeController()
     seedOptions(controller, "claude-code", configOptions())
@@ -440,7 +566,7 @@ describe("ModelSelect dismissal and modality", () => {
     })
 
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(await setup.waitForFrame((f) => f.includes(MODEL_SELECT_HINT))).not.toContain(HELP_TITLE)
 
     await actAsync(() => {
@@ -493,6 +619,7 @@ const APP_CONFIG: AppConfig = {
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   },
   sessions: [],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
   persistenceEnabled: true,
   telemetryEnabled: false,

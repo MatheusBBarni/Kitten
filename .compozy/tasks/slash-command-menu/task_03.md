@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "selectSessionCommands selector"
 type: backend
 complexity: low
@@ -28,9 +28,9 @@ Correct structural sharing here is what keeps a command update from re-rendering
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Add `selectSessionCommands` next to `selectSessionPlan`.
-- [ ] 3.2 Add unit tests for the projected value and empty default.
-- [ ] 3.3 Add an identity test proving unrelated updates do not change the reference.
+- [x] 3.1 Add `selectSessionCommands` next to `selectSessionPlan`.
+- [x] 3.2 Add unit tests for the projected value and empty default.
+- [x] 3.3 Add an identity test proving unrelated updates do not change the reference.
 
 ## Implementation Details
 Mirror `selectSessionPlan` (curried `(sessionId) => (state) => state.sessions[sessionId]!.commands`).
@@ -54,11 +54,11 @@ Consumers memoize the curried selector with `useMemo` keyed on the session id, p
 
 ## Tests
 - Unit tests:
-  - [ ] `selectSessionCommands(id)` returns the session's list after a `commands` event is applied.
-  - [ ] Returns `[]` for a freshly created session.
-  - [ ] The returned reference is identical (`Object.is`) before and after an unrelated event (e.g. a `status` change) on the same session.
+  - [x] `selectSessionCommands(id)` returns the session's list after a `commands` event is applied.
+  - [x] Returns `[]` for a freshly created session.
+  - [x] The returned reference is identical (`Object.is`) before and after an unrelated event (e.g. a `status` change) on the same session.
 - Integration tests:
-  - [ ] Applying a `commands` event to session A does not change the reference returned by `selectSessionCommands(B)`.
+  - [x] Applying a `commands` event to session A does not change the reference returned by `selectSessionCommands(B)`.
 - Test coverage target: >=80%
 - All tests must pass
 

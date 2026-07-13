@@ -1,11 +1,11 @@
 ---
-status: pending
+status: completed
 title: Controller - thread MCP list, resolve, and record readout
 type: backend
 complexity: high
 dependencies:
-  - task_02
-  - task_04
+    - task_02
+    - task_04
 ---
 
 # Task 05: Controller - thread MCP list, resolve, and record readout

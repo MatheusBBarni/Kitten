@@ -14,9 +14,16 @@
  */
 
 import type { AgentConnection, PermissionOutcome, PromptBlock, PromptResult } from "../agent/agentConnection.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } from "../core/types.ts"
+import {
+  selectPromptHistory,
+  type PromptHistoryDirection,
+  type PromptHistorySelection,
+} from "../core/promptHistory.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ClarificationOutcome, type ConfigOption, type SessionId } from "../core/types.ts"
+import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
+import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
@@ -43,12 +50,47 @@ export interface SwitchTelemetry {
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
 }
 
+/** Content-free prompt-history outcomes emitted by composer-only actions. */
+export interface PromptHistoryTelemetry {
+  /** Count one accepted composer submission; the recorder emits eligibility at two. */
+  promptHistorySubmitted(sessionId: SessionId): void
+  /** A history navigation selected an entry for the composer. */
+  promptHistoryRecalled(sessionId: SessionId): void
+  /** Down navigation left the newest recalled entry and cleared the composer. */
+  promptHistoryCleared(sessionId: SessionId): void
+  /** A recalled entry was changed before its next accepted composer submission. */
+  promptHistoryEditedResend(sessionId: SessionId): void
+}
+
+/** Fixed discovery outcomes allowed through the UI-facing telemetry facade. */
+export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
+
+/** Fixed warm-query render states allowed through the UI-facing telemetry facade. */
+export type FileSelectorRenderState = "results" | "empty" | "unavailable"
+
+/** Content-free file-selector facts forwarded to the recorder by controller actions. */
+export interface FileSelectorTelemetry {
+  fileSelectorOpened(sessionId: SessionId): void
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void
+  fileSelectorCorrected(sessionId: SessionId): void
+}
+
 /**
  * The recorder surface actions drive. Switch telemetry is optional so focused action
  * unit tests can keep injecting only the focus counter; the real recorder implements
  * both slices.
  */
-export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry>
+export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry>
 
 /** The default when no recorder is injected: record nothing. */
 const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
@@ -59,6 +101,17 @@ export interface SwitchFocusOptions {
   viaOverview?: boolean
 }
 
+/** The explicit lifecycle outcome selected by tab-management UI. */
+export type CloseChoice = "close" | "background" | "cancel" | "keep-open"
+
+/** Finite close results keep UI callers fail-soft without hiding teardown uncertainty. */
+export type CloseConversationResult =
+  | { outcome: "closed" }
+  | { outcome: "backgrounded" }
+  | { outcome: "kept-open" }
+  | { outcome: "teardown-failed" }
+  | { outcome: "ignored" }
+
 /** The seams the actions need. The controller supplies all of them. */
 export interface ActionDeps {
   store: AppStore
@@ -66,6 +119,12 @@ export interface ActionDeps {
   getSession(sessionId: SessionId): AgentSession | undefined
   /** Settle the permission request currently shown in the approval overlay. */
   resolvePermission(outcome: PermissionOutcome): void
+  /** Settle only the active clarification whose stable identity still matches. */
+  resolveClarification?: (
+    requestId: string,
+    generation: number,
+    outcome: ClarificationOutcome,
+  ) => void
   /** Ids for the user turns this surface records. Defaults to a random UUID. */
   newMessageId?: () => string
   /** Where a failing connection is reported. Defaults to swallowing the failure. */
@@ -74,20 +133,62 @@ export interface ActionDeps {
   refreshBranch?: (sessionId: SessionId) => void
   /** The telemetry recorder to report navigation and adapter-confirmed switches to. */
   recorder?: ActionTelemetry
+  /** Repository discovery owned and injected by the controller. */
+  repositoryFileSource?: RepositoryFileSource
   /** Replace every live agent session with a fresh one. */
   startNewRun?: () => Promise<void>
   /** Replace one unavailable restored session with a fresh promptable session. */
   startFreshSession?: (sessionId: SessionId) => Promise<boolean>
+  /** Create and start one controller-owned conversation runtime. */
+  createConversation?: () => Promise<SessionId | null>
+  /** Apply an explicit close outcome through the controller-owned teardown path. */
+  closeConversation?: (sessionId: SessionId, choice: CloseChoice) => Promise<CloseConversationResult>
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
 export interface ControllerActions {
+  /** Create a fresh visible conversation, or return `null` when none can be created. */
+  createConversation(): Promise<SessionId | null>
+  /** Rename an existing non-Closed conversation after whitespace normalization. */
+  renameConversation(sessionId: SessionId, displayName: string): void
+  /** Select one Visible conversation. Unknown, Background, and Closed ids are no-ops. */
+  selectConversation(sessionId: SessionId, options?: SwitchFocusOptions): void
+  /** Move one Visible conversation to background without touching its runtime. */
+  backgroundConversation(sessionId: SessionId): void
+  /** Reopen and select one Background conversation. */
+  reopenConversation(sessionId: SessionId, options?: SwitchFocusOptions): void
+  /** Apply an explicit, fail-soft close-policy outcome. */
+  closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult>
+  /** List safe repository-relative files for one explicitly addressed configured session. */
+  listRepositoryFiles(sessionId: SessionId): Promise<RepositoryFileList>
+  /** Record that a valid file-selector token opened for one addressed session. */
+  fileSelectorOpened(sessionId: SessionId): void
+  /** Record a fixed discovery outcome and caller-owned duration. */
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void
+  /** Record one fixed warm-query render state and caller-owned duration. */
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void
+  /** Record acceptance and the caller-owned open-to-selection duration. */
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void
+  /** Record that one pending accepted reference was corrected before submission. */
+  fileSelectorCorrected(sessionId: SessionId): void
   /**
    * Send a prompt to `sessionId` (default: the focused session), recording the user's
    * turn in the transcript first. Resolves with the agent's stop reason, or `null`
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
   sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
+  /** Record one accepted plain-composer submission in the addressed session. */
+  recordPromptHistory(text: string, sessionId?: SessionId): void
+  /** Navigate the addressed session's history and return the post-reducer selection. */
+  navigatePromptHistory(direction: PromptHistoryDirection, sessionId?: SessionId): PromptHistorySelection
   /** Interrupt the running turn on `sessionId` (default: the focused session). */
   cancel(sessionId?: SessionId): Promise<void>
   /**
@@ -112,12 +213,20 @@ export interface ControllerActions {
    * from the focused session. A no-op when no other session needs attention.
    */
   jumpToNextNeedy(): void
+  /** Reopen/select the next eligible attention conversation, including background work. */
+  jumpToNextAttention(): void
   /** Leave a restored run by replacing every agent session with a fresh one. */
   startNewRun(): Promise<void>
   /** Start one fresh agent session and seed it with persisted context. */
   startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
   /** Answer the pending permission request with the user's decision. */
   respondPermission(outcome: PermissionOutcome): void
+  /** Answer or cancel only the matching active clarification request. */
+  respondClarification(
+    requestId: string,
+    generation: number,
+    outcome: ClarificationOutcome,
+  ): void
 }
 
 /**
@@ -137,15 +246,21 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const onError = deps.onError ?? (() => {})
   const refreshBranch = deps.refreshBranch ?? (() => {})
   const recorder = deps.recorder ?? NOOP_ACTION_TELEMETRY
+  const repositoryFileSource = deps.repositoryFileSource
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
+  const createConversation = deps.createConversation ?? (async () => null)
+  const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
 
-  const focused = (): SessionId => store.getState().focusedSessionId
+  const focused = (): SessionId | undefined =>
+    store.getState().workspace.selectedVisibleId ?? undefined
 
   async function sendPrompt(
     input: PromptInput,
-    sessionId: SessionId = focused(),
+    requestedSessionId?: SessionId,
   ): Promise<PromptResult | null> {
+    const sessionId = requestedSessionId ?? focused()
+    if (!sessionId) return null
     const session = getSession(sessionId)
     if (!session) return null
     const blocks = composePromptBlocks(input)
@@ -170,10 +285,145 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     }
   }
 
+  function selectConversation(sessionId: SessionId, options?: SwitchFocusOptions): void {
+    const before = store.getState().workspace.selectedVisibleId
+    store.selectConversation(sessionId)
+    const after = store.getState().workspace.selectedVisibleId
+    if (after !== before && after !== null) {
+      recorder.focusSwitch(after, options?.viaOverview === true)
+      refreshBranch(after)
+    }
+  }
+
+  function reopenConversation(sessionId: SessionId, options?: SwitchFocusOptions): void {
+    const before = store.getState().workspace.selectedVisibleId
+    store.reopenConversation(sessionId)
+    const after = store.getState().workspace.selectedVisibleId
+    if (after !== before && after === sessionId) {
+      recorder.focusSwitch(after, options?.viaOverview === true)
+      refreshBranch(after)
+    }
+  }
+
+  function jumpToNextAttention(): void {
+    const target = selectNextNeedy(focused() ?? null)(store.getState())
+    if (!target) return
+    const lifecycle = store.getState().workspace.conversations[target]?.lifecycle
+    if (lifecycle === "background") reopenConversation(target, { viaOverview: true })
+    else selectConversation(target, { viaOverview: true })
+  }
+
+  function recordComposerPrompt(text: string, requestedSessionId?: SessionId): void {
+    const sessionId = requestedSessionId ?? focused()
+    const history = sessionId ? store.getState().sessions[sessionId]?.promptHistory : undefined
+    if (!sessionId || text.trim().length === 0 || !history) return
+
+    // Compare inside the action layer while the reducer still owns the active cursor.
+    // Prompt text remains in session memory and never crosses the recorder boundary.
+    const recalled = history.cursor === null ? undefined : history.entries[history.cursor]
+    if (recalled !== undefined && recalled !== text) recorder.promptHistoryEditedResend?.(sessionId)
+
+    store.applyEvent(sessionId, { kind: "prompt_history", action: "record", text })
+    recorder.promptHistorySubmitted?.(sessionId)
+  }
+
+  function navigateComposerHistory(
+    direction: PromptHistoryDirection,
+    requestedSessionId?: SessionId,
+  ): PromptHistorySelection {
+    const sessionId = requestedSessionId ?? focused()
+    if (!sessionId) return { text: null, historyIndex: null, total: 0 }
+    const before = store.getState().sessions[sessionId]?.promptHistory
+    if (!before) return { text: null, historyIndex: null, total: 0 }
+
+    store.applyEvent(sessionId, { kind: "prompt_history", action: direction })
+    const after = store.getState().sessions[sessionId]!.promptHistory
+
+    if (direction === "next" && before.cursor === null) {
+      return { text: null, historyIndex: null, total: after.entries.length }
+    }
+    if (direction === "next" && before.cursor === before.entries.length - 1 && after.cursor === null) {
+      recorder.promptHistoryCleared?.(sessionId)
+      return { text: "", historyIndex: null, total: after.entries.length }
+    }
+
+    const selection = selectPromptHistory(after)
+    if (selection.text !== null) recorder.promptHistoryRecalled?.(sessionId)
+    return selection
+  }
+
   return {
+    async createConversation(): Promise<SessionId | null> {
+      try {
+        return await createConversation()
+      } catch {
+        return null
+      }
+    },
+
+    renameConversation(sessionId, displayName): void {
+      store.renameConversation(sessionId, displayName)
+    },
+
+    selectConversation,
+
+    backgroundConversation(sessionId): void {
+      store.backgroundConversation(sessionId)
+    },
+
+    reopenConversation,
+
+    async closeConversation(sessionId, choice): Promise<CloseConversationResult> {
+      try {
+        return await closeConversation(sessionId, choice)
+      } catch (error) {
+        onError(sessionId, error)
+        return { outcome: "teardown-failed" }
+      }
+    },
+
+    async listRepositoryFiles(sessionId): Promise<RepositoryFileList> {
+      // Capture from configured session state before awaiting. Live ACP lookup and
+      // current focus are deliberately irrelevant to repository discovery.
+      const cwd = store.getState().sessions[sessionId]?.cwd
+      if (!cwd) return { kind: "unavailable", reason: "unknown_session" }
+      if (!repositoryFileSource) return { kind: "unavailable", reason: "discovery_failed" }
+      try {
+        return await repositoryFileSource.list(cwd)
+      } catch {
+        return { kind: "unavailable", reason: "discovery_failed" }
+      }
+    },
+
+    fileSelectorOpened(sessionId): void {
+      recorder.fileSelectorOpened?.(sessionId)
+    },
+
+    fileSelectorDiscovery(sessionId, outcome, durationMs): void {
+      recorder.fileSelectorDiscovery?.(sessionId, outcome, durationMs)
+    },
+
+    fileSelectorQueryRendered(sessionId, state, durationMs): void {
+      recorder.fileSelectorQueryRendered?.(sessionId, state, durationMs)
+    },
+
+    fileSelectorSelected(sessionId, durationMs): void {
+      recorder.fileSelectorSelected?.(sessionId, durationMs)
+    },
+
+    fileSelectorCorrected(sessionId): void {
+      recorder.fileSelectorCorrected?.(sessionId)
+    },
+
     sendPrompt,
 
-    async cancel(sessionId = focused()): Promise<void> {
+    recordPromptHistory: recordComposerPrompt,
+
+    navigatePromptHistory: navigateComposerHistory,
+
+    async cancel(requestedSessionId?: SessionId): Promise<void> {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return
       const session = getSession(sessionId)
       if (!session) return
       try {
@@ -183,7 +433,9 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    async setSessionConfigOption(configId, value, sessionId = focused()): Promise<boolean> {
+    async setSessionConfigOption(configId, value, requestedSessionId?: SessionId): Promise<boolean> {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return false
       const session = getSession(sessionId)
       if (!session) return false
       // Keep the pre-call option only long enough to identify the allowlisted category
@@ -219,35 +471,37 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    switchFocus(sessionId = nextSessionId(store.getState().order, focused()), options?: SwitchFocusOptions): void {
-      const before = store.getState().focusedSessionId
-      store.setFocus(sessionId)
-      const after = store.getState().focusedSessionId
-      // Only a switch that actually moved focus is a real navigation to count.
-      if (after !== before) {
-        recorder.focusSwitch(after, options?.viaOverview === true)
-        refreshBranch(after)
-      }
+    switchFocus(sessionId, options?: SwitchFocusOptions): void {
+      const currentState = store.getState()
+      const current = currentState.workspace.selectedVisibleId
+      const visible = visibleConversationIds(currentState.workspace)
+      const target =
+        sessionId ??
+        (current
+          ? nextSessionId(visible, current)
+          : visible[0])
+      if (!target) return
+      selectConversation(target, options)
     },
 
     jumpToNextNeedy(): void {
-      const target = selectNextNeedy(focused())(store.getState())
-      if (!target) return
-      store.setFocus(target)
-      // Jump-to-next is reachable only from the overview, so it is always overview-driven.
-      recorder.focusSwitch(target, true)
-      refreshBranch(target)
+      jumpToNextAttention()
     },
+
+    jumpToNextAttention,
 
     async startNewRun(): Promise<void> {
       try {
         await startNewRun()
       } catch (error) {
-        onError(focused(), error)
+        const sessionId = focused()
+        if (sessionId) onError(sessionId, error)
       }
     },
 
-    async startFreshFromContext(input, sessionId = focused()): Promise<PromptResult | null> {
+    async startFreshFromContext(input, requestedSessionId?: SessionId): Promise<PromptResult | null> {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return null
       const blocks = composePromptBlocks(input)
       if (blocks.length === 0) return null
       try {
@@ -261,6 +515,14 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
     respondPermission(outcome: PermissionOutcome): void {
       deps.resolvePermission(outcome)
+    },
+
+    respondClarification(requestId, generation, outcome): void {
+      try {
+        deps.resolveClarification?.(requestId, generation, outcome)
+      } catch {
+        // UI callbacks are fail-soft; a stale or failed resolver never escapes the view.
+      }
     },
   }
 }

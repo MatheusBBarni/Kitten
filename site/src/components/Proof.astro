@@ -1,0 +1,80 @@
+---
+import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import Section from "./Section.astro";
+
+interface Props {
+  section: ShowcaseConfig["proof"];
+}
+
+const { section } = Astro.props;
+const descriptionId = `${section.id}-description`;
+const motionNoteId = `${section.id}-motion-note`;
+---
+
+<Section id={section.id} heading={section.heading} body={section.body}>
+  <figure
+    class="proof-media"
+    data-proof-media
+    data-motion-preference="standard"
+  >
+    {
+      section.videoUrl ? (
+        <div class="proof-media-frame">
+          <video
+            data-proof-video
+            controls
+            playsinline
+            preload="none"
+            poster={section.posterUrl ?? undefined}
+            aria-label={section.posterAlt}
+            aria-describedby={`${descriptionId} ${motionNoteId}`}
+          >
+            <source src={section.videoUrl} />
+            {section.captionsUrl && (
+              <track
+                kind="captions"
+                src={section.captionsUrl}
+                srclang="en"
+                label="English"
+                default
+              />
+            )}
+            <p>{section.fallbackLabel}</p>
+          </video>
+        </div>
+      ) : (
+        <div class="proof-media-frame" data-proof-poster-frame>
+          {section.posterUrl && (
+            <img
+              data-proof-poster
+              src={section.posterUrl}
+              alt={section.posterAlt}
+              width="1600"
+              height="1000"
+            />
+          )}
+          <p class="proof-fallback" data-proof-fallback>
+            {section.fallbackLabel}
+          </p>
+        </div>
+      )
+    }
+    <p id={motionNoteId} class="motion-note" data-proof-motion-note hidden>
+      {section.reducedMotionLabel}
+    </p>
+    <figcaption id={descriptionId}>{section.accessibleDescription}</figcaption>
+  </figure>
+
+  <ol class="proof-steps" aria-label={section.accessibleDescription}>
+    {
+      section.steps.map((step, index) => (
+        <li data-proof-step data-proof-stage={index + 1}>
+          <h3>{step.label}</h3>
+          <p>{step.description}</p>
+        </li>
+      ))
+    }
+  </ol>
+</Section>
+
+<script src="../scripts/proof-media.ts"></script>

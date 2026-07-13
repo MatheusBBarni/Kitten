@@ -11,8 +11,11 @@ import { join } from "node:path"
 import { bucketChars, CHAR_BUCKETS, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
 import { createAppStore } from "../store/appStore.ts"
 import {
+  createUsageSeenRecord,
   createJsonlFileSink,
   createTelemetryRecorder,
+  createUsageSeenJsonlFileSink,
+  logUsageSeen,
   recordReadiness,
   resolveTelemetryPath,
   TELEMETRY_PATH_ENV_VAR,
@@ -35,6 +38,31 @@ function fakeClock(start = 1000): { now: () => number; advance: (ms: number) => 
 const types = (records: TelemetryRecord[]): string[] => records.map((record) => record.type)
 
 describe("opt-in gating", () => {
+  it("produces one exact content-free usage record when enabled", () => {
+    const record = createUsageSeenRecord(
+      { provider: "claude-code", used: 124_000, size: 200_000 },
+      true,
+    )
+
+    expect(record).toEqual({
+      evt: "usage_seen",
+      provider: "claude-code",
+      used: 124_000,
+      size: 200_000,
+    })
+    expect(Object.keys(record!)).toEqual(["evt", "provider", "used", "size"])
+  })
+
+  it("suppresses usage records by default", () => {
+    const records: unknown[] = []
+    const input = { provider: "codex", used: 10, size: 20 } as const
+
+    expect(createUsageSeenRecord(input)).toBeNull()
+    logUsageSeen(input, false, { write: (record) => records.push(record) })
+
+    expect(records).toHaveLength(0)
+  })
+
   it("writes nothing across a full sequence when telemetry is disabled", () => {
     const sink = memorySink()
     const store = createAppStore()
@@ -58,6 +86,31 @@ describe("opt-in gating", () => {
     recorder.configWriteError("modal")
     recorder.recordSwitch("codex", "model", true, false)
     recorder.recordSwitch("codex", "effort", false, false)
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistoryRecalled("codex")
+    recorder.promptHistoryCleared("codex")
+    recorder.promptHistoryEditedResend("codex")
+    recorder.fileSelectorOpened("codex")
+    recorder.fileSelectorDiscovery("codex", "unavailable", 20)
+    recorder.fileSelectorQueryRendered("codex", "empty", 3)
+    recorder.fileSelectorSelected("codex", 150)
+    recorder.fileSelectorCorrected("codex")
+    recorder.clarificationCapabilityClassified("codex", "unsupported", "unknown_recipe")
+    recorder.clarificationPresented({
+      requestId: "request-secret",
+      sessionId: "codex",
+      capability: "unsupported",
+      focused: false,
+      hasSingle: true,
+      hasMulti: true,
+      hasText: true,
+      fieldCount: 3,
+    })
+    recorder.clarificationPreempted("codex", "permission")
+    recorder.clarificationResumed("codex", "permission")
+    recorder.clarificationCancelledOnSessionLoss("codex", "connection_error")
+    recorder.clarificationSettled("request-secret", "cancelled")
     recorder.resumePickerOpened()
     recorder.resumePickerInteractive()
     recorder.resumeLoadStarted()
@@ -68,6 +121,290 @@ describe("opt-in gating", () => {
     unsubscribe()
 
     expect(sink.records).toHaveLength(0)
+  })
+
+  it("does not access or construct a sink for disabled file-selector telemetry", () => {
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled telemetry must not access a sink")
+      },
+    })
+
+    recorder.fileSelectorOpened("codex")
+    recorder.fileSelectorDiscovery("codex", "ready", 10)
+    recorder.fileSelectorQueryRendered("codex", "results", 2)
+    recorder.fileSelectorSelected("codex", 25)
+    recorder.fileSelectorCorrected("codex")
+  })
+})
+
+describe("clarification lifecycle events", () => {
+  it("records one ordered mixed-form lifecycle with anonymous refs and coarse duration", () => {
+    const sink = memorySink()
+    const clock = fakeClock()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "run-1",
+    })
+
+    recorder.clarificationCapabilityClassified("codex", "supported", "verified_recipe")
+    recorder.clarificationPresented({
+      requestId: "request-private",
+      sessionId: "developer-named-session",
+      capability: "supported",
+      focused: false,
+      hasSingle: true,
+      hasMulti: true,
+      hasText: true,
+      fieldCount: 3,
+    })
+    recorder.clarificationPreempted("developer-named-session", "permission")
+    clock.advance(7_000)
+    recorder.clarificationResumed("developer-named-session", "permission")
+    recorder.clarificationSettled("request-private", "answered")
+    recorder.clarificationSettled("request-private", "cancelled")
+
+    expect(types(sink.records)).toEqual([
+      "clarification_capability_classified",
+      "clarification_presented",
+      "clarification_preempted",
+      "clarification_resumed",
+      "clarification_settled",
+    ])
+    expect(sink.records).toEqual([
+      {
+        type: "clarification_capability_classified",
+        provider: "codex",
+        capability: "supported",
+        diagnostic: "verified_recipe",
+        at: 1_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_presented",
+        agentRef: 1,
+        capability: "supported",
+        focused: false,
+        at: 1_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_preempted",
+        agentRef: 1,
+        interactionKind: "permission",
+        at: 1_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_resumed",
+        agentRef: 1,
+        interactionKind: "permission",
+        at: 8_000,
+        sessionRef: "run-1",
+      },
+      {
+        type: "clarification_settled",
+        agentRef: 1,
+        terminalKind: "answered",
+        hasSingle: true,
+        hasMulti: true,
+        hasText: true,
+        fieldCountBucket: "two_to_three",
+        durationBucket: "5_to_30s",
+        at: 8_000,
+        sessionRef: "run-1",
+      },
+    ])
+  })
+
+  it("serializes no request, answer, session identity, or adapter recipe content", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+
+    recorder.clarificationCapabilityClassified("claude-code", "unsupported", "recipe_overridden")
+    recorder.clarificationPresented({
+      requestId: "request-containing-prompt",
+      sessionId: "/private/workspace/customer-project",
+      capability: "unsupported",
+      focused: true,
+      hasSingle: false,
+      hasMulti: false,
+      hasText: true,
+      fieldCount: 1,
+    })
+    recorder.clarificationCancelledOnSessionLoss(
+      "/private/workspace/customer-project",
+      "session_replaced",
+    )
+    recorder.clarificationSettled("request-containing-prompt", "cancelled")
+
+    const serialized = JSON.stringify(sink.records)
+    expect(serialized).not.toContain("customer-project")
+    expect(serialized).not.toContain("request-containing-prompt")
+    expect(serialized).not.toContain("adapterPackage")
+    expect(serialized).not.toContain("adapterVersion")
+    expect(serialized).not.toContain("prompt")
+    expect(serialized).not.toContain("answer")
+    expect(serialized).not.toContain("selected")
+    expect(serialized).not.toContain("command")
+    expect(serialized).not.toContain("cwd")
+    expect(sink.records.map((record) => Object.keys(record).sort())).toEqual([
+      ["at", "capability", "diagnostic", "provider", "sessionRef", "type"],
+      ["agentRef", "at", "capability", "focused", "sessionRef", "type"],
+      ["agentRef", "at", "lossReason", "sessionRef", "type"],
+      [
+        "agentRef",
+        "at",
+        "durationBucket",
+        "fieldCountBucket",
+        "hasMulti",
+        "hasSingle",
+        "hasText",
+        "sessionRef",
+        "terminalKind",
+        "type",
+      ],
+    ])
+  })
+})
+
+describe("file-selector events", () => {
+  it("records every fixed interaction fact with only allowlisted metadata", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.fileSelectorOpened("codex")
+    recorder.fileSelectorDiscovery("codex", "ready", 18)
+    recorder.fileSelectorQueryRendered("codex", "empty", 4)
+    recorder.fileSelectorSelected("codex", 240)
+    recorder.fileSelectorCorrected("codex")
+
+    expect(sink.records).toEqual([
+      { type: "file_selector_opened", agent: "codex", at: 42, sessionRef: "run-1" },
+      {
+        type: "file_selector_discovery",
+        agent: "codex",
+        outcome: "ready",
+        durationMs: 18,
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "file_selector_query_rendered",
+        agent: "codex",
+        state: "empty",
+        durationMs: 4,
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "file_selector_selected",
+        agent: "codex",
+        durationMs: 240,
+        at: 42,
+        sessionRef: "run-1",
+      },
+      { type: "file_selector_corrected", agent: "codex", at: 42, sessionRef: "run-1" },
+    ])
+  })
+
+  it("serializes no query, path, prompt, count, reference, or byte fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.fileSelectorOpened("claude-code")
+    recorder.fileSelectorDiscovery("claude-code", "unavailable", 30)
+    recorder.fileSelectorQueryRendered("claude-code", "unavailable", 5)
+    recorder.fileSelectorSelected("claude-code", 350)
+    recorder.fileSelectorCorrected("claude-code")
+
+    const prohibited = [
+      "query",
+      "path",
+      "prompt",
+      "count",
+      "candidateCount",
+      "candidate_count",
+      "referenceText",
+      "reference_text",
+      "sourceBytes",
+      "source_bytes",
+      "bytes",
+    ]
+    for (const record of sink.records) {
+      for (const field of prohibited) expect(Object.keys(record)).not.toContain(field)
+    }
+    const serialized = JSON.stringify(sink.records)
+    for (const field of prohibited) expect(serialized).not.toContain(`"${field}"`)
+  })
+
+  it("keeps outcome and render state closed at the typed recorder API", () => {
+    if (false) {
+      const recorder = createTelemetryRecorder({ enabled: false })
+      // @ts-expect-error Discovery outcomes are intentionally fixed.
+      recorder.fileSelectorDiscovery("codex", "failed", 1)
+      // @ts-expect-error Render states are intentionally fixed.
+      recorder.fileSelectorQueryRendered("codex", "loading", 1)
+    }
+    expect(true).toBe(true)
+  })
+})
+
+describe("prompt-history events", () => {
+  it("emits eligibility once on a session's second composer submission", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.promptHistorySubmitted("codex")
+    expect(sink.records).toEqual([])
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+
+    expect(sink.records).toEqual([
+      { type: "prompt_history_eligible", agent: "codex", at: 42, sessionRef: "run-1" },
+    ])
+  })
+
+  it("starts a fresh eligibility count when the session run is replaced", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    recorder.watch(store)
+
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+    store.startSession("codex", "replacement-acp-session")
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+
+    expect(types(sink.records)).toEqual(["prompt_history_eligible", "prompt_history_eligible"])
+  })
+
+  it("emits only exact content-free recall, clear, and edited-resend records", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.promptHistoryRecalled("claude-code")
+    recorder.promptHistoryCleared("claude-code")
+    recorder.promptHistoryEditedResend("claude-code")
+
+    expect(sink.records).toEqual([
+      { type: "prompt_history_recalled", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_cleared", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_edited_resend", agent: "claude-code", at: 42, sessionRef: "run-1" },
+    ])
+    const forbidden = ["text", "hash", "promptHash", "length", "capacity", "historyIndex", "entries", "charBucket"]
+    for (const record of sink.records) {
+      for (const key of forbidden) expect(Object.keys(record)).not.toContain(key)
+    }
   })
 })
 
@@ -370,7 +707,7 @@ describe("content-free guarantee", () => {
       expect(keys).not.toContain("summary")
       expect(
         keys.every((key) =>
-          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source", "mode", "liveCount", "continued"].includes(
+          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source", "mode", "liveCount", "continued", "outcome", "state"].includes(
             key,
           ),
         ),
@@ -568,11 +905,23 @@ describe("local JSONL sink", () => {
       const sink = createJsonlFileSink(path)
       sink.write({ type: "handoff_invoked", at: 1, sessionRef: "r" })
       sink.write({ type: "agent_ready", at: 2, sessionRef: "r", agent: "codex" })
+      createUsageSeenJsonlFileSink(path).write({
+        evt: "usage_seen",
+        provider: "claude-code",
+        used: 124_000,
+        size: 200_000,
+      })
 
       const lines = readFileSync(path, "utf8").trimEnd().split("\n")
-      expect(lines).toHaveLength(2)
+      expect(lines).toHaveLength(3)
       expect(JSON.parse(lines[0]!)).toEqual({ type: "handoff_invoked", at: 1, sessionRef: "r" })
       expect(JSON.parse(lines[1]!).agent).toBe("codex")
+      expect(JSON.parse(lines[2]!)).toEqual({
+        evt: "usage_seen",
+        provider: "claude-code",
+        used: 124_000,
+        size: 200_000,
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

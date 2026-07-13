@@ -3,20 +3,26 @@ import { describe, expect, it } from "bun:test"
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState } from "../core/shellReducer.ts"
-import type { DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
+import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import { createAppStore, defaultSessionSeeds, type AppStore, type AppState } from "./appStore.ts"
 import {
   selectApprovalOverlay,
+  selectActiveModal,
+  selectClarificationCapability,
+  selectClarificationOverlay,
   selectHandoffPreview,
   selectFocusedPane,
   selectHasOpenOverlay,
   selectIsFocused,
+  selectKeyboardCapability,
   selectRestoration,
   selectRestorationBundle,
   selectSessionPicker,
   selectShell,
+  selectSessionPromptHistory,
   selectSessionStatus,
   selectSessionTurns,
+  selectTabDialogOverlay,
   selectSettingsOverlay,
   selectThemePreference,
 } from "./selectors.ts"
@@ -57,6 +63,17 @@ const HANDOFF_BUNDLE: HandoffBundle = {
   redactionCount: 0,
 }
 
+const CLARIFICATION_PAYLOAD: ClarificationPayload = {
+  prompt: "Choose a boundary",
+  fields: [{
+    id: "boundary",
+    label: "Boundary",
+    mode: "single",
+    required: true,
+    options: [{ id: "controller", label: "Controller" }],
+  }],
+}
+
 const message = (messageId: string, textDelta: string): DomainSessionEvent => ({
   kind: "agent_message",
   messageId,
@@ -75,22 +92,48 @@ describe("createAppStore", () => {
     const state = createAppStore().getState()
     expect(state.sessions["claude-code"]).toEqual(createSessionState(seed("claude-code")))
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
-    expect(state.order).toEqual(["claude-code", "codex"])
-    expect(state.focusedSessionId).toBe("claude-code")
-    expect(state.focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+    expect(state.workspace.order).toEqual(["claude-code", "codex"])
+    expect(state.workspace.selectedVisibleId).toBe("claude-code")
+    expect(state.focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
     expect(state.shell).toEqual(createShellState())
+    expect(selectKeyboardCapability(state)).toBe("unknown")
     expect(state.overlays).toEqual({
       approval: null,
+      clarification: null,
       handoffPreview: null,
       handoffTarget: null,
       modelSelect: null,
       settings: null,
+      tabDialog: null,
       sessions: false,
       sessionPicker: false,
     })
     expect(state.restoration).toEqual({ "claude-code": null, codex: null })
     expect(state.restorationBundle).toBeNull()
     expect(state.preferences).toEqual({ theme: "auto" })
+    expect(selectClarificationCapability("claude-code")(state)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
+    })
+  })
+
+  it("promotes Kitty keyboard capability once without disturbing durable workspace state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    let notifications = 0
+    store.subscribe(() => notifications++)
+
+    store.confirmKittyKeyboard()
+
+    const confirmed = store.getState()
+    expect(selectKeyboardCapability(confirmed)).toBe("kittyConfirmed")
+    expect(confirmed.workspace).toBe(before.workspace)
+    expect(confirmed.sessions).toBe(before.sessions)
+    expect(notifications).toBe(1)
+
+    store.confirmKittyKeyboard()
+    expect(store.getState()).toBe(confirmed)
+    expect(notifications).toBe(1)
   })
 
   it("seeds one session per provider with distinct ids, the default cwd, and the provider title", () => {
@@ -114,12 +157,12 @@ describe("createAppStore", () => {
   it("honors pre-bound session ids and an initial focused session", () => {
     const store = createAppStore({
       seeds: [seed("claude-code"), seed("codex", "session-codex")],
-      focusedSessionId: "codex",
+      selectedVisibleId: "codex",
     })
     const state = store.getState()
     expect(state.sessions.codex!.acpSessionId).toBe("session-codex")
     expect(state.sessions["claude-code"]!.acpSessionId).toBe("")
-    expect(state.focusedSessionId).toBe("codex")
+    expect(state.workspace.selectedVisibleId).toBe("codex")
   })
 
   it("seeds the theme preference from options", () => {
@@ -130,6 +173,83 @@ describe("createAppStore", () => {
 })
 
 describe("applyEvent", () => {
+  it("routes clarification status through the reducer and preserves the other session identity", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", message("m1", "Need input"))
+    store.applyEvent("claude-code", { kind: "plan", entries: [{ content: "Await decision" }] })
+    const before = store.getState()
+    const targetBefore = before.sessions["claude-code"]!
+    const otherBefore = before.sessions.codex
+
+    store.applyEvent("claude-code", { kind: "status", status: "awaiting_clarification" })
+
+    const after = store.getState()
+    expect(after.sessions["claude-code"]!.status).toBe("awaiting_clarification")
+    expect(after.sessions["claude-code"]!.turns).toBe(targetBefore.turns)
+    expect(after.sessions["claude-code"]!.plan).toBe(targetBefore.plan)
+    expect(after.sessions.codex).toBe(otherBefore)
+    expect(after.workspace.conversations["claude-code"]!.attention).toMatchObject({
+      status: "awaiting_clarification",
+      seen: false,
+    })
+  })
+
+  it("routes prompt history to the addressed session and preserves the other session identity", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const focusedHistories = trackSelector(store, selectSessionPromptHistory("claude-code"))
+    const otherHistories = trackSelector(store, selectSessionPromptHistory("codex"))
+
+    expect(before.workspace.selectedVisibleId).toBe("claude-code")
+
+    store.applyEvent("claude-code", {
+      kind: "prompt_history",
+      action: "record",
+      text: "remember this",
+    })
+    store.applyEvent("claude-code", { kind: "prompt_history", action: "previous" })
+
+    const after = store.getState()
+    expect(selectSessionPromptHistory("claude-code")(after)).toEqual({
+      entries: ["remember this"],
+      cursor: 0,
+    })
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+    expect(selectSessionPromptHistory("codex")(after)).toBe(before.sessions.codex!.promptHistory)
+    expect(focusedHistories).toEqual([
+      { entries: ["remember this"], cursor: null },
+      { entries: ["remember this"], cursor: 0 },
+    ])
+    expect(otherHistories).toEqual([])
+  })
+
+  it("routes commands through the reducer to only the addressed session", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const commands = [
+      { name: "review", description: "Review the current diff", hint: "[scope]" },
+      { name: "test", description: "Run the test suite" },
+    ]
+
+    store.applyEvent("claude-code", { kind: "commands", commands })
+
+    const after = store.getState()
+    expect(after.sessions["claude-code"]!.commands).toBe(commands)
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+    expect(after.sessions.codex!.commands).toEqual([])
+  })
+
+  it("applies usage to the target session while preserving the other session slice", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+
+    const after = store.getState()
+    expect(after.sessions["claude-code"]!.usage).toEqual({ used: 124_000, size: 200_000 })
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+  })
+
   it("updates only the target agent's slice and leaves the other untouched", () => {
     const store = createAppStore()
     const before = store.getState()
@@ -227,6 +347,22 @@ describe("startSession", () => {
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex", "session-2")))
     expect(state.sessions["claude-code"]).toBe(claudeBefore)
   })
+
+  it("recreates the addressed session with empty prompt history", () => {
+    const store = createAppStore()
+    store.applyEvent("codex", {
+      kind: "prompt_history",
+      action: "record",
+      text: "prior run prompt",
+    })
+    const priorHistory = selectSessionPromptHistory("codex")(store.getState())
+
+    store.startSession("codex", "session-new-run")
+
+    const freshHistory = selectSessionPromptHistory("codex")(store.getState())
+    expect(freshHistory).toEqual({ entries: [], cursor: null })
+    expect(freshHistory).not.toBe(priorHistory)
+  })
 })
 
 describe("setFocus", () => {
@@ -237,14 +373,14 @@ describe("setFocus", () => {
     store.setFocus("codex")
 
     const after = store.getState()
-    expect(after.focusedSessionId).toBe("codex")
-    expect(after.focusedPane).toEqual({ kind: "agent", agentId: "codex" })
+    expect(after.workspace.selectedVisibleId).toBe("codex")
+    expect(after.focusedPane).toEqual({ kind: "agent", sessionId: "codex" })
     expect(after.sessions).toBe(before.sessions)
     expect(after.overlays).toBe(before.overlays)
   })
 
   it("is a no-op when the agent is already focused", () => {
-    const store = createAppStore({ focusedSessionId: "codex" })
+    const store = createAppStore({ selectedVisibleId: "codex" })
     const before = store.getState()
     let notifications = 0
     store.subscribe(() => notifications++)
@@ -280,7 +416,7 @@ describe("setFocus", () => {
     store.setFocus("ghost")
 
     expect(store.getState()).toBe(before)
-    expect(store.getState().focusedSessionId).toBe("claude-code")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 })
 
@@ -291,7 +427,7 @@ describe("setFocusedPane", () => {
     let notifications = 0
     store.subscribe(() => notifications++)
 
-    store.setFocusedPane({ kind: "agent", agentId: "claude-code" })
+    store.setFocusedPane({ kind: "agent", sessionId: "claude-code" })
 
     expect(store.getState()).toBe(before)
     expect(notifications).toBe(0)
@@ -305,20 +441,69 @@ describe("setFocusedPane", () => {
     store.setFocusedPane({ kind: "shell" })
 
     expect(panes).toEqual([{ kind: "shell" }])
-    expect(store.getState().focusedSessionId).toBe("claude-code")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("ignores an agent pane whose session does not exist", () => {
     const store = createAppStore()
     const before = store.getState()
 
-    store.setFocusedPane({ kind: "agent", agentId: "ghost" })
+    store.setFocusedPane({ kind: "agent", sessionId: "ghost" })
 
     expect(store.getState()).toBe(before)
   })
 })
 
 describe("overlay slots", () => {
+  it("projects clarification independently and preserves every unrelated reference on open and close", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
+    store.openHandoffTarget({ sourceSessionId: "codex" })
+    store.openSettings()
+    store.openSessions()
+    store.openSessionPicker()
+    const before = store.getState()
+    const overlay = {
+      requestId: "clarification-1",
+      generation: 7,
+      sessionId: "claude-code" as SessionId,
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      payload: CLARIFICATION_PAYLOAD,
+    }
+
+    store.openClarification(overlay)
+
+    const opened = store.getState()
+    expect(selectClarificationOverlay(opened)).toBe(overlay)
+    expect(opened.overlays.approval).toBe(before.overlays.approval)
+    expect(opened.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(opened.overlays.handoffTarget).toBe(before.overlays.handoffTarget)
+    expect(opened.overlays.settings).toBe(before.overlays.settings)
+    expect(opened.overlays.sessions).toBe(before.overlays.sessions)
+    expect(opened.overlays.sessionPicker).toBe(before.overlays.sessionPicker)
+    expect(opened.sessions).toBe(before.sessions)
+    expect(opened.workspace).toBe(before.workspace)
+    expect(opened.preferences).toBe(before.preferences)
+    expect(opened.restoration).toBe(before.restoration)
+    expect(opened.clarificationCapabilities).toBe(before.clarificationCapabilities)
+
+    store.closeClarification()
+
+    const closed = store.getState()
+    expect(selectClarificationOverlay(closed)).toBeNull()
+    expect(closed.overlays.approval).toBe(before.overlays.approval)
+    expect(closed.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(closed.overlays.handoffTarget).toBe(before.overlays.handoffTarget)
+    expect(closed.overlays.settings).toBe(before.overlays.settings)
+    expect(closed.overlays.sessions).toBe(before.overlays.sessions)
+    expect(closed.overlays.sessionPicker).toBe(before.overlays.sessionPicker)
+    expect(closed.sessions).toBe(before.sessions)
+    expect(closed.workspace).toBe(before.workspace)
+    expect(closed.preferences).toBe(before.preferences)
+  })
+
   it("exposes an opened approval request and clears it on close", () => {
     const store = createAppStore()
     const overlay = { sessionId: "claude-code" as SessionId, title: "Claude Code", cwd: "/workspace/kitten", request: APPROVAL_REQUEST }
@@ -327,6 +512,7 @@ describe("overlay slots", () => {
     expect(selectApprovalOverlay(store.getState())).toEqual(overlay)
 
     store.closeApproval()
+    store.closeClarification()
     expect(selectApprovalOverlay(store.getState())).toBeNull()
   })
 
@@ -359,7 +545,7 @@ describe("overlay slots", () => {
   })
 
   it("exposes an opened model selector and clears it on close", () => {
-    const store = createAppStore()
+    const store = createAppStore({ selectedVisibleId: "codex" })
     const overlay = { sessionId: "codex" as SessionId }
 
     store.openModelSelect(overlay)
@@ -370,7 +556,7 @@ describe("overlay slots", () => {
   })
 
   it("keeps the model selector independent of the approval slot", () => {
-    const store = createAppStore()
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
     store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
     store.openModelSelect({ sessionId: "claude-code" })
 
@@ -379,6 +565,19 @@ describe("overlay slots", () => {
     const overlays = store.getState().overlays
     expect(overlays.modelSelect).toBeNull()
     expect(overlays.approval?.sessionId).toBe("codex")
+  })
+
+  it("rejects model selectors without the exact selected Visible conversation", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+
+    store.openModelSelect({ sessionId: "codex" })
+    expect(store.getState().overlays.modelSelect).toBeNull()
+
+    store.backgroundConversation("claude-code")
+    store.backgroundConversation("codex")
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+    store.openModelSelect({ sessionId: "codex" })
+    expect(store.getState().overlays.modelSelect).toBeNull()
   })
 
   it("opens settings without changing the other overlay-slot identities", () => {
@@ -481,6 +680,34 @@ describe("overlay slots", () => {
   })
 })
 
+describe("clarification capability state", () => {
+  it("updates one session capability without disturbing overlays or session state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const capability = {
+      status: "supported" as const,
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+    }
+
+    store.setClarificationCapability("codex", capability)
+
+    const after = store.getState()
+    expect(selectClarificationCapability("codex")(after)).toEqual(capability)
+    expect(selectClarificationCapability("claude-code")(after)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
+    })
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.workspace).toBe(before.workspace)
+    expect(after.overlays).toBe(before.overlays)
+    expect(after.preferences).toBe(before.preferences)
+
+    store.setClarificationCapability("codex", capability)
+    expect(store.getState()).toBe(after)
+  })
+})
+
 describe("restoration state", () => {
   it("defaults every seeded session to no restoration status", () => {
     const store = createAppStore()
@@ -543,7 +770,7 @@ describe("preferences", () => {
     expect(afterChange.preferences).not.toBe(before.preferences)
     expect(afterChange.sessions).toBe(before.sessions)
     expect(afterChange.overlays).toBe(before.overlays)
-    expect(afterChange.focusedSessionId).toBe(before.focusedSessionId)
+    expect(afterChange.workspace.selectedVisibleId).toBe(before.workspace.selectedVisibleId)
 
     store.setThemePreference("dark")
 
@@ -572,21 +799,21 @@ describe("integration: settings preference flow", () => {
     expect(opened.overlays.settings).toEqual({ tab: "theme" })
     expect(opened.preferences).toBe(initial.preferences)
     expect(opened.sessions).toBe(initial.sessions)
-    expect(opened.focusedSessionId).toBe(initial.focusedSessionId)
+    expect(opened.workspace.selectedVisibleId).toBe(initial.workspace.selectedVisibleId)
 
     store.setThemePreference("dark")
     const themed = store.getState()
     expect(themed.preferences).toEqual({ theme: "dark" })
     expect(themed.overlays).toBe(opened.overlays)
     expect(themed.sessions).toBe(opened.sessions)
-    expect(themed.focusedSessionId).toBe(opened.focusedSessionId)
+    expect(themed.workspace.selectedVisibleId).toBe(opened.workspace.selectedVisibleId)
 
     store.closeSettings()
     const closed = store.getState()
     expect(closed.overlays.settings).toBeNull()
     expect(closed.preferences).toBe(themed.preferences)
     expect(closed.sessions).toBe(themed.sessions)
-    expect(closed.focusedSessionId).toBe(themed.focusedSessionId)
+    expect(closed.workspace.selectedVisibleId).toBe(themed.workspace.selectedVisibleId)
   })
 })
 
@@ -595,7 +822,7 @@ describe("subscriptions", () => {
     const store = createAppStore()
     const seen: { focused: SessionId; previous: SessionId }[] = []
     const unsubscribe = store.subscribe((state, previous) =>
-      seen.push({ focused: state.focusedSessionId, previous: previous.focusedSessionId }),
+      seen.push({ focused: state.workspace.selectedVisibleId!, previous: previous.workspace.selectedVisibleId! }),
     )
 
     store.setFocus("codex")
@@ -780,7 +1007,7 @@ describe("integration: a scripted interleaved event stream", () => {
     }
 
     const state = store.getState()
-    expect(state.focusedSessionId).toBe("codex")
+    expect(state.workspace.selectedVisibleId).toBe("codex")
     expect(state.overlays.approval?.request).toBe(APPROVAL_REQUEST)
   })
 })
@@ -800,5 +1027,248 @@ describe("integration: shell and agent selector isolation", () => {
 
     expect(shellCwds).toEqual(["/one", "/two"])
     expect(agentStatuses).toEqual(["working"])
+  })
+})
+
+describe("workspace lifecycle integration", () => {
+  it("represents an empty workspace without an invalid agent pane", () => {
+    const store = createAppStore({ seeds: [] })
+
+    expect(store.getState().sessions).toEqual({})
+    expect(store.getState().workspace).toEqual({
+      conversations: {},
+      order: [],
+      selectedVisibleId: null,
+    })
+    expect(store.getState().focusedPane).toEqual({ kind: "workspace" })
+  })
+
+  it("atomically inserts and removes a dynamic execution slice and workspace entry", () => {
+    const store = createAppStore({ seeds: [] })
+    const dynamic: SessionSeed = {
+      id: "dynamic",
+      providerKind: "codex",
+      title: "Dynamic",
+      cwd: "/work/dynamic",
+    }
+
+    store.addSession(dynamic, { displayName: "Parser", availability: { kind: "ready" } })
+    const inserted = store.getState()
+    expect(inserted.sessions.dynamic).toEqual(createSessionState(dynamic))
+    expect(inserted.workspace.conversations.dynamic).toMatchObject({
+      displayName: "Parser",
+      lifecycle: "visible",
+      availability: { kind: "ready" },
+    })
+    expect(inserted.workspace.selectedVisibleId).toBe("dynamic")
+    expect(inserted.focusedPane).toEqual({ kind: "agent", sessionId: "dynamic" })
+
+    store.removeSession("dynamic")
+    const removed = store.getState()
+    expect(removed.sessions.dynamic).toBeUndefined()
+    expect(removed.workspace.conversations.dynamic).toBeUndefined()
+    expect(removed.workspace.selectedVisibleId).toBeNull()
+    expect(removed.focusedPane).toEqual({ kind: "workspace" })
+  })
+
+  it("atomically replaces runtime placeholders with persisted workspace identity and order", () => {
+    const store = createAppStore()
+    const background: SessionSeed = {
+      id: "background",
+      providerKind: "codex",
+      title: "Background",
+      cwd: "/work/background",
+    }
+    const visible: SessionSeed = {
+      id: "visible",
+      providerKind: "claude-code",
+      title: "Visible",
+      cwd: "/work/visible",
+    }
+
+    store.replaceSessions(
+      [
+        {
+          seed: background,
+          workspace: {
+            sessionId: "background",
+            displayName: "Review API",
+            lifecycle: "background",
+            createdOrdinal: 7,
+            availability: { kind: "starting" },
+            attention: { status: "finished", seen: false, sequence: 4 },
+          },
+        },
+        {
+          seed: visible,
+          workspace: {
+            sessionId: "visible",
+            displayName: "Build CLI",
+            createdOrdinal: 9,
+            availability: { kind: "starting" },
+          },
+        },
+      ],
+      "visible",
+    )
+
+    const state = store.getState()
+    expect(Object.keys(state.sessions)).toEqual(["background", "visible"])
+    expect(state.workspace.order).toEqual(["background", "visible"])
+    expect(state.workspace.selectedVisibleId).toBe("visible")
+    expect(state.workspace.conversations.background).toMatchObject({
+      displayName: "Review API",
+      lifecycle: "background",
+      createdOrdinal: 7,
+      attention: { status: "finished", seen: false, sequence: 4 },
+    })
+  })
+
+  it("can bind a restored ACP id without resetting persisted attention", () => {
+    const store = createAppStore({ seeds: [] })
+    const restored: SessionSeed = {
+      id: "restored",
+      providerKind: "codex",
+      title: "Restored",
+      cwd: "/work/restored",
+    }
+    store.replaceSessions(
+      [
+        {
+          seed: restored,
+          workspace: {
+            sessionId: "restored",
+            displayName: "Restored",
+            attention: { status: "finished", seen: false, sequence: 3 },
+          },
+        },
+      ],
+      "restored",
+    )
+
+    store.startSession("restored", "acp-restored", { preserveWorkspaceAttention: true })
+
+    expect(store.getState().sessions.restored?.acpSessionId).toBe("acp-restored")
+    expect(store.getState().workspace.conversations.restored?.attention).toEqual({
+      status: "finished",
+      seen: false,
+      sequence: 3,
+    })
+  })
+
+  it("preserves SessionState through rename, background, reopen, teardown, and availability", () => {
+    const store = createAppStore()
+    const session = store.getState().sessions["claude-code"]!
+
+    store.renameConversation("claude-code", "Compiler")
+    store.backgroundConversation("claude-code")
+    store.reopenConversation("claude-code")
+    store.setConversationTeardown("claude-code", "closing")
+    store.setConversationAvailability("claude-code", {
+      kind: "unavailable",
+      reasonCode: "teardown-failed",
+      retryable: true,
+    })
+
+    expect(store.getState().sessions["claude-code"]).toBe(session)
+    expect(store.getState().workspace.conversations["claude-code"]).toMatchObject({
+      displayName: "Compiler",
+      lifecycle: "visible",
+      teardownState: "closing",
+      availability: {
+        kind: "unavailable",
+        reasonCode: "teardown-failed",
+        retryable: true,
+      },
+    })
+  })
+
+  it("creates attention epochs and acknowledges only the selected current epoch", () => {
+    const store = createAppStore()
+
+    store.applyEvent("codex", { kind: "status", status: "awaiting_approval" })
+    expect(store.getState().sessions.codex?.status).toBe("awaiting_approval")
+    expect(store.getState().workspace.conversations.codex?.attention).toEqual({
+      status: "awaiting_approval",
+      seen: false,
+      sequence: 1,
+    })
+
+    store.setFocus("codex")
+    expect(store.getState().sessions.codex?.status).toBe("awaiting_approval")
+    expect(store.getState().workspace.conversations.codex?.attention.seen).toBe(true)
+
+    store.applyEvent("codex", { kind: "status", status: "working" })
+    store.applyEvent("codex", { kind: "status", status: "error" })
+    expect(store.getState().workspace.conversations.codex?.attention).toEqual({
+      status: "error",
+      seen: false,
+      sequence: 2,
+    })
+  })
+
+  it("keeps a background approval attributed while another conversation is selected", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "status", status: "awaiting_approval" })
+    store.backgroundConversation("claude-code")
+    store.openApproval({
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      request: APPROVAL_REQUEST,
+    })
+
+    expect(store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(store.getState().workspace.conversations["claude-code"]?.lifecycle).toBe("background")
+    expect(store.getState().workspace.conversations["claude-code"]?.attention.seen).toBe(false)
+    expect(store.getState().overlays.approval?.sessionId).toBe("claude-code")
+  })
+
+  it("suppresses focus changes under overlays and retains captured target identity", () => {
+    const store = createAppStore()
+    store.openTabDialog({ kind: "rename", sessionId: "claude-code" })
+    store.setFocus("codex")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "claude-code",
+    })
+
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      request: APPROVAL_REQUEST,
+    })
+    store.openTabDialog({ kind: "close", sessionId: "codex" })
+    expect(store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "claude-code",
+    })
+    expect(store.getState().overlays.approval?.sessionId).toBe("codex")
+  })
+
+  it("immutably opens, replaces, and closes the one tab-dialog slot under aggregate gating", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+
+    store.openTabDialog({ kind: "rename", sessionId: "claude-code" })
+    const renamed = store.getState()
+    expect(renamed).not.toBe(initial)
+    expect(renamed.sessions).toBe(initial.sessions)
+    expect(renamed.workspace).toBe(initial.workspace)
+    expect(selectTabDialogOverlay(renamed)).toEqual({ kind: "rename", sessionId: "claude-code" })
+    expect(selectHasOpenOverlay(renamed)).toBe(true)
+    expect(selectActiveModal(renamed)).toEqual({ kind: "tab-dialog", sessionId: "claude-code" })
+
+    store.openTabDialog({ kind: "close", sessionId: "codex" })
+    const replaced = store.getState()
+    expect(replaced.overlays.tabDialog).toEqual({ kind: "close", sessionId: "codex" })
+    expect(replaced.overlays.approval).toBeNull()
+
+    store.removeSession("codex")
+    const closed = store.getState()
+    expect(closed.overlays.tabDialog).toBeNull()
+    expect(selectHasOpenOverlay(closed)).toBe(false)
   })
 })

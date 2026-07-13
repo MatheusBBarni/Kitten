@@ -6,6 +6,7 @@
  * already-decided interaction state beside the active textarea.
  */
 
+import type { MouseEvent } from "@opentui/core"
 import type { ReactNode } from "react"
 
 import type { CockpitCommand } from "./keymap.ts"
@@ -14,15 +15,15 @@ import { usePalette } from "./theme.ts"
 /** One command the non-modal slash menu can render. */
 export type MenuRow =
   | {
-      source: "kitten"
+      source: "cockpit"
       command: CockpitCommand
-      name: string
-      description: string
+      label: string
+      shortcut: string
     }
   | {
       source: "agent"
       name: string
-      description: string
+      label: string
       hint?: string
     }
 
@@ -42,15 +43,22 @@ export interface SlashMenuProps {
 /** Never leave a user staring at an empty border when their filter matches nothing. */
 export const NO_COMMANDS_MATCH = "No commands match this filter."
 
+/** Stable identity for the row keyboard activation currently targets. */
+export const HIGHLIGHTED_COMMAND_ROW_ID = "slash-menu-highlighted-row"
+
 /** A stateless grouped command list; PromptEditor handles all activation. */
-export function SlashMenu({ groups, highlightedIndex, onSelect: _onSelect }: SlashMenuProps): ReactNode {
+export function SlashMenu({ groups, highlightedIndex, onSelect }: SlashMenuProps): ReactNode {
   const palette = usePalette()
-  const rows = groups.flatMap((group) => group.rows)
+  const rowCount = groups.reduce((count, group) => count + group.rows.length, 0)
+  let offset = 0
 
   return (
     <box
       style={{
-        width: "100%",
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
         flexDirection: "column",
         border: true,
         borderColor: palette.border,
@@ -62,17 +70,22 @@ export function SlashMenu({ groups, highlightedIndex, onSelect: _onSelect }: Sla
       title="Commands"
       titleColor={palette.accent}
     >
-      {rows.length === 0 ? (
+      {rowCount === 0 ? (
         <text fg={palette.muted}>{NO_COMMANDS_MATCH}</text>
       ) : (
-        groups.map((group) => (
-          <SlashMenuGroupView
-            key={group.source}
-            group={group}
-            highlightedIndex={highlightedIndex}
-            offset={offsetFor(groups, group.source)}
-          />
-        ))
+        groups.map((group) => {
+          const groupOffset = offset
+          offset += group.rows.length
+          return (
+            <SlashMenuGroupView
+              key={group.source}
+              group={group}
+              highlightedIndex={highlightedIndex}
+              offset={groupOffset}
+              onSelect={onSelect}
+            />
+          )
+        })
       )}
     </box>
   )
@@ -82,43 +95,54 @@ function SlashMenuGroupView({
   group,
   highlightedIndex,
   offset,
+  onSelect,
 }: {
   group: SlashMenuGroup
   highlightedIndex: number
   offset: number
+  onSelect: (row: MenuRow) => void
 }): ReactNode {
   const palette = usePalette()
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
       <text fg={palette.accent}>{group.source}</text>
       {group.rows.map((row, index) => (
-        <SlashMenuRow key={`${row.source}:${row.name}`} row={row} highlighted={offset + index === highlightedIndex} />
+        <SlashMenuRow
+          key={row.source === "cockpit" ? `cockpit:${row.command}` : `agent:${row.name}`}
+          row={row}
+          highlighted={offset + index === highlightedIndex}
+          onSelect={onSelect}
+        />
       ))}
     </box>
   )
 }
 
-function SlashMenuRow({ row, highlighted }: { row: MenuRow; highlighted: boolean }): ReactNode {
+function SlashMenuRow({
+  row,
+  highlighted,
+  onSelect,
+}: {
+  row: MenuRow
+  highlighted: boolean
+  onSelect: (row: MenuRow) => void
+}): ReactNode {
   const palette = usePalette()
-  // The slash picker is a compact launcher, not a second help panel. Descriptions
-  // still drive filtering and remain available through `/help`; only an agent's
-  // input hint earns space here because it changes what the user must type next.
-  const trailing = row.source === "agent" ? row.hint : undefined
+
+  const activate = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    onSelect(row)
+  }
 
   return (
-    <text style={{ flexShrink: 0 }}>
-      <span fg={palette.accent}>{highlighted ? "▸" : " "}</span>
-      <span fg={highlighted ? palette.text : palette.muted}>{` /${row.name}`}</span>
-      {trailing ? <span fg={palette.muted}>{`  ${trailing}`}</span> : null}
-    </text>
+    <box style={{ height: 1, flexShrink: 0 }}>
+      <text id={highlighted ? HIGHLIGHTED_COMMAND_ROW_ID : undefined} onMouseDown={activate}>
+        <span fg={palette.accent}>{highlighted ? "▸" : " "}</span>
+        <span fg={highlighted ? palette.text : palette.muted}>{` ${row.label}`}</span>
+        {row.source === "cockpit" ? <span fg={palette.muted}>{`  ${row.shortcut}`}</span> : null}
+        {row.source === "agent" && row.hint ? <span fg={palette.muted}>{`  ${row.hint}`}</span> : null}
+      </text>
+    </box>
   )
-}
-
-function offsetFor(groups: readonly SlashMenuGroup[], source: string): number {
-  let offset = 0
-  for (const group of groups) {
-    if (group.source === source) return offset
-    offset += group.rows.length
-  }
-  return offset
 }

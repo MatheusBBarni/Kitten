@@ -1,5 +1,5 @@
 // Suite: SettingsView overlay
-// Invariant: settings captures the keyboard, applies theme navigation live, and yields to approval.
+// Invariant: settings captures the keyboard, applies theme navigation live, and yields to higher-priority agent interactions.
 // Boundary IN: real AppStore, OpenTUI keyboard routing, palette resolution, and rendered frame.
 // Boundary OUT: shell opening/mount wiring (task 10) and disk persistence (task 09).
 
@@ -13,6 +13,7 @@ import { createFakeController, type FakeController } from "../../test/fakeContro
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { ThemePreference } from "../core/types.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
+import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { SETTINGS_HINT } from "./keymap.ts"
 import {
@@ -31,6 +32,8 @@ const HEIGHT = 18
 
 interface RenderSettingsOptions {
   approvalOpen?: boolean
+  clarificationOpen?: boolean
+  clarificationPrompt?: boolean
   editor?: boolean
   open?: boolean
   preference?: ThemePreference
@@ -68,6 +71,28 @@ async function renderSettings(options: RenderSettingsOptions = {}): Promise<Sett
       },
     })
   }
+  if (options.clarificationOpen) {
+    store.openClarification({
+      requestId: "clarification-settings",
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  }
 
   const setup = await testRender(
     <CockpitProvider controller={controller}>
@@ -76,6 +101,7 @@ async function renderSettings(options: RenderSettingsOptions = {}): Promise<Sett
         {options.probePalette ? <PaletteProbe /> : null}
         {options.editor ? <textarea ref={editor} focused /> : null}
         <SettingsView />
+        {options.clarificationPrompt ? <ClarificationPrompt /> : null}
       </box>
     </CockpitProvider>,
     { width: WIDTH, height: HEIGHT, kittyKeyboard: true },
@@ -102,6 +128,18 @@ describe("SettingsView visibility", () => {
 
     const frame = setup.captureCharFrame()
     expect(store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(frame).not.toContain(SETTINGS_TITLE)
+    expect(frame).not.toContain(SETTINGS_HINT)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders nothing during clarification while the settings slot remains open", async () => {
+    const { setup, store } = await renderSettings({ clarificationOpen: true, preference: "dark" })
+
+    const frame = setup.captureCharFrame()
+    expect(store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(store.getState().preferences.theme).toBe("dark")
     expect(frame).not.toContain(SETTINGS_TITLE)
     expect(frame).not.toContain(SETTINGS_HINT)
 
@@ -198,6 +236,56 @@ describe("SettingsView interaction", () => {
     })
 
     expect(editor.current?.plainText).toBe("")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not handle arrows, reset, or Escape while clarification is active", async () => {
+    const { setup, store } = await renderSettings({
+      clarificationOpen: true,
+      preference: "catppuccin-mocha",
+    })
+    const closeSettings = spyOn(store, "closeSettings")
+    const setThemePreference = spyOn(store, "setThemePreference")
+
+    await actAsync(() => {
+      setup.mockInput.pressArrow("up")
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressKey("r")
+      setup.mockInput.pressEscape()
+    })
+
+    expect(closeSettings).not.toHaveBeenCalled()
+    expect(setThemePreference).not.toHaveBeenCalled()
+    expect(store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(store.getState().preferences.theme).toBe("catppuccin-mocha")
+    closeSettings.mockRestore()
+    setThemePreference.mockRestore()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("restores the unchanged settings dialog after clarification settles", async () => {
+    const { controller, setup, store } = await renderSettings({
+      clarificationOpen: true,
+      clarificationPrompt: true,
+      preference: "dark",
+    })
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification).toEqual([{
+      requestId: "clarification-settings",
+      generation: 1,
+      outcome: { kind: "cancelled" },
+    }])
+    expect(store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(store.getState().preferences.theme).toBe("dark")
+    const resumed = await setup.waitForFrame((frame) => frame.includes(SETTINGS_HINT))
+    expect(resumed).toContain(`${THEME_OPTION_MARKER} Dark`)
 
     await destroyMounted(setup.renderer)
   })

@@ -10,6 +10,9 @@ import {
   APPROVAL_HINT,
   APPROVAL_KEYMAP,
   approvalOptionIndex,
+  CLARIFICATION_HINT,
+  CLARIFICATION_KEYMAP,
+  clarificationOptionIndex,
   COCKPIT_COMMANDS,
   COCKPIT_KEYMAP,
   EDITOR_KEYMAP,
@@ -18,8 +21,10 @@ import {
   HANDOFF_HINT,
   HANDOFF_KEYMAP,
   HELP_ENTRIES,
+  helpEntries,
   KEYMAP_HINT,
   matchApprovalCommand,
+  matchClarificationCommand,
   matchCommand,
   matchHandoffCommand,
   matchMenuCommand,
@@ -40,6 +45,7 @@ import {
   SHELL_HINT,
   SETTINGS_HINT,
   SETTINGS_KEYMAP,
+  tabNavigationHint,
   type CockpitKey,
 } from "./keymap.ts"
 
@@ -56,8 +62,13 @@ describe("matchCommand", () => {
     expect(matchCommand(key("escape"))).toBe("close-help")
   })
 
+  it("maps Ctrl+T to the hand-off while leaving a bare t to the prompt", () => {
+    expect(matchCommand(key("t", { ctrl: true }))).toBe("hand-off")
+    expect(matchCommand(key("t"))).toBeNull()
+  })
+
   it("leaves every retired cockpit action chord to the prompt", () => {
-    for (const name of ["o", "t", "s", "r", "n", "e", ","]) {
+    for (const name of ["o", "s", "r", "n", "e", ","]) {
       expect(matchCommand(key(name, { ctrl: true }))).toBeNull()
     }
     for (const name of ["f1", "f3"]) {
@@ -73,12 +84,36 @@ describe("matchCommand", () => {
     expect(matchCommand(key("`", { ctrl: true, meta: true }))).toBeNull()
     expect(matchCommand(key("escape", { meta: true }))).toBeNull()
   })
+
+  it("matches adjacent-tab chords only after Kitty confirmation and on a current Kitty event", () => {
+    const previous = key("h", { ctrl: true, source: "kitty" })
+    const next = key("l", { ctrl: true, source: "kitty" })
+
+    expect(matchCommand(previous, "unknown")).toBeNull()
+    expect(matchCommand(next, "unknown")).toBeNull()
+    expect(matchCommand(previous, "kittyConfirmed")).toBe("previous-tab")
+    expect(matchCommand(next, "kittyConfirmed")).toBe("next-tab")
+    expect(matchCommand(key("h", { ctrl: true, source: "raw" }), "kittyConfirmed")).toBeNull()
+    expect(matchCommand(key("l", { ctrl: true, source: "raw" }), "kittyConfirmed")).toBeNull()
+  })
+
+  it("rejects printable, modified, and unrelated Kitty events for adjacent navigation", () => {
+    for (const event of [
+      key("h", { source: "kitty" }),
+      key("l", { source: "kitty" }),
+      key("h", { ctrl: true, shift: true, source: "kitty" }),
+      key("l", { ctrl: true, meta: true, source: "kitty" }),
+      key("j", { ctrl: true, source: "kitty" }),
+    ]) {
+      expect(matchCommand(event, "kittyConfirmed")).toBeNull()
+    }
+  })
 })
 
 describe("COCKPIT_KEYMAP", () => {
-  it("retains only the terminal-level shell chord and help dismissal", () => {
+  it("registers each conditional tab chord plus the retained hand-off, shell, and help bindings once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["toggle-shell", "close-help"])
+    expect(commands).toEqual(["previous-tab", "next-tab", "hand-off", "toggle-shell", "close-help"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -89,8 +124,24 @@ describe("COCKPIT_KEYMAP", () => {
     }
   })
 
+  it("documents boundary-aware editor recall without claiming global arrows", () => {
+    expect(EDITOR_KEYMAP).toContainEqual({
+      keys: "↑ / ↓",
+      description: "Recall prompts at multiline editing boundaries",
+    })
+    expect(COCKPIT_KEYMAP.some(({ keys }) => keys.includes("↑") || keys.includes("↓"))).toBeFalse()
+  })
+
+  it("documents @ file discovery while preserving the shared menu command map", () => {
+    expect(EDITOR_KEYMAP).toContainEqual({
+      keys: "@",
+      description: "Find and insert a repository file reference",
+    })
+    expect(MENU_KEYMAP.map(({ command }) => command)).toEqual(["prev-item", "next-item", "confirm", "dismiss"])
+  })
+
   it("keeps slash-first compact affordances derived from the command registry", () => {
-    expect(KEYMAP_HINT).toBe("/help")
+    expect(KEYMAP_HINT).toContain("/help")
     expect(SHELL_HINT).toBe("/shell")
     expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+` / F2")
     expect(SHELL_EXIT_HINT).toBe("Ctrl+` / F2 exit shell")
@@ -105,6 +156,8 @@ describe("COCKPIT_COMMANDS", () => {
       ["switch-focus", "switch"],
       ["hand-off", "handoff"],
       ["sessions", "sessions"],
+      ["previous-tab", "previous-tab"],
+      ["next-tab", "next-tab"],
       ["resume-session", "resume"],
       ["start-new-run", "new"],
       ["clear-run", "clear"],
@@ -147,10 +200,10 @@ describe("integration - OpenTUI KeyEvent dispatch", () => {
 
 describe("matchMenuCommand", () => {
   it("maps arrows and Tab variants to slash-menu navigation", () => {
-    expect(matchMenuCommand(key("up"))).toBe("prev-option")
-    expect(matchMenuCommand(key("down"))).toBe("next-option")
-    expect(matchMenuCommand(key("tab"))).toBe("next-option")
-    expect(matchMenuCommand(key("tab", { shift: true }))).toBe("prev-option")
+    expect(matchMenuCommand(key("up"))).toBe("prev-item")
+    expect(matchMenuCommand(key("down"))).toBe("next-item")
+    expect(matchMenuCommand(key("tab"))).toBe("next-item")
+    expect(matchMenuCommand(key("tab", { shift: true }))).toBe("prev-item")
   })
 
   it("maps either Enter variant to run or insert the highlighted command", () => {
@@ -169,8 +222,16 @@ describe("matchMenuCommand", () => {
 describe("MENU_KEYMAP", () => {
   it("binds each prompt-menu outcome exactly once", () => {
     const commands = MENU_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-option", "next-option", "confirm", "dismiss"])
+    expect(commands).toEqual(["prev-item", "next-item", "confirm", "dismiss"])
     expect(new Set(commands).size).toBe(commands.length)
+  })
+})
+
+describe("KEYMAP_HINT", () => {
+  it("advertises the hand-off chord and slash menu on one line", () => {
+    expect(KEYMAP_HINT).toContain("^T hand-off")
+    expect(KEYMAP_HINT).toContain("/ menu")
+    expect(KEYMAP_HINT).not.toContain("\n")
   })
 })
 
@@ -216,6 +277,18 @@ describe("HELP_ENTRIES", () => {
     expect(new Set(descriptions).size).toBe(descriptions.length)
   })
 
+  it("shows Kitty tab chords only after confirmation and otherwise advertises the sessions attention fallback", () => {
+    const unknown = helpEntries("unknown").map((entry) => entry.keys)
+    const confirmed = helpEntries("kittyConfirmed").map((entry) => entry.keys)
+
+    expect(unknown).not.toContain("Ctrl+H")
+    expect(unknown).not.toContain("Ctrl+L")
+    expect(confirmed).toContain("Ctrl+H")
+    expect(confirmed).toContain("Ctrl+L")
+    expect(tabNavigationHint("unknown")).toBe("/sessions → n next attention")
+    expect(tabNavigationHint("kittyConfirmed")).toBe("Ctrl+H/Ctrl+L tabs")
+  })
+
   it("uses slash names for every cockpit action and leaves legacy chords absent", () => {
     const keys = HELP_ENTRIES.map((entry) => entry.keys)
     for (const command of COCKPIT_COMMANDS) {
@@ -229,6 +302,7 @@ describe("HELP_ENTRIES", () => {
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {
     for (const binding of [
       ...APPROVAL_KEYMAP,
+      ...CLARIFICATION_KEYMAP,
       ...HANDOFF_KEYMAP,
       ...SESSION_PICKER_KEYMAP,
       ...SESSIONS_KEYMAP,
@@ -280,6 +354,51 @@ describe("APPROVAL_KEYMAP", () => {
     }
     // The digit shortcut has no binding of its own, so pin it here.
     expect(APPROVAL_HINT).toContain("1-9")
+  })
+})
+
+describe("clarification keymap", () => {
+  it("maps navigation, field focus, toggle, submission, and cancellation", () => {
+    expect(matchClarificationCommand(key("up"))).toBe("prev-option")
+    expect(matchClarificationCommand(key("down"))).toBe("next-option")
+    expect(matchClarificationCommand(key("tab", { shift: true }))).toBe("prev-field")
+    expect(matchClarificationCommand(key("tab"))).toBe("next-field")
+    expect(matchClarificationCommand(key("space"))).toBe("toggle-option")
+    expect(matchClarificationCommand(key("return"))).toBe("confirm")
+    expect(matchClarificationCommand(key("kpenter"))).toBe("confirm")
+    expect(matchClarificationCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("leaves printable text and modified commands to the focused clarification input", () => {
+    expect(matchClarificationCommand(key("a"))).toBeNull()
+    expect(matchClarificationCommand(key("space", { ctrl: true }))).toBeNull()
+    expect(matchClarificationCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchClarificationCommand(key("escape", { meta: true }))).toBeNull()
+  })
+
+  it("resolves only plain digits 1 through 9 to stable zero-based option indices", () => {
+    expect(clarificationOptionIndex(key("1"))).toBe(0)
+    expect(clarificationOptionIndex(key("9"))).toBe(8)
+    expect(clarificationOptionIndex(key("0"))).toBeNull()
+    expect(clarificationOptionIndex(key("2", { ctrl: true }))).toBeNull()
+    expect(clarificationOptionIndex(key("f1"))).toBeNull()
+  })
+
+  it("binds each clarification command once and documents every command plus digits", () => {
+    const commands = CLARIFICATION_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual([
+      "prev-option",
+      "next-option",
+      "prev-field",
+      "next-field",
+      "toggle-option",
+      "confirm",
+      "cancel",
+    ])
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const binding of CLARIFICATION_KEYMAP) expect(CLARIFICATION_HINT).toContain(binding.keys)
+    expect(CLARIFICATION_HINT).toContain("1-9")
+    expect(CLARIFICATION_HINT).toContain("cancel request")
   })
 })
 
@@ -391,7 +510,7 @@ describe("SESSIONS_KEYMAP", () => {
       if (binding.command === "jump-next-needy") continue
       expect(SESSIONS_HINT).toContain(binding.keys)
     }
-    expect(SESSIONS_HINT).toContain("n next needy")
+    expect(SESSIONS_HINT).toContain("n next attention")
   })
 })
 

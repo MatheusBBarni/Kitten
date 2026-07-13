@@ -1,6 +1,76 @@
 import { describe, expect, it } from "bun:test"
 
-import { VISIBLE_CATEGORIES, visibleConfigOptions, type ConfigOption } from "./types.ts"
+import {
+  VISIBLE_CATEGORIES,
+  visibleConfigOptions,
+  type ClarificationField,
+  type ClarificationOutcome,
+  type ClarificationPayload,
+  type ConfigOption,
+} from "./types.ts"
+
+describe("clarification contracts", () => {
+  it("represents normalized single, multi, and text fields without lifecycle data", () => {
+    const fields: ClarificationField[] = [
+      {
+        id: "runtime",
+        label: "Runtime",
+        description: "Choose one runtime",
+        mode: "single",
+        required: true,
+        options: [
+          { id: "bun", label: "Bun", description: "Use the repository runtime" },
+          { id: "node", label: "Node.js" },
+        ],
+      },
+      {
+        id: "checks",
+        label: "Checks",
+        mode: "multi",
+        required: false,
+        options: [
+          { id: "types", label: "Typecheck" },
+          { id: "tests", label: "Tests" },
+        ],
+      },
+      {
+        id: "notes",
+        label: "Notes",
+        description: "Add any constraints",
+        mode: "text",
+        required: false,
+      },
+    ]
+    const payload: ClarificationPayload = { prompt: "How should I proceed?", fields }
+    const answered: ClarificationOutcome = {
+      kind: "answered",
+      values: { runtime: "bun", checks: ["types", "tests"], notes: "Keep it small" },
+    }
+    const cancelled: ClarificationOutcome = { kind: "cancelled" }
+
+    expect(payload).toEqual({ prompt: "How should I proceed?", fields })
+    expect(answered.kind).toBe("answered")
+    expect(cancelled).toEqual({ kind: "cancelled" })
+    expect(payload).not.toHaveProperty("requestId")
+    expect(payload).not.toHaveProperty("connectionGeneration")
+  })
+
+  it("rejects non-normalized field shapes at the type boundary", () => {
+    const accept = (_field: ClarificationField): void => undefined
+    const acceptOutcome = (_outcome: ClarificationOutcome): void => undefined
+
+    // @ts-expect-error Choice fields require a normalized option list.
+    accept({ id: "runtime", label: "Runtime", mode: "single", required: true })
+    // @ts-expect-error Text fields cannot carry choice options.
+    accept({ id: "notes", label: "Notes", mode: "text", required: false, options: [] })
+    // @ts-expect-error Answer values are normalized to strings or string arrays.
+    acceptOutcome({ kind: "answered", values: { runtime: 1 } })
+    // @ts-expect-error Cancellation carries no answer values.
+    acceptOutcome({ kind: "cancelled", values: {} })
+
+    expect(true).toBe(true)
+  })
+})
 
 /**
  * The fail-closed category allowlist (ADR-004). `visibleConfigOptions` is the single

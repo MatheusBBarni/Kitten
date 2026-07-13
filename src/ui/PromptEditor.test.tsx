@@ -8,19 +8,32 @@ import { describe, expect, it } from "bun:test"
 import { RGBA } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
+import { Profiler } from "react"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import type { RepositoryFileList } from "../app/fileDiscovery.ts"
 import type { HandoffBundle } from "../core/types.ts"
+import { createAppStore } from "../store/appStore.ts"
+import { selectHasOpenOverlay } from "../store/selectors.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
+import { ConversationView } from "./ConversationView.tsx"
+import {
+  FILE_SELECTOR_EMPTY,
+  FILE_SELECTOR_LOADING,
+  FILE_SELECTOR_UNAVAILABLE,
+} from "./FileSelector.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
   PROMPT_DISABLED_TITLE,
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
   PROMPT_TITLE,
+  PROMPT_WORKSPACE_TITLE,
   PromptEditor,
+  slashMenuRows,
+  slashTokenAt,
 } from "./PromptEditor.tsx"
 import type { CockpitCommand } from "./keymap.ts"
 import { DARK_PALETTE } from "./theme.ts"
@@ -53,7 +66,11 @@ async function renderEditor(
     </CockpitProvider>,
     { width: 64, height, kittyKeyboard: true },
   )
-  await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE) || frame.includes(PROMPT_DISABLED_TITLE))
+  await setup.waitForFrame((frame) =>
+    frame.includes(PROMPT_TITLE) ||
+    frame.includes(PROMPT_DISABLED_TITLE) ||
+    frame.includes(PROMPT_WORKSPACE_TITLE),
+  )
   return setup
 }
 
@@ -75,6 +92,44 @@ async function pressEnter(setup: TestRendererSetup, modifiers?: { shift: true })
 async function pressEscape(setup: TestRendererSetup): Promise<void> {
   await actAsync(() => {
     setup.mockInput.pressEscape()
+  })
+}
+
+/** Press Tab in either menu-navigation direction. */
+async function pressTab(setup: TestRendererSetup, shift = false): Promise<void> {
+  await actAsync(() => {
+    setup.mockInput.pressTab(shift ? { shift: true } : undefined)
+  })
+}
+
+/** Press Backspace through the same Kitty keyboard parser as production. */
+async function pressBackspace(setup: TestRendererSetup): Promise<void> {
+  await actAsync(() => {
+    setup.mockInput.pressBackspace()
+  })
+}
+
+/** Kitty's functional-key code point for keypad Enter. */
+async function pressKeypadEnter(setup: TestRendererSetup): Promise<void> {
+  await actAsync(async () => {
+    await setup.mockInput.pressKeys(["\u001b[57414u"])
+  })
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((settle) => { resolve = settle })
+  return { promise, resolve }
+}
+
+/** Press a vertical arrow, optionally with modifiers held. */
+async function pressArrow(
+  setup: TestRendererSetup,
+  direction: "up" | "down" | "left" | "right",
+  modifiers?: { shift?: boolean; ctrl?: boolean; meta?: boolean; super?: boolean; hyper?: boolean },
+): Promise<void> {
+  await actAsync(() => {
+    setup.mockInput.pressArrow(direction, modifiers)
   })
 }
 
@@ -132,6 +187,28 @@ describe("PromptEditor presentation", () => {
 })
 
 describe("PromptEditor submit", () => {
+  it("does not consult or invoke selected-session behavior without a visible selection", async () => {
+    const controller = createFakeController({ store: createAppStore({ seeds: [] }), runtimes: [] })
+    let readinessChecks = 0
+    controller.isReady = () => {
+      readinessChecks += 1
+      return true
+    }
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 10, (command) => dispatched.push(command))
+
+    await type(setup, "/model")
+    await pressEnter(setup)
+    await pressEscape(setup)
+
+    expect(readinessChecks).toBe(0)
+    expect(dispatched).toEqual([])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.cancel).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("sends the composed text to the focused agent on Enter and clears the editor", async () => {
     const controller = createFakeController()
     const setup = await renderEditor(controller)
@@ -144,6 +221,28 @@ describe("PromptEditor submit", () => {
     expect(sentText(controller)).toBe("explain this repo")
     // The draft is gone: the placeholder is back, which only shows on an empty buffer.
     expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("explain this repo")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("records an accepted submission before invoking the existing send action", async () => {
+    const controller = createFakeController()
+    const events: string[] = []
+    const record = controller.actions.recordPromptHistory.bind(controller.actions)
+    controller.actions.recordPromptHistory = (text, sessionId) => {
+      events.push(`record:${text}:${sessionId}`)
+      record(text, sessionId)
+    }
+    controller.actions.sendPrompt = async (input) => {
+      events.push(`send:${String(input)}`)
+      return null
+    }
+    const setup = await renderEditor(controller)
+
+    await type(setup, "accepted locally")
+    await pressEnter(setup)
+
+    expect(events).toEqual(["record:accepted locally:claude-code", "send:accepted locally"])
 
     await destroyMounted(setup.renderer)
   })
@@ -228,26 +327,61 @@ describe("PromptEditor interrupt", () => {
 })
 
 describe("PromptEditor slash commands", () => {
-  it("filters agent commands and inserts the selected command without sending it", async () => {
+  const agentCommands = [
+    { name: "review", description: "Review the current diff", hint: "[scope]" },
+    { name: "test", description: "Run the focused tests" },
+  ]
+
+  function seedAgentCommands(controller: FakeController): void {
+    controller.store.applyEvent("claude-code", { kind: "commands", commands: agentCommands })
+  }
+
+  it("detects only slash tokens that begin at a token boundary and still own the caret", () => {
+    expect(slashTokenAt("/", 1)).toEqual({ start: 0, end: 1, filter: "" })
+    expect(slashTokenAt("foo /", 5)).toEqual({ start: 4, end: 5, filter: "" })
+    expect(slashTokenAt("foo/bar", 7)).toBeNull()
+    expect(slashTokenAt("/usr/", 5)).toBeNull()
+    expect(slashTokenAt("/review", 0)).toBeNull()
+    expect(slashTokenAt("/review ", 8)).toBeNull()
+  })
+
+  it("produces no candidates for an unmatched token", () => {
+    expect(slashMenuRows("xyz", agentCommands)).toEqual([])
+  })
+
+  it("opens with the Cockpit group first, hand-off on top, and agent commands below", async () => {
     const controller = createFakeController()
-    controller.store.applyEvent("claude-code", {
-      kind: "commands",
-      commands: [
-        { name: "review", description: "Review the current diff", hint: "[scope]" },
-        { name: "test", description: "Run the focused tests" },
-      ],
-    })
+    seedAgentCommands(controller)
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff", "Agent commands", "/review")
+
+    expect(menu.indexOf("Cockpit")).toBeLessThan(menu.indexOf("Agent commands"))
+    expect(menu.indexOf("/handoff")).toBeLessThan(menu.indexOf("/shell"))
+    expect(menu).toContain("▸ /handoff")
+    expect(selectHasOpenOverlay(controller.store.getState())).toBeFalse()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("filters to and highlights /review, then inserts it with the cursor after the trailing space", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
     // The menu is positioned above the prompt, as it is in the real cockpit. Dock
     // the standalone editor to the bottom so the test observes that real layout.
     const setup = await renderEditor(controller, 32, undefined, true)
 
-    await type(setup, "/review")
+    await type(setup, "/rev")
     const menu = await frameWith(setup, "Commands", "Agent commands", "/review", "[scope]")
     expect(menu).not.toContain("/settings")
+    expect(menu).toContain("▸ /review")
 
     await pressEnter(setup)
     expect(controller.calls.sendPrompt).toEqual([])
-    await frameWith(setup, "/review")
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/review ")
+    expect(setup.renderer.currentFocusedEditor?.cursorOffset).toBe(8)
+    expect(await setup.waitForFrame((frame) => frame.includes("/review ") && !frame.includes("Commands"))).not.toContain("Commands")
 
     // Selecting an agent command owns the separating space; subsequent prompt text
     // must append directly instead of creating an accidental double space.
@@ -258,19 +392,481 @@ describe("PromptEditor slash commands", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("dispatches a selected Kitten command instead of sending it to the agent", async () => {
+  it("dispatches hand-off from the top row instead of sending it to the agent", async () => {
     const controller = createFakeController()
     const dispatched: CockpitCommand[] = []
     const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
 
-    await type(setup, "/model")
-    const menu = await frameWith(setup, "Commands", "/model")
-    expect(menu).not.toContain("Choose an agent model")
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "▸ /handoff")
     await pressEnter(setup)
 
-    expect(dispatched).toEqual(["model-select"])
+    expect(dispatched).toEqual(["hand-off"])
     expect(controller.calls.sendPrompt).toEqual([])
-    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/model")
+    expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/handoff")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("dismisses without clearing text, then lets Enter submit normally", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "/handoff")
+    await pressEscape(setup)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/")
+    expect(await setup.waitForFrame((frame) => frame.includes("/") && !frame.includes("Commands"))).not.toContain("Commands")
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("/")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("submits /usr/bin as literal prompt text after the second slash disarms the menu", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/usr/bin")
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/usr/bin")
+    expect(setup.captureCharFrame()).not.toContain("Commands")
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("/usr/bin")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not re-render the transcript while navigating the editor-local menu", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
+    let transcriptCommits = 0
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <box style={{ height: 32, flexDirection: "column" }}>
+          <box style={{ flexGrow: 1 }}>
+            <Profiler id="transcript" onRender={() => { transcriptCommits += 1 }}>
+              <ConversationView welcomeBannerVariant="none" />
+            </Profiler>
+          </box>
+          <PromptEditor />
+        </box>
+      </CockpitProvider>,
+      { width: 64, height: 32, kittyKeyboard: true },
+    )
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    const baselineCommits = transcriptCommits
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "/handoff", "/review")
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressArrow("up")
+    })
+
+    expect(transcriptCommits).toBe(baselineCommits)
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps armed-menu arrows out of history even when prompts are recallable", async () => {
+    const controller = createFakeController()
+    controller.actions.recordPromptHistory("session secret", "claude-code")
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "▸ /handoff")
+    await pressArrow(setup, "down")
+    await pressArrow(setup, "up")
+
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/")
+    expect(setup.captureCharFrame()).not.toContain("session secret")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor @ file completion", () => {
+  it("discovers once, filters the warm list locally, inserts a visible reference, then submits on the following Enter", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({
+        kind: "ready",
+        paths: ["src/app/actions.ts", "src/ui/PromptEditor.tsx", "test/fakeController.ts"],
+      }),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, "Files", "src/app/actions.ts", "src/ui/PromptEditor.tsx")
+    expect(controller.calls.listRepositoryFiles).toEqual(["claude-code"])
+    expect(controller.calls.fileSelectorOpened).toEqual(["claude-code"])
+
+    await type(setup, "prompt")
+    expect(await frameWith(setup, "▸ src/ui/PromptEditor.tsx")).not.toContain("src/app/actions.ts")
+    expect(controller.calls.listRepositoryFiles).toEqual(["claude-code"])
+    expect(controller.calls.fileSelectorQueryRendered).toHaveLength(1)
+
+    await pressEnter(setup)
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("@src/ui/PromptEditor.tsx ")
+    expect(controller.calls.fileSelectorSelected).toHaveLength(1)
+
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("@src/ui/PromptEditor.tsx ")
+
+    const metricPayload = JSON.stringify({
+      opened: controller.calls.fileSelectorOpened,
+      discovery: controller.calls.fileSelectorDiscovery,
+      rendered: controller.calls.fileSelectorQueryRendered,
+      selected: controller.calls.fileSelectorSelected,
+    })
+    expect(metricPayload).not.toContain("PromptEditor.tsx")
+    expect(metricPayload).not.toContain("@prompt")
+    expect(controller.calls.fileSelectorDiscovery[0]?.outcome).toBe("ready")
+    expect(controller.calls.fileSelectorQueryRendered[0]?.state).toBe("results")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("reuses arrows, Tab, Shift+Tab, and Return to select the highlighted path", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["a.ts", "b.ts", "c.ts"] }),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, "▸ a.ts")
+    await pressTab(setup)
+    await frameWith(setup, "▸ b.ts")
+    await pressTab(setup, true)
+    await frameWith(setup, "▸ a.ts")
+    await pressArrow(setup, "down")
+    await frameWith(setup, "▸ b.ts")
+    await pressArrow(setup, "up")
+    await frameWith(setup, "▸ a.ts")
+    await pressTab(setup)
+    await pressEnter(setup)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("@b.ts ")
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("accepts keypad Enter and formats whitespace paths with JSON-style quotes", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["src/My File.ts"] }),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, "src/My File.ts")
+    await pressKeypadEnter(setup)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe('@"src/My File.ts" ')
+    expect(controller.calls.sendPrompt).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps loading, empty, and unavailable states non-selectable so Enter remains ordinary submission", async () => {
+    const pending = deferred<RepositoryFileList>()
+    const cases: { label: string; result: RepositoryFileList | Promise<RepositoryFileList>; message: string }[] = [
+      { label: "loading", result: pending.promise, message: FILE_SELECTOR_LOADING },
+      { label: "empty", result: { kind: "ready", paths: [] }, message: FILE_SELECTOR_EMPTY },
+      {
+        label: "unavailable",
+        result: { kind: "unavailable", reason: "discovery_failed" },
+        message: FILE_SELECTOR_UNAVAILABLE,
+      },
+    ]
+
+    for (const { label, result, message } of cases) {
+      const controller = createFakeController({ listRepositoryFiles: () => result })
+      const setup = await renderEditor(controller, 32, undefined, true)
+      await type(setup, `@${label}`)
+      await frameWith(setup, message)
+      await pressEnter(setup)
+      expect(sentText(controller)).toBe(`@${label}`)
+      await destroyMounted(setup.renderer)
+    }
+    pending.resolve({ kind: "ready", paths: ["late.ts"] })
+  })
+
+  it("contains a rejected discovery callback and records continued unavailable feedback as a warm render", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => Promise.reject(new Error("source failed")),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, FILE_SELECTOR_UNAVAILABLE)
+    await type(setup, "still-typing")
+    await frameWith(setup, FILE_SELECTOR_UNAVAILABLE, "@still-typing")
+
+    expect(controller.calls.fileSelectorDiscovery[0]?.outcome).toBe("unavailable")
+    expect(controller.calls.fileSelectorQueryRendered.at(-1)?.state).toBe("unavailable")
+    expect(controller.calls.sendPrompt).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("suppresses one dismissed token until deletion, cursor departure, or a new token resets it", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["src/a.ts"] }),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, "Files", "src/a.ts")
+    await pressEscape(setup)
+    await setup.waitForFrame((frame) => !frame.includes("Files"))
+    await type(setup, "src")
+    expect(setup.captureCharFrame()).not.toContain("Files")
+    expect(controller.calls.fileSelectorOpened).toHaveLength(1)
+
+    for (let index = 0; index < 4; index += 1) await pressBackspace(setup)
+    await type(setup, "@")
+    await frameWith(setup, "Files", "src/a.ts")
+    expect(controller.calls.listRepositoryFiles).toHaveLength(1)
+    expect(controller.calls.fileSelectorOpened).toHaveLength(2)
+
+    await pressEscape(setup)
+    await type(setup, "x")
+    await pressArrow(setup, "left")
+    await pressArrow(setup, "left")
+    await pressArrow(setup, "right")
+    await type(setup, "y")
+    await frameWith(setup, FILE_SELECTOR_EMPTY)
+    expect(controller.calls.fileSelectorOpened).toHaveLength(3)
+
+    await pressEscape(setup)
+    await actAsync(() => {
+      const editor = setup.renderer.currentFocusedEditor
+      if (editor) editor.cursorOffset = editor.plainText.length
+    })
+    await type(setup, " @")
+    await frameWith(setup, "Files", "src/a.ts")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("invalidates a deferred old-session result and starts explicit discovery for the new focus", async () => {
+    const claude = deferred<RepositoryFileList>()
+    const codex = deferred<RepositoryFileList>()
+    const controller = createFakeController({
+      listRepositoryFiles: (sessionId) => sessionId === "claude-code" ? claude.promise : codex.promise,
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, FILE_SELECTOR_LOADING)
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await type(setup, "c")
+    await frameWith(setup, FILE_SELECTOR_LOADING)
+    expect(controller.calls.listRepositoryFiles).toEqual(["claude-code", "codex"])
+
+    await actAsync(async () => {
+      claude.resolve({ kind: "ready", paths: ["old/session.ts"] })
+      await claude.promise
+      await Promise.resolve()
+    })
+    expect(setup.captureCharFrame()).not.toContain("old/session.ts")
+    await actAsync(async () => {
+      codex.resolve({ kind: "ready", paths: ["current/session.ts"] })
+      await codex.promise
+      await Promise.resolve()
+    })
+    expect(await frameWith(setup, "current/session.ts")).not.toContain("old/session.ts")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("records one correction for an edited accepted range and clears pending tracking on submission", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["src/a.ts"] }),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, "src/a.ts")
+    await pressEnter(setup)
+    await pressBackspace(setup)
+    expect(controller.calls.fileSelectorCorrected).toEqual([])
+    await pressBackspace(setup)
+    await type(setup, "x")
+    expect(controller.calls.fileSelectorCorrected).toEqual(["claude-code"])
+
+    await pressEnter(setup)
+    await type(setup, "ordinary")
+    expect(controller.calls.fileSelectorCorrected).toEqual(["claude-code"])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows selectable files for a not-ready session but keeps the existing send gate", async () => {
+    const runtimes: AgentRuntimeState[] = [
+      {
+        sessionId: "claude-code",
+        providerKind: "claude-code",
+        displayName: "Claude Code",
+        title: "Claude Code",
+        cwd: "/workspace/kitten",
+        ready: false,
+        error: "not ready",
+      },
+      readyRuntimes()[1]!,
+    ]
+    const controller = createFakeController({
+      runtimes,
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["src/a.ts"] }),
+    })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "@")
+    await frameWith(setup, "src/a.ts")
+    await pressEnter(setup)
+    await pressEnter(setup)
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("@src/a.ts ")
+
+    runtimes[0]!.ready = true
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await actAsync(() => controller.actions.switchFocus("claude-code"))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE) && !frame.includes(PROMPT_DISABLED_TITLE))
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("@src/a.ts ")
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor history recall", () => {
+  it("recalls newest-to-oldest, moves forward, then clears after the newest entry", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await type(setup, "first prompt")
+    await pressEnter(setup)
+    await type(setup, "second prompt")
+    await pressEnter(setup)
+
+    await pressArrow(setup, "up")
+    expect(await frameWith(setup, "second prompt", "History 2/2")).toContain("History 2/2")
+    await pressArrow(setup, "up")
+    expect(await frameWith(setup, "first prompt", "History 1/2")).not.toContain("second prompt")
+    await pressArrow(setup, "down")
+    expect(await frameWith(setup, "second prompt", "History 2/2")).not.toContain("first prompt")
+    await pressArrow(setup, "down")
+
+    const cleared = await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER) && !frame.includes("History"))
+    expect(cleared).not.toContain("second prompt")
+    expect(controller.calls.navigatePromptHistory.map(({ direction }) => direction)).toEqual([
+      "previous",
+      "previous",
+      "next",
+      "next",
+    ])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("leaves the draft unchanged when history navigation returns null", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await type(setup, "ordinary draft")
+    await pressArrow(setup, "up")
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("ordinary draft")
+    expect(controller.calls.navigatePromptHistory).toEqual([{ direction: "previous", sessionId: "claude-code" }])
+    expect(setup.captureCharFrame()).not.toContain("History")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps modified vertical arrows outside the recall path", async () => {
+    const controller = createFakeController()
+    controller.actions.recordPromptHistory("recallable", "claude-code")
+    const setup = await renderEditor(controller)
+
+    await type(setup, "draft")
+    await pressArrow(setup, "up", { shift: true })
+    await pressArrow(setup, "down", { ctrl: true })
+    await pressArrow(setup, "up", { meta: true })
+
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("draft")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses native multiline movement before entering history at the true boundary", async () => {
+    const controller = createFakeController()
+    controller.actions.recordPromptHistory("recalled prompt", "claude-code")
+    const setup = await renderEditor(controller)
+
+    await type(setup, "top line")
+    await pressEnter(setup, { shift: true })
+    await type(setup, "bottom line")
+    const before = setup.renderer.currentFocusedEditor?.cursorOffset
+
+    await pressArrow(setup, "up")
+    expect(controller.calls.navigatePromptHistory).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("top line\nbottom line")
+    expect(setup.renderer.currentFocusedEditor?.cursorOffset).not.toBe(before)
+
+    await pressArrow(setup, "up")
+    expect(controller.calls.navigatePromptHistory).toEqual([{ direction: "previous", sessionId: "claude-code" }])
+    expect(await frameWith(setup, "recalled prompt", "History 1/1")).not.toContain("top line")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps recalled text and indicators isolated when focus changes sessions", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await type(setup, "claude only")
+    await pressEnter(setup)
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await type(setup, "codex only")
+    await pressEnter(setup)
+    await pressArrow(setup, "up")
+    await frameWith(setup, "codex only", "History 1/1")
+
+    await actAsync(() => controller.actions.switchFocus("claude-code"))
+    const claudePlain = await setup.waitForFrame(
+      (frame) => frame.includes(PROMPT_PLACEHOLDER) && !frame.includes("codex only") && !frame.includes("History"),
+    )
+    expect(claudePlain).not.toContain("codex only")
+
+    await pressArrow(setup, "up")
+    expect(await frameWith(setup, "claude only", "History 1/1")).not.toContain("codex only")
+
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    expect(await frameWith(setup, "codex only", "History 1/1")).not.toContain("claude only")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("collapses consecutive duplicate submissions into one visible recall entry", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    for (let count = 0; count < 2; count += 1) {
+      await type(setup, "same prompt")
+      await pressEnter(setup)
+    }
+    await pressArrow(setup, "up")
+
+    expect(await frameWith(setup, "same prompt", "History 1/1")).toContain("History 1/1")
+    expect(controller.store.getState().sessions["claude-code"]!.promptHistory.entries).toEqual(["same prompt"])
 
     await destroyMounted(setup.renderer)
   })

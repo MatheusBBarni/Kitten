@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import type { ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
+import type { AvailableCommand, ClarificationPayload, ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
@@ -15,18 +15,23 @@ import {
   selectRestoration,
   selectSessionPendingDiffs,
   selectSessionPlan,
+  selectSessionPromptHistory,
   selectSessionCommands,
   selectSessionReferencedFiles,
   selectSessionState,
+  selectSessionHeadroom,
   selectSessionStatus,
   selectSessionTurns,
   selectApprovalOverlay,
+  selectClarificationCapability,
+  selectClarificationOverlay,
   selectFocusedPane,
   selectFocusedSessionId,
   selectFocusedSession,
   selectHandoffPreview,
   selectHasOpenOverlay,
   selectIsApprovalOpen,
+  selectIsClarificationOpen,
   selectIsFocused,
   selectIsShellFocused,
   selectIsSessionsOpen,
@@ -35,6 +40,14 @@ import {
   selectSettingsOverlay,
   selectShell,
   selectThemePreference,
+  selectActiveModal,
+  selectAttentionQueue,
+  selectBackgroundWork,
+  selectDuplicateLabels,
+  selectNextAttention,
+  selectSharedWorkspaces,
+  selectTabDialogOverlay,
+  selectVisibleTabs,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -59,6 +72,17 @@ const EFFORT_OPTION: ConfigOption = {
     { value: "medium", name: "Medium" },
     { value: "high", name: "High" },
   ],
+}
+
+const CLARIFICATION_PAYLOAD: ClarificationPayload = {
+  prompt: "Choose a boundary",
+  fields: [{
+    id: "boundary",
+    label: "Boundary",
+    mode: "single",
+    required: true,
+    options: [{ id: "controller", label: "Controller" }],
+  }],
 }
 
 /**
@@ -107,10 +131,10 @@ describe("focus selectors", () => {
         { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w", acpSessionId: "session-codex" },
       ],
     })
-    expect(selectFocusedSession(store.getState()).providerKind).toBe("claude-code")
+    expect(selectFocusedSession(store.getState())?.providerKind).toBe("claude-code")
 
     store.setFocus("codex")
-    expect(selectFocusedSession(store.getState()).acpSessionId).toBe("session-codex")
+    expect(selectFocusedSession(store.getState())?.acpSessionId).toBe("session-codex")
   })
 
   it("projects pane focus and reports shell focus only for the shell pane", () => {
@@ -123,7 +147,7 @@ describe("focus selectors", () => {
     expect(selectIsShellFocused(store.getState())).toBe(true)
     expect(selectIsFocused("claude-code")(store.getState())).toBe(false)
 
-    store.setFocusedPane({ kind: "agent", agentId: "codex" })
+    store.setFocusedPane({ kind: "agent", sessionId: "codex" })
     expect(selectIsShellFocused(store.getState())).toBe(false)
   })
 })
@@ -184,6 +208,39 @@ describe("per-agent session selectors", () => {
     expect(selectSessionBranch("claude-code")(withBranch)).toBe("feature/status-bar")
   })
 
+  it("derives rounded remaining-context headroom from reported usage", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    store.applyEvent("codex", { kind: "usage", used: 200_000, size: 200_000 })
+
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBe(38)
+    expect(selectSessionHeadroom("codex")(store.getState())).toBe(0)
+  })
+
+  it("returns null when usage is absent or its size is not positive", () => {
+    const store = createAppStore()
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+
+    store.applyEvent("claude-code", { kind: "usage", used: 0, size: 0 })
+    store.applyEvent("codex", { kind: "usage", used: 0, size: -1 })
+
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+    expect(selectSessionHeadroom("codex")(store.getState())).toBeNull()
+  })
+
+  it("preserves another agent's headroom value and session identity across a usage update", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const codexHeadroom = selectSessionHeadroom("codex")
+    const beforeHeadroom = codexHeadroom(before)
+
+    store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+
+    const after = store.getState()
+    expect(codexHeadroom(after)).toBe(beforeHeadroom)
+    expect(selectSessionState("codex")(after)).toBe(before.sessions.codex!)
+  })
+
   it("keeps delegated model and context slots hidden", () => {
     const state = createAppStore().getState()
     expect(selectSessionModel("claude-code")(state)).toBeNull()
@@ -199,7 +256,10 @@ describe("per-agent session selectors", () => {
         "claude-code": { ...base.sessions["claude-code"]!, branch: "feature/status-bar" },
       },
     }
-    const after = { ...before, focusedSessionId: "codex" }
+    const after = {
+      ...before,
+      workspace: { ...before.workspace, selectedVisibleId: "codex" },
+    }
     const branch = selectSessionBranch("claude-code")
     const model = selectSessionModel("claude-code")
     const context = selectSessionContext("claude-code")
@@ -238,6 +298,103 @@ describe("per-agent session selectors", () => {
   })
 })
 
+describe("selectSessionPromptHistory", () => {
+  it("projects the addressed session history and stays stable across unrelated updates", () => {
+    const store = createAppStore()
+    const selectHistory = selectSessionPromptHistory("claude-code")
+    const initialHistory = selectHistory(store.getState())
+
+    expect(initialHistory).toEqual({ entries: [], cursor: null })
+
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "m1",
+      textDelta: "streamed output",
+    })
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/kitten" })
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+
+    store.setThemePreference("dark")
+    expect(selectHistory(store.getState())).toBe(initialHistory)
+  })
+
+  it("changes only for history events in the selected session", () => {
+    const store = createAppStore()
+    const selectClaudeHistory = selectSessionPromptHistory("claude-code")
+    const before = selectClaudeHistory(store.getState())
+
+    store.applyEvent("codex", { kind: "prompt_history", action: "record", text: "codex only" })
+    expect(selectClaudeHistory(store.getState())).toBe(before)
+
+    store.applyEvent("claude-code", {
+      kind: "prompt_history",
+      action: "record",
+      text: "claude only",
+    })
+    expect(selectClaudeHistory(store.getState())).toEqual({
+      entries: ["claude only"],
+      cursor: null,
+    })
+    expect(selectClaudeHistory(store.getState())).not.toBe(before)
+  })
+
+  it("returns one stable empty fallback when no session is selected", () => {
+    const selectHistory = selectSessionPromptHistory(null)
+    const first = selectHistory(createAppStore().getState())
+    const second = selectHistory(createAppStore({ seeds: [] }).getState())
+
+    expect(first).toEqual({ entries: [], cursor: null })
+    expect(second).toBe(first)
+  })
+})
+
+describe("selectSessionCommands", () => {
+  const commands: AvailableCommand[] = [
+    { name: "review", description: "Review the current diff", hint: "[scope]" },
+    { name: "test", description: "Run the test suite" },
+  ]
+
+  it("returns a session's advertised commands after a commands event", () => {
+    const store = createAppStore()
+
+    store.applyEvent("claude-code", { kind: "commands", commands })
+
+    expect(selectSessionCommands("claude-code")(store.getState())).toBe(commands)
+  })
+
+  it("returns an empty list for a freshly created session", () => {
+    const store = createAppStore()
+
+    expect(selectSessionCommands("claude-code")(store.getState())).toEqual([])
+  })
+
+  it("preserves the list reference across an unrelated update to the same session", () => {
+    const store = createAppStore()
+    const selectCommands = selectSessionCommands("claude-code")
+    store.applyEvent("claude-code", { kind: "commands", commands })
+    const before = selectCommands(store.getState())
+
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+
+    expect(Object.is(selectCommands(store.getState()), before)).toBe(true)
+  })
+
+  it("preserves another session's list reference when commands change", () => {
+    const store = createAppStore()
+    const selectCodexCommands = selectSessionCommands("codex")
+    const before = selectCodexCommands(store.getState())
+
+    store.applyEvent("claude-code", { kind: "commands", commands })
+
+    expect(Object.is(selectCodexCommands(store.getState()), before)).toBe(true)
+  })
+})
+
 /** A three-session fleet (two sharing a provider) focused on "a" by default. */
 function fleetStore(): AppStore {
   return createAppStore({
@@ -251,6 +408,7 @@ function fleetStore(): AppStore {
 
 describe("needsAttention (ADR-006)", () => {
   it("is true for the states the developer must act on", () => {
+    expect(needsAttention("awaiting_clarification")).toBe(true)
     expect(needsAttention("awaiting_approval")).toBe(true)
     expect(needsAttention("error")).toBe(true)
     expect(needsAttention("finished")).toBe(true)
@@ -271,7 +429,35 @@ describe("selectSessionList", () => {
     expect(list.map((item) => item.id)).toEqual(["a", "b", "c"])
     expect(list.map((item) => item.status)).toEqual(["idle", "finished", "idle"])
     expect(list.map((item) => item.needsAttention)).toEqual([false, true, false])
-    expect(list[0]).toMatchObject({ id: "a", title: "A", providerKind: "claude-code" })
+    expect(list[0]).toMatchObject({
+      id: "a",
+      title: "A",
+      label: "A",
+      providerKind: "claude-code",
+      lifecycle: "visible",
+      selected: true,
+      attentionSeen: true,
+    })
+  })
+
+  it("exposes background lifecycle and duplicate labels in workspace order", () => {
+    const store = fleetStore()
+    store.renameConversation("a", "Work")
+    store.renameConversation("b", "Work")
+    store.backgroundConversation("b")
+
+    expect(selectSessionList(store.getState()).map(({ id, label, lifecycle }) => ({ id, label, lifecycle }))).toEqual([
+      { id: "a", label: "Work (1)", lifecycle: "visible" },
+      { id: "b", label: "Work (2)", lifecycle: "background" },
+      { id: "c", label: "C", lifecycle: "visible" },
+    ])
+  })
+
+  it("excludes a Closed conversation from the universal session list", () => {
+    const store = fleetStore()
+    store.removeSession("b")
+
+    expect(selectSessionList(store.getState()).map((item) => item.id)).toEqual(["a", "c"])
   })
 
   it("carries each session's working directory, so the overview can label its card", () => {
@@ -286,6 +472,24 @@ describe("selectSessionList", () => {
 })
 
 describe("selectNextNeedy (ADR-006)", () => {
+  it("returns clarification ahead of simultaneous approval, error, and finished sessions", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "pivot", providerKind: "claude-code", title: "Pivot", cwd: "/w" },
+        { id: "done", providerKind: "codex", title: "Done", cwd: "/w" },
+        { id: "failed", providerKind: "claude-code", title: "Failed", cwd: "/w" },
+        { id: "approval", providerKind: "codex", title: "Approval", cwd: "/w" },
+        { id: "clarification", providerKind: "claude-code", title: "Clarification", cwd: "/w" },
+      ],
+    })
+    store.applyEvent("done", { kind: "status", status: "finished" })
+    store.applyEvent("failed", { kind: "status", status: "error" })
+    store.applyEvent("approval", { kind: "status", status: "awaiting_approval" })
+    store.applyEvent("clarification", { kind: "status", status: "awaiting_clarification" })
+
+    expect(selectNextNeedy("pivot")(store.getState())).toBe("clarification")
+  })
+
   it("returns an awaiting_approval session ahead of a finished one", () => {
     const store = fleetStore()
     store.applyEvent("b", { kind: "status", status: "finished" })
@@ -328,12 +532,45 @@ describe("overlay selectors", () => {
   it("report closed slots as null and no open overlay", () => {
     const state = createAppStore().getState()
     expect(selectApprovalOverlay(state)).toBeNull()
+    expect(selectClarificationOverlay(state)).toBeNull()
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectSettingsOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
+    expect(selectIsClarificationOpen(state)).toBe(false)
     expect(selectIsSessionsOpen(state)).toBe(false)
     expect(selectSessionPicker(state)).toBe(false)
+  })
+
+  it("gives clarification modal priority and reports it as the only open-overlay gate", () => {
+    const store = createAppStore()
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      request: { sessionId: "s1", toolCall: { toolCallId: "c1" }, options: [] },
+    })
+    store.openSettings()
+    store.openClarification({
+      requestId: "clarification-1",
+      generation: 2,
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    const state = store.getState()
+
+    expect(selectClarificationOverlay(state)?.payload).toBe(CLARIFICATION_PAYLOAD)
+    expect(selectIsClarificationOpen(state)).toBe(true)
+    expect(selectHasOpenOverlay(state)).toBe(true)
+    expect(selectActiveModal(state)).toEqual({
+      kind: "clarification",
+      sessionId: "claude-code",
+      requestId: "clarification-1",
+    })
+    expect(selectApprovalOverlay(state)?.sessionId).toBe("codex")
+    expect(selectSettingsOverlay(state)).toEqual({ tab: "theme" })
   })
 
   it("report an open sessions overview as an open, modal overlay", () => {
@@ -395,7 +632,7 @@ describe("overlay selectors", () => {
   })
 
   it("report an open model selector as an open, modal overlay", () => {
-    const store = createAppStore()
+    const store = createAppStore({ selectedVisibleId: "codex" })
     store.openModelSelect({ sessionId: "codex" })
     const state = store.getState()
 
@@ -418,6 +655,27 @@ describe("overlay selectors", () => {
     const state = createAppStore().getState()
     expect(selectModelSelectOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
+  })
+})
+
+describe("clarification capability selector", () => {
+  it("returns a stable per-session supported or unsupported view", () => {
+    const store = createAppStore()
+    const unsupported = selectClarificationCapability("claude-code")
+    const supported = selectClarificationCapability("codex")
+
+    expect(unsupported(store.getState())).toEqual({ status: "unsupported", reason: "unknown_recipe" })
+    store.setClarificationCapability("codex", {
+      status: "supported",
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+    })
+    expect(supported(store.getState())).toEqual({
+      status: "supported",
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+    })
+    expect(unsupported(store.getState())).toEqual({ status: "unsupported", reason: "unknown_recipe" })
   })
 })
 
@@ -481,5 +739,84 @@ describe("config-option selectors", () => {
     })
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("workspace view selectors", () => {
+  const workspaceStore = (): AppStore =>
+    createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/shared" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/shared" },
+        { id: "c", providerKind: "claude-code", title: "C", cwd: "/other" },
+      ],
+    })
+
+  it("orders visible/background views and disambiguates duplicate labels deterministically", () => {
+    const store = workspaceStore()
+    for (const id of ["a", "b", "c"]) store.renameConversation(id, "Work")
+    store.backgroundConversation("b")
+
+    const state = store.getState()
+    expect(selectVisibleTabs(state).map((tab) => tab.id)).toEqual(["a", "c"])
+    expect(selectBackgroundWork(state).map((tab) => tab.id)).toEqual(["b"])
+    expect(selectDuplicateLabels(state)).toEqual({
+      a: "Work (1)",
+      b: "Work (2)",
+      c: "Work (3)",
+    })
+    expect(selectSharedWorkspaces(state)).toEqual([
+      { cwd: "/shared", count: 2, sessionIds: ["a", "b"] },
+    ])
+    expect(selectVisibleTabs(state)[0]?.sharedWorkspaceCount).toBe(2)
+  })
+
+  it("routes unseen background attention by rank without losing execution status", () => {
+    const store = workspaceStore()
+    store.backgroundConversation("b")
+    store.applyEvent("c", { kind: "status", status: "error" })
+    store.applyEvent("b", { kind: "status", status: "awaiting_approval" })
+
+    expect(selectAttentionQueue(store.getState()).map((item) => item.id)).toEqual(["b", "c"])
+    expect(selectNextAttention(store.getState())).toBe("b")
+
+    store.reopenConversation("b")
+    expect(store.getState().sessions.b?.status).toBe("awaiting_approval")
+    expect(selectAttentionQueue(store.getState()).map((item) => item.id)).toEqual(["c"])
+  })
+
+  it("preserves unrelated tab identities through concurrent streaming", () => {
+    const store = workspaceStore()
+    const before = selectVisibleTabs(store.getState())
+
+    store.applyEvent("b", { kind: "agent_message", messageId: "m1", textDelta: "token" })
+    const streamed = selectVisibleTabs(store.getState())
+    expect(streamed).toBe(before)
+    expect(streamed[0]).toBe(before[0])
+    expect(streamed[1]).toBe(before[1])
+    expect(streamed[2]).toBe(before[2])
+
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    const finished = selectVisibleTabs(store.getState())
+    expect(finished).not.toBe(streamed)
+    expect(finished[0]).toBe(streamed[0])
+    expect(finished[1]).not.toBe(streamed[1])
+    expect(finished[2]).toBe(streamed[2])
+  })
+
+  it("reports approval above a captured tab dialog", () => {
+    const store = workspaceStore()
+    store.openTabDialog({ kind: "close", sessionId: "b" })
+    expect(selectTabDialogOverlay(store.getState())).toEqual({ kind: "close", sessionId: "b" })
+    expect(selectActiveModal(store.getState())).toEqual({ kind: "tab-dialog", sessionId: "b" })
+
+    store.openApproval({
+      sessionId: "c",
+      title: "C",
+      cwd: "/other",
+      request: { sessionId: "acp-c", toolCall: { toolCallId: "call-c" }, options: [] },
+    })
+    expect(selectActiveModal(store.getState())).toEqual({ kind: "approval", sessionId: "c" })
+    expect(selectTabDialogOverlay(store.getState())?.sessionId).toBe("b")
   })
 })

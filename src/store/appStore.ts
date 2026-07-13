@@ -25,9 +25,12 @@
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
+import { createWorkspaceState, workspaceReducer } from "../core/workspace.ts"
 import {
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_KINDS,
+  type ClarificationCapability,
+  type ClarificationPayload,
   type ConfigOption,
   type DomainSessionEvent,
   type HandoffBundle,
@@ -38,6 +41,12 @@ import {
   type ShellEvent,
   type ShellState,
   type ThemePreference,
+  type ConversationAvailability,
+  type TeardownState,
+  type WorkspaceState,
+  type WorkspaceEvent,
+  type WorkspaceConversationSeed,
+  type WorkspaceNotice,
 } from "../core/types.ts"
 
 /** Every provider kind Kitten seeds a default session for, in cockpit order (ADR-001). */
@@ -57,6 +66,16 @@ export interface ApprovalOverlay {
   title: string
   cwd: string
   request: PermissionRequest
+}
+
+/** Resolver-free view of the controller's currently active clarification request. */
+export interface ClarificationOverlay {
+  requestId: string
+  generation: number
+  sessionId: SessionId
+  title: string
+  cwd: string
+  payload: ClarificationPayload
 }
 
 /** The hand-off preview slot: the bundle awaiting the user's curation and confirm. */
@@ -104,8 +123,19 @@ export interface Preferences {
 /** Whether a restored session is promptable or only its saved context remains. */
 export type RestorationMode = "live" | "unavailable"
 
+/** Renderer-observed keyboard support. This state is deliberately never persisted. */
+export type KeyboardCapability = "unknown" | "kittyConfirmed"
+
 /** The pane that currently owns keyboard input (ADR-005). */
-export type FocusedPane = { kind: "agent"; agentId: SessionId } | { kind: "shell" }
+export type FocusedPane =
+  | { kind: "agent"; sessionId: SessionId }
+  | { kind: "shell" }
+  | { kind: "workspace" }
+
+/** One captured-target tab dialog. Approval remains the higher-priority modal. */
+export type TabDialogOverlay =
+  | { kind: "rename"; sessionId: SessionId }
+  | { kind: "close"; sessionId: SessionId }
 
 /**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
@@ -117,6 +147,7 @@ export type FocusedPane = { kind: "agent"; agentId: SessionId } | { kind: "shell
  */
 export interface OverlayState {
   approval: ApprovalOverlay | null
+  clarification: ClarificationOverlay | null
   handoffPreview: HandoffPreviewOverlay | null
   /** The hand-off target picker, open only while the developer is choosing a recipient. */
   handoffTarget: HandoffTargetOverlay | null
@@ -124,6 +155,7 @@ export interface OverlayState {
   modelSelect: ModelSelectOverlay | null
   /** The settings modal, open on its active settings tab. */
   settings: SettingsOverlay | null
+  tabDialog: TabDialogOverlay | null
   sessions: boolean
   /** The resumable-session picker carries no payload; it reads runs from the run store. */
   sessionPicker: boolean
@@ -142,13 +174,17 @@ export interface OverlayState {
  */
 export interface AppState {
   sessions: Record<SessionId, SessionState>
-  /** The session ids in stable display order. */
-  order: SessionId[]
-  /** The active conversation, retained while the shell owns keyboard focus. */
-  focusedSessionId: SessionId
+  /** User-owned conversation metadata, order, lifecycle, selection, and attention acknowledgement. */
+  workspace: WorkspaceState
+  /** Ephemeral action feedback for valid empty-workspace states. */
+  workspaceNotice: WorkspaceNotice | null
+  /** Ephemeral terminal-input capability, promoted only by the renderer boundary. */
+  keyboardCapability: KeyboardCapability
   focusedPane: FocusedPane
   shell: ShellState
   preferences: Preferences
+  /** Protocol-free capability classification exposed per configured session. */
+  clarificationCapabilities: Record<SessionId, ClarificationCapability>
   overlays: OverlayState
   restoration: Record<SessionId, RestorationMode | null>
   /** The persisted hand-off context for the currently restored cockpit run. */
@@ -180,7 +216,30 @@ export interface AppStore {
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
-  startSession(sessionId: SessionId, acpSessionId: string): void
+  startSession(
+    sessionId: SessionId,
+    acpSessionId: string,
+    options?: { preserveWorkspaceAttention?: boolean },
+  ): void
+  /** Atomically insert a normalized execution slice and its visible workspace entry. */
+  addSession(seed: SessionSeed, options?: { displayName?: string; availability?: ConversationAvailability }): void
+  /** Atomically replace execution/workspace membership from validated restore descriptors. */
+  replaceSessions(
+    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    selectedVisibleId: SessionId | null,
+  ): void
+  /** Atomically remove an execution slice after successful teardown and close its workspace entry. */
+  removeSession(sessionId: SessionId): void
+  renameConversation(sessionId: SessionId, displayName: string): void
+  selectConversation(sessionId: SessionId): void
+  selectAdjacentConversation(direction: "previous" | "next"): void
+  backgroundConversation(sessionId: SessionId): void
+  reopenConversation(sessionId: SessionId): void
+  setConversationAvailability(sessionId: SessionId, availability: ConversationAvailability): void
+  setConversationTeardown(sessionId: SessionId, teardownState: TeardownState): void
+  setWorkspaceNotice(notice: WorkspaceNotice | null): void
+  /** Record the first observed Kitty-protocol key event. Idempotent after confirmation. */
+  confirmKittyKeyboard(): void
   /** Move keyboard focus to a session. Focusing the focused session is a no-op. */
   setFocus(sessionId: SessionId): void
   /** Move keyboard focus to an agent or the shell. Reapplying the same pane is a no-op. */
@@ -190,6 +249,10 @@ export interface AppStore {
   openApproval(overlay: ApprovalOverlay): void
   /** Clear the approval slot. Closing a closed slot is a no-op. */
   closeApproval(): void
+  /** Project the controller-owned active clarification without storing its resolver. */
+  openClarification(overlay: ClarificationOverlay): void
+  /** Clear only the clarification projection. */
+  closeClarification(): void
   /** Open the hand-off preview overlay for the assembled bundle. */
   openHandoffPreview(overlay: HandoffPreviewOverlay): void
   /** Clear the hand-off preview slot. Closing a closed slot is a no-op. */
@@ -206,6 +269,9 @@ export interface AppStore {
   openSettings(overlay?: SettingsOverlay): void
   /** Clear the settings slot. Closing a closed slot is a no-op. */
   closeSettings(): void
+  /** Open a captured-target tab dialog unless approval currently owns modal precedence. */
+  openTabDialog(overlay: TabDialogOverlay): void
+  closeTabDialog(): void
   /** Open the `/sessions` overview. Opening an open overview is a no-op. */
   openSessions(): void
   /** Close the sessions overview. Closing a closed overview is a no-op. */
@@ -214,6 +280,8 @@ export interface AppStore {
   openSessionPicker(): void
   /** Close the resumable-session picker. Closing a closed picker is a no-op. */
   closeSessionPicker(): void
+  /** Publish one session's resolved structured-clarification capability. */
+  setClarificationCapability(sessionId: SessionId, capability: ClarificationCapability): void
   /** Set one session's restoration status without changing its transcript. */
   setRestoration(sessionId: SessionId, mode: RestorationMode | null): void
   /** Replace the persisted context exposed by degraded restored panes. */
@@ -230,7 +298,7 @@ export interface AppStoreOptions {
    */
   seeds?: SessionSeed[]
   /** Which session holds focus at startup. Defaults to the first seeded session. */
-  focusedSessionId?: SessionId
+  selectedVisibleId?: SessionId
   /** Reactive user-preference seed. Defaults to following the terminal theme. */
   preferences?: Preferences
 }
@@ -248,25 +316,39 @@ class AppStoreImpl implements AppStore {
     const seeds = options.seeds ?? defaultSessionSeeds()
     const sessions = {} as Record<SessionId, SessionState>
     const restoration = {} as Record<SessionId, RestorationMode | null>
-    const order: SessionId[] = []
+    const clarificationCapabilities = {} as Record<SessionId, ClarificationCapability>
     for (const seed of seeds) {
       sessions[seed.id] = createSessionState(seed)
       restoration[seed.id] = null
-      order.push(seed.id)
+      clarificationCapabilities[seed.id] = unknownClarificationCapability()
     }
+    const workspace = createWorkspaceState({
+      conversations: seeds.map((seed) => ({
+        sessionId: seed.id,
+        displayName: seed.title,
+        availability: { kind: "starting" },
+      })),
+      selectedVisibleId: options.selectedVisibleId ?? null,
+    })
     this.state = {
       sessions,
-      order,
-      focusedSessionId: options.focusedSessionId ?? order[0]!,
-      focusedPane: { kind: "agent", agentId: options.focusedSessionId ?? order[0]! },
+      workspace,
+      workspaceNotice: null,
+      keyboardCapability: "unknown",
+      focusedPane: workspace.selectedVisibleId
+        ? { kind: "agent", sessionId: workspace.selectedVisibleId }
+        : { kind: "workspace" },
       shell: createShellState(),
       preferences: { theme: options.preferences?.theme ?? "auto" },
+      clarificationCapabilities,
       overlays: {
         approval: null,
+        clarification: null,
         handoffPreview: null,
         handoffTarget: null,
         modelSelect: null,
         settings: null,
+        tabDialog: null,
         sessions: false,
         sessionPicker: false,
       },
@@ -306,7 +388,19 @@ class AppStoreImpl implements AppStore {
     if (!session) return
     const next = sessionReducer(session, event)
     if (next === session) return
-    this.commit({ ...this.state, sessions: { ...this.state.sessions, [sessionId]: next } })
+    const workspace =
+      next.status === session.status
+        ? this.state.workspace
+        : workspaceReducer(this.state.workspace, {
+            kind: "execution_status",
+            sessionId,
+            status: next.status,
+          })
+    this.commit({
+      ...this.state,
+      sessions: { ...this.state.sessions, [sessionId]: next },
+      workspace,
+    })
   }
 
   applyShellEvent(event: ShellEvent): void {
@@ -315,7 +409,11 @@ class AppStoreImpl implements AppStore {
     this.commit({ ...this.state, shell: next })
   }
 
-  startSession(sessionId: SessionId, acpSessionId: string): void {
+  startSession(
+    sessionId: SessionId,
+    acpSessionId: string,
+    options: { preserveWorkspaceAttention?: boolean } = {},
+  ): void {
     const existing = this.state.sessions[sessionId]
     if (!existing) return
     // Reset the transcript and bind the ACP id, but keep the session's identity
@@ -328,23 +426,187 @@ class AppStoreImpl implements AppStore {
       task: existing.task,
       acpSessionId,
     })
-    this.commit({ ...this.state, sessions: { ...this.state.sessions, [sessionId]: fresh } })
+    const workspace = options.preserveWorkspaceAttention
+      ? this.state.workspace
+      : workspaceReducer(this.state.workspace, {
+          kind: "execution_status",
+          sessionId,
+          status: fresh.status,
+        })
+    this.commit({
+      ...this.state,
+      sessions: { ...this.state.sessions, [sessionId]: fresh },
+      workspace,
+    })
+  }
+
+  addSession(
+    seed: SessionSeed,
+    options: { displayName?: string; availability?: ConversationAvailability } = {},
+  ): void {
+    if (this.state.sessions[seed.id] || this.state.workspace.conversations[seed.id]) return
+    const workspace = workspaceReducer(this.state.workspace, {
+      kind: "create",
+      sessionId: seed.id,
+      displayName: options.displayName ?? seed.title,
+      availability: options.availability,
+      initialStatus: "idle",
+    })
+    if (workspace === this.state.workspace) return
+    this.commit({
+      ...this.state,
+      sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      workspace,
+      restoration: { ...this.state.restoration, [seed.id]: null },
+      clarificationCapabilities: {
+        ...this.state.clarificationCapabilities,
+        [seed.id]: unknownClarificationCapability(),
+      },
+      focusedPane: { kind: "agent", sessionId: seed.id },
+    })
+  }
+
+  replaceSessions(
+    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    selectedVisibleId: SessionId | null,
+  ): void {
+    const sessions: Record<SessionId, SessionState> = {}
+    const restoration: Record<SessionId, RestorationMode | null> = {}
+    const clarificationCapabilities: Record<SessionId, ClarificationCapability> = {}
+    for (const entry of entries) {
+      sessions[entry.seed.id] = createSessionState(entry.seed)
+      restoration[entry.seed.id] = null
+      clarificationCapabilities[entry.seed.id] = unknownClarificationCapability()
+    }
+    const workspace = createWorkspaceState({
+      conversations: entries.map((entry) => entry.workspace),
+      selectedVisibleId,
+    })
+    this.commit({
+      ...this.state,
+      sessions,
+      workspace,
+      workspaceNotice: null,
+      restoration,
+      clarificationCapabilities,
+      focusedPane: reconcilePane(this.state.focusedPane, workspace),
+    })
+  }
+
+  removeSession(sessionId: SessionId): void {
+    if (!this.state.sessions[sessionId] || !this.state.workspace.conversations[sessionId]) return
+    const workspace = workspaceReducer(this.state.workspace, { kind: "close_succeeded", sessionId })
+    const sessions = { ...this.state.sessions }
+    const restoration = { ...this.state.restoration }
+    const clarificationCapabilities = { ...this.state.clarificationCapabilities }
+    delete sessions[sessionId]
+    delete restoration[sessionId]
+    delete clarificationCapabilities[sessionId]
+    this.commit({
+      ...this.state,
+      sessions,
+      workspace,
+      overlays:
+        this.state.overlays.tabDialog?.sessionId === sessionId ||
+        this.state.overlays.clarification?.sessionId === sessionId
+          ? {
+              ...this.state.overlays,
+              ...(this.state.overlays.tabDialog?.sessionId === sessionId ? { tabDialog: null } : {}),
+              ...(this.state.overlays.clarification?.sessionId === sessionId ? { clarification: null } : {}),
+            }
+          : this.state.overlays,
+      restoration,
+      clarificationCapabilities,
+      focusedPane: reconcilePane(this.state.focusedPane, workspace),
+    })
+  }
+
+  renameConversation(sessionId: SessionId, displayName: string): void {
+    this.commitWorkspace({ kind: "rename", sessionId, displayName })
+  }
+
+  selectConversation(sessionId: SessionId): void {
+    if (hasOpenOverlay(this.state.overlays)) return
+    const workspace = workspaceReducer(this.state.workspace, { kind: "select", sessionId })
+    if (workspace === this.state.workspace) return
+    this.commit({ ...this.state, workspace, focusedPane: { kind: "agent", sessionId } })
+  }
+
+  selectAdjacentConversation(direction: "previous" | "next"): void {
+    if (hasOpenOverlay(this.state.overlays)) return
+    const workspace = workspaceReducer(this.state.workspace, { kind: "select_adjacent", direction })
+    if (workspace === this.state.workspace) return
+    this.commit({
+      ...this.state,
+      workspace,
+      focusedPane: workspace.selectedVisibleId
+        ? { kind: "agent", sessionId: workspace.selectedVisibleId }
+        : { kind: "workspace" },
+    })
+  }
+
+  confirmKittyKeyboard(): void {
+    if (this.state.keyboardCapability === "kittyConfirmed") return
+    this.commit({ ...this.state, keyboardCapability: "kittyConfirmed" })
+  }
+
+  backgroundConversation(sessionId: SessionId): void {
+    this.commitWorkspace({ kind: "background", sessionId })
+  }
+
+  reopenConversation(sessionId: SessionId): void {
+    const workspace = workspaceReducer(this.state.workspace, { kind: "reopen", sessionId })
+    if (workspace === this.state.workspace) return
+    this.commit({
+      ...this.state,
+      workspace,
+      focusedPane: { kind: "agent", sessionId },
+    })
+  }
+
+  setConversationAvailability(
+    sessionId: SessionId,
+    availability: ConversationAvailability,
+  ): void {
+    this.commitWorkspace({ kind: "set_availability", sessionId, availability })
+  }
+
+  setConversationTeardown(sessionId: SessionId, teardownState: TeardownState): void {
+    this.commitWorkspace({ kind: "set_teardown_state", sessionId, teardownState })
+  }
+
+  setWorkspaceNotice(notice: WorkspaceNotice | null): void {
+    if (this.state.workspaceNotice?.code === notice?.code) return
+    this.commit({ ...this.state, workspaceNotice: notice })
   }
 
   setFocus(sessionId: SessionId): void {
-    this.setFocusedPane({ kind: "agent", agentId: sessionId })
+    this.selectConversation(sessionId)
   }
 
   setFocusedPane(pane: FocusedPane): void {
-    if (pane.kind === "agent" && !this.state.sessions[pane.agentId]) return
+    if (hasOpenOverlay(this.state.overlays)) return
+    if (pane.kind === "agent") {
+      const conversation = this.state.workspace.conversations[pane.sessionId]
+      if (!conversation || conversation.lifecycle !== "visible") return
+      const workspace = workspaceReducer(this.state.workspace, {
+        kind: "select",
+        sessionId: pane.sessionId,
+      })
+      if (
+        workspace === this.state.workspace &&
+        this.state.focusedPane.kind === "agent" &&
+        this.state.focusedPane.sessionId === pane.sessionId
+      ) {
+        return
+      }
+      this.commit({ ...this.state, workspace, focusedPane: pane })
+      return
+    }
+    if (pane.kind === "workspace" && this.state.workspace.selectedVisibleId !== null) return
     const current = this.state.focusedPane
-    if (current.kind === "shell" && pane.kind === "shell") return
-    if (current.kind === "agent" && pane.kind === "agent" && current.agentId === pane.agentId) return
-    this.commit({
-      ...this.state,
-      focusedSessionId: pane.kind === "agent" ? pane.agentId : this.state.focusedSessionId,
-      focusedPane: pane,
-    })
+    if (current.kind === pane.kind) return
+    this.commit({ ...this.state, focusedPane: pane })
   }
 
   openApproval(overlay: ApprovalOverlay): void {
@@ -354,6 +616,15 @@ class AppStoreImpl implements AppStore {
   closeApproval(): void {
     if (this.state.overlays.approval === null) return
     this.setOverlays({ approval: null })
+  }
+
+  openClarification(overlay: ClarificationOverlay): void {
+    this.setOverlays({ clarification: overlay })
+  }
+
+  closeClarification(): void {
+    if (this.state.overlays.clarification === null) return
+    this.setOverlays({ clarification: null })
   }
 
   openHandoffPreview(overlay: HandoffPreviewOverlay): void {
@@ -375,6 +646,17 @@ class AppStoreImpl implements AppStore {
   }
 
   openModelSelect(overlay: ModelSelectOverlay): void {
+    const selectedSessionId = this.state.workspace.selectedVisibleId
+    const selectedConversation = selectedSessionId
+      ? this.state.workspace.conversations[selectedSessionId]
+      : undefined
+    if (
+      selectedSessionId === null ||
+      overlay.sessionId !== selectedSessionId ||
+      selectedConversation?.lifecycle !== "visible"
+    ) {
+      return
+    }
     this.setOverlays({ modelSelect: overlay })
   }
 
@@ -390,6 +672,24 @@ class AppStoreImpl implements AppStore {
   closeSettings(): void {
     if (this.state.overlays.settings === null) return
     this.setOverlays({ settings: null })
+  }
+
+  openTabDialog(overlay: TabDialogOverlay): void {
+    if (this.state.overlays.approval !== null) return
+    const conversation = this.state.workspace.conversations[overlay.sessionId]
+    if (!conversation || conversation.teardownState === "closing") return
+    if (
+      this.state.overlays.tabDialog?.kind === overlay.kind &&
+      this.state.overlays.tabDialog.sessionId === overlay.sessionId
+    ) {
+      return
+    }
+    this.setOverlays({ tabDialog: overlay })
+  }
+
+  closeTabDialog(): void {
+    if (this.state.overlays.tabDialog === null) return
+    this.setOverlays({ tabDialog: null })
   }
 
   openSessions(): void {
@@ -410,6 +710,19 @@ class AppStoreImpl implements AppStore {
   closeSessionPicker(): void {
     if (!this.state.overlays.sessionPicker) return
     this.setOverlays({ sessionPicker: false })
+  }
+
+  setClarificationCapability(sessionId: SessionId, capability: ClarificationCapability): void {
+    if (!this.state.sessions[sessionId]) return
+    const current = this.state.clarificationCapabilities[sessionId]
+    if (sameClarificationCapability(current, capability)) return
+    this.commit({
+      ...this.state,
+      clarificationCapabilities: {
+        ...this.state.clarificationCapabilities,
+        [sessionId]: capability,
+      },
+    })
   }
 
   setRestoration(sessionId: SessionId, mode: RestorationMode | null): void {
@@ -435,6 +748,16 @@ class AppStoreImpl implements AppStore {
     this.commit({ ...this.state, overlays: { ...this.state.overlays, ...patch } })
   }
 
+  private commitWorkspace(event: WorkspaceEvent): void {
+    const workspace = workspaceReducer(this.state.workspace, event)
+    if (workspace === this.state.workspace) return
+    this.commit({
+      ...this.state,
+      workspace,
+      focusedPane: reconcilePane(this.state.focusedPane, workspace),
+    })
+  }
+
   /**
    * Publish a new state. Listeners are notified from a snapshot of the set, so a
    * listener that unsubscribes (or subscribes) during notification cannot disturb
@@ -448,6 +771,42 @@ class AppStoreImpl implements AppStore {
       listener(next, previous)
     }
   }
+}
+
+function reconcilePane(pane: FocusedPane, workspace: WorkspaceState): FocusedPane {
+  if (pane.kind === "shell") return pane
+  return workspace.selectedVisibleId
+    ? { kind: "agent", sessionId: workspace.selectedVisibleId }
+    : { kind: "workspace" }
+}
+
+function hasOpenOverlay(overlays: OverlayState): boolean {
+  return (
+    overlays.approval !== null ||
+    overlays.clarification !== null ||
+    overlays.handoffPreview !== null ||
+    overlays.handoffTarget !== null ||
+    overlays.modelSelect !== null ||
+    overlays.settings !== null ||
+    overlays.tabDialog !== null ||
+    overlays.sessions ||
+    overlays.sessionPicker
+  )
+}
+
+function unknownClarificationCapability(): ClarificationCapability {
+  return { status: "unsupported", reason: "unknown_recipe" }
+}
+
+function sameClarificationCapability(
+  left: ClarificationCapability | undefined,
+  right: ClarificationCapability,
+): boolean {
+  if (!left || left.status !== right.status) return false
+  if (left.status === "supported" && right.status === "supported") {
+    return left.adapterPackage === right.adapterPackage && left.adapterVersion === right.adapterVersion
+  }
+  return left.status === "unsupported" && right.status === "unsupported" && left.reason === right.reason
 }
 
 /**

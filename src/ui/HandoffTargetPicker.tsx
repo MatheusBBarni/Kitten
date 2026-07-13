@@ -38,7 +38,7 @@ import { useCallback, useState, type ReactNode } from "react"
 
 import type { HandoffFlow } from "../app/handoff.ts"
 import type { HandoffTargetOverlay } from "../store/appStore.ts"
-import { selectHandoffTarget, selectIsApprovalOpen, selectSessionList, type SessionListItem } from "../store/selectors.ts"
+import { selectHandoffTarget, selectIsApprovalOpen, selectIsClarificationOpen, selectSessionList, type SessionListItem } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { HANDOFF_TARGET_HINT, matchSessionsCommand } from "./keymap.ts"
 import { SessionCard } from "./SessionsOverlay.tsx"
@@ -65,6 +65,7 @@ function TargetDialog({ overlay, flow }: { overlay: HandoffTargetOverlay; flow: 
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
   const sessions = useAppSelector(selectSessionList)
 
@@ -86,6 +87,10 @@ function TargetDialog({ overlay, flow }: { overlay: HandoffTargetOverlay; flow: 
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification owns top modal priority. Return before claiming the key or moving
+      // the local selection so this exact picker resumes after clarification settles.
+      if (clarificationOpen) return
+
       // A permission request blocks an agent mid-turn. It outranks a picker that is
       // waiting on nothing but the developer, so hand it the keyboard whole.
       if (approvalOpen) return
@@ -114,7 +119,7 @@ function TargetDialog({ overlay, flow }: { overlay: HandoffTargetOverlay; flow: 
           return
       }
     },
-    [approvalOpen, candidates.length, choose, flow],
+    [approvalOpen, candidates.length, choose, clarificationOpen, flow],
   )
   useKeyboard(onKey)
 

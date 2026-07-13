@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "npm platform-package generator in scripts/build.ts"
 type: infra
 complexity: medium
@@ -29,11 +29,11 @@ This task extends `scripts/build.ts` with seam-gated functions that generate an 
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add `platformPackageManifest` producing the per-slug `package.json`
-- [ ] 6.2 Add `writePlatformPackage` with an injectable write seam
-- [ ] 6.3 Read the build-time version from `package.json`
-- [ ] 6.4 Wire generation into `buildAll`/the CLI behind a `BuildOptions` seam
-- [ ] 6.5 Unit-test the manifest fields and the write behavior with injected fakes
+- [x] 6.1 Add `platformPackageManifest` producing the per-slug `package.json`
+- [x] 6.2 Add `writePlatformPackage` with an injectable write seam
+- [x] 6.3 Read the build-time version from `package.json`
+- [x] 6.4 Wire generation into `buildAll`/the CLI behind a `BuildOptions` seam
+- [x] 6.5 Unit-test the manifest fields and the write behavior with injected fakes
 
 ## Implementation Details
 Extend `scripts/build.ts`, adding functions near `renderManifest`/`buildAll` and reusing the `BuildOptions`/`Bun.write` seam pattern.
@@ -60,13 +60,13 @@ Match the `test/build.test.ts` structure, which injects `run`/`hash`/`writeManif
 
 ## Tests
 - Unit tests:
-  - [ ] `platformPackageManifest({platform:"darwin-arm64",...}, "1.2.3")` yields `name "@kitten/darwin-arm64"`, `os ["darwin"]`, `cpu ["arm64"]`, `version "1.2.3"`, `files ["kitten-darwin-arm64"]`, and NO `scripts`/`exports`
-  - [ ] each of the four slugs maps to the correct `os`/`cpu` pair
-  - [ ] `writePlatformPackage` with an injected write records a `package.json` write and a binary copy under `<outDir>/@kitten/<slug>/`
-  - [ ] `buildAll` with the generation seam enabled and injected fakes produces four platform packages plus the existing `SHA256SUMS`
-  - [ ] `buildAll` behavior is unchanged when the generation seam is disabled
+  - [x] `platformPackageManifest({platform:"darwin-arm64",...}, "1.2.3")` yields `name "@kitten/darwin-arm64"`, `os ["darwin"]`, `cpu ["arm64"]`, `version "1.2.3"`, `files ["kitten-darwin-arm64"]`, and NO `scripts`/`exports`
+  - [x] each of the four slugs maps to the correct `os`/`cpu` pair
+  - [x] `writePlatformPackage` with an injected write records a `package.json` write and a binary copy under `<outDir>/@kitten/<slug>/`
+  - [x] `buildAll` with the generation seam enabled and injected fakes produces four platform packages plus the existing `SHA256SUMS`
+  - [x] `buildAll` behavior is unchanged when the generation seam is disabled
 - Integration tests:
-  - [ ] generating the host platform package writes a resolvable `package.json` + binary under the output dir
+  - [x] generating the host platform package writes a resolvable `package.json` + binary under the output dir
 - Test coverage target: >=80%
 - All tests must pass
 

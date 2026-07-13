@@ -15,6 +15,7 @@ import {
   defaultAppConfig,
   findAgentConfig,
   loadAppConfig,
+  mergeAppConfig,
   parseAppConfig,
   resolveConfigPath,
   resolveSessions,
@@ -29,6 +30,14 @@ import {
  */
 
 const tempDirs: string[] = []
+const README_PATH = join(import.meta.dir, "..", "..", "README.md")
+
+async function readReadmeJsonExample(name: "mcp-config-example" | "mcp-remote-example"): Promise<string> {
+  const readme = await Bun.file(README_PATH).text()
+  const match = readme.match(new RegExp(`<!-- ${name}:start -->\\s*\`\`\`json\\s*([\\s\\S]*?)\\s*\`\`\`\\s*<!-- ${name}:end -->`))
+  if (!match?.[1]) throw new Error(`README example ${name} is missing`)
+  return match[1]
+}
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "kitten-config-"))
@@ -60,6 +69,7 @@ describe("defaults", () => {
       command: "npx",
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
     })
     expect(findAgentConfig(config, "codex")).toEqual({
       id: "codex",
@@ -67,6 +77,7 @@ describe("defaults", () => {
       command: "npx",
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
     })
   })
 
@@ -87,11 +98,107 @@ describe("defaults", () => {
     first.providers["claude-code"].args.push("--rogue")
     first.providers["claude-code"].env.ROGUE = "1"
     first.providers.codex.env.INITIAL_AGENT_MODE = "agent"
+    first.mcpServers.push({ name: "rogue", command: "rogue", args: [], env: {} })
 
     const second = defaultAppConfig()
     expect(second.providers["claude-code"].args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
     expect(second.providers["claude-code"].env).toEqual({})
     expect(second.providers.codex.env).toEqual({ INITIAL_AGENT_MODE: CODEX_YOLO_MODE })
+    expect(second.mcpServers).toEqual([])
+  })
+})
+
+describe("MCP server config", () => {
+  const namedServers = {
+    github: {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+    },
+    linear: {
+      type: "stdio" as const,
+      command: "/opt/bin/linear-mcp",
+      args: ["--stdio"],
+      env: {},
+    },
+  }
+
+  it("Should normalize two name-keyed stdio servers into the domain list", () => {
+    const config = parseAppConfig(JSON.stringify({ mcpServers: namedServers }))
+
+    expect(config.mcpServers).toEqual([
+      { name: "github", ...namedServers.github },
+      {
+        name: "linear",
+        command: namedServers.linear.command,
+        args: namedServers.linear.args,
+        env: namedServers.linear.env,
+      },
+    ])
+  })
+
+  it.each([
+    ["a url", { command: "remote", args: [], env: {}, url: "https://example.com/mcp" }],
+    ["a non-stdio type", { type: "http", command: "remote", args: [], env: {} }],
+  ])("Should reject %s transport and name the offending server", (_case, server) => {
+    const parse = () => parseAppConfig(JSON.stringify({ mcpServers: { github: server } }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/mcpServers\.github/)
+  })
+
+  it("Should reject an unknown key inside a server entry", () => {
+    const parse = () =>
+      parseAppConfig(
+        JSON.stringify({ mcpServers: { linear: { command: "linear-mcp", args: [], env: {}, enabled: true } } }),
+      )
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/mcpServers\.linear.*enabled/)
+  })
+
+  it("Should default to an empty MCP server list when the field is omitted", () => {
+    expect(parseAppConfig("{}").mcpServers).toEqual([])
+  })
+
+  it("Should keep and defensively copy user-provided MCP servers during merge", () => {
+    const user = { mcpServers: namedServers }
+    const config = mergeAppConfig(user)
+
+    expect(config.mcpServers.map((server) => server.name)).toEqual(["github", "linear"])
+    expect(config.mcpServers[0]!.args).not.toBe(namedServers.github.args)
+    expect(config.mcpServers[0]!.env).not.toBe(namedServers.github.env)
+  })
+
+  it("Should load and normalize name-keyed MCP servers from a real config file", async () => {
+    const path = await writeConfig(JSON.stringify({ mcpServers: namedServers }))
+
+    const config = await loadAppConfig({ path })
+
+    expect(config.mcpServers.map((server) => server.name)).toEqual(["github", "linear"])
+    expect(config.mcpServers[0]).toEqual({ name: "github", ...namedServers.github })
+  })
+
+  it("Should load the documented stdio example and yield its documented server list", async () => {
+    const path = await writeConfig(await readReadmeJsonExample("mcp-config-example"))
+
+    const config = await loadAppConfig({ path })
+
+    expect(config.mcpServers).toEqual([
+      {
+        name: "github",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-github"],
+        env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+      },
+    ])
+  })
+
+  it("Should reject the documented remote HTTP example", async () => {
+    const path = await writeConfig(await readReadmeJsonExample("mcp-remote-example"))
+
+    await expect(loadAppConfig({ path })).rejects.toThrow(ConfigError)
+    await expect(loadAppConfig({ path })).rejects.toThrow(/mcpServers\.github-remote/)
   })
 })
 
@@ -117,6 +224,17 @@ describe("user overrides", () => {
     expect(claude?.displayName).toBe("Claude")
     expect(claude?.command).toBe("npx")
     expect(claude?.args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
+    expect(claude?.clarificationCapability).toEqual({ status: "unsupported", reason: "unverified_recipe" })
+  })
+
+  it("Should classify capability after merging every identity-bearing override", () => {
+    const command = parseAppConfig(JSON.stringify({ providers: { codex: { command: "/opt/bin/npx" } } }))
+    const args = parseAppConfig(JSON.stringify({ providers: { codex: { args: ["-y", CODEX_ACP_PACKAGE, "--debug"] } } }))
+    const env = parseAppConfig(JSON.stringify({ providers: { codex: { env: { CODEX_PATH: "/opt/codex" } } } }))
+
+    expect(findAgentConfig(command, "codex")?.clarificationCapability.status).toBe("unsupported")
+    expect(findAgentConfig(args, "codex")?.clarificationCapability.status).toBe("unsupported")
+    expect(findAgentConfig(env, "codex")?.clarificationCapability.status).toBe("unsupported")
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {
@@ -209,6 +327,7 @@ describe("resolveSessions", () => {
     expect(resolved.map((session) => session.seed.title)).toEqual(["Codex", "Claude Code"])
     // The resolved spawn recipe carries the provider's id for the connection factory.
     expect(resolved[0]!.spawn).toEqual(findAgentConfig(config, "codex")!)
+    expect(resolved.every((session) => session.spawn.clarificationCapability.status === "unsupported")).toBe(true)
   })
 
   it("Should resolve two sessions of the same provider into distinct ids, titles, and directories", () => {

@@ -20,6 +20,7 @@ import {
   START_FRESH_LABEL,
 } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
+import { KEYMAP_HINT } from "./keymap.ts"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
@@ -129,7 +130,7 @@ describe("ConversationView turns", () => {
     expect(frame).toContain("Agents: ready · ready")
     expect(frame).toContain(`Working directory: ${process.cwd()}`)
     expect(frame).toContain(WELCOME_ON_RAMP)
-    expect(frame).not.toContain("Claude Code")
+    expect(frame).toContain("[selected] Claude Code")
     expect(frame).not.toContain("Codex")
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
 
@@ -428,7 +429,7 @@ describe("ConversationView streaming", () => {
     expect(userFrame).toContain("ping")
     expect(userFrame).not.toContain("Hello")
     expect(userFrame).toContain("Kitten")
-    expect(userFrame).not.toContain("Claude Code")
+    expect(userFrame).toContain("[selected] Claude Code")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))
     await waitForFrame((f) => f.includes("Hello"))
@@ -444,8 +445,8 @@ describe("ConversationView streaming", () => {
     expect(settled).toContain("ping")
     expect(settled).toContain("Hello, world.")
     expect(settled.match(/Hello, world\./g)).toHaveLength(1)
-    expect(settled).toContain("/help")
-    expect(settled).not.toContain("Claude Code")
+    expect(settled).toContain(KEYMAP_HINT)
+    expect(settled).toContain("[selected] Claude Code")
 
     await destroyMounted(renderer)
   })

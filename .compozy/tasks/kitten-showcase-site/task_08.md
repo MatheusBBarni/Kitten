@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add launch documentation and final validation checks in repository README
 type: docs
 complexity: medium
@@ -29,11 +29,11 @@ Update repository documentation to expose the dedicated showcase site, required 
 
 ## Subtasks
 
-- [ ] 08.01 Add a "Showcase Site" section to README with canonical public URL and install path note.
-- [ ] 08.02 Add concise launch readiness checks and success criteria from the PRD and TechSpec.
-- [ ] 08.03 Include verification notes for star fallback and reduced-motion proof playback behavior.
-- [ ] 08.04 Add a short note on V1 telemetry policy and what remains manual/launch-aggregated measurement.
-- [ ] 08.05 Ensure no duplicate or contradictory claims are introduced near existing CLI README sections.
+- [x] 08.01 Add a "Showcase Site" section to README with canonical public URL and install path note.
+- [x] 08.02 Add concise launch readiness checks and success criteria from the PRD and TechSpec.
+- [x] 08.03 Include verification notes for star fallback and reduced-motion proof playback behavior.
+- [x] 08.04 Add a short note on V1 telemetry policy and what remains manual/launch-aggregated measurement.
+- [x] 08.05 Ensure no duplicate or contradictory claims are introduced near existing CLI README sections.
 
 ## Implementation Details
 
@@ -68,11 +68,11 @@ This task references PRD non-goals and success criteria to ensure claims and lau
 ## Tests
 
 - Unit tests:
-  - [ ] README includes a dedicated showcase section with public URL and install route note.
-  - [ ] Launch checklist explicitly states one verified install route only.
+  - [x] README includes a dedicated showcase section with public URL and install route note.
+  - [x] Launch checklist explicitly states one verified install route only.
 - Integration tests:
-  - [ ] End-to-end smoke: `cd site && bun run build && bun run preview` serves expected index sections.
-  - [ ] Verification script or checklist run validates star fallback/CTA behavior against latest implementation.
+  - [x] End-to-end smoke: `cd site && bun run build && bun run preview` serves expected index sections.
+  - [x] Verification script or checklist run validates star fallback/CTA behavior against latest implementation.
 - Test coverage target: >=80%
 - All tests must pass
 

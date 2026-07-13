@@ -1,41 +1,111 @@
 name: Release artifacts
 
-# Compiled standalone binaries per platform (ADR-006). Each platform is built AND
-# self-checked on a native runner, so OpenTUI's native (Zig) core is validated on the
-# real target - the ADR-006 cross-platform FFI risk - before anything is published.
-
+# release-please and the native release build stay in one run because a Release
+# created with github.token does not trigger a separate workflow.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing GitHub Release tag to rebuild and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
+  release_please:
+    name: Cut or select the release
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created || steps.fallback.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.fallback.outputs.tag_name }}
+    steps:
+      - name: Run release-please
+        id: release
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Guard manual fallback
+        id: fallback
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag_name must be a stable release tag such as v1.2.3"
+            exit 1
+          fi
+
+          version="${TAG_NAME#v}"
+          if npm view "kitten@$version" version >/dev/null 2>&1; then
+            echo "::error::kitten@$version is already published; refusing an immutable npm republish"
+            exit 1
+          fi
+
+          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          mapfile -t existing_assets < <(
+            gh release view "$TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name'
+          )
+          expected_assets=(
+            kitten-darwin-arm64
+            kitten-darwin-x64
+            kitten-linux-x64
+            kitten-linux-arm64
+            SHA256SUMS
+          )
+
+          for asset in "${expected_assets[@]}"; do
+            if printf '%s\n' "${existing_assets[@]}" | grep -Fqx "$asset"; then
+              echo "::error::$TAG_NAME already contains $asset; refusing to attach release assets twice"
+              exit 1
+            fi
+          done
+
+          echo "release_created=true" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: release_please
+    if: needs.release_please.outputs.release_created == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
           - platform: darwin-x64
-            runner: macos-13
+            runner: macos-15-intel
           - platform: linux-x64
             runner: ubuntu-latest
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release_please.outputs.tag_name }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
 
-      - name: Compile ${{ matrix.platform }} (native runner, real FFI)
+      - name: Compile ${{ matrix.platform }} on its native runner
         run: bun run scripts/build.ts ${{ matrix.platform }}
 
       - name: Self-check the artifact
@@ -55,49 +125,229 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kitten-${{ matrix.platform }}
-          path: dist/kitten-${{ matrix.platform }}*
+          path: |
+            dist/kitten-${{ matrix.platform }}
+            dist/kitten-${{ matrix.platform }}.sha256
+            dist/npm/@kitten/${{ matrix.platform }}
 
-  publish-binaries:
-    name: Attach binaries + SHA256SUMS to the release
-    needs: build
-    if: github.event_name == 'release'
+  attach:
+    name: Attach binaries and SHA256SUMS
+    needs: [release_please, build]
+    if: needs.release_please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: staging
-      - name: Assemble dist and SHA256SUMS
+
+      - name: Assemble the release assets
+        shell: bash
         run: |
+          set -euo pipefail
+          expected_binaries=(
+            kitten-darwin-arm64
+            kitten-darwin-x64
+            kitten-linux-x64
+            kitten-linux-arm64
+          )
           mkdir -p dist
-          find staging -type f -name 'kitten-*' ! -name '*.sha256' -exec cp {} dist/ \;
+
+          for binary in "${expected_binaries[@]}"; do
+            source_path="$(find staging -type f -name "$binary" -print -quit)"
+            if [[ -z "$source_path" ]]; then
+              echo "::error::missing build artifact $binary"
+              exit 1
+            fi
+            cp "$source_path" "dist/$binary"
+          done
+
           cd dist
           sha256sum kitten-* > SHA256SUMS
           cat SHA256SUMS
-      - name: Upload to release
+
+      - name: Upload assets to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/kitten-* dist/SHA256SUMS --repo "${{ github.repository }}"
+          TAG_NAME: ${{ needs.release_please.outputs.tag_name }}
+        run: gh release upload "$TAG_NAME" dist/kitten-* dist/SHA256SUMS --repo "$GITHUB_REPOSITORY"
 
-  publish-npm:
-    name: Publish npm package (bunx kitten)
-    needs: build
-    if: github.event_name == 'release'
+  publish:
+    name: Publish npm packages with provenance
+    needs: [release_please, build, attach]
+    if: needs.release_please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
-      - run: bun install --frozen-lockfile
-      # The release tag is the source of truth for the version. package.json ships 0.0.0,
-      # so without this every release would try to publish 0.0.0 - a version/tag mismatch
-      # on the first release and a hard 403 (cannot republish a version) on every one
-      # after. Stamp the tag in before publishing so npm gets a matching, monotonic version.
-      - name: Stamp version from release tag
+          ref: ${{ needs.release_please.outputs.tag_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+
+      - name: Enforce the trusted-publishing toolchain floor
+        run: |
+          npm install --global npm@11.5.1
+          node --version
+          npm --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      - name: Require a public source repository for provenance
         env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: npm version "${TAG#v}" --no-git-tag-version --allow-same-version
-      - name: Publish
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
+          if [[ "$visibility" != "public" ]]; then
+            echo "::error::npm provenance requires a public source repository; current visibility is $visibility"
+            exit 1
+          fi
+
+      - name: Validate the release version
+        id: version
         env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: bun publish --access public
+          TAG_NAME: ${{ needs.release_please.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag_version="${TAG_NAME#v}"
+          if [[ "$version" != "$tag_version" ]]; then
+            echo "::error::package version $version does not match release tag $TAG_NAME"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish platform packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            package_dir="staging/kitten-$platform/npm/@kitten/$platform"
+            binary="$package_dir/kitten-$platform"
+            if [[ ! -f "$package_dir/package.json" || ! -f "$binary" ]]; then
+              echo "::error::missing staged npm package for @kitten/$platform"
+              exit 1
+            fi
+
+            node -e '
+              const [manifest, expectedName, expectedVersion] = process.argv.slice(1)
+              const pkg = require("./" + manifest)
+              if (pkg.name !== expectedName || pkg.version !== expectedVersion) {
+                throw new Error(
+                  manifest + " is " + pkg.name + "@" + pkg.version +
+                  "; expected " + expectedName + "@" + expectedVersion,
+                )
+              }
+            ' "$package_dir/package.json" "@kitten/$platform" "$VERSION"
+
+            # Artifact transfer normalizes modes; npm must receive an executable.
+            chmod +x "$package_dir/kitten-$platform"
+            npm publish "$package_dir" --provenance --access public
+          done
+
+      - name: Publish main package last
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs")
+          const path = "package.json"
+          const pkg = JSON.parse(fs.readFileSync(path, "utf8"))
+          const version = process.env.VERSION
+          const platforms = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]
+
+          if (pkg.version !== version) {
+            throw new Error(`package version ${pkg.version} does not match ${version}`)
+          }
+          for (const platform of platforms) {
+            const name = `@kitten/${platform}`
+            pkg.optionalDependencies[name] = version
+          }
+          fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
+          NODE
+          npm publish . --provenance --access public
+
+  smoke:
+    name: Smoke ${{ matrix.platform }} from npm
+    needs: [release_please, publish]
+    if: needs.release_please.outputs.release_created == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+          - platform: darwin-x64
+            runner: macos-15-intel
+          - platform: linux-x64
+            runner: ubuntu-latest
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+
+      - name: Use a Bun-free Node environment
+        run: |
+          npm install --global npm@11.5.1
+          node_bin="$(dirname "$(command -v node)")"
+          clean_path="$node_bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          echo "PATH=$clean_path" >> "$GITHUB_ENV"
+          export PATH="$clean_path"
+          if command -v bun >/dev/null 2>&1; then
+            echo "::error::Bun must not be available during the npm smoke"
+            exit 1
+          fi
+          node --version
+          npm --version
+
+      - name: Wait for the published shim
+        env:
+          TAG_NAME: ${{ needs.release_please.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          for attempt in {1..12}; do
+            if [[ "$(npm view "kitten@$version" version 2>/dev/null || true)" == "$version" ]]; then
+              exit 0
+            fi
+            if [[ "$attempt" == 12 ]]; then
+              echo "::error::kitten@$version did not become visible on npm"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Run the published launcher and verify provenance
+        env:
+          TAG_NAME: ${{ needs.release_please.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          actual_version="$(npx --yes "kitten@$VERSION" --version)"
+          if [[ "$actual_version" != "$VERSION" ]]; then
+            echo "::error::kitten reported $actual_version; expected $VERSION"
+            exit 1
+          fi
+          npx --yes "kitten@$VERSION" --self-check
+
+          audit_dir="$RUNNER_TEMP/kitten-signature-audit"
+          mkdir -p "$audit_dir"
+          cd "$audit_dir"
+          npm init --yes >/dev/null
+          npm install --ignore-scripts "kitten@$VERSION"
+          npm audit signatures

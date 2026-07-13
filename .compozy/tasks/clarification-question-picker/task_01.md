@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add fail-closed ACP capability classification and contract gate"
 type: backend
 complexity: high
@@ -26,10 +26,10 @@ Classify resolved provider recipes as supported or unsupported for experimental 
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define the protocol-free capability result and exact recipe identity.
-- [ ] 1.2 Classify resolved built-in and overridden configurations.
-- [ ] 1.3 Add hermetic unit and config regression coverage.
-- [ ] 1.4 Add the opt-in actual-adapter contract gate.
+- [x] 1.1 Define the protocol-free capability result and exact recipe identity.
+- [x] 1.2 Classify resolved built-in and overridden configurations.
+- [x] 1.3 Add hermetic unit and config regression coverage.
+- [x] 1.4 Add the opt-in actual-adapter contract gate.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -58,12 +58,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Exact verified recipe is supported while changed command, args, environment, package, or version is unsupported.
-  - [ ] A cosmetic display-name change does not change capability classification.
-  - [ ] Unsupported capability does not make a handshaking provider not-ready.
-  - [ ] Opt-in real adapter contract proves advertise, request, accepted response, cancellation, and clean completion; a skipped contract never enables an entry.
+  - [x] Exact verified recipe is supported while changed command, args, environment, package, or version is unsupported.
+  - [x] A cosmetic display-name change does not change capability classification.
+  - [x] Unsupported capability does not make a handshaking provider not-ready.
+  - [x] Opt-in real adapter contract proves advertise, request, accepted response, cancellation, and clean completion; a skipped contract never enables an entry.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

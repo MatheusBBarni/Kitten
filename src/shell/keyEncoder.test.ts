@@ -70,6 +70,8 @@ describe("encodeKey", () => {
     ["Ctrl+A", "a", 0x01],
     ["Ctrl+C", "c", 0x03],
     ["Ctrl+D", "d", 0x04],
+    ["Ctrl+H", "h", 0x08],
+    ["Ctrl+L", "l", 0x0c],
     ["Ctrl+Z", "z", 0x1a],
     ["Ctrl+Shift+C", "C", 0x03],
     ["Ctrl+@", "@", 0x00],

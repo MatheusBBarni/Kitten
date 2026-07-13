@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Self-describing version module, --version/--help, and ACP clientInfo"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ This task adds `src/version.ts` as the single version source (a bundled `package
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add `src/version.ts` re-exporting `package.json`'s version as `KITTEN_VERSION`
-- [ ] 1.2 Add a `--version` predicate + dispatch in `src/index.ts`
-- [ ] 1.3 Add a `--help` predicate + dispatch with examples and install/upgrade commands
-- [ ] 1.4 Point `agentConnection.ts` `clientInfo.version` at `KITTEN_VERSION`
-- [ ] 1.5 Cover version equality, `--version`, `--help`, clientInfo, and the compiled binary's `--version`
+- [x] 1.1 Add `src/version.ts` re-exporting `package.json`'s version as `KITTEN_VERSION`
+- [x] 1.2 Add a `--version` predicate + dispatch in `src/index.ts`
+- [x] 1.3 Add a `--help` predicate + dispatch with examples and install/upgrade commands
+- [x] 1.4 Point `agentConnection.ts` `clientInfo.version` at `KITTEN_VERSION`
+- [x] 1.5 Cover version equality, `--version`, `--help`, clientInfo, and the compiled binary's `--version`
 
 ## Implementation Details
 Create `src/version.ts`; modify `src/index.ts` (the top-level `if (import.meta.main)` dispatch, adding `wantsVersion`/`wantsHelp` beside `wantsSelfCheck`); modify `src/agent/agentConnection.ts` (the `initialize` call's `clientInfo`).
@@ -65,14 +65,14 @@ Follow the repo's ESM convention: explicit `.ts` import extensions and the `reso
 
 ## Tests
 - Unit tests:
-  - [ ] `KITTEN_VERSION` strictly equals `package.json`'s `version` field
-  - [ ] `wantsVersion(["--version"])` is true; `wantsVersion(["--self-check"])` is false
-  - [ ] dispatch with `--version` writes exactly `KITTEN_VERSION` + newline to stdout and exits 0
-  - [ ] dispatch with `--help` writes usage containing `npx kitten` and `--self-check` and exits 0
-  - [ ] `agentConnection` `initialize` sends `clientInfo.version === KITTEN_VERSION` (mocked connection)
-  - [ ] an unknown flag (`--nope`) triggers neither version/help/self-check nor an error (falls through)
+  - [x] `KITTEN_VERSION` strictly equals `package.json`'s `version` field
+  - [x] `wantsVersion(["--version"])` is true; `wantsVersion(["--self-check"])` is false
+  - [x] dispatch with `--version` writes exactly `KITTEN_VERSION` + newline to stdout and exits 0
+  - [x] dispatch with `--help` writes usage containing `npx kitten` and `--self-check` and exits 0
+  - [x] `agentConnection` `initialize` sends `clientInfo.version === KITTEN_VERSION` (mocked connection)
+  - [x] an unknown flag (`--nope`) triggers neither version/help/self-check nor an error (falls through)
 - Integration tests:
-  - [ ] `test/build.integration.test.ts`: the host-compiled binary run with `--version` prints the same string as `package.json`'s version
+  - [x] `test/build.integration.test.ts`: the host-compiled binary run with `--version` prints the same string as `package.json`'s version
 - Test coverage target: >=80%
 - All tests must pass
 

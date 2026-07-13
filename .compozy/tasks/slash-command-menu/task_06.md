@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "SlashMenu presentational component"
 type: frontend
 complexity: medium
@@ -29,12 +29,12 @@ It holds no state and touches no store, so the editor (task_07) owns all behavio
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Define `MenuRow` and `SlashMenuProps`.
-- [ ] 6.2 Render grouped rows with source headers.
-- [ ] 6.3 Render the shortcut column (cockpit) and hint column (agent).
-- [ ] 6.4 Apply highlight styling to the active row and wire `onSelect`.
-- [ ] 6.5 Render the empty/no-match state.
-- [ ] 6.6 Add render tests for structure, highlight, and empty state.
+- [x] 6.1 Define `MenuRow` and `SlashMenuProps`.
+- [x] 6.2 Render grouped rows with source headers.
+- [x] 6.3 Render the shortcut column (cockpit) and hint column (agent).
+- [x] 6.4 Apply highlight styling to the active row and wire `onSelect`.
+- [x] 6.5 Render the empty/no-match state.
+- [x] 6.6 Add render tests for structure, highlight, and empty state.
 
 ## Implementation Details
 Follow the existing overlay components (`HandoffPreview`, `SessionsOverlay`) for the absolutely-positioned box and palette usage; the difference is that this box is non-modal and holds no state.
@@ -60,11 +60,11 @@ See the TechSpec "Implementation Design > Core Interfaces"; do not duplicate the
 
 ## Tests
 - Unit tests:
-  - [ ] Given a Cockpit group with a hand-off row and an agent group with a `/review` row (hint "topic"), the painted frame shows both group headers, the hand-off row's shortcut `Ctrl+T`, and the `/review` hint text.
-  - [ ] `highlightedIndex` of 0 renders the first row with the highlight style and other rows without it.
-  - [ ] Empty `groups` renders a "no commands match" line rather than a blank box.
+  - [x] Given a Cockpit group with a hand-off row and an agent group with a `/review` row (hint "topic"), the painted frame shows both group headers, the hand-off row's shortcut `Ctrl+T`, and the `/review` hint text.
+  - [x] `highlightedIndex` of 0 renders the first row with the highlight style and other rows without it.
+  - [x] Empty `groups` renders a "no commands match" line rather than a blank box.
 - Integration tests:
-  - [ ] Rendered in the test renderer, activating the highlighted row calls `onSelect` with that exact row object.
+  - [x] Rendered in the test renderer, activating the highlighted row calls `onSelect` with that exact row object.
 - Test coverage target: >=80%
 - All tests must pass
 

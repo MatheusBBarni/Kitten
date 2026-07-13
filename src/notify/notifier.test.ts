@@ -33,6 +33,44 @@ function harness(store: AppStore, focus: FocusState) {
 }
 
 describe("attention notifier", () => {
+  it("alerts exactly once on an unfocused working-to-clarification transition", () => {
+    const store = soloStore()
+    const h = harness(store, "unfocused")
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
+
+    expect(h.bells()).toBe(1)
+    expect(h.channel.calls).toEqual([
+      { title: "Alpha", provider: "claude-code", cwd: "/work/alpha", state: "awaiting_clarification" },
+    ])
+  })
+
+  it("keeps a focused working-to-clarification transition in-app", () => {
+    const store = soloStore()
+    const h = harness(store, "focused")
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
+
+    expect(h.bells()).toBe(0)
+    expect(h.channel.calls).toHaveLength(0)
+  })
+
+  it("does not re-alert when clarification moves to another needy status", () => {
+    const store = soloStore()
+    const h = harness(store, "unfocused")
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_approval" })
+    store.applyEvent("a", { kind: "status", status: "error" })
+    store.applyEvent("a", { kind: "status", status: "finished" })
+
+    expect(h.bells()).toBe(1)
+    expect(h.channel.calls).toHaveLength(1)
+  })
+
   it("fires exactly one bell and one channel call on a needy transition while unfocused", () => {
     const store = soloStore()
     const h = harness(store, "unfocused")
@@ -93,18 +131,40 @@ describe("attention notifier", () => {
     expect(h.channel.calls).toHaveLength(1)
   })
 
-  it("passes only title, provider, cwd, and state to the channel - never prompt or transcript text", () => {
+  it("keeps clarification notifications generic and excludes request and transcript content", () => {
     const store = soloStore()
     const h = harness(store, "unfocused")
 
-    // A prompt and streamed transcript precede the needy transition; none may leak.
+    // Request content and streamed transcript precede the needy transition; none may leak.
     store.applyEvent("a", { kind: "agent_message", messageId: "m1", textDelta: "secret transcript text" })
-    store.applyEvent("a", { kind: "status", status: "awaiting_approval" })
+    store.openClarification({
+      requestId: "clarification-1",
+      generation: 1,
+      sessionId: "a",
+      title: "Alpha",
+      cwd: "/work/alpha",
+      payload: {
+        prompt: "secret clarification prompt",
+        fields: [{
+          id: "answer",
+          label: "secret option label",
+          mode: "text",
+          required: true,
+        }],
+      },
+    })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
 
     expect(h.channel.calls).toHaveLength(1)
     const input = h.channel.calls[0]!
     expect(Object.keys(input).sort()).toEqual(["cwd", "provider", "state", "title"])
-    expect(input).toEqual({ title: "Alpha", provider: "claude-code", cwd: "/work/alpha", state: "awaiting_approval" })
+    expect(input).toEqual({
+      title: "Alpha",
+      provider: "claude-code",
+      cwd: "/work/alpha",
+      state: "awaiting_clarification",
+    })
+    expect(JSON.stringify(input)).not.toContain("secret")
   })
 
   it("does not fire for a session already needy at boot (latch primed from initial state)", () => {
@@ -115,6 +175,40 @@ describe("attention notifier", () => {
 
     // An unrelated change re-emits the list; the pre-existing needy session must stay quiet.
     store.applyEvent("a", { kind: "agent_message", messageId: "m1", textDelta: "more" })
+
+    expect(h.bells()).toBe(0)
+    expect(h.channel.calls).toHaveLength(0)
+  })
+
+  it("notifies a background transition once even when no Visible conversation is selected", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "Alpha", cwd: "/work/alpha" },
+        { id: "b", providerKind: "codex", title: "Bravo", cwd: "/work/bravo" },
+      ],
+      selectedVisibleId: "a",
+    })
+    store.backgroundConversation("a")
+    store.backgroundConversation("b")
+    const h = harness(store, "unfocused")
+
+    store.applyEvent("b", { kind: "status", status: "working" })
+    store.applyEvent("b", { kind: "status", status: "finished" })
+    store.applyEvent("b", { kind: "status", status: "finished" })
+
+    expect(store.getState().workspace.selectedVisibleId).toBeNull()
+    expect(h.bells()).toBe(1)
+    expect(h.channel.calls).toEqual([
+      { title: "Bravo", provider: "codex", cwd: "/work/bravo", state: "finished" },
+    ])
+  })
+
+  it("never notifies a Closed conversation", () => {
+    const store = soloStore()
+    const h = harness(store, "unfocused")
+
+    store.removeSession("a")
+    store.applyEvent("a", { kind: "status", status: "error" })
 
     expect(h.bells()).toBe(0)
     expect(h.channel.calls).toHaveLength(0)

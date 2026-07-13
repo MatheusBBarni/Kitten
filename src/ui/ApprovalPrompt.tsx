@@ -35,7 +35,7 @@ import { useCallback, useState, type ReactNode } from "react"
 
 import type { PermissionOptionView, PermissionOutcome } from "../agent/agentConnection.ts"
 import type { ApprovalOverlay } from "../store/appStore.ts"
-import { selectApprovalOverlay } from "../store/selectors.ts"
+import { selectApprovalOverlay, selectIsClarificationOpen } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { APPROVAL_HINT, approvalOptionIndex, matchApprovalCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -74,6 +74,7 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const { sessionId, title, cwd, request } = overlay
   const { options, toolCall } = request
 
@@ -116,6 +117,10 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification is the top-priority interaction. Return before claiming the key
+      // or touching this dialog so its mounted request and highlight resume unchanged.
+      if (clarificationOpen) return
+
       // Modal: no key reaches the focused textarea while an agent waits on an answer,
       // whether or not this dialog claims it. The shell stands down separately.
       key.preventDefault()
@@ -143,7 +148,7 @@ function ApprovalDialog({ overlay }: { overlay: ApprovalOverlay }): ReactNode {
           return
       }
     },
-    [answer, choose, options.length, selected],
+    [answer, choose, clarificationOpen, options.length, selected],
   )
   useKeyboard(onKey)
 

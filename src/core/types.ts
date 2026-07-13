@@ -10,6 +10,8 @@
  * Type shapes follow the TechSpec "Data Models" and "Core Interfaces" sections.
  */
 
+import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
+
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
  * own identity (ADR-004). Two sessions can share a `ProviderKind`; each still gets
@@ -51,7 +53,13 @@ export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
  * The adapter derives `finished`/`error` only from terminal signals, never from a
  * streaming update, so `finished` cannot flicker mid-turn.
  */
-export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished" | "error"
+export type SessionStatus =
+  | "idle"
+  | "working"
+  | "awaiting_clarification"
+  | "awaiting_approval"
+  | "finished"
+  | "error"
 
 /**
  * Whether a session's status is one the developer must act on: an approval to
@@ -61,7 +69,142 @@ export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished
  * about which sessions need you.
  */
 export const needsAttention = (status: SessionStatus): boolean =>
-  status === "awaiting_approval" || status === "error" || status === "finished"
+  status === "awaiting_clarification" ||
+  status === "awaiting_approval" ||
+  status === "error" ||
+  status === "finished"
+
+/** One protocol-free choice presented by a structured clarification field. */
+export interface ClarificationOption {
+  /** Stable adapter-normalized identifier returned in an answered outcome. */
+  id: string
+  label: string
+  description?: string
+}
+
+interface ClarificationFieldBase {
+  /** Stable adapter-normalized identifier used as the outcome-values key. */
+  id: string
+  label: string
+  description?: string
+  required: boolean
+}
+
+/** A field whose answer must reference one normalized option identifier. */
+export interface ClarificationSingleField extends ClarificationFieldBase {
+  mode: "single"
+  options: ClarificationOption[]
+}
+
+/** A field whose answer may reference several normalized option identifiers. */
+export interface ClarificationMultiField extends ClarificationFieldBase {
+  mode: "multi"
+  options: ClarificationOption[]
+}
+
+/** A field answered with protocol-free text rather than a choice identifier. */
+export interface ClarificationTextField extends ClarificationFieldBase {
+  mode: "text"
+  options?: never
+}
+
+/** Every adapter-normalized field shape accepted by the core and downstream UI. */
+export type ClarificationField =
+  | ClarificationSingleField
+  | ClarificationMultiField
+  | ClarificationTextField
+
+/** Adapter-normalized clarification content with no request or connection lifecycle data. */
+export interface ClarificationPayload {
+  prompt: string
+  fields: ClarificationField[]
+}
+
+/** The only terminal user outcomes exposed beyond the adapter/controller boundary. */
+export type ClarificationOutcome =
+  | { kind: "answered"; values: Record<string, string | string[]> }
+  | { kind: "cancelled" }
+
+/** User-owned lifecycle for one conversation in the workspace. */
+export type ConversationLifecycle = "visible" | "background" | "closed"
+
+/** Finite, protocol-free reasons why a conversation runtime is unavailable. */
+export type ConversationUnavailableReason =
+  | "provider-unavailable"
+  | "connection-failed"
+  | "restore-unavailable"
+  | "teardown-failed"
+
+/** Runtime standing exposed to the workspace without carrying raw ACP errors. */
+export type ConversationAvailability =
+  | { kind: "starting" }
+  | { kind: "ready" }
+  | {
+      kind: "unavailable"
+      reasonCode: ConversationUnavailableReason
+      retryable: boolean
+    }
+
+/** Prevents duplicate teardown while lifecycle remains unchanged until success. */
+export type TeardownState = "open" | "closing"
+
+/** Workspace acknowledgement for the current execution-status epoch. */
+export interface AttentionRecord {
+  status: SessionStatus
+  seen: boolean
+  sequence: number
+}
+
+/** User-owned metadata for one non-Closed conversation. */
+export interface WorkspaceConversation {
+  sessionId: SessionId
+  displayName: string
+  lifecycle: Exclude<ConversationLifecycle, "closed">
+  createdOrdinal: number
+  availability: ConversationAvailability
+  teardownState: TeardownState
+  attention: AttentionRecord
+}
+
+/** Protocol-free workspace state; selection is nullable for a valid empty view. */
+export interface WorkspaceState {
+  conversations: Record<SessionId, WorkspaceConversation>
+  order: SessionId[]
+  selectedVisibleId: SessionId | null
+}
+
+/** Ephemeral workspace feedback; never persisted or sent to telemetry. */
+export type WorkspaceNotice = { code: "no-provider-available" }
+
+/** Seed accepted by the pure workspace factory for boot and restore. */
+export interface WorkspaceConversationSeed {
+  sessionId: SessionId
+  displayName: string
+  lifecycle?: Exclude<ConversationLifecycle, "closed">
+  createdOrdinal?: number
+  availability?: ConversationAvailability
+  teardownState?: TeardownState
+  attention?: AttentionRecord
+}
+
+/** Pure workspace transitions. Runtime and I/O effects stay in the controller. */
+export type WorkspaceEvent =
+  | {
+      kind: "create"
+      sessionId: SessionId
+      displayName: string
+      availability?: ConversationAvailability
+      initialStatus?: SessionStatus
+    }
+  | { kind: "rename"; sessionId: SessionId; displayName: string }
+  | { kind: "select"; sessionId: SessionId }
+  | { kind: "select_adjacent"; direction: "previous" | "next" }
+  | { kind: "background"; sessionId: SessionId }
+  | { kind: "reopen"; sessionId: SessionId }
+  | { kind: "set_availability"; sessionId: SessionId; availability: ConversationAvailability }
+  | { kind: "set_teardown_state"; sessionId: SessionId; teardownState: TeardownState }
+  | { kind: "execution_status"; sessionId: SessionId; status: SessionStatus }
+  | { kind: "close_succeeded"; sessionId: SessionId }
 
 /** Normalized classification of a tool call, translated from the agent's own kinds. */
 export type ToolCallKind =
@@ -241,6 +384,14 @@ export interface SessionSeed {
   acpSessionId?: string
 }
 
+/** Raw context-window usage reported by an agent. */
+export interface SessionUsage {
+  /** Tokens currently in the agent's context window. */
+  used: number
+  /** Total context-window size in tokens. */
+  size: number
+}
+
 /**
  * The full state of one session, and the sole thing the reducer writes.
  *
@@ -266,6 +417,8 @@ export interface SessionState {
   pendingDiffs: PendingDiff[]
   /** The agent's most recently reported plan, if any. */
   plan: PlanEntry[]
+  /** Raw agent-reported context usage; undefined until the first report. */
+  usage?: SessionUsage
   /**
    * The full set of config options the agent has advertised for this session
    * (ADR-003), replaced wholesale on every `config_options` event because the
@@ -274,6 +427,8 @@ export interface SessionState {
   configOptions: ConfigOption[]
   /** The latest complete slash-command list advertised for this session. */
   commands: AvailableCommand[]
+  /** Current-run composer submissions and recall position, private to this session. */
+  promptHistory: PromptHistoryState
 }
 
 /** One semantically bounded shell command and its captured raw output. */
@@ -318,10 +473,12 @@ export type DomainSessionEvent =
   | { kind: "user_message"; messageId: string; text: string }
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
-  | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
+  | { kind: "status"; status: SessionStatus }
+  | { kind: "usage"; used: number; size: number }
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
+  | PromptHistoryEvent
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic
@@ -352,6 +509,25 @@ export interface ProviderRecipe {
 }
 
 /**
+ * Whether a resolved provider recipe may use Kitten's structured clarification
+ * path. This stays protocol-free; ACP capability types remain in `src/agent`.
+ */
+export type ClarificationCapability =
+  | { status: "supported"; adapterPackage: string; adapterVersion: string }
+  | {
+      status: "unsupported"
+      reason: "unknown_recipe" | "recipe_overridden" | "unverified_recipe"
+    }
+
+/** A protocol-free stdio MCP server declaration shared by every agent session. */
+export interface McpServerConfig {
+  name: string
+  command: string
+  args: string[]
+  env: Record<string, string>
+}
+
+/**
  * A provider's spawn recipe paired with its own {@link ProviderKind}. This is the
  * shape the agent adapter layer spawns from: a {@link ProviderRecipe} plus the `id`
  * the map key carries in config. Renamed conceptually from the former per-agent
@@ -359,6 +535,11 @@ export interface ProviderRecipe {
  */
 export interface AgentConfig extends ProviderRecipe {
   id: ProviderKind
+}
+
+/** A provider config after exact clarification capability classification. */
+export interface ResolvedAgentConfig extends AgentConfig {
+  clarificationCapability: ClarificationCapability
 }
 
 /**
@@ -398,6 +579,7 @@ export interface ShellConfig {
 export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
   sessions: SessionDescriptor[]
+  mcpServers: McpServerConfig[]
   shell: ShellConfig
   persistenceEnabled: boolean
   telemetryEnabled: boolean
@@ -413,7 +595,7 @@ export interface AppConfig {
  */
 export interface ResolvedSession {
   seed: SessionSeed
-  spawn: AgentConfig
+  spawn: ResolvedAgentConfig
 }
 
 /** A content-free telemetry record (opt-in, local JSONL only). */

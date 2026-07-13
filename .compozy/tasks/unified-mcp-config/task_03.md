@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: ACP MCP translator - domain to SDK McpServer
 type: backend
 complexity: low
@@ -30,9 +30,9 @@ This is the only place the SDK `McpServer` type is constructed, preserving the a
 </requirements>
 
 ## Subtasks
-- [ ] 03.1 Add `toAcpMcpServers` to `acpTranslate.ts`.
-- [ ] 03.2 Convert each env map into the SDK `EnvVariable` array shape.
-- [ ] 03.3 Produce the stdio `McpServer` variant per server, preserving order.
+- [x] 03.1 Add `toAcpMcpServers` to `acpTranslate.ts`.
+- [x] 03.2 Convert each env map into the SDK `EnvVariable` array shape.
+- [x] 03.3 Produce the stdio `McpServer` variant per server, preserving order.
 
 ## Implementation Details
 Modify `src/agent/acpTranslate.ts`, the established domain-to-SDK translation home.
@@ -55,12 +55,12 @@ ADR-003 mandates translation lives here so no SDK MCP type escapes the boundary.
 
 ## Tests
 - Unit tests:
-  - [ ] A server `{ name:"gh", command:"/abs/npx", args:["-y","x"], env:{A:"1",B:"2"} }` maps to a stdio `McpServer` whose env is `[{name:"A",value:"1"},{name:"B",value:"2"}]`.
-  - [ ] An empty input array returns an empty array.
-  - [ ] A server with an empty env map maps to an empty env array.
-  - [ ] Two servers appear in the output in the same order as the input.
+  - [x] A server `{ name:"gh", command:"/abs/npx", args:["-y","x"], env:{A:"1",B:"2"} }` maps to a stdio `McpServer` whose env is `[{name:"A",value:"1"},{name:"B",value:"2"}]`.
+  - [x] An empty input array returns an empty array.
+  - [x] A server with an empty env map maps to an empty env array.
+  - [x] Two servers appear in the output in the same order as the input.
 - Integration tests:
-  - [ ] Covered by task_04's in-memory contract test asserting the translated shape reaches the agent side (referenced, not duplicated here).
+  - [x] Covered by task_04's in-memory contract test asserting the translated shape reaches the agent side (referenced, not duplicated here).
 - Test coverage target: >=80%
 - All tests must pass
 

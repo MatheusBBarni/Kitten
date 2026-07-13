@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Pure file-completion parsing, formatting, and edit tracking"
 type: frontend
 complexity: medium
@@ -28,11 +28,11 @@ Extract the deterministic @ completion logic from the future PromptEditor integr
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Create pure file-token and path-match helpers.
-- [ ] 5.2 Define deterministic result ranking and visible-row limiting.
-- [ ] 5.3 Define visible reference formatting for plain and quoted paths.
-- [ ] 5.4 Define suppression transition helpers for dismissed tokens.
-- [ ] 5.5 Define pending-reference edit-range and correction helpers with direct tests.
+- [x] 5.1 Create pure file-token and path-match helpers.
+- [x] 5.2 Define deterministic result ranking and visible-row limiting.
+- [x] 5.3 Define visible reference formatting for plain and quoted paths.
+- [x] 5.4 Define suppression transition helpers for dismissed tokens.
+- [x] 5.5 Define pending-reference edit-range and correction helpers with direct tests.
 
 ## Implementation Details
 
@@ -61,14 +61,14 @@ Create `src/ui/fileCompletion.ts` and colocated tests as the pure seam specified
 
 ## Tests
 - Unit tests:
-  - [ ] @ at offset zero and after whitespace returns a token; `name@example.com`, `foo@bar`, and cursor-outside-token do not.
-  - [ ] Basename-prefix matches rank before full-path substring matches; case-folded matching preserves original path spelling and lexical tie order.
-  - [ ] The visible result subset stops at eight without mutating the complete match list.
-  - [ ] Plain, whitespace, quote, and backslash paths produce the required plain or quoted visible reference.
-  - [ ] Escape suppression persists for continued typing in the same token and clears only under each specified reset condition.
-  - [ ] Insertions before shift a pending range, edits after retain it, overlap reports one correction, and submission clears without reporting.
+  - [x] @ at offset zero and after whitespace returns a token; `name@example.com`, `foo@bar`, and cursor-outside-token do not.
+  - [x] Basename-prefix matches rank before full-path substring matches; case-folded matching preserves original path spelling and lexical tie order.
+  - [x] The visible result subset stops at eight without mutating the complete match list.
+  - [x] Plain, whitespace, quote, and backslash paths produce the required plain or quoted visible reference.
+  - [x] Escape suppression persists for continued typing in the same token and clears only under each specified reset condition.
+  - [x] Insertions before shift a pending range, edits after retain it, overlap reports one correction, and submission clears without reporting.
 - Integration tests:
-  - [ ] A minimal composition fixture maps a token, candidate list, and selected path through helpers to the exact visible draft reference.
+  - [x] A minimal composition fixture maps a token, candidate list, and selected path through helpers to the exact visible draft reference.
 - Test coverage target: >=80%
 - All tests must pass
 

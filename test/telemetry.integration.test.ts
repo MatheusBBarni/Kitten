@@ -5,10 +5,20 @@ import { join } from "node:path"
 
 import type { AgentConnection } from "../src/agent/agentConnection.ts"
 import { createControllerActions } from "../src/app/actions.ts"
-import type { AgentRuntimeState, SessionController } from "../src/app/controller.ts"
+import {
+  createSessionController,
+  type AgentRuntimeState,
+  type SessionController,
+} from "../src/app/controller.ts"
 import { createHandoffEdits, createHandoffFlow } from "../src/app/handoff.ts"
 import { REEXPLANATION_CHAR_THRESHOLD } from "../src/core/telemetryHeuristics.ts"
-import type { ConfigOption, SessionId } from "../src/core/types.ts"
+import type {
+  AppConfig,
+  ClarificationOutcome,
+  ClarificationPayload,
+  ConfigOption,
+  SessionId,
+} from "../src/core/types.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
 import {
   createJsonlFileSink,
@@ -70,12 +80,45 @@ function realController(
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId)?.ready === true,
+    closeConversation: async () => ({ outcome: "ignored" }),
     restore: async () => {},
     dispose: async () => {},
   }
 }
 
 const SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"
+
+function clarificationConnection(): {
+  connection: AgentConnection
+  clarify(payload: ClarificationPayload): Promise<ClarificationOutcome>
+} {
+  let handler: ((payload: ClarificationPayload) => Promise<ClarificationOutcome>) | null = null
+  const connection = {
+    id: "claude-code",
+    connect: async () => ({ ready: true as const, protocolVersion: 1, canLoadSession: false }),
+    newSession: async () => "acp-session-private",
+    loadSession: async () => {},
+    prompt: async () => ({ stopReason: "end_turn" as const }),
+    cancel: async () => {},
+    setSessionConfigOption: async () => [],
+    onUpdate: () => () => {},
+    onPermission: () => {},
+    onClarification: (next: (payload: ClarificationPayload) => Promise<ClarificationOutcome>) => {
+      handler = next
+      return () => {
+        if (handler === next) handler = null
+      }
+    },
+    dispose: async () => {},
+  } as AgentConnection
+  return {
+    connection,
+    clarify(payload) {
+      if (!handler) throw new Error("clarification handler not registered")
+      return handler(payload)
+    },
+  }
+}
 
 describe("telemetry over a scripted hand-off session", () => {
   it("writes the content-free switch and effort-linked hand-off sequence to an injected memory sink", async () => {
@@ -248,6 +291,121 @@ describe("telemetry over a scripted hand-off session", () => {
           ),
         ).toBe(true)
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("clarification lifecycle over controller and local JSONL", () => {
+  it("writes an ordered mixed-form lifecycle without request or answer content", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-clarification-telemetry-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      let clock = 1_000
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => clock,
+        sessionRef: "run-fixed",
+      })
+      const stub = clarificationConnection()
+      const config: AppConfig = {
+        providers: {
+          "claude-code": {
+            displayName: "Claude Code",
+            command: "claude-acp",
+            args: [],
+            env: {},
+          },
+          codex: {
+            displayName: "Codex",
+            command: "codex-acp",
+            args: [],
+            env: {},
+          },
+        },
+        sessions: [{ provider: "claude-code", cwd: dir, title: "Private" }],
+        mcpServers: [],
+        shell: { enabled: false, command: "/bin/sh", scrollback: 100 },
+        persistenceEnabled: false,
+        telemetryEnabled: true,
+        theme: "auto",
+        welcomeBanner: "auto",
+      }
+      const controller = await createSessionController({
+        config,
+        createConnection: () => stub.connection,
+        readBranch: async () => null,
+        recorder,
+        newInteractionId: () => "request-private",
+        sendInitialTasks: false,
+      })
+      const payload: ClarificationPayload = {
+        prompt: "private prompt",
+        fields: [
+          {
+            id: "single-private",
+            label: "private single",
+            mode: "single",
+            required: true,
+            options: [{ id: "selected-private", label: "private option" }],
+          },
+          {
+            id: "multi-private",
+            label: "private multi",
+            mode: "multi",
+            required: false,
+            options: [{ id: "multi-value-private", label: "private multi option" }],
+          },
+          {
+            id: "text-private",
+            label: "private text",
+            mode: "text",
+            required: false,
+          },
+        ],
+      }
+
+      const clarification = stub.clarify(payload)
+      const overlay = controller.store.getState().overlays.clarification!
+      clock += 31_000
+      controller.actions.respondClarification(overlay.requestId, overlay.generation, {
+        kind: "answered",
+        values: {
+          "single-private": "selected-private",
+          "multi-private": ["multi-value-private"],
+          "text-private": "private answer",
+        },
+      })
+      await clarification
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as TelemetryRecord)
+      expect(records.map((record) => record.type)).toEqual([
+        "clarification_capability_classified",
+        "clarification_presented",
+        "clarification_settled",
+      ])
+      expect(records.at(-1)).toMatchObject({
+        terminalKind: "answered",
+        hasSingle: true,
+        hasMulti: true,
+        hasText: true,
+        fieldCountBucket: "two_to_three",
+        durationBucket: "30_to_120s",
+      })
+      expect(raw).not.toContain("private prompt")
+      expect(raw).not.toContain("private option")
+      expect(raw).not.toContain("private answer")
+      expect(raw).not.toContain(dir)
+      expect(raw).not.toContain("claude-acp")
+      expect(raw).not.toContain("request-private")
+
+      await controller.dispose()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

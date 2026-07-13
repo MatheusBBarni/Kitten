@@ -1,0 +1,42 @@
+---
+import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import Section from "./Section.astro";
+
+interface Props {
+  section: ShowcaseConfig["install"];
+}
+
+const { section } = Astro.props;
+const route = section.commands[0];
+const hintId = `${section.id}-copy-hint`;
+const statusId = `${section.id}-copy-status`;
+---
+
+<Section id={section.id} heading={section.heading} body={section.body}>
+  <div class="install-command" data-install-command>
+    <pre><code
+        data-copy-command-text
+        tabindex="0"
+        aria-label="Install command; select and copy manually if automatic copy is unavailable"
+      >{section.primaryInstallCmd}</code></pre>
+    <button
+      class="button button-primary"
+      type="button"
+      data-copy-command-trigger
+      aria-describedby={`${hintId} ${statusId}`}
+    >
+      {section.primaryCtaLabel}
+    </button>
+    {route && <p class="install-hint" id={hintId}>{route.shellCopyHint}</p>}
+    <p
+      class="install-status"
+      id={statusId}
+      data-copy-command-status
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    ></p>
+  </div>
+</Section>
+
+<script src="../scripts/copy-command.ts"></script>

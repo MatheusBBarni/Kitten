@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Opt-in file-selector telemetry through controller actions"
 type: backend
 complexity: high
@@ -28,11 +28,11 @@ Extend the existing local telemetry recorder and controller action facade with t
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Extend the telemetry event and record contracts with fixed file-selector signals.
-- [ ] 3.2 Add recorder methods and disabled-recorder implementations.
-- [ ] 3.3 Wire a narrow file-selector telemetry facade through actions and controller construction.
-- [ ] 3.4 Add deterministic enabled and disabled recorder coverage.
-- [ ] 3.5 Prove the serialized event shape cannot contain prohibited content fields.
+- [x] 3.1 Extend the telemetry event and record contracts with fixed file-selector signals.
+- [x] 3.2 Add recorder methods and disabled-recorder implementations.
+- [x] 3.3 Wire a narrow file-selector telemetry facade through actions and controller construction.
+- [x] 3.4 Add deterministic enabled and disabled recorder coverage.
+- [x] 3.5 Prove the serialized event shape cannot contain prohibited content fields.
 
 ## Implementation Details
 
@@ -64,13 +64,13 @@ Use TechSpec "Monitoring and Observability" as the event inventory and "Data Mod
 
 ## Tests
 - Unit tests:
-  - [ ] Each fixed file-selector event records the expected event kind, agent id, duration, and fixed outcome/state only.
-  - [ ] Disabled telemetry records no event and constructs no sink writes for every new method.
-  - [ ] Serialized records lack query, path, prompt, candidate-count, reference-text, and byte fields.
-  - [ ] Invalid or non-fixed outcome values are not accepted by the typed recorder API.
+  - [x] Each fixed file-selector event records the expected event kind, agent id, duration, and fixed outcome/state only.
+  - [x] Disabled telemetry records no event and constructs no sink writes for every new method.
+  - [x] Serialized records lack query, path, prompt, candidate-count, reference-text, and byte fields.
+  - [x] Invalid or non-fixed outcome values are not accepted by the typed recorder API.
 - Integration tests:
-  - [ ] A controller built with an enabled injected recorder forwards a file-selector action fact to the sink.
-  - [ ] The same controller built with telemetry disabled emits no sink record while other controller actions remain functional.
+  - [x] A controller built with an enabled injected recorder forwards a file-selector action fact to the sink.
+  - [x] The same controller built with telemetry disabled emits no sink record while other controller actions remain functional.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -34,7 +34,7 @@
 
 import type { KeyEvent } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 
 import {
   EFFORT_CATEGORY,
@@ -46,7 +46,9 @@ import {
 import type { ModelSelectOverlay } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
+  selectFocusedSessionId,
   selectIsApprovalOpen,
+  selectIsClarificationOpen,
   selectModelSelectOverlay,
   selectSessionList,
   selectSessionTurns,
@@ -96,8 +98,16 @@ export function modelSelectTitleFor(displayName: string): string {
  * swallow keys.
  */
 export function ModelSelect(): ReactNode {
+  const controller = useController()
   const overlay = useAppSelector(selectModelSelectOverlay)
-  if (!overlay) return null
+  const selectedSessionId = useAppSelector(selectFocusedSessionId)
+  const validOverlay = overlay !== null && overlay.sessionId === selectedSessionId
+
+  useEffect(() => {
+    if (overlay !== null && !validOverlay) controller.store.closeModelSelect()
+  }, [controller, overlay, validOverlay])
+
+  if (!validOverlay) return null
   // A new open target starts with a fresh tab/row selection rather than preserving
   // transient state from the last selector instance.
   return <ModelSelectDialog key={overlay.sessionId} overlay={overlay} />
@@ -134,6 +144,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   const palette = usePalette()
   const { height } = useTerminalDimensions()
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const sessions = useAppSelector(selectSessionList)
 
   // Tabs represent session instances, not provider kinds: several sessions can share
@@ -214,6 +225,10 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification owns top modal priority. Return before claiming or interpreting
+      // this key so the mounted selector and any inline confirmation resume unchanged.
+      if (clarificationOpen) return
+
       // A permission request blocks an agent mid-turn. It outranks a selector that is
       // waiting on nothing but the developer, so hand it the keyboard whole.
       if (approvalOpen) return
@@ -263,7 +278,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
           return
       }
     },
-    [approvalOpen, apply, choose, clamped, confirming, controller, rows, switchTab],
+    [approvalOpen, apply, choose, clarificationOpen, clamped, confirming, controller, rows, switchTab],
   )
   useKeyboard(onKey)
 

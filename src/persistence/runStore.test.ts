@@ -12,7 +12,13 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
-import type { PersistedRunRecord } from "./runRecord.ts"
+import type { ResolvedSession } from "../core/types.ts"
+import {
+  migratePersistedRunV1,
+  type PersistedRunRecord,
+  type PersistedRunRecordV1,
+  type PersistedRunRecordV2,
+} from "./runRecord.ts"
 import {
   SESSIONS_PATH_ENV_VAR,
   createRunStore,
@@ -29,8 +35,8 @@ const SECRET = "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"
 
 function makeRecord(
   cwd: string,
-  overrides: Partial<PersistedRunRecord> = {},
-): PersistedRunRecord {
+  overrides: Partial<PersistedRunRecordV1> = {},
+): PersistedRunRecordV1 {
   return {
     version: 1,
     runId: "run-1",
@@ -64,6 +70,75 @@ function makeRecord(
   }
 }
 
+function makeV2Record(cwd: string, overrides: Partial<PersistedRunRecordV2> = {}): PersistedRunRecordV2 {
+  return {
+    version: 2,
+    runId: "run-v2",
+    cwd,
+    gitBranch: "feat/tabs",
+    createdAt: 100,
+    updatedAt: 300,
+    conversations: {
+      visible: {
+        sessionId: "visible",
+        providerKind: "codex",
+        cwd,
+        initialTitle: "Codex",
+        acpSessionId: "acp-visible",
+        lastPrompt: "implement persistence",
+        messageCount: 3,
+        status: "working",
+      },
+      background: {
+        sessionId: "background",
+        providerKind: "claude-code",
+        cwd,
+        initialTitle: "Claude Code",
+        acpSessionId: "acp-background",
+        lastPrompt: "review persistence",
+        messageCount: 5,
+        status: "finished",
+      },
+    },
+    workspace: {
+      conversations: {
+        visible: {
+          sessionId: "visible",
+          displayName: "Writer",
+          lifecycle: "visible",
+          createdOrdinal: 4,
+          attention: { seen: true, sequence: 2 },
+        },
+        background: {
+          sessionId: "background",
+          displayName: "Reviewer",
+          lifecycle: "background",
+          createdOrdinal: 7,
+          attention: { seen: false, sequence: 8 },
+        },
+      },
+      order: ["visible", "background"],
+      selectedVisibleId: "visible",
+    },
+    handoffBundle: null,
+    ...overrides,
+  }
+}
+
+function resolvedSession(id: string, providerKind: "claude-code" | "codex", cwd: string): ResolvedSession {
+  return {
+    seed: { id, providerKind, cwd, title: `${id} configured` },
+    spawn: {
+      id: providerKind,
+      displayName: id,
+      command: "agent",
+      args: [],
+      env: {},
+      clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+    },
+  }
+}
+
 function withTempStore(run: (base: string) => void): void {
   const base = mkdtempSync(join(tmpdir(), "kitten-run-store-"))
   try {
@@ -86,6 +161,61 @@ describe("createRunStore", () => {
       expect(statSync(path).isFile()).toBe(true)
       expect(statSync(path).mode & 0o777).toBe(0o600)
       expect(store.load(cwd, record.runId)).toEqual({ ...record, cwd: resolve(cwd) })
+    })
+  })
+
+  it("round-trips V2 descriptors and canonical visible/background workspace metadata", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const record = makeV2Record(cwd)
+      const store = createRunStore({ enabled: true, path: base })
+
+      store.save(record)
+
+      expect(store.load(cwd, record.runId)).toEqual({
+        ...record,
+        cwd: resolve(cwd),
+        conversations: {
+          visible: { ...record.conversations.visible!, cwd: resolve(cwd) },
+          background: { ...record.conversations.background!, cwd: resolve(cwd) },
+        },
+      })
+      expect(store.list(cwd)).toEqual([
+        {
+          runId: "run-v2",
+          updatedAt: 300,
+          gitBranch: "feat/tabs",
+          focusedAgentId: "visible",
+          lastPrompt: "implement persistence",
+          messageCount: 3,
+        },
+      ])
+    })
+  })
+
+  it("accepts a background-only V2 workspace with null selection and branch", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "project")
+      const original = makeV2Record(cwd)
+      const backgroundOnly = makeV2Record(cwd, {
+        gitBranch: null,
+        conversations: { background: original.conversations.background! },
+        workspace: {
+          conversations: { background: original.workspace.conversations.background! },
+          order: ["background"],
+          selectedVisibleId: null,
+        },
+      })
+      const store = createRunStore({ enabled: true, path: base })
+
+      store.save(backgroundOnly)
+
+      expect(store.load(cwd, "run-v2")).toMatchObject({
+        version: 2,
+        gitBranch: null,
+        workspace: { order: ["background"], selectedVisibleId: null },
+      })
+      expect(store.list(cwd)[0]?.focusedAgentId).toBeNull()
     })
   })
 
@@ -152,10 +282,38 @@ describe("createRunStore", () => {
       expect(raw).not.toContain(SECRET)
       expect(raw).not.toContain('"turns"')
       expect(raw).not.toContain("must never persist")
-      expect(store.load(cwd, "run-1")?.agents.codex?.lastPrompt).toBe(
+      const loaded = store.load(cwd, "run-1")
+      expect(loaded?.version).toBe(1)
+      expect(loaded?.version === 1 ? loaded.agents.codex?.lastPrompt : undefined).toBe(
         `use ${REDACTION_PLACEHOLDER} to continue`,
       )
       expect(store.load(cwd, "run-1")?.gitBranch).toBe(`feat/${REDACTION_PLACEHOLDER}`)
+    })
+  })
+
+  it("redacts V2 branch, titles, display names, and prompt summaries", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "project")
+      const record = makeV2Record(cwd, { gitBranch: `feat/${SECRET}` })
+      record.conversations.visible!.initialTitle = `Title ${SECRET}`
+      record.conversations.visible!.lastPrompt = `Prompt ${SECRET}`
+      record.workspace.conversations.visible!.displayName = `Name ${SECRET}`
+      const store = createRunStore({ enabled: true, path: base })
+
+      store.save(record)
+
+      const raw = readFileSync(
+        join(base, "sessions", encodeProjectDirectory(cwd), "run-v2.json"),
+        "utf8",
+      )
+      expect(raw).not.toContain(SECRET)
+      const loaded = store.load(cwd, "run-v2")
+      expect(loaded?.version).toBe(2)
+      if (loaded?.version !== 2) throw new Error("Expected V2 record")
+      expect(loaded.gitBranch).toBe(`feat/${REDACTION_PLACEHOLDER}`)
+      expect(loaded.conversations.visible?.initialTitle).toBe(`Title ${REDACTION_PLACEHOLDER}`)
+      expect(loaded.conversations.visible?.lastPrompt).toBe(`Prompt ${REDACTION_PLACEHOLDER}`)
+      expect(loaded.workspace.conversations.visible?.displayName).toBe(`Name ${REDACTION_PLACEHOLDER}`)
     })
   })
 
@@ -230,10 +388,38 @@ describe("createRunStore", () => {
       store.save(makeRecord(cwd, { runId: "valid" }))
       const projectDirectory = join(base, "sessions", encodeProjectDirectory(cwd))
       writeFileSync(join(projectDirectory, "broken.json"), "{ not json", "utf8")
-      writeFileSync(join(projectDirectory, "wrong-version.json"), '{"version":2}', "utf8")
+      writeFileSync(join(projectDirectory, "wrong-version.json"), '{"version":3}', "utf8")
 
       expect(store.list(cwd).map((summary) => summary.runId)).toEqual(["valid"])
       expect(store.load(cwd, "broken")).toBeNull()
+    })
+  })
+
+  it.each([
+    ["duplicate order", (record: PersistedRunRecordV2) => record.workspace.order.push("visible")],
+    ["missing membership", (record: PersistedRunRecordV2) => delete record.workspace.conversations.background],
+    ["invalid lifecycle", (record: PersistedRunRecordV2) => {
+      ;(record.workspace.conversations.background as { lifecycle: string }).lifecycle = "closed"
+    }],
+    ["invalid selection", (record: PersistedRunRecordV2) => {
+      record.workspace.selectedVisibleId = "background"
+    }],
+    ["missing visible selection", (record: PersistedRunRecordV2) => {
+      record.workspace.selectedVisibleId = null
+      record.gitBranch = null
+    }],
+  ])("fails soft for V2 %s while retaining valid sibling runs", (_name, mutate) => {
+    withTempStore((base) => {
+      const cwd = join(base, "project")
+      const store = createRunStore({ enabled: true, path: base })
+      store.save(makeV2Record(cwd, { runId: "valid" }))
+      const invalid = structuredClone(makeV2Record(cwd, { runId: "invalid" }))
+      mutate(invalid)
+      const projectDirectory = join(base, "sessions", encodeProjectDirectory(cwd))
+      writeFileSync(join(projectDirectory, "invalid.json"), JSON.stringify(invalid), "utf8")
+
+      expect(store.load(cwd, "invalid")).toBeNull()
+      expect(store.list(cwd).map((summary) => summary.runId)).toEqual(["valid"])
     })
   })
 
@@ -259,6 +445,62 @@ describe("createRunStore", () => {
       expect(() => store.save(makeRecord(cwd, { runId: "../escape" }))).toThrow(/Invalid run id/)
       expect(readdirSync(base)).toEqual([])
     })
+  })
+})
+
+describe("migratePersistedRunV1", () => {
+  it("keeps only configuration-matched entries and treats legacy sessionId as the ACP pointer", () => {
+    const cwd = "/work/kitten"
+    const legacy = makeRecord(cwd, {
+      focusedAgentId: "dynamic-unmatched",
+      agents: {
+        codex: {
+          sessionId: "saved-acp-pointer",
+          lastPrompt: "resume this",
+          messageCount: 9,
+          status: "finished",
+        },
+        "dynamic-unmatched": {
+          sessionId: "must-not-migrate",
+          lastPrompt: "unknown descriptor",
+          messageCount: 2,
+          status: "idle",
+        },
+      },
+    })
+
+    const migrated = migratePersistedRunV1(legacy, [
+      resolvedSession("claude", "claude-code", cwd),
+      resolvedSession("codex", "codex", cwd),
+    ])
+
+    expect(migrated.conversations).toEqual({
+      codex: {
+        sessionId: "codex",
+        providerKind: "codex",
+        cwd,
+        initialTitle: "codex configured",
+        acpSessionId: "saved-acp-pointer",
+        lastPrompt: "resume this",
+        messageCount: 9,
+        status: "finished",
+      },
+    })
+    expect(migrated.workspace).toEqual({
+      conversations: {
+        codex: {
+          sessionId: "codex",
+          displayName: "codex configured",
+          lifecycle: "visible",
+          createdOrdinal: 0,
+          attention: { seen: false, sequence: 0 },
+        },
+      },
+      order: ["codex"],
+      selectedVisibleId: null,
+    })
+    expect(migrated.gitBranch).toBeNull()
+    expect(legacy.agents["dynamic-unmatched"]).toBeDefined()
   })
 })
 

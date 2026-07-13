@@ -68,6 +68,7 @@ function fakeConnection(id: ProviderKind): AgentConnection {
       return () => subscribers.delete(callback)
     },
     onPermission(_handler: (request: PermissionRequest) => Promise<PermissionOutcome>) {},
+    onClarification: () => () => {},
     dispose: async () => {},
   }
 }
@@ -110,7 +111,7 @@ describe("writer-produced run restore", () => {
     await controller.restore(record!)
 
     const state = target.getState()
-    expect(state.focusedSessionId).toBe("codex")
+    expect(state.workspace.selectedVisibleId).toBe("codex")
     expect(state.restoration).toMatchObject({ "claude-code": "live", codex: "live" })
     expect(state.sessions["claude-code"]!.acpSessionId).toBe("claude-persisted")
     expect(state.sessions.codex!.acpSessionId).toBe("codex-persisted")
@@ -176,6 +177,7 @@ describe("unavailable-pane fresh-start integration", () => {
             return () => subscribers.delete(callback)
           },
           onPermission(_handler: (request: PermissionRequest) => Promise<PermissionOutcome>) {},
+          onClarification: () => () => {},
           dispose: async () => {},
         }
       },

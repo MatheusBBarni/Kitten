@@ -9,9 +9,17 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
-import type { PersistedRunRecord, PersistedRunSummary } from "../persistence/runRecord.ts"
+import {
+  persistedResumeAgent,
+  persistedSelectedConversationId,
+  type PersistedRunRecord,
+  type PersistedRunRecordV1,
+  type PersistedRunRecordV2,
+  type PersistedRunSummary,
+} from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { createTelemetryRecorder, type TelemetryRecord, type TelemetryRecorder } from "../telemetry/recorder.ts"
+import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   DELETE_ALL_CONFIRMATION,
@@ -38,7 +46,7 @@ function savedRun(
   gitBranch: string | null,
   messageCount: number,
   summary: string,
-): PersistedRunRecord {
+): PersistedRunRecordV1 {
   return {
     version: 1,
     runId,
@@ -72,14 +80,16 @@ function savedRun(
 }
 
 function summary(record: PersistedRunRecord): PersistedRunSummary {
-  const focused = record.agents[record.focusedAgentId]!
+  const focusedAgentId = persistedSelectedConversationId(record)
+  const summaryId = focusedAgentId ?? (record.version === 2 ? record.workspace.order[0] : null)
+  const focused = summaryId === null || summaryId === undefined ? undefined : persistedResumeAgent(record, summaryId)
   return {
     runId: record.runId,
     updatedAt: record.updatedAt,
     gitBranch: record.gitBranch,
-    focusedAgentId: record.focusedAgentId,
-    lastPrompt: focused.lastPrompt,
-    messageCount: focused.messageCount,
+    focusedAgentId,
+    lastPrompt: focused?.lastPrompt ?? "",
+    messageCount: focused?.messageCount ?? 0,
   }
 }
 
@@ -116,6 +126,43 @@ const RUNS = [
   savedRun("dashboard", "polish usage dashboard", NOW - 8 * DAY, null, 1, "Polish the usage dashboard."),
 ]
 
+function backgroundOnlyV2Run(): PersistedRunRecordV2 {
+  return {
+    version: 2,
+    runId: "background-v2",
+    cwd: CWD,
+    gitBranch: null,
+    createdAt: NOW - DAY,
+    updatedAt: NOW,
+    conversations: {
+      review: {
+        sessionId: "review",
+        providerKind: "codex",
+        cwd: CWD,
+        initialTitle: "Codex",
+        acpSessionId: "review-acp",
+        lastPrompt: "review the V2 record",
+        messageCount: 6,
+        status: "finished",
+      },
+    },
+    workspace: {
+      conversations: {
+        review: {
+          sessionId: "review",
+          displayName: "Background review",
+          lifecycle: "background",
+          createdOrdinal: 3,
+          attention: { seen: false, sequence: 4 },
+        },
+      },
+      order: ["review"],
+      selectedVisibleId: null,
+    },
+    handoffBundle: null,
+  }
+}
+
 async function renderPicker(
   source: SessionPickerSource,
   open = true,
@@ -127,11 +174,38 @@ async function renderPicker(
     <CockpitProvider controller={controller}>
       <box style={{ width: 80, height: 24, position: "relative" }}>
         <SessionPicker source={source} recorder={recorder} />
+        <ClarificationPrompt />
       </box>
     </CockpitProvider>,
     { width: 80, height: 24, kittyKeyboard: true, exitOnCtrlC: false },
   )
   return { controller, ...setup }
+}
+
+/** Open the real top-priority clarification overlay over the mounted saved-run picker. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: CWD,
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
 }
 
 describe("SessionPicker pure formatting", () => {
@@ -166,6 +240,20 @@ describe("SessionPicker visibility and listing", () => {
     expect(frame).toContain("repair parser recovery")
     expect(frame).toContain("no branch")
 
+    await destroyMounted(setup.renderer)
+  })
+
+  it("lists and previews a V2 run with null visible selection", async () => {
+    const setup = await renderPicker(pickerSource([backgroundOnlyV2Run()]))
+    await setup.waitForFrame((value) => value.includes("review the V2 record"))
+
+    await actAsync(async () => {
+      await setup.mockInput.typeText(" ")
+    })
+    const frame = await setup.waitForFrame((value) => value.includes("Focused: none"))
+
+    expect(frame).toContain("1 agent")
+    expect(frame).toContain("No run summary.")
     await destroyMounted(setup.renderer)
   })
 
@@ -236,6 +324,81 @@ describe("SessionPicker visibility and listing", () => {
 })
 
 describe("SessionPicker outcomes", () => {
+  it("blocks filter text, navigation, and restore while clarification is active, then resumes them", async () => {
+    const setup = await renderPicker(pickerSource(RUNS))
+
+    await actAsync(async () => {
+      await setup.mockInput.typeText("rpr")
+    })
+    await setup.waitForFrame((frame) =>
+      frame.includes("repair parser recovery") && !frame.includes("refactor the auth guard"),
+    )
+
+    await openClarification(setup.controller, "clarification-picker-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(async () => {
+      await setup.mockInput.typeText("x")
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => setup.controller.store.getState().overlays.clarification === null)
+
+    expect(setup.controller.calls.respondClarification).toHaveLength(1)
+    expect(setup.controller.calls.restore).toEqual([])
+    expect(setup.controller.store.getState().overlays.sessionPicker).toBe(true)
+    const resumed = await setup.waitForFrame((frame) => frame.includes("repair parser recovery"))
+    expect(resumed).not.toContain("refactor the auth guard")
+    expect(resumed).not.toContain(NO_MATCHING_RUNS)
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => setup.controller.calls.restore.length === 1)
+    expect(setup.controller.calls.restore[0]?.runId).toBe("parser")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("preserves armed deletion and blocks Ctrl+D and Escape until clarification settles", async () => {
+    const deleteCalls: string[] = []
+    const store = memoryRunStore(RUNS)
+    const originalDelete = store.delete.bind(store)
+    store.delete = (cwd, runId) => {
+      deleteCalls.push(`${cwd}:${runId}`)
+      originalDelete(cwd, runId)
+    }
+    const setup = await renderPicker({ runStore: store, cwd: CWD, now: () => NOW })
+
+    await actAsync(() => {
+      setup.mockInput.pressKey("d", { ctrl: true })
+    })
+    await setup.waitForFrame((frame) => frame.includes(DELETE_RUN_CONFIRMATION))
+
+    await openClarification(setup.controller, "clarification-picker-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressKey("d", { ctrl: true })
+      setup.mockInput.pressEscape()
+    })
+    await setup.waitFor(() => setup.controller.store.getState().overlays.clarification === null)
+
+    expect(setup.controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(deleteCalls).toEqual([])
+    expect(setup.controller.store.getState().overlays.sessionPicker).toBe(true)
+    const resumed = await setup.waitForFrame((frame) =>
+      frame.includes(DELETE_RUN_CONFIRMATION) && !frame.includes("Choose a boundary"),
+    )
+    expect(resumed).toContain("refactor the auth guard")
+
+    await actAsync(() => {
+      setup.mockInput.pressKey("d", { ctrl: true })
+    })
+    await setup.waitForFrame((frame) => !frame.includes("refactor the auth guard"))
+    expect(deleteCalls).toEqual([`${CWD}:auth`])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("previews the highlighted run on Space without restoring", async () => {
     const setup = await renderPicker(pickerSource(RUNS))
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "PromptEditor menu integration"
 type: frontend
 complexity: high
@@ -33,12 +33,12 @@ This is the integration hub that makes the feature usable, and it carries the in
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Detect the `/` token from the buffer/caret in `onContentChange` and drive arm/disarm state.
-- [ ] 7.2 Capture the menu navigation keys in `onKeyDown` while armed; fall through when disarmed.
-- [ ] 7.3 Assemble grouped, filtered rows from the keymap and the commands selector.
-- [ ] 7.4 Run a cockpit selection via `onRunCommand`; insert an agent command's text via the textarea.
-- [ ] 7.5 Render `SlashMenu` anchored above the textarea without entering the store overlay slot.
-- [ ] 7.6 Add interaction, trigger-edge-case, and transcript render-count tests.
+- [x] 7.1 Detect the `/` token from the buffer/caret in `onContentChange` and drive arm/disarm state.
+- [x] 7.2 Capture the menu navigation keys in `onKeyDown` while armed; fall through when disarmed.
+- [x] 7.3 Assemble grouped, filtered rows from the keymap and the commands selector.
+- [x] 7.4 Run a cockpit selection via `onRunCommand`; insert an agent command's text via the textarea.
+- [x] 7.5 Render `SlashMenu` anchored above the textarea without entering the store overlay slot.
+- [x] 7.6 Add interaction, trigger-edge-case, and transcript render-count tests.
 
 ## Implementation Details
 Token detection reads `plainText` + `cursorOffset` in `onContentChange`; navigation keys are intercepted in `onKeyDown` before the submit binding acts; agent-command insertion uses the textarea's `insertText`.
@@ -67,16 +67,16 @@ See the TechSpec "System Architecture" data-flow and "Implementation Design"; co
 
 ## Tests
 - Unit tests:
-  - [ ] The token detector arms for `/` at input start and for `/` after whitespace (`foo /`), and does not arm for a mid-word slash (`foo/bar`).
-  - [ ] The detector disarms when the token has no matching command (`/xyz`) and when a second `/` is typed (`/usr/`).
+  - [x] The token detector arms for `/` at input start and for `/` after whitespace (`foo /`), and does not arm for a mid-word slash (`foo/bar`).
+  - [x] The detector disarms when the token has no matching command (`/xyz`) and when a second `/` is typed (`/usr/`).
 - Integration tests:
-  - [ ] Typing `/` opens the menu with the Cockpit group first (hand-off on top) and the seeded agent group below.
-  - [ ] Typing `/rev` narrows to and highlights the `/review` row.
-  - [ ] Enter on the hand-off row calls `onRunCommand("hand-off")` and records no `sendPrompt`.
-  - [ ] Enter on `/review` sets the buffer to `"/review "` with the cursor after it, closes the menu, and records no `sendPrompt`.
-  - [ ] Esc disarms without clearing the typed text, and a subsequent Enter submits via `sendPrompt`.
-  - [ ] Typing `/usr/bin` never arms the menu and Enter submits it as a literal prompt.
-  - [ ] The transcript view does not re-render while navigating the armed menu (stable render count).
+  - [x] Typing `/` opens the menu with the Cockpit group first (hand-off on top) and the seeded agent group below.
+  - [x] Typing `/rev` narrows to and highlights the `/review` row.
+  - [x] Enter on the hand-off row calls `onRunCommand("hand-off")` and records no `sendPrompt`.
+  - [x] Enter on `/review` sets the buffer to `"/review "` with the cursor after it, closes the menu, and records no `sendPrompt`.
+  - [x] Esc disarms without clearing the typed text, and a subsequent Enter submits via `sendPrompt`.
+  - [x] Typing `/usr/bin` never arms the menu and Enter submits it as a literal prompt.
+  - [x] The transcript view does not re-render while navigating the armed menu (stable render count).
 - Test coverage target: >=80%
 - All tests must pass
 

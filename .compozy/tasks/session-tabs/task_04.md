@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Replace fixed controller plan with mutable conversation registry"
 type: refactor
 complexity: high
@@ -28,11 +28,11 @@ Refactor the controller from a configuration-seeded fixed fleet into a mutable r
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Replace fixed-fleet lifecycle ownership with a mutable conversation registry.
-- [ ] 4.2 Register dynamic conversations with isolated runtime state and descriptor lookup.
-- [ ] 4.3 Restore versioned saved conversations in deterministic workspace order.
-- [ ] 4.4 Preserve constrained legacy restoration without fabricating missing descriptors.
-- [ ] 4.5 Expose runtime standing and recovery paths for dynamic unavailable conversations.
+- [x] 4.1 Replace fixed-fleet lifecycle ownership with a mutable conversation registry.
+- [x] 4.2 Register dynamic conversations with isolated runtime state and descriptor lookup.
+- [x] 4.3 Restore versioned saved conversations in deterministic workspace order.
+- [x] 4.4 Preserve constrained legacy restoration without fabricating missing descriptors.
+- [x] 4.5 Expose runtime standing and recovery paths for dynamic unavailable conversations.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Use the TechSpec’s **Component Overview**, **Data Flow**, **Persistence and Re
 
 ## Tests
 - Unit tests:
-  - [ ] Dynamic conversations receive distinct runtime/session identities even when they share a provider.
-  - [ ] Runtime enumeration, lookup, readiness, recovery, branch refresh, and disposal work for record-only dynamic IDs.
-  - [ ] V2 restore creates store identity and subscriptions before replay and preserves persisted order/selection.
-  - [ ] One connection/load failure leaves only that conversation unavailable while siblings continue.
-  - [ ] V1 restore keeps matching configuration-backed entries and safely ignores unmatched pointers.
+  - [x] Dynamic conversations receive distinct runtime/session identities even when they share a provider.
+  - [x] Runtime enumeration, lookup, readiness, recovery, branch refresh, and disposal work for record-only dynamic IDs.
+  - [x] V2 restore creates store identity and subscriptions before replay and preserves persisted order/selection.
+  - [x] One connection/load failure leaves only that conversation unavailable while siblings continue.
+  - [x] V1 restore keeps matching configuration-backed entries and safely ignores unmatched pointers.
 - Integration tests:
-  - [ ] A saved run with dynamic visible/background conversations restores through the picker even when startup configuration differs.
-  - [ ] Unavailable restored conversations expose a recovery path without preventing usable siblings from booting.
+  - [x] A saved run with dynamic visible/background conversations restores through the picker even when startup configuration differs.
+  - [x] Unavailable restored conversations expose a recovery path without preventing usable siblings from booting.
 - Test coverage target: >=80%
 - All tests must pass
 

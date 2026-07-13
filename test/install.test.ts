@@ -62,6 +62,12 @@ describe("install.sh verify_checksum", () => {
 })
 
 describe("install.sh helpers", () => {
+  it("defaults downloads to the public Kitten repository", () => {
+    const { stdout, exitCode } = inInstaller('printf "%s" "$REPO"')
+    expect(stdout).toBe("MatheusBBarni/Kitten")
+    expect(exitCode).toBe(0)
+  })
+
   it("extracts the checksum for a named artifact from the manifest", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-manifest-"))
     try {

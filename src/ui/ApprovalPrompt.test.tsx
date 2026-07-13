@@ -74,6 +74,32 @@ async function openApproval(controller: FakeController, sessionId: SessionId, re
   })
 }
 
+/** Open the real top-priority clarification overlay over an existing interaction. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "codex",
+      title: "Clarification owner",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
+}
+
 /** Wait for the real controller to surface a particular permission request in the store. */
 function waitForApprovalForSession(store: AppStore, sessionId: SessionId): Promise<void> {
   if (store.getState().overlays.approval?.sessionId === sessionId) return Promise.resolve()
@@ -152,7 +178,7 @@ describe("ApprovalPrompt visibility", () => {
     const frame = await waitForFrame((f) => f.includes(approvalTitleFor("Codex")))
 
     expect(frame).not.toContain(approvalTitleFor("Claude Code"))
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
 
     await destroyMounted(renderer)
   })
@@ -420,6 +446,43 @@ describe("ApprovalPrompt outcome routing", () => {
 })
 
 describe("ApprovalPrompt modality", () => {
+  it("suspends digits, Enter, Escape, and highlight mutation until clarification settles", async () => {
+    const controller = createFakeController()
+    const setup = await renderWithApproval(controller)
+    const suspendedApproval = controller.store.getState().overlays.approval
+
+    await openClarification(controller, "clarification-approval-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(async () => {
+      setup.mockInput.pressArrow("down")
+      await setup.mockInput.typeText("2")
+      setup.mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification).toHaveLength(1)
+    expect(controller.calls.respondPermission).toHaveLength(0)
+    expect(controller.store.getState().overlays.approval).toBe(suspendedApproval)
+
+    await openClarification(controller, "clarification-approval-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(controller.calls.respondPermission).toHaveLength(0)
+    expect(controller.store.getState().overlays.approval).toBe(suspendedApproval)
+
+    // The original dialog resumes without reconstruction: the clarification's Down
+    // and digit did not move its default highlight, so Enter still chooses Allow once.
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    expect(controller.calls.respondPermission).toEqual([{ outcome: "selected", optionId: ALLOW.optionId }])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("keeps every key from the shell and the prompt editor while it is open", async () => {
     const controller = createFakeController()
     const { renderer, mockInput, waitForFrame } = await renderWithApproval(controller)
@@ -432,7 +495,7 @@ describe("ApprovalPrompt modality", () => {
 
     // Neither the global shell chord nor prompt command can reach past the approval gate.
     expect(controller.store.getState().focusedPane.kind).toBe("agent")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
     expect(await waitForFrame((f) => f.includes(APPROVAL_HINT))).not.toContain(HELP_TITLE)
 
     // Dismiss, and only then read the composer. A keystroke paints a pass after it
@@ -474,6 +537,7 @@ const APP_CONFIG: AppConfig = {
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   },
   sessions: [],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
   persistenceEnabled: true,
   telemetryEnabled: false,
@@ -565,6 +629,7 @@ describe("integration - two sessions of the same provider requesting permission 
         { provider: "claude-code", cwd: dirA, title: "repo-a" },
         { provider: "claude-code", cwd: dirB, title: "repo-b" },
       ],
+      mcpServers: [],
       shell: APP_CONFIG.shell,
       persistenceEnabled: true,
       telemetryEnabled: false,

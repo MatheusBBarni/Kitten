@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add accessible install copy action handling
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Add the runtime behavior that lets visitors copy the single verified install rou
 
 ## Subtasks
 
-- [ ] 04.01 Implement `site/src/scripts/copy-command.ts` with Clipboard API attempt and controlled fallback.
-- [ ] 04.02 Add install button/trigger attributes in `site/src/components/Install.astro` to bind script behavior.
-- [ ] 04.03 Add accessible status region for copy result messages and keyboard focus behavior.
-- [ ] 04.04 Verify command source remains the single approved route from Task 02 and is not altered at runtime.
-- [ ] 04.05 Add defensive handling for empty/invalid command inputs to prevent runtime errors.
+- [x] 04.01 Implement `site/src/scripts/copy-command.ts` with Clipboard API attempt and controlled fallback.
+- [x] 04.02 Add install button/trigger attributes in `site/src/components/Install.astro` to bind script behavior.
+- [x] 04.03 Add accessible status region for copy result messages and keyboard focus behavior.
+- [x] 04.04 Verify command source remains the single approved route from Task 02 and is not altered at runtime.
+- [x] 04.05 Add defensive handling for empty/invalid command inputs to prevent runtime errors.
 
 ## Implementation Details
 
@@ -68,11 +68,11 @@ This task realizes the "Verified Installation Conversion" implementation intent.
 ## Tests
 
 - Unit tests:
-  - [ ] Copy handler copies exact command text when Clipboard API succeeds.
-  - [ ] Fallback path selects content and updates status text when Clipboard API is unavailable.
-  - [ ] Empty/invalid command input does not emit a false success state.
+  - [x] Copy handler copies exact command text when Clipboard API succeeds.
+  - [x] Fallback path selects content and updates status text when Clipboard API is unavailable.
+  - [x] Empty/invalid command input does not emit a false success state.
 - Integration tests:
-  - [ ] Keyboard users can tab to copy control and trigger via Enter/Space.
+  - [x] Keyboard users can tab to copy control and trigger via Enter/Space.
 - Test coverage target: >=80%
 - All tests must pass
 

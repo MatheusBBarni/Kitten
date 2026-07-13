@@ -330,7 +330,7 @@ describe("HandoffFlow.begin", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("redacts the bundle before it is shown, and reports how many secrets went", () => {
@@ -348,6 +348,24 @@ describe("HandoffFlow.begin", () => {
     const controller = createFakeController()
     expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: false, reason: "empty-source" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+  })
+
+  it("returns empty-source without assembling or opening an overlay when selection is null", () => {
+    const controller = controllerWithWork()
+    controller.store.backgroundConversation("claude-code")
+    controller.store.backgroundConversation("codex")
+    let assemblies = 0
+    const assembler = {
+      assemble(): never {
+        assemblies += 1
+        throw new Error("assembler must not run without a selected source")
+      },
+    }
+
+    expect(createHandoffFlow({ controller, assembler }).begin()).toEqual({ ok: false, reason: "empty-source" })
+    expect(assemblies).toBe(0)
+    expect(controller.store.getState().overlays.handoffPreview).toBeNull()
+    expect(controller.store.getState().overlays.handoffTarget).toBeNull()
   })
 
   it("returns no-target when the agent that would receive the bundle never came up", () => {
@@ -445,7 +463,7 @@ describe("HandoffFlow.confirm", () => {
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("codex")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
     expect(controller.calls.switchFocus).toEqual(["codex"])
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
@@ -645,6 +663,40 @@ describe("HandoffFlow.confirm", () => {
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
   })
+
+  it("keeps preview-first safety when the source is removed before confirmation", async () => {
+    const controller = controllerWithWork()
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    const bundle = openBundle(controller)
+    controller.store.removeSession("claude-code")
+
+    expect(await flow.confirm(createHandoffEdits(bundle))).toBeNull()
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.switchFocus).toEqual([])
+  })
+
+  it("declines an unavailable target without sending or moving focus", async () => {
+    const runtimes = readyRuntimes()
+    const controller = controllerWithWork({ runtimes })
+    const flow = createHandoffFlow({ controller })
+    flow.begin()
+    const bundle = openBundle(controller)
+    runtimes[1] = {
+      sessionId: "codex",
+      providerKind: "codex",
+      displayName: "Codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      ready: false,
+      error: "connection lost",
+    }
+
+    expect(await flow.confirm(createHandoffEdits(bundle))).toBeNull()
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.switchFocus).toEqual([])
+    expect(controller.store.getState().overlays.handoffPreview).not.toBeNull()
+  })
 })
 
 describe("HandoffFlow.cancel", () => {
@@ -658,7 +710,7 @@ describe("HandoffFlow.cancel", () => {
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 
   it("is a no-op with no preview open", () => {
@@ -718,7 +770,7 @@ describe("HandoffFlow.begin - fleet targeting", () => {
 
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
   })
 })
 
@@ -751,7 +803,7 @@ describe("HandoffFlow.chooseTarget", () => {
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("c")
     expect(sentText(controller)).toContain(HANDOFF_INSTRUCTION)
     expect(controller.calls.switchFocus).toEqual(["c"])
-    expect(controller.store.getState().focusedSessionId).toBe("c")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("c")
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
   })
 
@@ -802,7 +854,7 @@ describe("HandoffFlow.chooseTarget", () => {
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
     expect(controller.calls.sendPrompt).toHaveLength(0)
     expect(controller.calls.switchFocus).toHaveLength(0)
-    expect(controller.store.getState().focusedSessionId).toBe("a")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
   })
 })
 
@@ -877,6 +929,6 @@ describe("hand-back", () => {
     await flow.confirm(createHandoffEdits(overlay.bundle))
 
     expect(controller.calls.sendPrompt[0]!.sessionId).toBe("claude-code")
-    expect(controller.store.getState().focusedSessionId).toBe("claude-code")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
   })
 })

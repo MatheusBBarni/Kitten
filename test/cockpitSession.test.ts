@@ -13,7 +13,7 @@ import type { SessionController } from "../src/app/controller.ts"
 import type { ConfigWatcher } from "../src/config/configWatcher.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { AppConfig, ThemePreference } from "../src/core/types.ts"
-import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
+import type { PersistedRunRecord, PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore } from "../src/persistence/runStore.ts"
 import { createAppStore } from "../src/store/appStore.ts"
 import { selectThemePreference } from "../src/store/selectors.ts"
@@ -79,12 +79,13 @@ function controllerOver(
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
+    closeConversation: async () => ({ outcome: "ignored" }),
     restore: async (record) => onRestore(record),
     dispose: async () => {},
   }
 }
 
-function persistedRun(runId: string, updatedAt: number, cwd = process.cwd()): PersistedRunRecord {
+function persistedRun(runId: string, updatedAt: number, cwd = process.cwd()): PersistedRunRecordV1 {
   return {
     version: 1,
     runId,

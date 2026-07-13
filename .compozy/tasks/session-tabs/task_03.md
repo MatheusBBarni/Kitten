@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add V2 run persistence and V1 migration"
 type: refactor
 complexity: high
@@ -28,11 +28,11 @@ Introduce a versioned saved-run contract that restores dynamic Session Tabs whil
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Define versioned record and workspace persistence shapes.
-- [ ] 3.2 Validate V2 membership, lifecycle, ordering, selection, and descriptor invariants.
-- [ ] 3.3 Preserve V1 readability through a constrained migration path.
-- [ ] 3.4 Snapshot version-2 execution and workspace metadata without duplication.
-- [ ] 3.5 Verify saved-run files, redaction, and empty-workspace behavior.
+- [x] 3.1 Define versioned record and workspace persistence shapes.
+- [x] 3.2 Validate V2 membership, lifecycle, ordering, selection, and descriptor invariants.
+- [x] 3.3 Preserve V1 readability through a constrained migration path.
+- [x] 3.4 Snapshot version-2 execution and workspace metadata without duplication.
+- [x] 3.5 Verify saved-run files, redaction, and empty-workspace behavior.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Apply the TechSpec’s **Persistence and Restore** and **Version-2 Validation In
 
 ## Tests
 - Unit tests:
-  - [ ] New snapshots are version 2 and preserve dynamic visible/background descriptors, names, order, selection, attention, and ACP pointers.
-  - [ ] Empty visible workspace persists null selection and null branch metadata.
-  - [ ] Closed conversations, raw errors, ephemeral notices, capability state, and transcript turns are absent from V2 output.
-  - [ ] Invalid order membership, duplicate IDs, invalid lifecycle, and invalid selection are rejected or fail-soft as specified.
-  - [ ] V1 records retain only matching configuration-backed entries and use their saved ACP pointers without inventing user metadata.
+  - [x] New snapshots are version 2 and preserve dynamic visible/background descriptors, names, order, selection, attention, and ACP pointers.
+  - [x] Empty visible workspace persists null selection and null branch metadata.
+  - [x] Closed conversations, raw errors, ephemeral notices, capability state, and transcript turns are absent from V2 output.
+  - [x] Invalid order membership, duplicate IDs, invalid lifecycle, and invalid selection are rejected or fail-soft as specified.
+  - [x] V1 records retain only matching configuration-backed entries and use their saved ACP pointers without inventing user metadata.
 - Integration tests:
-  - [ ] Atomic save/load round-trip preserves valid V2 state and leaves unrelated run files available after malformed input.
-  - [ ] Legacy V1 files remain listable and loadable during the migration window.
+  - [x] Atomic save/load round-trip preserves valid V2 state and leaves unrelated run files available after malformed input.
+  - [x] Legacy V1 files remain listable and loadable during the migration window.
 - Test coverage target: >=80%
 - All tests must pass
 

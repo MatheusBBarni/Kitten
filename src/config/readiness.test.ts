@@ -23,6 +23,8 @@ import { checkAgentReadiness, checkAllAgentsReadiness, DEFAULT_HANDSHAKE_TIMEOUT
  * accepted, rejected, or answered at the wrong protocol version - decides the verdict.
  */
 
+const UNSUPPORTED_CLARIFICATION = { status: "unsupported", reason: "unknown_recipe" } as const
+
 const CLAUDE: AgentConfig = {
   id: "claude-code",
   displayName: "Claude Code",
@@ -30,7 +32,13 @@ const CLAUDE: AgentConfig = {
   args: ["--stdio"],
   env: {},
 }
-const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
+const CODEX: AgentConfig = {
+  id: "codex",
+  displayName: "Codex",
+  command: "codex-acp",
+  args: [],
+  env: {},
+}
 
 const APP_CONFIG: AppConfig = {
   providers: {
@@ -38,6 +46,7 @@ const APP_CONFIG: AppConfig = {
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   },
   sessions: [],
+  mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
   persistenceEnabled: true,
   telemetryEnabled: false,
@@ -150,6 +159,7 @@ describe("checkAgentReadiness - failure taxonomy", () => {
     })
 
     expect(result.ready).toBe(true)
+    expect(result.clarificationCapability).toEqual(UNSUPPORTED_CLARIFICATION)
     expect(stub.disposed()).toBe(true)
   })
 
@@ -185,6 +195,7 @@ describe("checkAgentReadiness - against the mock ACP agent", () => {
     expect(result).toEqual({
       agentId: "claude-code",
       displayName: "Claude Code",
+      clarificationCapability: UNSUPPORTED_CLARIFICATION,
       ready: true,
       protocolVersion: SUPPORTED_PROTOCOL_VERSION,
     })

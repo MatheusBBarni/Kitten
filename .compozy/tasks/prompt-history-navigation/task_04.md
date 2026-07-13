@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Implement Composer Recall UX and Keyboard Help"
 type: frontend
 complexity: high
@@ -30,11 +30,11 @@ Deliver the keyboard-first prompt-recall experience in the real multiline compos
 
 ## Subtasks
 
-- [ ] 4.1 Connect composer submission and boundary navigation to the controller actions from task 3.
-- [ ] 4.2 Preserve slash-menu precedence and native multiline cursor movement for all non-history arrow behavior.
-- [ ] 4.3 Render and clear the session-derived history indicator in the prompt surface.
-- [ ] 4.4 Update editor keyboard guidance without changing global shortcut ownership.
-- [ ] 4.5 Add real-textarea regressions for history, multiline boundaries, menu precedence, and session isolation.
+- [x] 4.1 Connect composer submission and boundary navigation to the controller actions from task 3.
+- [x] 4.2 Preserve slash-menu precedence and native multiline cursor movement for all non-history arrow behavior.
+- [x] 4.3 Render and clear the session-derived history indicator in the prompt surface.
+- [x] 4.4 Update editor keyboard guidance without changing global shortcut ownership.
+- [x] 4.5 Add real-textarea regressions for history, multiline boundaries, menu precedence, and session isolation.
 
 ## Implementation Details
 
@@ -70,16 +70,16 @@ Follow the TechSpec’s **PromptEditor Dispatch**, **Testing Approach**, and **I
 ## Tests
 
 - Unit tests:
-  - [ ] Editor help lists Up/Down recall behavior without adding a global cockpit command binding.
-  - [ ] Modified arrows remain outside the recall path.
-  - [ ] A non-null history result replaces the full textarea text, while a null result leaves it unchanged.
+  - [x] Editor help lists Up/Down recall behavior without adding a global cockpit command binding.
+  - [x] Modified arrows remain outside the recall path.
+  - [x] A non-null history result replaces the full textarea text, while a null result leaves it unchanged.
 - Integration tests:
-  - [ ] After submitting two prompts, Up recalls the newest then the older prompt; Down returns toward newest and clears only after it.
-  - [ ] `History n/total` appears while browsing and disappears after clear-after-newest.
-  - [ ] An armed slash menu continues to move its highlighted command with Up/Down and does not recall a prompt.
-  - [ ] Multiline or wrapped text with available vertical movement moves the cursor without replacing prompt text; a true boundary enters history.
-  - [ ] Switching focus between sessions shows only the owning session’s history and never exposes another session’s prompts.
-  - [ ] Consecutive duplicate submissions produce one recallable entry and do not change the indicator total twice.
+  - [x] After submitting two prompts, Up recalls the newest then the older prompt; Down returns toward newest and clears only after it.
+  - [x] `History n/total` appears while browsing and disappears after clear-after-newest.
+  - [x] An armed slash menu continues to move its highlighted command with Up/Down and does not recall a prompt.
+  - [x] Multiline or wrapped text with available vertical movement moves the cursor without replacing prompt text; a true boundary enters history.
+  - [x] Switching focus between sessions shows only the owning session’s history and never exposes another session’s prompts.
+  - [x] Consecutive duplicate submissions produce one recallable entry and do not change the indicator total twice.
 - Test coverage target: >=80%
 - All tests must pass
 

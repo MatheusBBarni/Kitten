@@ -1,6 +1,10 @@
-import type { HandoffBundle, SessionId, Turn } from "../core/types.ts"
+import type { HandoffBundle, Turn } from "../core/types.ts"
 import type { AppState, AppStore, Unsubscribe } from "../store/appStore.ts"
-import type { PersistedAgent, PersistedRunRecord } from "./runRecord.ts"
+import type {
+  PersistedConversationV2,
+  PersistedRunRecordV2,
+  PersistedWorkspaceConversationV2,
+} from "./runRecord.ts"
 import type { RunStore } from "./runStore.ts"
 
 /** The store quiet period before the latest run snapshot is persisted. */
@@ -55,6 +59,7 @@ class ActiveRunWriter implements RunWriter {
   private readonly onError: (error: unknown) => void
   private latestState: AppState | undefined
   private lastHandoffBundle: HandoffBundle | null = null
+  private observedRestorationBundle: HandoffBundle | null | undefined
   private timer: TimerHandle | undefined
   private unsubscribe: Unsubscribe | undefined
   private dirty = false
@@ -107,6 +112,13 @@ class ActiveRunWriter implements RunWriter {
 
   private observe(state: AppState): void {
     this.latestState = state
+    // A restored run's fallback context is not displayed as a hand-off overlay.
+    // Track its lifecycle separately so the first autosave keeps it, while an
+    // explicit start-new-run transition to null clears the old context.
+    if (this.observedRestorationBundle !== state.restorationBundle) {
+      this.observedRestorationBundle = state.restorationBundle
+      this.lastHandoffBundle = state.restorationBundle
+    }
     if (state.overlays.handoffPreview !== null) {
       this.lastHandoffBundle = state.overlays.handoffPreview.bundle
     }
@@ -128,34 +140,56 @@ class ActiveRunWriter implements RunWriter {
     }
   }
 
-  private snapshot(state: AppState): PersistedRunRecord {
-    const focused = state.sessions[state.focusedSessionId]
-    if (!focused) throw new Error(`Cannot persist missing focused session: ${state.focusedSessionId}`)
-
-    const agents: Record<SessionId, PersistedAgent> = {}
-    for (const sessionId of state.order) {
+  private snapshot(state: AppState): PersistedRunRecordV2 {
+    const conversations: Record<string, PersistedConversationV2> = {}
+    const workspaceConversations: Record<string, PersistedWorkspaceConversationV2> = {}
+    const order: string[] = []
+    for (const sessionId of state.workspace.order) {
       const session = state.sessions[sessionId]
-      if (!session) continue
-      agents[sessionId] = {
-        sessionId: session.acpSessionId,
+      const workspaceConversation = state.workspace.conversations[sessionId]
+      if (!session || !workspaceConversation) continue
+      order.push(sessionId)
+      conversations[sessionId] = {
+        sessionId,
+        providerKind: session.providerKind,
+        cwd: session.cwd,
+        initialTitle: session.title,
+        acpSessionId: session.acpSessionId,
         status: session.status,
         messageCount: session.turns.length,
         lastPrompt: lastUserPrompt(session.turns),
       }
+      workspaceConversations[sessionId] = {
+        sessionId,
+        displayName: workspaceConversation.displayName,
+        lifecycle: workspaceConversation.lifecycle,
+        createdOrdinal: workspaceConversation.createdOrdinal,
+        attention: {
+          seen: workspaceConversation.attention.seen,
+          sequence: workspaceConversation.attention.sequence,
+        },
+      }
     }
 
+    const selectedVisibleId = state.workspace.selectedVisibleId
+    const selected = selectedVisibleId === null ? undefined : state.sessions[selectedVisibleId]
+
     return {
-      version: 1,
+      version: 2,
       runId: this.runId,
       // A run belongs to the launch project even when focus moves between sessions
       // configured with different working directories. Boot and the picker use this
       // same key to find it again.
       cwd: this.projectCwd,
-      gitBranch: focused.branch ?? null,
-      focusedAgentId: state.focusedSessionId,
+      gitBranch: selected?.branch ?? null,
       createdAt: this.createdAt,
       updatedAt: this.now(),
-      agents,
+      conversations,
+      workspace: {
+        conversations: workspaceConversations,
+        order,
+        selectedVisibleId,
+      },
       handoffBundle: this.lastHandoffBundle,
     }
   }

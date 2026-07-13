@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Suspend approval and handoff modal handlers during clarification preemption"
 type: frontend
 complexity: high
@@ -26,10 +26,10 @@ Make approval and handoff overlays retain their state while clarification is act
 </requirements>
 
 ## Subtasks
-- [ ] 8.1 Gate approval keyboard handling.
-- [ ] 8.2 Gate handoff preview keyboard handling.
-- [ ] 8.3 Gate handoff target picker keyboard handling.
-- [ ] 8.4 Add state-preserving preemption regressions.
+- [x] 8.1 Gate approval keyboard handling.
+- [x] 8.2 Gate handoff preview keyboard handling.
+- [x] 8.3 Gate handoff target picker keyboard handling.
+- [x] 8.4 Add state-preserving preemption regressions.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -58,12 +58,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Enter, Escape, and digits do not respond to approval while clarification is active.
-  - [ ] Handoff preview cannot send, discard, or edit while clarification owns input.
-  - [ ] Handoff target picker cannot select or close while clarification is active.
-  - [ ] After settlement, each suspended overlay performs its original action unchanged.
+  - [x] Enter, Escape, and digits do not respond to approval while clarification is active.
+  - [x] Handoff preview cannot send, discard, or edit while clarification owns input.
+  - [x] Handoff target picker cannot select or close while clarification is active.
+  - [x] After settlement, each suspended overlay performs its original action unchanged.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

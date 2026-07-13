@@ -19,9 +19,10 @@ import { CodeRenderable, getTreeSitterClient, type BaseRenderable, type Captured
 
 import { createAgentConnection, type AgentConnection } from "../agent/agentConnection.ts"
 import { loadAppConfig, resolveSessions } from "../config/configLoader.ts"
+import { resolveMcpServers } from "../config/mcpResolver.ts"
 import type { AgentConfig, AppConfig, DomainSessionEvent } from "../core/types.ts"
 import { selfCheckElement } from "../ui/main.tsx"
-import { createSessionController } from "./controller.ts"
+import { createSessionController, type McpRuntimeReadout } from "./controller.ts"
 import { configureTreeSitterWorker } from "./treeSitterWorker.ts"
 
 /** Plain prose used to discover the active default foreground in the captured frame. */
@@ -52,6 +53,15 @@ export interface SelfCheckResult {
   highlights: SelfCheckHighlights
   /** Empty for the process-free smoke test; populated by the opt-in real-adapter probe. */
   reloadProbe: ReloadProbeResult[]
+  /** Per-session MCP provisioning result, including every skipped declaration and reason. */
+  mcp: McpSelfCheckResult[]
+}
+
+/** A self-check-safe MCP readout: names and reasons only, never resolved environment values. */
+export interface McpSelfCheckResult {
+  configuredSessionId: string
+  displayName: string
+  mcp: McpRuntimeReadout
 }
 
 export type ReloadProbeOutcome = "reload confirmed" | "capability absent" | "reload failed"
@@ -110,6 +120,7 @@ export async function runReloadConfirmationProbe(
 ): Promise<ReloadProbeResult[]> {
   const createConnection = deps.createConnection ?? ((agent) => createAgentConnection({ config: agent }))
   const awaitReplay = deps.awaitReplay ?? awaitReplayWithTimeout
+  const mcpServers = resolveMcpServers(config.mcpServers).resolved
   const reports: ReloadProbeResult[] = []
 
   for (const { seed, spawn } of resolveSessions(config)) {
@@ -137,7 +148,7 @@ export async function runReloadConfirmationProbe(
         continue
       }
 
-      const sessionId = await creator.newSession(seed.cwd)
+      const sessionId = await creator.newSession(seed.cwd, mcpServers)
       await creator.prompt(sessionId, [{ type: "text", text: RELOAD_PROBE_PROMPT }])
       await disposeQuietly(creator)
       creator = null
@@ -170,7 +181,7 @@ export async function runReloadConfirmationProbe(
         resolveHistory()
       })
 
-      await loader.loadSession(sessionId, seed.cwd)
+      await loader.loadSession(sessionId, seed.cwd, mcpServers)
       replayedHistory ||= await awaitReplay(historySignal)
       reports.push(
         replayedHistory
@@ -206,6 +217,15 @@ export function reloadProbePassed(reports: readonly ReloadProbeResult[]): boolea
   return reports.every((report) => report.outcome === "reload confirmed")
 }
 
+/** Render one actionable, secret-free MCP provisioning line for the CLI self-check. */
+export function formatMcpSelfCheckLine(report: McpSelfCheckResult): string {
+  const loaded = report.mcp.loaded.length > 0 ? report.mcp.loaded.join(", ") : "none"
+  const skipped = report.mcp.skipped.length > 0
+    ? report.mcp.skipped.map(({ name, reason }) => `${name} (${reason})`).join(", ")
+    : "none"
+  return `[MCP] ${report.displayName} (${report.configuredSessionId}): loaded=${loaded}; skipped=${skipped}`
+}
+
 /**
  * A connection that never spawns a process and always reports not-ready.
  *
@@ -236,6 +256,7 @@ export function createOfflineConnection(config: AgentConfig): AgentConnection {
       return () => {}
     },
     onPermission() {},
+    onClarification: () => () => {},
     async dispose() {},
   }
 }
@@ -296,7 +317,22 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
       const frame = await waitForFrame(
         (candidate) => candidate.includes(SELF_CHECK_MARKDOWN_TOKEN) && candidate.includes(SELF_CHECK_DIFF_TOKEN),
       )
-      result = { frame, highlights: assertSelfCheckHighlights(captureSpans()), reloadProbe }
+      result = {
+        frame,
+        highlights: assertSelfCheckHighlights(captureSpans()),
+        reloadProbe,
+        mcp: controller.runtimes().map((runtime) => {
+          const mcp = runtime.mcp ?? { loaded: [], skipped: [] }
+          return {
+            configuredSessionId: runtime.sessionId,
+            displayName: runtime.displayName,
+            mcp: {
+              loaded: [...mcp.loaded],
+              skipped: mcp.skipped.map((server) => ({ ...server })),
+            },
+          }
+        }),
+      }
     })
     if (!result) throw new Error("self-check did not produce highlight evidence")
     return result

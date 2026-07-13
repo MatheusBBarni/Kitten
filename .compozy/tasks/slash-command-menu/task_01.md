@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Command domain slice: type, event, and reducer field"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ This is the foundation the translation (task_02), the selector (task_03), and th
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Define the `AvailableCommand` domain type alongside `ConfigOption` in `types.ts`.
-- [ ] 1.2 Add the `commands` variant to the `DomainSessionEvent` union.
-- [ ] 1.3 Add the `commands` field to `SessionState` and initialize it in `createSessionState`.
-- [ ] 1.4 Add the wholesale-replace reducer case, mirroring `config_options`.
-- [ ] 1.5 Add reducer unit tests for replace, empty init, and non-interference.
+- [x] 1.1 Define the `AvailableCommand` domain type alongside `ConfigOption` in `types.ts`.
+- [x] 1.2 Add the `commands` variant to the `DomainSessionEvent` union.
+- [x] 1.3 Add the `commands` field to `SessionState` and initialize it in `createSessionState`.
+- [x] 1.4 Add the wholesale-replace reducer case, mirroring `config_options`.
+- [x] 1.5 Add reducer unit tests for replace, empty init, and non-interference.
 
 ## Implementation Details
 Follow the `configOptions` slice as the template end to end; it is the closest match (protocol-free list, wholesale-replace).
@@ -60,12 +60,12 @@ See the TechSpec "Implementation Design > Core Interfaces" and "Data Models" sec
 
 ## Tests
 - Unit tests:
-  - [ ] A `commands` event with two commands sets `SessionState.commands` to exactly those two.
-  - [ ] A second `commands` event fully replaces the previous list (no merge, no append).
-  - [ ] `createSessionState` yields `commands: []` for a fresh session.
-  - [ ] Applying an unrelated event (e.g. `status`) leaves `commands` unchanged and preserves its reference identity.
+  - [x] A `commands` event with two commands sets `SessionState.commands` to exactly those two.
+  - [x] A second `commands` event fully replaces the previous list (no merge, no append).
+  - [x] `createSessionState` yields `commands: []` for a fresh session.
+  - [x] Applying an unrelated event (e.g. `status`) leaves `commands` unchanged and preserves its reference identity.
 - Integration tests:
-  - [ ] Applying a `commands` event through the store/reducer round-trip lands the list on the addressed session and leaves other sessions untouched.
+  - [x] Applying a `commands` event through the store/reducer round-trip lands the list on the addressed session and leaves other sessions untouched.
 - Test coverage target: >=80%
 - All tests must pass
 

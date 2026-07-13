@@ -17,7 +17,7 @@ import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/cor
 import { join } from "node:path"
 
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
-import { formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
+import { formatMcpSelfCheckLine, formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
 import { configureTreeSitterWorker } from "./app/treeSitterWorker.ts"
 import { bannerVariant, markFirstRunSeen, readFirstRunSeen, type BannerVariant } from "./config/appState.ts"
 import { loadAppConfig, resolveSessions } from "./config/configLoader.ts"
@@ -49,6 +49,7 @@ import { selectThemePreference } from "./store/selectors.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderBootBanner, type BootBannerDisposer, type BootBannerOptions } from "./ui/bootBanner.tsx"
 import { renderCockpit } from "./ui/main.tsx"
+import { KITTEN_VERSION } from "./version.ts"
 
 export { renderCockpit }
 
@@ -85,7 +86,25 @@ export function createCockpitRenderer(factory: typeof createCliRenderer = create
   return factory({
     exitOnCtrlC: false,
     targetFps: 30,
+    useKittyKeyboard: {
+      disambiguate: true,
+      alternateKeys: true,
+    },
   })
+}
+
+/** Promote keyboard capability only after the renderer parses a Kitty-source event. */
+export function wireKeyboardCapability(renderer: CliRenderer, onKittyConfirmed: () => void): () => void {
+  const onKeypress = (key: KeyEvent): void => {
+    if (key.source === "kitty") onKittyConfirmed()
+  }
+
+  renderer.keyInput.on("keypress", onKeypress)
+  const stop = (): void => {
+    renderer.keyInput.off("keypress", onKeypress)
+  }
+  renderer.once("destroy", stop)
+  return stop
 }
 
 /** Route Ctrl+C at the renderer boundary without stealing it from the focused shell. */
@@ -226,6 +245,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     runtimes: () => baseController.runtimes(),
     runtime: (sessionId) => baseController.runtime(sessionId),
     isReady: (sessionId) => baseController.isReady(sessionId),
+    closeConversation: (sessionId, choice) => baseController.closeConversation(sessionId, choice),
     restore: (record, mode) => baseController.restore(record, mode),
     dispose(): Promise<void> {
       if (disposal) return disposal
@@ -362,6 +382,8 @@ export interface MainDeps {
   onBlocked?: (report: FirstRunReport) => void
   /** How the attention notifier is wired; defaults to {@link wireAttentionNotifier}. */
   wireNotifier?: (renderer: CliRenderer, store: AppStore) => void
+  /** How renderer key events promote ephemeral Kitty capability; injectable for lifecycle tests. */
+  wireKeyboardCapability?: (renderer: CliRenderer, onKittyConfirmed: () => void) => void
 }
 
 /** What {@link main} hands back so a caller (or a test) can inspect the booted app. */
@@ -502,6 +524,9 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
   // Wire the attention notifier alongside telemetry: it watches the same store and
   // reads terminal focus from the renderer. Best-effort, so it never blocks the mount.
   ;(deps.wireNotifier ?? wireAttentionNotifier)(renderer, controller.store)
+  ;(deps.wireKeyboardCapability ?? wireKeyboardCapability)(renderer, () => {
+    controller.store.confirmKittyKeyboard()
+  })
   wireCtrlCRouting(renderer, controller)
 
   disposeBootBanner?.()
@@ -519,19 +544,78 @@ export function wantsSelfCheck(argv: readonly string[]): boolean {
   return argv.includes("--self-check")
 }
 
+/** Whether the CLI was asked to print Kitten's release version. */
+export function wantsVersion(argv: readonly string[]): boolean {
+  return argv.includes("--version")
+}
+
+/** Whether the CLI was asked to print usage and install guidance. */
+export function wantsHelp(argv: readonly string[]): boolean {
+  return argv.includes("--help")
+}
+
+export interface CliFlagDispatchOptions {
+  /** Output seam used by tests and the real stdout stream. */
+  write?: (output: string) => void
+  /** Exit seam used by tests and the real process. */
+  exit?: (code: number) => void
+}
+
+function formatCliHelp(): string {
+  return `Examples:
+  npx kitten                      Try Kitten without installing
+  kitten                          Launch in the current Git repository
+  kitten --self-check             Run the headless boot check
+
+Kitten ${KITTEN_VERSION}
+
+Usage:
+  kitten [--version | --help | --self-check]
+
+Options:
+  --version                       Print the installed version
+  --help                          Print this help
+  --self-check                    Verify Kitten can boot headlessly
+
+Install or upgrade:
+  npm / npx channel:              npm i -g kitten@latest
+  standalone binary channel:     curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | sh
+`
+}
+
+/** Handle metadata-only flags before boot; return false to continue into the cockpit. */
+export function dispatchCliFlags(argv: readonly string[], options: CliFlagDispatchOptions = {}): boolean {
+  const write = options.write ?? ((output: string) => process.stdout.write(output))
+  const exit = options.exit ?? ((code: number) => process.exit(code))
+
+  if (wantsVersion(argv)) {
+    write(`${KITTEN_VERSION}\n`)
+    exit(0)
+    return true
+  }
+  if (wantsHelp(argv)) {
+    write(formatCliHelp())
+    exit(0)
+    return true
+  }
+  return false
+}
+
 /** Whether self-check should run the manual/nightly real-adapter reload gate. */
 export function wantsReloadProbe(argv: readonly string[]): boolean {
   return argv.includes("--reload-probe")
 }
 
 if (import.meta.main) {
-  if (wantsSelfCheck(process.argv)) {
+  const cliFlagHandled = dispatchCliFlags(process.argv)
+  if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
     try {
-      const { frame, reloadProbe } = await runSelfCheck({
+      const { frame, reloadProbe, mcp } = await runSelfCheck({
         reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
       })
       const probeLines = reloadProbe.map(formatReloadProbeLine)
-      process.stdout.write(`${frame}\n${probeLines.length > 0 ? `${probeLines.join("\n")}\n` : ""}`)
+      const mcpLines = mcp.map(formatMcpSelfCheckLine)
+      process.stdout.write(`${frame}\n${mcpLines.concat(probeLines).map((line) => `${line}\n`).join("")}`)
       if (!reloadProbePassed(reloadProbe)) {
         process.stderr.write("SELF-CHECK FAILED: reload confirmation probe reported one or more failures\n")
         process.exit(1)
@@ -542,7 +626,7 @@ if (import.meta.main) {
       process.stderr.write(`SELF-CHECK FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
       process.exit(1)
     }
-  } else {
+  } else if (!cliFlagHandled) {
     await main()
   }
 }

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Expose tab actions and protect nullable-session consumers"
 type: refactor
 complexity: high
@@ -28,11 +28,11 @@ Expand the controller action boundary so UI code can create, rename, select, bac
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Define the complete UI-safe conversation action surface.
-- [ ] 6.2 Support create, rename, select, background, reopen, close, and attention routing outcomes.
-- [ ] 6.3 Make focused-session actions and handoff fail safely with no visible selection.
-- [ ] 6.4 Preserve background attention notification and closed-conversation exclusion.
-- [ ] 6.5 Update fakes and action-facing tests for the expanded contract.
+- [x] 6.1 Define the complete UI-safe conversation action surface.
+- [x] 6.2 Support create, rename, select, background, reopen, close, and attention routing outcomes.
+- [x] 6.3 Make focused-session actions and handoff fail safely with no visible selection.
+- [x] 6.4 Preserve background attention notification and closed-conversation exclusion.
+- [x] 6.5 Update fakes and action-facing tests for the expanded contract.
 
 ## Implementation Details
 
@@ -67,14 +67,14 @@ Use the TechSpec’s **Core Interfaces**, **Local Action Surface**, **Focus Auth
 
 ## Tests
 - Unit tests:
-  - [ ] Fresh creation inherits selected provider/CWD, uses a configured default from an empty workspace, and returns null without throwing when none exists.
-  - [ ] Rename rejects whitespace-only values; select/background/reopen/close handle unknown and Closed IDs safely.
-  - [ ] Empty selection makes prompt, cancel, model, and handoff operations inert without opening an overlay or assembling a bundle.
-  - [ ] Attention routing reopens/selects an eligible background conversation and no-ops when none exists.
-  - [ ] A background attention transition notifies once even when no tab is selected; Closed entries never notify.
+  - [x] Fresh creation inherits selected provider/CWD, uses a configured default from an empty workspace, and returns null without throwing when none exists.
+  - [x] Rename rejects whitespace-only values; select/background/reopen/close handle unknown and Closed IDs safely.
+  - [x] Empty selection makes prompt, cancel, model, and handoff operations inert without opening an overlay or assembling a bundle.
+  - [x] Attention routing reopens/selects an eligible background conversation and no-ops when none exists.
+  - [x] A background attention transition notifies once even when no tab is selected; Closed entries never notify.
 - Integration tests:
-  - [ ] UI-facing action calls stay within ControllerActions and isolate failed creation/cancellation from sibling conversations.
-  - [ ] Handoff remains preview-first and safely declines unavailable, removed, or null source targets.
+  - [x] UI-facing action calls stay within ControllerActions and isolate failed creation/cancellation from sibling conversations.
+  - [x] Handoff remains preview-first and safely declines unavailable, removed, or null source targets.
 - Test coverage target: >=80%
 - All tests must pass
 

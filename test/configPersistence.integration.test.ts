@@ -30,6 +30,7 @@ function controllerOver(store: ReturnType<typeof createAppStore>): SessionContro
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
+    closeConversation: async () => ({ outcome: "ignored" }),
     restore: async () => {},
     dispose: async () => {},
   }

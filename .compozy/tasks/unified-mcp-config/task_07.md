@@ -1,10 +1,10 @@
 ---
-status: pending
+status: completed
 title: Redact MCP secrets in telemetry and logs
 type: backend
 complexity: low
 dependencies:
-  - task_05
+    - task_05
 ---
 
 # Task 07: Redact MCP secrets in telemetry and logs

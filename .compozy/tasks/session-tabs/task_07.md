@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add capability-gated tab keyboard navigation"
 type: frontend
 complexity: high
@@ -28,11 +28,11 @@ Enable the requested Ctrl+H and Ctrl+L navigation only when terminal input can d
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Add renderer capability negotiation and injectable event observation.
-- [ ] 7.2 Record and expose ephemeral keyboard capability state.
-- [ ] 7.3 Register previous/next tab commands and conditional help in the canonical keymap.
-- [ ] 7.4 Preserve overlay, shell, and legacy-input precedence.
-- [ ] 7.5 Verify direct chords, fallback hints, and PTY bytes across terminal modes.
+- [x] 7.1 Add renderer capability negotiation and injectable event observation.
+- [x] 7.2 Record and expose ephemeral keyboard capability state.
+- [x] 7.3 Register previous/next tab commands and conditional help in the canonical keymap.
+- [x] 7.4 Preserve overlay, shell, and legacy-input precedence.
+- [x] 7.5 Verify direct chords, fallback hints, and PTY bytes across terminal modes.
 
 ## Implementation Details
 
@@ -66,14 +66,14 @@ Follow the TechSpec’s **Keyboard Capability Policy** and **UI and Input Design
 
 ## Tests
 - Unit tests:
-  - [ ] Unknown capability never navigates, including a first Kitty event before promotion is visible to dispatch.
-  - [ ] Confirmed capability plus Kitty Ctrl+H/Ctrl+L invokes exactly one previous/next action and prevents default.
-  - [ ] Confirmed capability plus a raw/legacy event, printable h/l, modified variants, and unrelated Kitty keys do not navigate.
-  - [ ] All overlay states suppress tab commands and conditional help exposes fallback text when unavailable.
-  - [ ] Shell-focused Ctrl+H/Ctrl+L produce the existing `0x08` and `0x0c` byte behavior with no tab action.
+  - [x] Unknown capability never navigates, including a first Kitty event before promotion is visible to dispatch.
+  - [x] Confirmed capability plus Kitty Ctrl+H/Ctrl+L invokes exactly one previous/next action and prevents default.
+  - [x] Confirmed capability plus a raw/legacy event, printable h/l, modified variants, and unrelated Kitty keys do not navigate.
+  - [x] All overlay states suppress tab commands and conditional help exposes fallback text when unavailable.
+  - [x] Shell-focused Ctrl+H/Ctrl+L produce the existing `0x08` and `0x0c` byte behavior with no tab action.
 - Integration tests:
-  - [ ] Renderer bootstrap requests Kitty reporting while preserving current renderer options and cleanup behavior.
-  - [ ] Keyboard events traverse the mounted cockpit and shell runtime without chord leakage.
+  - [x] Renderer bootstrap requests Kitty reporting while preserving current renderer options and cleanup behavior.
+  - [x] Keyboard events traverse the mounted cockpit and shell runtime without chord leakage.
 - Test coverage target: >=80%
 - All tests must pass
 

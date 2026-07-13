@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add core clarification model and status compatibility"
 type: backend
 complexity: high
@@ -26,10 +26,10 @@ Add the ACP-free payload, field, option, and outcome contract needed by all down
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Define normalized clarification payload and outcome types.
-- [ ] 2.2 Add awaiting clarification to the pure status model.
-- [ ] 2.3 Preserve immutable reducer behavior for clarification transitions.
-- [ ] 2.4 Update required exhaustive compatibility maps.
+- [x] 2.1 Define normalized clarification payload and outcome types.
+- [x] 2.2 Add awaiting clarification to the pure status model.
+- [x] 2.3 Preserve immutable reducer behavior for clarification transitions.
+- [x] 2.4 Update required exhaustive compatibility maps.
 
 ## Implementation Details
 Follow the TechSpec sections System Architecture, Implementation Design, Testing Approach, and Development Sequencing. Keep ACP at the adapter boundary, preserve the reducer as the only SessionState writer, and use existing fail-soft actions and immutable store patterns.
@@ -59,12 +59,12 @@ Follow the TechSpec sections System Architecture, Implementation Design, Testing
 
 ## Tests
 - Unit tests:
-  - [ ] Single, multi, and text field contracts accept only normalized values.
-  - [ ] needsAttention returns true for awaiting_clarification and retains prior outcomes for other statuses.
-  - [ ] Reducer transitions preserve unrelated session references and content.
-  - [ ] Existing exhaustive status maps compile after the new status is introduced.
+  - [x] Single, multi, and text field contracts accept only normalized values.
+  - [x] needsAttention returns true for awaiting_clarification and retains prior outcomes for other statuses.
+  - [x] Reducer transitions preserve unrelated session references and content.
+  - [x] Existing exhaustive status maps compile after the new status is introduced.
 - Integration tests:
-  - [ ] Exercise this task through its declared boundary with its declared dependencies present.
+  - [x] Exercise this task through its declared boundary with its declared dependencies present.
 - Test coverage target: >=80%
 - All tests must pass
 

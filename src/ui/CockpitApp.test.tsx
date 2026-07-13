@@ -6,13 +6,19 @@
 import { describe, expect, it, spyOn } from "bun:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
+import { KeyEvent } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
-import type { PersistedRunRecord, PersistedRunSummary } from "../persistence/runRecord.ts"
+import { wireKeyboardCapability } from "../index.ts"
+import type {
+  PersistedRunRecord,
+  PersistedRunRecordV1,
+  PersistedRunSummary,
+} from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../shell/shellRuntime.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
@@ -22,6 +28,7 @@ import {
   type TelemetryRecorder,
 } from "../telemetry/recorder.ts"
 import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
+import { CLARIFICATION_TITLE } from "./ClarificationPrompt.tsx"
 import {
   CockpitApp,
   EXTERNAL_RUN_COPIED_PREFIX,
@@ -29,7 +36,7 @@ import {
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
-import { HELP_ENTRIES, SHELL_EXIT_HINT } from "./keymap.ts"
+import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
@@ -53,6 +60,21 @@ function expectNoOverflow(frame: string, width: number, height: number): void {
     expect([...row].length).toBe(width)
   }
   expect(frame).not.toContain("਀")
+}
+
+function keyEvent(name: string, options: { ctrl?: boolean; shift?: boolean; meta?: boolean; source?: "raw" | "kitty" } = {}): KeyEvent {
+  return new KeyEvent({
+    name,
+    ctrl: options.ctrl ?? false,
+    shift: options.shift ?? false,
+    meta: options.meta ?? false,
+    option: false,
+    sequence: "",
+    number: false,
+    raw: options.source === "kitty" ? `kitty:${name}` : name,
+    eventType: "press",
+    source: options.source ?? "raw",
+  })
 }
 
 async function renderCockpitApp(
@@ -86,7 +108,7 @@ async function runSlashCommand(
 }
 
 /** A project run fixture plus its in-memory persistence boundary for `/resume` flows. */
-function pickerRun(runId: string, lastPrompt: string, updatedAt: number): PersistedRunRecord {
+function pickerRun(runId: string, lastPrompt: string, updatedAt: number): PersistedRunRecordV1 {
   return {
     version: 1,
     runId,
@@ -103,8 +125,8 @@ function pickerRun(runId: string, lastPrompt: string, updatedAt: number): Persis
   }
 }
 
-function pickerSource(records: PersistedRunRecord[]): SessionPickerSource {
-  const toSummary = (record: PersistedRunRecord): PersistedRunSummary => {
+function pickerSource(records: PersistedRunRecordV1[]): SessionPickerSource {
+  const toSummary = (record: PersistedRunRecordV1): PersistedRunSummary => {
     const focused = record.agents[record.focusedAgentId]!
     return {
       runId: record.runId,
@@ -136,6 +158,30 @@ function openApproval(controller: FakeController): void {
       sessionId: "claude-code",
       toolCall: { toolCallId: "approval-1", kind: "other", title: "Approve action" },
       options: [{ optionId: "reject", name: "Reject", kind: "reject_once" }],
+    },
+  })
+}
+
+/** Open the real top-priority clarification projection over a local modal. */
+function openClarification(controller: FakeController): void {
+  controller.store.openClarification({
+    requestId: "clarification-settings-shell",
+    generation: 1,
+    sessionId: "codex",
+    title: "Codex",
+    cwd: "/workspace/kitten",
+    payload: {
+      prompt: "Choose a boundary",
+      fields: [{
+        id: "boundary",
+        label: "Boundary",
+        mode: "single",
+        required: true,
+        options: [
+          { id: "controller", label: "Controller" },
+          { id: "store", label: "Store" },
+        ],
+      }],
     },
   })
 }
@@ -182,13 +228,14 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
-    expect(frame).not.toContain("Claude Code")
+    expect(frame).toContain("[selected] Claude Code")
+    expect(frame).toContain("[tab] Codex")
 
-    // The strip keeps the focused provider, model, and status in one bottom row.
+    // The strip keeps both agents' status/headroom visible and the focused model detailed.
     const strip = rows.at(-1) ?? ""
     expect(strip).toContain(`claude:— - ${STATUS_LABELS.idle}`)
-    expect(strip).not.toContain("codex:—")
-    expect(strip).toContain("/help")
+    expect(strip).toContain(`codex:— - ${STATUS_LABELS.idle} —`)
+    expect(strip).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
   })
@@ -200,7 +247,7 @@ describe("CockpitApp layout", () => {
     const frame = captureCharFrame()
     expectNoOverflow(frame, 80, 24)
     expect(frame).toContain(WELCOME_KITTEN[0])
-    expect(frame).toContain("/help")
+    expect(frame).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
   })
@@ -250,6 +297,31 @@ describe("CockpitApp layout", () => {
 
     await destroyMounted(renderer)
   })
+
+  it("reacts to a newly created conversation becoming available", async () => {
+    const runtimes: AgentRuntimeState[] = [
+      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", cwd: "/workspace/kitten", ready: false, error: "Starting" },
+      readyRuntimes()[1]!,
+    ]
+    const controller = createFakeController({ runtimes })
+    const { renderer, waitForFrame } = await renderCockpitApp(controller)
+
+    await waitForFrame((frame) => frame.includes("This agent is not ready."))
+    runtimes[0] = {
+      sessionId: "claude-code",
+      providerKind: "claude-code",
+      displayName: "Claude Code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      ready: true,
+      acpSessionId: "fresh-claude",
+    }
+    await actAsync(() => controller.store.setConversationAvailability("claude-code", { kind: "ready" }))
+
+    const ready = await waitForFrame((frame) => frame.includes(WELCOME_GREETING))
+    expect(ready).not.toContain("This agent is not ready.")
+    await destroyMounted(renderer)
+  })
 })
 
 describe("CockpitApp resize", () => {
@@ -263,7 +335,7 @@ describe("CockpitApp resize", () => {
     await actAsync(() => {
       resize(64, 12)
     })
-    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(`/help`))
+    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(KEYMAP_HINT))
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
@@ -303,7 +375,7 @@ describe("CockpitApp alternate-screen layout", () => {
       const alternateSize = shell.resizes.at(-1)!
       expect(runtime.bufferType()).toBe("alternate")
       expect(alternate).not.toContain(PROMPT_PLACEHOLDER)
-      expect(alternate).not.toContain("/help")
+      expect(alternate).not.toContain(KEYMAP_HINT)
       expect(alternate).not.toContain(SHELL_EXIT_HINT)
       expect(alternateSize.rows).toBeGreaterThan(primarySize.rows)
 
@@ -335,6 +407,81 @@ describe("CockpitApp alternate-screen layout", () => {
 })
 
 describe("CockpitApp keymap", () => {
+  it("ignores the first Kitty tab chord, then dispatches one cyclic action per confirmed Kitty event", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+    const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    const stopObservation = wireKeyboardCapability(setup.renderer, () => controller.store.confirmKittyKeyboard())
+
+    try {
+      const first = keyEvent("l", { ctrl: true, source: "kitty" })
+      await actAsync(() => {
+        setup.renderer.keyInput.emit("keypress", first)
+      })
+      expect(controller.store.getState().keyboardCapability).toBe("kittyConfirmed")
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+      expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(first.defaultPrevented).toBe(false)
+
+      const next = keyEvent("l", { ctrl: true, source: "kitty" })
+      await actAsync(() => {
+        setup.renderer.keyInput.emit("keypress", next)
+      })
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+      expect(selectAdjacent).toHaveBeenCalledTimes(1)
+      expect(selectAdjacent).toHaveBeenLastCalledWith("next")
+      expect(next.defaultPrevented).toBe(true)
+
+      const previous = keyEvent("h", { ctrl: true, source: "kitty" })
+      await actAsync(() => {
+        setup.renderer.keyInput.emit("keypress", previous)
+      })
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+      expect(selectAdjacent).toHaveBeenCalledTimes(2)
+      expect(selectAdjacent).toHaveBeenLastCalledWith("previous")
+      expect(previous.defaultPrevented).toBe(true)
+    } finally {
+      stopObservation()
+      selectAdjacent.mockRestore()
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("rejects confirmed raw and modified tab lookalikes and stands down behind a modal", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+    const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+
+    try {
+      for (const event of [
+        keyEvent("l", { ctrl: true, source: "raw" }),
+        keyEvent("h", { ctrl: true, shift: true, source: "kitty" }),
+        keyEvent("l", { ctrl: true, meta: true, source: "kitty" }),
+        keyEvent("j", { ctrl: true, source: "kitty" }),
+      ]) {
+        await actAsync(() => {
+          setup.renderer.keyInput.emit("keypress", event)
+        })
+      }
+
+      await actAsync(() => controller.store.openSettings())
+      await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+      await actAsync(() => {
+        setup.renderer.keyInput.emit(
+          "keypress",
+          keyEvent("l", { ctrl: true, source: "kitty" }),
+        )
+      })
+
+      expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    } finally {
+      selectAdjacent.mockRestore()
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   it("forwards navigation and function keys while an alternate-screen app is active", async () => {
     const { controller, runtime, shell } = shellReadyController()
     const setup = await renderCockpitApp(controller)
@@ -392,7 +539,7 @@ describe("CockpitApp keymap", () => {
         setup.mockInput.pressKey("F2")
       })
       await setup.waitForFrame((frame) => frame.includes(WELCOME_GREETING) && !frame.includes("Shell · focused"))
-      expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+      expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
       expect(setup.renderer.currentFocusedEditor?.plainText).toBe("agent draft")
 
       await actAsync(async () => {
@@ -446,6 +593,31 @@ describe("CockpitApp keymap", () => {
       expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x03])
       expect(setup.renderer.isDestroyed).toBe(false)
     } finally {
+      await destroyMounted(setup.renderer)
+      await runtime.dispose()
+    }
+  })
+
+  it("forwards shell-focused Ctrl+H and Ctrl+L as PTY bytes without tab navigation", async () => {
+    const { controller, runtime, shell } = shellReadyController()
+    const setup = await renderCockpitApp(controller)
+    const selectAdjacent = spyOn(controller.store, "selectAdjacentConversation")
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+
+    try {
+      await runSlashCommand(setup, "shell")
+      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
+
+      await actAsync(() => {
+        setup.mockInput.pressKey("h", { ctrl: true })
+        setup.mockInput.pressKey("l", { ctrl: true })
+      })
+
+      expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x08, 0x0c])
+      expect(selectAdjacent).toHaveBeenCalledTimes(0)
+      expect(controller.store.getState().focusedPane).toEqual({ kind: "shell" })
+    } finally {
+      selectAdjacent.mockRestore()
       await destroyMounted(setup.renderer)
       await runtime.dispose()
     }
@@ -551,7 +723,7 @@ describe("CockpitApp keymap", () => {
     expect(controller.calls.switchFocus).toEqual([undefined])
     // The action really moved focus, reflected by the compact inline summary.
     const frame = await setup.waitForFrame((f) => f.includes(`codex:— - ${STATUS_LABELS.idle}`))
-    expect(controller.store.getState().focusedSessionId).toBe("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     expect(frame).toContain("Kitten")
 
     await destroyMounted(setup.renderer)
@@ -667,6 +839,9 @@ describe("CockpitApp keymap", () => {
     }
     expect(opened).toContain("/model")
     expect(opened).toContain("/settings")
+    const fileDiscoveryHelp = EDITOR_KEYMAP.find((entry) => entry.keys === "@")
+    expect(fileDiscoveryHelp).toBeDefined()
+    expect(opened).toContain(fileDiscoveryHelp!.description)
     expect(opened).not.toContain("Ctrl+O")
 
     await destroyMounted(setup.renderer)
@@ -773,6 +948,34 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("routes shell Escape to clarification and resumes unchanged settings", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await runSlashCommand(setup, "settings")
+    await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+      openClarification(controller)
+    })
+    await setup.waitForFrame((frame) => frame.includes(CLARIFICATION_TITLE))
+
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+
+    expect(controller.calls.respondClarification).toEqual([{
+      requestId: "clarification-settings-shell",
+      generation: 1,
+      outcome: { kind: "cancelled" },
+    }])
+    expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
+    expect(controller.store.getState().preferences.theme).toBe("light")
+    expect(await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain("Light")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("stands the terminal shell chord down while settings owns the keyboard", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
@@ -785,7 +988,7 @@ describe("CockpitApp keymap", () => {
     })
 
     expect(controller.calls.switchFocus).toEqual([])
-    expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", agentId: "claude-code" })
+    expect(controller.store.getState().focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     expect(controller.store.getState().overlays.handoffTarget).toBeNull()
 

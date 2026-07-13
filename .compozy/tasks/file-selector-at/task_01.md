@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Repository file discovery source and safety policy"
 type: backend
 complexity: high
@@ -28,11 +28,11 @@ Create the fail-soft, injectable source that produces safe repository-relative f
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Add the repository-file source contract and its production implementation.
-- [ ] 1.2 Enforce the Git root, ignore, attribute, path-safety, and normal-file candidate policies.
-- [ ] 1.3 Add the bounded binary and filesystem safety checks.
-- [ ] 1.4 Expose injectable subprocess and filesystem seams for deterministic tests.
-- [ ] 1.5 Add direct coverage for success, unavailable, safety, and bound conditions.
+- [x] 1.1 Add the repository-file source contract and its production implementation.
+- [x] 1.2 Enforce the Git root, ignore, attribute, path-safety, and normal-file candidate policies.
+- [x] 1.3 Add the bounded binary and filesystem safety checks.
+- [x] 1.4 Expose injectable subprocess and filesystem seams for deterministic tests.
+- [x] 1.5 Add direct coverage for success, unavailable, safety, and bound conditions.
 
 ## Implementation Details
 
@@ -62,14 +62,14 @@ Create the application-layer discovery module described in TechSpec "System Arch
 
 ## Tests
 - Unit tests:
-  - [ ] Root resolution, NUL-delimited `ls-files` parsing, and stable lexical path ordering return the expected relative paths.
-  - [ ] `check-ignore --no-index` removes ignored candidates, including a tracked path that currently matches ignore rules.
-  - [ ] Attribute triples exclude generated/non-text values and malformed output returns unavailable.
-  - [ ] C0/C1 filenames, root escapes, symlinks, non-regular paths, and NUL-prefix binary files never appear.
-  - [ ] Prefix reads are limited to 4 KiB, worker concurrency never exceeds its constant, and no candidate cap truncates results.
+  - [x] Root resolution, NUL-delimited `ls-files` parsing, and stable lexical path ordering return the expected relative paths.
+  - [x] `check-ignore --no-index` removes ignored candidates, including a tracked path that currently matches ignore rules.
+  - [x] Attribute triples exclude generated/non-text values and malformed output returns unavailable.
+  - [x] C0/C1 filenames, root escapes, symlinks, non-regular paths, and NUL-prefix binary files never appear.
+  - [x] Prefix reads are limited to 4 KiB, worker concurrency never exceeds its constant, and no candidate cap truncates results.
 - Integration tests:
-  - [ ] An injected repository fixture with ignored, generated, binary, safe whitespace, and duplicate-basename files returns only the intended relative candidates.
-  - [ ] A non-repository cwd or failed Git process yields an unavailable result without throwing.
+  - [x] An injected repository fixture with ignored, generated, binary, safe whitespace, and duplicate-basename files returns only the intended relative candidates.
+  - [x] A non-repository cwd or failed Git process yields an unavailable result without throwing.
 - Test coverage target: >=80%
 - All tests must pass
 

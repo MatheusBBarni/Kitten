@@ -1,0 +1,38 @@
+---
+import Faq from "../components/Faq.astro";
+import Hero from "../components/Hero.astro";
+import Install from "../components/Install.astro";
+import Proof from "../components/Proof.astro";
+import Requirements from "../components/Requirements.astro";
+import SiteControls from "../components/SiteControls.astro";
+import {
+  assertValidShowcaseConfig,
+  showcaseConfig,
+} from "../config/showcase-config.ts";
+import "../styles/site.css";
+
+assertValidShowcaseConfig(showcaseConfig);
+
+const { site, hero, proof, install, requirements, faq, repository } =
+  showcaseConfig;
+---
+
+<!doctype html>
+<html lang={site.language}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={site.description} />
+    <title>{site.title}</title>
+  </head>
+  <body>
+    <main id="main-content">
+      <Hero section={hero} install={install} />
+      <Proof section={proof} />
+      <Install section={install} />
+      <SiteControls repository={repository} hero={hero} install={install} />
+      <Requirements section={requirements} />
+      <Faq section={faq} />
+    </main>
+  </body>
+</html>

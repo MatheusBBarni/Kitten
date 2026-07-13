@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import type { AvailableCommand, ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
 
 /**
  * Fixture-driven tests for the pure `SessionState` reducer. The core has no I/O,
@@ -35,8 +36,10 @@ describe("createSessionState", () => {
       referencedFiles: new Map(),
       pendingDiffs: [],
       plan: [],
+      usage: undefined,
       configOptions: [],
       commands: [],
+      promptHistory: { entries: [], cursor: null },
     })
   })
 
@@ -46,6 +49,109 @@ describe("createSessionState", () => {
 
   it("defaults commands to an empty array", () => {
     expect(initial().commands).toEqual([])
+  })
+
+  it("defaults usage to unknown", () => {
+    expect(initial().usage).toBeUndefined()
+  })
+
+  it("defaults prompt history to no entries and no active recall cursor", () => {
+    expect(initial().promptHistory).toEqual({ entries: [], cursor: null })
+  })
+})
+
+describe("prompt history events", () => {
+  it("delegates record, previous, and next transitions to the prompt-history policy", () => {
+    const recorded = sessionReducer(initial(), {
+      kind: "prompt_history",
+      action: "record",
+      text: "inspect the reducer",
+    })
+    const recalled = sessionReducer(recorded, { kind: "prompt_history", action: "previous" })
+    const cleared = sessionReducer(recalled, { kind: "prompt_history", action: "next" })
+
+    expect(recorded.promptHistory).toEqual({ entries: ["inspect the reducer"], cursor: null })
+    expect(recalled.promptHistory).toEqual({ entries: ["inspect the reducer"], cursor: 0 })
+    expect(cleared.promptHistory).toEqual({ entries: ["inspect the reducer"], cursor: null })
+  })
+
+  it("changes only prompt history and preserves every unrelated reference", () => {
+    const before = fold([
+      { kind: "user_message", messageId: "u1", text: "existing turn" },
+      { kind: "plan", entries: [{ content: "Existing plan", status: "in_progress" }] },
+      { kind: "commands", commands: [{ name: "review", description: "Review changes" }] },
+    ])
+
+    const after = sessionReducer(before, {
+      kind: "prompt_history",
+      action: "record",
+      text: "new prompt",
+    })
+
+    expect(after).toEqual({
+      ...before,
+      promptHistory: { entries: ["new prompt"], cursor: null },
+    })
+    expect(after.turns).toBe(before.turns)
+    expect(after.plan).toBe(before.plan)
+    expect(after.commands).toBe(before.commands)
+    expect(after.configOptions).toBe(before.configOptions)
+    expect(after.referencedFiles).toBe(before.referencedFiles)
+    expect(after.pendingDiffs).toBe(before.pendingDiffs)
+  })
+
+  it("returns the same session for a prompt-history no-op", () => {
+    const before = initial()
+
+    expect(sessionReducer(before, { kind: "prompt_history", action: "next" })).toBe(before)
+  })
+})
+
+describe("usage", () => {
+  it("sets raw usage without changing unrelated session fields", () => {
+    const before = fold([
+      { kind: "user_message", messageId: "u1", text: "inspect usage" },
+      { kind: "status", status: "working" },
+      { kind: "plan", entries: [{ content: "Measure context", status: "in_progress" }] },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "Edit gauge",
+          status: "pending",
+          locations: ["src/gauge.ts"],
+          diff: { path: "src/gauge.ts", unified: "@@ -1 +1 @@" },
+        },
+      },
+    ])
+
+    const after = sessionReducer(before, { kind: "usage", used: 124_000, size: 200_000 })
+
+    expect(after.usage).toEqual({ used: 124_000, size: 200_000 })
+    expect(after.turns).toBe(before.turns)
+    expect(after.status).toBe(before.status)
+    expect(after.plan).toBe(before.plan)
+    expect(after.referencedFiles).toBe(before.referencedFiles)
+    expect(after.pendingDiffs).toBe(before.pendingDiffs)
+  })
+
+  it("replaces the prior usage value wholesale", () => {
+    const first = fold([{ kind: "usage", used: 124_000, size: 200_000 }])
+
+    const second = sessionReducer(first, { kind: "usage", used: 80_000, size: 160_000 })
+
+    expect(second.usage).toEqual({ used: 80_000, size: 160_000 })
+    expect(second.usage).not.toBe(first.usage)
+  })
+
+  it("does not mutate the input state", () => {
+    const before = initial()
+
+    const after = sessionReducer(before, { kind: "usage", used: 124_000, size: 200_000 })
+
+    expect(after).not.toBe(before)
+    expect(before.usage).toBeUndefined()
   })
 })
 
@@ -226,11 +332,37 @@ describe("plan and status events", () => {
     expect(state.turns).toEqual(withTurn.turns)
   })
 
-  it("updates status without altering turns", () => {
-    const withTurn = fold([{ kind: "agent_message", messageId: "m1", textDelta: "hi" }])
-    const state = sessionReducer(withTurn, { kind: "status", status: "awaiting_approval" })
-    expect(state.status).toBe("awaiting_approval")
-    expect(state.turns).toEqual(withTurn.turns)
+  it("enters and leaves clarification without replacing session content", () => {
+    const withWork = fold([
+      { kind: "agent_message", messageId: "m1", textDelta: "hi" },
+      { kind: "plan", entries: [{ content: "Wait for input", status: "in_progress" }] },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "Prepare edit",
+          status: "pending",
+          locations: ["src/core/types.ts"],
+          diff: { path: "src/core/types.ts", unified: "diff" },
+        },
+      },
+    ])
+
+    const awaiting = sessionReducer(withWork, { kind: "status", status: "awaiting_clarification" })
+    const resumed = sessionReducer(awaiting, { kind: "status", status: "working" })
+
+    expect(awaiting.status).toBe("awaiting_clarification")
+    expect(resumed.status).toBe("working")
+    for (const state of [awaiting, resumed]) {
+      expect(state.turns).toBe(withWork.turns)
+      expect(state.plan).toBe(withWork.plan)
+      expect(state.referencedFiles).toBe(withWork.referencedFiles)
+      expect(state.pendingDiffs).toBe(withWork.pendingDiffs)
+      expect(state.configOptions).toBe(withWork.configOptions)
+      expect(state.commands).toBe(withWork.commands)
+      expect(state.promptHistory).toBe(withWork.promptHistory)
+    }
   })
 })
 
@@ -341,16 +473,42 @@ describe("config_options events", () => {
 })
 
 describe("commands events", () => {
-  const review = { name: "review", description: "Review the current diff", hint: "[scope]" }
-  const test = { name: "test", description: "Run the test suite" }
+  const review: AvailableCommand = { name: "review", description: "Review the current diff", hint: "[scope]" }
+  const test: AvailableCommand = { name: "test", description: "Run the test suite" }
+
+  it("sets commands to exactly the advertised list", () => {
+    const commands = [review, test]
+    const state = sessionReducer(initial(), { kind: "commands", commands })
+
+    expect(state.commands).toBe(commands)
+    expect(state.commands).toEqual([review, test])
+  })
 
   it("replaces the advertised list wholesale", () => {
-    const state = fold([
-      { kind: "commands", commands: [review, test] },
-      { kind: "commands", commands: [test] },
-    ])
+    const first = sessionReducer(initial(), { kind: "commands", commands: [review, test] })
+    const replacement = [test]
+    const state = sessionReducer(first, { kind: "commands", commands: replacement })
 
+    expect(state.commands).toBe(replacement)
     expect(state.commands).toEqual([test])
+  })
+
+  it("changes no other session field when commands are replaced", () => {
+    const withWork = fold([
+      { kind: "status", status: "awaiting_approval" },
+      { kind: "user_message", messageId: "u1", text: "review this" },
+      { kind: "plan", entries: [{ content: "Inspect diff", status: "in_progress" }] },
+    ])
+    const commands = [review, test]
+
+    const next = sessionReducer(withWork, { kind: "commands", commands })
+
+    expect(next).toEqual({ ...withWork, commands })
+    expect(next.turns).toBe(withWork.turns)
+    expect(next.plan).toBe(withWork.plan)
+    expect(next.referencedFiles).toBe(withWork.referencedFiles)
+    expect(next.pendingDiffs).toBe(withWork.pendingDiffs)
+    expect(next.configOptions).toBe(withWork.configOptions)
   })
 
   it("leaves the command-list reference intact for unrelated events", () => {
@@ -369,6 +527,44 @@ describe("purity", () => {
     sessionReducer(before, { kind: "agent_message", messageId: "m1", textDelta: "x" })
     expect(before.turns).toEqual([])
     expect([...before.referencedFiles]).toEqual(snapshot.referencedFiles)
+  })
+})
+
+describe("integration: workspace ownership boundary", () => {
+  it("keeps execution state and status unchanged across workspace-only transitions", () => {
+    const sessionBefore = sessionReducer(initial(), { kind: "status", status: "working" })
+    const workspaceBefore = createWorkspaceState({
+      conversations: [{ sessionId: sessionBefore.id, displayName: "Task", availability: { kind: "ready" } }],
+      selectedVisibleId: sessionBefore.id,
+    })
+
+    const workspaceAfter = [
+      { kind: "rename", sessionId: sessionBefore.id, displayName: "Renamed task" } as const,
+      { kind: "background", sessionId: sessionBefore.id } as const,
+      { kind: "reopen", sessionId: sessionBefore.id } as const,
+    ].reduce(workspaceReducer, workspaceBefore)
+
+    expect(sessionBefore.status).toBe("working")
+    expect(sessionBefore.turns).toEqual([])
+    expect(workspaceAfter.conversations[sessionBefore.id]?.displayName).toBe("Renamed task")
+    expect(workspaceAfter.selectedVisibleId).toBe(sessionBefore.id)
+  })
+
+  it("records attention acknowledgement without clearing the session reducer status", () => {
+    const sessionBefore = sessionReducer(initial(), { kind: "status", status: "awaiting_approval" })
+    const workspaceBefore = createWorkspaceState({
+      conversations: [{ sessionId: sessionBefore.id, displayName: "Approval", availability: { kind: "ready" } }],
+      selectedVisibleId: sessionBefore.id,
+    })
+    const withAttention = workspaceReducer(workspaceBefore, {
+      kind: "execution_status",
+      sessionId: sessionBefore.id,
+      status: sessionBefore.status,
+    })
+    const acknowledged = workspaceReducer(withAttention, { kind: "select", sessionId: sessionBefore.id })
+
+    expect(acknowledged.conversations[sessionBefore.id]?.attention.seen).toBe(true)
+    expect(sessionBefore.status).toBe("awaiting_approval")
   })
 })
 

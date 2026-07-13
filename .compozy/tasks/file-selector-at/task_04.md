@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Stateless file selector presentation and @ help entry"
 type: frontend
 complexity: medium
@@ -28,11 +28,11 @@ Create the terminal presentation leaf for repository-file completion and documen
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Define the presentation props and status rendering for file completion.
-- [ ] 4.2 Render safe relative rows, full-path disambiguation, and highlight state.
-- [ ] 4.3 Add legible loading, empty, and unavailable feedback.
-- [ ] 4.4 Document @ discovery through the central editor help table.
-- [ ] 4.5 Add focused component and keymap coverage.
+- [x] 4.1 Define the presentation props and status rendering for file completion.
+- [x] 4.2 Render safe relative rows, full-path disambiguation, and highlight state.
+- [x] 4.3 Add legible loading, empty, and unavailable feedback.
+- [x] 4.4 Document @ discovery through the central editor help table.
+- [x] 4.5 Add focused component and keymap coverage.
 
 ## Implementation Details
 
@@ -62,14 +62,14 @@ Follow TechSpec "System Architecture > Presentation and keymap" and the existing
 
 ## Tests
 - Unit tests:
-  - [ ] Loading state shows concise discovery feedback without an empty selector border.
-  - [ ] Ready rows show complete relative paths, duplicate basename disambiguation, and one highlight.
-  - [ ] Empty and unavailable states show distinct legible messages and no selectable row.
-  - [ ] More than eight supplied rows renders no more than eight visible candidates.
-  - [ ] `EDITOR_KEYMAP` exposes @ discovery while existing `MENU_KEYMAP` command mappings remain unchanged.
+  - [x] Loading state shows concise discovery feedback without an empty selector border.
+  - [x] Ready rows show complete relative paths, duplicate basename disambiguation, and one highlight.
+  - [x] Empty and unavailable states show distinct legible messages and no selectable row.
+  - [x] More than eight supplied rows renders no more than eight visible candidates.
+  - [x] `EDITOR_KEYMAP` exposes @ discovery while existing `MENU_KEYMAP` command mappings remain unchanged.
 - Integration tests:
-  - [ ] Mounted in an OpenTUI test renderer, each selector status remains visible above a prompt-sized container without importing a controller.
-  - [ ] The existing help surface includes the @ discovery description from the central keymap.
+  - [x] Mounted in an OpenTUI test renderer, each selector status remains visible above a prompt-sized container without importing a controller.
+  - [x] The existing help surface includes the @ discovery description from the central keymap.
 - Test coverage target: >=80%
 - All tests must pass
 

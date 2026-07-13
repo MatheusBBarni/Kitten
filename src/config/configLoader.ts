@@ -28,14 +28,17 @@ import { z } from "zod"
 import type {
   AgentConfig,
   AppConfig,
+  McpServerConfig,
   ProviderKind,
   ProviderRecipe,
+  ResolvedAgentConfig,
   ResolvedSession,
   SessionDescriptor,
   ThemePreference,
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import { classifyClarificationCapability } from "./clarificationCapability.ts"
 
 /**
  * The pinned ACP adapter packages the default config launches through `npx`.
@@ -143,6 +146,19 @@ const SHELL_OVERRIDE_SCHEMA = z
   })
   .strict()
 
+/** One stdio-only MCP declaration; remote transports are outside the V1 scope. */
+const MCP_SERVER_SCHEMA = z
+  .object({
+    type: z.literal("stdio").optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()),
+    env: z.record(z.string(), z.string()),
+  })
+  .strict()
+
+/** MCP declarations are keyed by their stable, user-facing server name. */
+const MCP_SERVERS_SCHEMA = z.record(z.string().min(1), MCP_SERVER_SCHEMA)
+
 /**
  * The shape of the on-disk config file. Every field is optional: the file only ever
  * expresses deltas from {@link defaultAppConfig}. `strict()` rejects unknown keys so
@@ -160,6 +176,7 @@ export const USER_CONFIG_SCHEMA = z
     /** @deprecated Use `providers`. Kept as an alias for one migration window. */
     agents: PROVIDERS_SCHEMA.optional(),
     sessions: z.array(SESSION_DESCRIPTOR_SCHEMA).optional(),
+    mcpServers: MCP_SERVERS_SCHEMA.optional(),
     shell: SHELL_OVERRIDE_SCHEMA.optional(),
   })
   .strict()
@@ -183,6 +200,7 @@ export function defaultAppConfig(): AppConfig {
   return {
     providers: cloneProviders(DEFAULT_PROVIDERS),
     sessions: [],
+    mcpServers: [],
     shell: {
       enabled: true,
       command: process.env.SHELL || "/bin/sh",
@@ -223,6 +241,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
   return {
     providers: config.providers,
     sessions: user.sessions?.map((session) => ({ ...session })) ?? [],
+    mcpServers: normalizeMcpServers(user.mcpServers),
     shell: {
       enabled: user.shell?.enabled ?? config.shell.enabled,
       command: user.shell?.command ?? config.shell.command,
@@ -233,6 +252,16 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     theme: user.theme ?? config.theme,
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
   }
+}
+
+function normalizeMcpServers(servers: UserConfig["mcpServers"]): McpServerConfig[] {
+  if (!servers) return []
+  return Object.entries(servers).map(([name, server]) => ({
+    name,
+    command: server.command,
+    args: [...server.args],
+    env: { ...server.env },
+  }))
 }
 
 function applyOverride(recipe: ProviderRecipe, override: ProviderOverride | undefined): ProviderRecipe {
@@ -304,10 +333,14 @@ export async function loadAppConfig(options: LoadAppConfigOptions = {}): Promise
 }
 
 /** The spawn recipe for one provider, paired with its id. `undefined` when omitted. */
-export function findAgentConfig(config: AppConfig, id: ProviderKind): AgentConfig | undefined {
+export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAgentConfig | undefined {
   const recipe = config.providers[id]
   if (!recipe) return undefined
-  return { id, ...recipe }
+  const resolved = { id, ...recipe }
+  return {
+    ...resolved,
+    clarificationCapability: classifyClarificationCapability(resolved),
+  }
 }
 
 /** Seams so {@link resolveSessions} can validate `cwd` without touching the real disk. */
@@ -366,7 +399,7 @@ export function resolveSessions(config: AppConfig, options: ResolveSessionsOptio
         cwd,
         ...(descriptor.task !== undefined ? { task: descriptor.task } : {}),
       },
-      spawn: { id: descriptor.provider, ...recipe },
+      spawn: findAgentConfig(config, descriptor.provider)!,
     }
   })
 }

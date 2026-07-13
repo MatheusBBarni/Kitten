@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import type { HandoffBundle } from "../core/types.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
-import type { PersistedRunRecord } from "./runRecord.ts"
+import type { PersistedRunRecordV2 } from "./runRecord.ts"
 import { createRunWriter } from "./runWriter.ts"
 import type { RunStore } from "./runStore.ts"
 
@@ -38,14 +38,15 @@ function controlledTimer(): {
 }
 
 function recordingRunStore(): RunStore & {
-  records: PersistedRunRecord[]
+  records: PersistedRunRecordV2[]
   flushCalls: number
 } {
-  const records: PersistedRunRecord[] = []
+  const records: PersistedRunRecordV2[] = []
   return {
     records,
     flushCalls: 0,
     save(record) {
+      if (record.version !== 2) throw new Error("RunWriter must write V2 records")
       records.push(record)
     },
     list() {
@@ -68,7 +69,7 @@ function seededStore(): AppStore {
       { id: "claude", providerKind: "claude-code", title: "Claude", cwd: "/work/kitten" },
       { id: "codex", providerKind: "codex", title: "Codex", cwd: "/work/kitten" },
     ],
-    focusedSessionId: "claude",
+    selectedVisibleId: "claude",
   })
   store.startSession("claude", "claude-acp-session")
   store.startSession("codex", "codex-acp-session")
@@ -113,7 +114,7 @@ describe("createRunWriter", () => {
         { id: "claude", providerKind: "claude-code", title: "Claude", cwd: "/work/alpha" },
         { id: "codex", providerKind: "codex", title: "Codex", cwd: "/work/beta" },
       ],
-      focusedSessionId: "claude",
+      selectedVisibleId: "claude",
     })
     const runStore = recordingRunStore()
     const timer = controlledTimer()
@@ -150,30 +151,132 @@ describe("createRunWriter", () => {
 
     expect(runStore.records).toHaveLength(1)
     expect(runStore.records[0]).toEqual({
-      version: 1,
+      version: 2,
       runId: "run-03",
       cwd: "/work/kitten",
       gitBranch: "feat/parser",
-      focusedAgentId: "claude",
       createdAt: 1_000,
       updatedAt: 2_000,
-      agents: {
+      conversations: {
         claude: {
-          sessionId: "claude-acp-session",
+          sessionId: "claude",
+          providerKind: "claude-code",
+          cwd: "/work/kitten",
+          initialTitle: "Claude",
+          acpSessionId: "claude-acp-session",
           status: "idle",
           messageCount: 3,
           lastPrompt: "fix the parser",
         },
         codex: {
-          sessionId: "codex-acp-session",
+          sessionId: "codex",
+          providerKind: "codex",
+          cwd: "/work/kitten",
+          initialTitle: "Codex",
+          acpSessionId: "codex-acp-session",
           status: "idle",
           messageCount: 0,
           lastPrompt: "",
         },
       },
+      workspace: {
+        conversations: {
+          claude: {
+            sessionId: "claude",
+            displayName: "Claude",
+            lifecycle: "visible",
+            createdOrdinal: 0,
+            attention: { seen: true, sequence: 0 },
+          },
+          codex: {
+            sessionId: "codex",
+            displayName: "Codex",
+            lifecycle: "visible",
+            createdOrdinal: 1,
+            attention: { seen: true, sequence: 0 },
+          },
+        },
+        order: ["claude", "codex"],
+        selectedVisibleId: "claude",
+      },
       handoffBundle: null,
     })
     expect(JSON.stringify(runStore.records[0])).not.toContain('"turns"')
+    writer.dispose()
+  })
+
+  it("preserves dynamic workspace names, order, lifecycle, attention, and ACP pointers exactly once", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    store.addSession(
+      { id: "dynamic", providerKind: "codex", title: "Codex seed", cwd: "/work/dynamic" },
+      { displayName: "Dynamic task", availability: { kind: "ready" } },
+    )
+    store.startSession("dynamic", "dynamic-acp")
+    store.applyEvent("dynamic", { kind: "status", status: "finished" })
+    store.backgroundConversation("dynamic")
+    store.renameConversation("claude", "Primary task")
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    expect(record.workspace.order).toEqual(["claude", "codex", "dynamic"])
+    expect(record.workspace.selectedVisibleId).toBe("claude")
+    expect(record.workspace.conversations.claude?.displayName).toBe("Primary task")
+    expect(record.workspace.conversations.dynamic).toMatchObject({
+      lifecycle: "background",
+      displayName: "Dynamic task",
+      attention: { seen: false, sequence: 1 },
+    })
+    expect(record.conversations.dynamic).toMatchObject({
+      sessionId: "dynamic",
+      acpSessionId: "dynamic-acp",
+      providerKind: "codex",
+      cwd: "/work/dynamic",
+      initialTitle: "Codex seed",
+    })
+    expect(record.conversations.dynamic).not.toHaveProperty("displayName")
+    expect(record.conversations.dynamic).not.toHaveProperty("lifecycle")
+    writer.dispose()
+  })
+
+  it("writes a valid empty V2 workspace with null selection and branch and omits closed state", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    store.removeSession("claude")
+    store.removeSession("codex")
+
+    timer.flush()
+
+    expect(runStore.records.at(-1)).toEqual({
+      version: 2,
+      runId: "run-03",
+      cwd: "/work/kitten",
+      gitBranch: null,
+      createdAt: 1_000,
+      updatedAt: 2_000,
+      conversations: {},
+      workspace: { conversations: {}, order: [], selectedVisibleId: null },
+      handoffBundle: null,
+    })
+    writer.dispose()
+  })
+
+  it("omits transcript, availability, teardown, raw-error, notice, and capability state", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    store.applyEvent("claude", { kind: "user_message", messageId: "u1", text: "safe summary" })
+    const state = store.getState() as unknown as Record<string, unknown>
+    state.keyboardCapability = "kittyConfirmed"
+    state.workspaceNotice = { code: "no-provider-available" }
+    ;(store.getState().sessions.claude as unknown as Record<string, unknown>).rawError = "private failure"
+
+    timer.flush()
+
+    const serialized = JSON.stringify(runStore.records.at(-1))
+    expect(serialized).not.toContain('"turns"')
+    expect(serialized).not.toContain('"availability"')
+    expect(serialized).not.toContain('"teardownState"')
+    expect(serialized).not.toContain("private failure")
+    expect(serialized).not.toContain("no-provider-available")
+    expect(serialized).not.toContain("kittyConfirmed")
     writer.dispose()
   })
 
@@ -189,7 +292,7 @@ describe("createRunWriter", () => {
     timer.flush()
 
     expect(runStore.records).toHaveLength(1)
-    expect(runStore.records[0]?.agents.claude?.messageCount).toBe(5)
+    expect(runStore.records[0]?.conversations.claude?.messageCount).toBe(5)
     writer.dispose()
   })
 
@@ -206,6 +309,31 @@ describe("createRunWriter", () => {
     timer.flush()
 
     expect(runStore.records.at(-1)?.handoffBundle).toEqual(HANDOFF_BUNDLE)
+    writer.dispose()
+  })
+
+  it("persists restored fallback context on the first autosave and clears it for a new run", () => {
+    const store = seededStore()
+    const runStore = recordingRunStore()
+    const timer = controlledTimer()
+    store.setRestorationBundle(HANDOFF_BUNDLE)
+    const writer = createRunWriter({
+      enabled: true,
+      runStore,
+      projectCwd: "/work/kitten",
+      runId: "restored-run",
+      now: () => 1_000,
+      setTimer: timer.setTimer,
+      clearTimer: timer.clearTimer,
+    })
+
+    writer.watch(store)
+    timer.flush()
+    expect(runStore.records.at(-1)?.handoffBundle).toEqual(HANDOFF_BUNDLE)
+
+    store.setRestorationBundle(null)
+    timer.flush()
+    expect(runStore.records.at(-1)?.handoffBundle).toBeNull()
     writer.dispose()
   })
 
@@ -240,7 +368,7 @@ describe("createRunWriter", () => {
     timer.flush()
 
     expect(runStore.records).toHaveLength(1)
-    expect(runStore.records[0]?.agents.claude?.lastPrompt).toBe("persist before exit")
+    expect(runStore.records[0]?.conversations.claude?.lastPrompt).toBe("persist before exit")
     expect(runStore.flushCalls).toBe(1)
   })
 
