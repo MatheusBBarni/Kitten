@@ -30,6 +30,14 @@ import {
  */
 
 const tempDirs: string[] = []
+const README_PATH = join(import.meta.dir, "..", "..", "README.md")
+
+async function readReadmeJsonExample(name: "mcp-config-example" | "mcp-remote-example"): Promise<string> {
+  const readme = await Bun.file(README_PATH).text()
+  const match = readme.match(new RegExp(`<!-- ${name}:start -->\\s*\`\`\`json\\s*([\\s\\S]*?)\\s*\`\`\`\\s*<!-- ${name}:end -->`))
+  if (!match?.[1]) throw new Error(`README example ${name} is missing`)
+  return match[1]
+}
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "kitten-config-"))
@@ -167,6 +175,28 @@ describe("MCP server config", () => {
 
     expect(config.mcpServers.map((server) => server.name)).toEqual(["github", "linear"])
     expect(config.mcpServers[0]).toEqual({ name: "github", ...namedServers.github })
+  })
+
+  it("Should load the documented stdio example and yield its documented server list", async () => {
+    const path = await writeConfig(await readReadmeJsonExample("mcp-config-example"))
+
+    const config = await loadAppConfig({ path })
+
+    expect(config.mcpServers).toEqual([
+      {
+        name: "github",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-github"],
+        env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+      },
+    ])
+  })
+
+  it("Should reject the documented remote HTTP example", async () => {
+    const path = await writeConfig(await readReadmeJsonExample("mcp-remote-example"))
+
+    await expect(loadAppConfig({ path })).rejects.toThrow(ConfigError)
+    await expect(loadAppConfig({ path })).rejects.toThrow(/mcpServers\.github-remote/)
   })
 })
 

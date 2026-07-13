@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Setup documentation and example config
 type: docs
 complexity: low
@@ -30,9 +30,9 @@ Documentation is the authoring experience for V1 (there is no helper command), s
 </requirements>
 
 ## Subtasks
-- [ ] 09.1 Add an MCP section to the README Configuration docs.
-- [ ] 09.2 Provide a commented example `mcpServers` map with an env reference.
-- [ ] 09.3 Document V1 scope, failure behavior, and the readout location.
+- [x] 09.1 Add an MCP section to the README Configuration docs.
+- [x] 09.2 Provide a commented example `mcpServers` map with an env reference.
+- [x] 09.3 Document V1 scope, failure behavior, and the readout location.
 
 ## Implementation Details
 Update `README.md` (Configuration section).
@@ -55,10 +55,10 @@ This is a documentation task; no product code changes.
 
 ## Tests
 - Unit tests:
-  - [ ] The documented example config parses successfully through `loadAppConfig` (the example is valid against the schema).
-  - [ ] The documented remote-rejection claim matches behavior: the shown http example is rejected by the loader, consistent with task_01.
+  - [x] The documented example config parses successfully through `loadAppConfig` (the example is valid against the schema).
+  - [x] The documented remote-rejection claim matches behavior: the shown http example is rejected by the loader, consistent with task_01.
 - Integration tests:
-  - [ ] The example config, when loaded, yields the documented server list, keeping docs and schema in sync.
+  - [x] The example config, when loaded, yields the documented server list, keeping docs and schema in sync.
 - Test coverage target: >=80% (example-validation test)
 - All tests must pass
 

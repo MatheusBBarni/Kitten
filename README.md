@@ -126,6 +126,58 @@ Malformed config files fail fast. There is no silent fallback.
 
 Telemetry is disabled by default. When enabled, it writes local content-free JSONL counters only.
 
+### MCP servers
+
+Declare shared MCP servers in the top-level `mcpServers` object. It is a name-keyed map: each key is the server name shown in Kitten's readouts, and each value is a stdio launch recipe with these fields:
+
+- `command` — the executable Kitten launches.
+- `args` — the command-line arguments, in order.
+- `env` — environment variables passed to the server. Values can reference launch-time variables with `${VAR}`.
+
+The following strict JSON is ready to copy into `config.json`. The `github` key names the server, `npx` launches it over stdio, `args` identifies the package, and `env` reads the token from the environment instead of storing the secret in this file.
+
+<!-- mcp-config-example:start -->
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    }
+  }
+}
+```
+<!-- mcp-config-example:end -->
+
+Set every referenced variable in the environment before starting Kitten. For the example above:
+
+```bash
+export GITHUB_TOKEN="your-token"
+bun start
+```
+
+V1 supports stdio servers only. Remote HTTP/SSE entries such as this one are rejected when the config loads:
+
+<!-- mcp-remote-example:start -->
+```json
+{
+  "mcpServers": {
+    "github-remote": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
+  }
+}
+```
+<!-- mcp-remote-example:end -->
+
+An unresolved `${VAR}` does not block startup: Kitten skips that server and shows a warning. Declared MCP servers are active in sessions launched by Kitten; writing them into Claude Code or Codex configuration for standalone use is deferred beyond V1.
+
+Run `bun run selfcheck` to see the loaded/skipped MCP readout without opening the cockpit. In the cockpit, the same per-session result appears in the status strip.
+
 ## Development commands
 
 ```bash
