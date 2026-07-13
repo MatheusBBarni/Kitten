@@ -30,8 +30,10 @@ import {
   redactionNotice,
   SHELL_HEADING,
   SUMMARY_HEADING,
+  TARGET_HEADROOM_LABEL,
   TARGET_CONFIG_HEADING,
 } from "./HandoffPreview.tsx"
+import { formatHeadroom, HEADROOM_UNKNOWN } from "./headroom.ts"
 import { CURRENT_MARK, EFFORT_HEADING, MID_SWITCH_WARNING, MODEL_HEADING, OTHER_MARK, ROW_MARKER, TARGET_MARK } from "./ModelSelect.tsx"
 import { APPROVAL_HINT, HANDOFF_CONFIG_HINT, HANDOFF_EDIT_HINT, HANDOFF_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -152,10 +154,10 @@ function seedShell(controller: FakeController): void {
   })
 }
 
-async function renderCockpit(controller: FakeController): Promise<TestRendererSetup> {
+async function renderCockpit(controller: FakeController, height = HEIGHT): Promise<TestRendererSetup> {
   const setup = await testRender(<CockpitApp controller={controller} />, {
     width: WIDTH,
-    height: HEIGHT,
+    height,
     kittyKeyboard: true,
   })
   await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
@@ -330,6 +332,55 @@ describe("HandoffPreview visibility", () => {
     const setup = await renderWithPreview(controller)
 
     expect(setup.captureCharFrame()).toContain(redactionNotice(0))
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows the target's formatted headroom immediately after the redaction notice", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    controller.store.applyEvent("codex", { kind: "usage", used: 36_000, size: 200_000 })
+    const setup = await renderWithPreview(controller)
+
+    const display = formatHeadroom(82)
+    const expectedLine = `${TARGET_HEADROOM_LABEL}: ${display.label} ${"█".repeat(display.filled)}${"░".repeat(display.cells - display.filled)}`
+    const rows = setup.captureCharFrame().split("\n")
+    const noticeRow = rows.findIndex((row) => row.includes(redactionNotice(0)))
+    const headroomRow = rows.findIndex((row) => row.includes(expectedLine))
+    const summaryRow = rows.findIndex((row) => row.includes(SUMMARY_HEADING))
+
+    expect(headroomRow).toBe(noticeRow + 1)
+    expect(headroomRow).toBeLessThan(summaryRow)
+    expect(spanContaining(setup, TARGET_HEADROOM_LABEL)?.fg.toString()).toBe(paletteColor(DARK_PALETTE.muted))
+    expect(spanContaining(setup, display.label)?.fg.toString()).toBe(paletteColor(DARK_PALETTE.text))
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows honest unknown target headroom when the target has no usage", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    const setup = await renderWithPreview(controller)
+
+    expect(setup.captureCharFrame()).toContain(`${TARGET_HEADROOM_LABEL}: ${HEADROOM_UNKNOWN}`)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps the send action visible within a 24-row terminal", async () => {
+    const controller = createFakeController()
+    seed(controller, "claude-code")
+    controller.store.applyEvent("codex", { kind: "usage", used: 36_000, size: 200_000 })
+    const setup = await renderCockpit(controller, 24)
+
+    const frame = await handoff(setup)
+    const rows = frame.replace(/\n$/, "").split("\n")
+    const hintRow = rows.findIndex((row) => row.includes(HANDOFF_HINT))
+
+    expect(rows).toHaveLength(24)
+    expect(hintRow).toBeGreaterThanOrEqual(0)
+    expect(hintRow).toBeLessThan(23)
+    expect(rows[hintRow]).toContain("Enter send")
 
     await destroyMounted(setup.renderer)
   })
