@@ -39,6 +39,32 @@ describe("createFakeController", () => {
     expect(controller.calls.closeConversation).toEqual([{ sessionId: created!, choice: "close" }])
   })
 
+  it("applies history actions through the real store contract selectors read", () => {
+    const controller = createFakeController()
+
+    controller.actions.recordPromptHistory("first")
+    controller.actions.recordPromptHistory("second", "codex")
+
+    expect(controller.actions.navigatePromptHistory("previous", "codex")).toEqual({
+      text: "second",
+      historyIndex: 0,
+      total: 1,
+    })
+    expect(controller.store.getState().sessions.codex!.promptHistory).toEqual({
+      entries: ["second"],
+      cursor: 0,
+    })
+    expect(controller.store.getState().sessions["claude-code"]!.promptHistory).toEqual({
+      entries: ["first"],
+      cursor: null,
+    })
+    expect(controller.calls.recordPromptHistory).toEqual([
+      { text: "first", sessionId: undefined },
+      { text: "second", sessionId: "codex" },
+    ])
+    expect(controller.calls.navigatePromptHistory).toEqual([{ direction: "previous", sessionId: "codex" }])
+  })
+
   it("closes the approval slot on an answer, like the real controller does", () => {
     const controller = createFakeController()
     controller.store.openApproval({

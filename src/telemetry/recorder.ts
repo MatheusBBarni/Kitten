@@ -114,6 +114,10 @@ export type TelemetryEventType =
   | "resume_first_action"
   | "resume_picker_interactive_ms"
   | "resume_load_usable_ms"
+  | "prompt_history_eligible"
+  | "prompt_history_recalled"
+  | "prompt_history_cleared"
+  | "prompt_history_edited_resend"
 
 /** The two entry points whose adoption the resume metrics compare. */
 export type ResumeMode = "picker" | "last-run"
@@ -200,6 +204,14 @@ export interface TelemetryRecorder {
    * arms the content-free kept-change watch only for a confirmed value change.
    */
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+  /** Count an accepted composer submission and emit eligibility exactly at the second. */
+  promptHistorySubmitted(sessionId: SessionId): void
+  /** Record a successful history selection. */
+  promptHistoryRecalled(sessionId: SessionId): void
+  /** Record leaving the newest recalled entry for a blank composer. */
+  promptHistoryCleared(sessionId: SessionId): void
+  /** Record submission of a changed recalled entry. */
+  promptHistoryEditedResend(sessionId: SessionId): void
   /** A session completed its handshake and holds a live ACP session. */
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
@@ -261,6 +273,10 @@ const NOOP_RECORDER: TelemetryRecorder = {
   configWrite() {},
   configWriteError() {},
   recordSwitch() {},
+  promptHistorySubmitted() {},
+  promptHistoryRecalled() {},
+  promptHistoryCleared() {},
+  promptHistoryEditedResend() {},
   agentReady() {},
   agentUnready() {},
   focusSwitch() {},
@@ -326,6 +342,7 @@ class ActiveRecorder implements TelemetryRecorder {
   private resumeLoadStartedAt: number | null = null
   private resumePickerOpenedAt: number | null = null
   private resumeFirstActionArmed = false
+  private readonly promptSubmissionCounts = new Map<SessionId, number>()
   private readonly watches = new Map<SessionId, AgentWatch>()
 
   constructor(options: TelemetryRecorderOptions) {
@@ -391,6 +408,24 @@ class ActiveRecorder implements TelemetryRecorder {
     if (kind === "effort" && confirmed && effortChanged) {
       this.watchFor(sessionId).effortRetention = [{ kind: "effort_change" }]
     }
+  }
+
+  promptHistorySubmitted(sessionId: SessionId): void {
+    const count = (this.promptSubmissionCounts.get(sessionId) ?? 0) + 1
+    this.promptSubmissionCounts.set(sessionId, count)
+    if (count === 2) this.record({ type: "prompt_history_eligible", agent: sessionId })
+  }
+
+  promptHistoryRecalled(sessionId: SessionId): void {
+    this.record({ type: "prompt_history_recalled", agent: sessionId })
+  }
+
+  promptHistoryCleared(sessionId: SessionId): void {
+    this.record({ type: "prompt_history_cleared", agent: sessionId })
+  }
+
+  promptHistoryEditedResend(sessionId: SessionId): void {
+    this.record({ type: "prompt_history_edited_resend", agent: sessionId })
   }
 
   agentReady(sessionId: SessionId): void {
@@ -462,6 +497,7 @@ class ActiveRecorder implements TelemetryRecorder {
         // arming silently and skip this commit: a restart is not the developer acting.
         if (session.acpSessionId !== watch.seenAcpSessionId) {
           watch.seenAcpSessionId = session.acpSessionId
+          this.promptSubmissionCounts.delete(sessionId)
           watch.seenTurns = session.turns.length
           watch.seenEffortValue = effortValue(session.configOptions)
           watch.awaitingResponseAt = null

@@ -125,6 +125,7 @@ interface StubOptions {
   loadSessionEvents?: DomainSessionEvent[]
   loadSessionWait?: Promise<void>
   promptThrows?: unknown
+  promptWait?: Promise<void>
   cancelThrows?: unknown
   cancelWait?: Promise<void>
   disposeThrows?: unknown
@@ -231,6 +232,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     },
     async prompt(sessionId, blocks) {
       prompts.push({ sessionId, blocks })
+      await options.promptWait
       if (options.promptThrows !== undefined) throw options.promptThrows
       return { stopReason: "end_turn" }
     },
@@ -1322,6 +1324,7 @@ describe("createSessionController - multi-session fleet", () => {
     expect(controller.store.getState().sessions.codex!.turns).toEqual([
       { kind: "user", messageId: "msg-1", text: "start the build" },
     ])
+    expect(controller.store.getState().sessions.codex!.promptHistory.entries).toEqual([])
 
     await controller.dispose()
   })
@@ -2161,6 +2164,138 @@ describe("createSessionController - dispose", () => {
 })
 
 describe("createControllerActions", () => {
+  it("records accepted composer history before the agent prompt settles", async () => {
+    const store = createAppStore()
+    const turn = deferred()
+    const connection = createStubConnection("claude-code", { promptWait: turn.promise })
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "claude-code", acpSessionId: "s1", connection }),
+      resolvePermission: () => {},
+    })
+
+    actions.recordPromptHistory("retry this")
+    const prompt = actions.sendPrompt("retry this")
+
+    expect(store.getState().sessions["claude-code"]!.promptHistory.entries).toEqual(["retry this"])
+    expect(actions.navigatePromptHistory("previous")).toEqual({
+      text: "retry this",
+      historyIndex: 0,
+      total: 1,
+    })
+
+    turn.resolve()
+    await prompt
+  })
+
+  it("keeps a composer prompt recallable after the addressed agent rejects", async () => {
+    const store = createAppStore()
+    const connection = createStubConnection("claude-code", { promptThrows: new Error("agent failed") })
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "claude-code", acpSessionId: "s1", connection }),
+      resolvePermission: () => {},
+    })
+
+    actions.recordPromptHistory("recover me")
+    expect(await actions.sendPrompt("recover me")).toBeNull()
+
+    expect(actions.navigatePromptHistory("previous")).toEqual({
+      text: "recover me",
+      historyIndex: 0,
+      total: 1,
+    })
+  })
+
+  it("navigates an explicit session without changing focused-session history", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+    actions.recordPromptHistory("focused", "claude-code")
+    actions.recordPromptHistory("older", "codex")
+    actions.recordPromptHistory("newer", "codex")
+
+    expect(actions.navigatePromptHistory("previous", "codex")).toEqual({
+      text: "newer",
+      historyIndex: 1,
+      total: 2,
+    })
+    expect(store.getState().sessions["claude-code"]!.promptHistory).toEqual({
+      entries: ["focused"],
+      cursor: null,
+    })
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
+  })
+
+  it("returns no replacement for empty history and next from idle", () => {
+    const store = createAppStore()
+    const actions = createControllerActions({ store, getSession: () => undefined, resolvePermission: () => {} })
+
+    expect(actions.navigatePromptHistory("previous")).toEqual({ text: null, historyIndex: null, total: 0 })
+    actions.recordPromptHistory("  \n  ")
+    expect(actions.navigatePromptHistory("previous")).toEqual({ text: null, historyIndex: null, total: 0 })
+    actions.recordPromptHistory("one")
+    expect(actions.navigatePromptHistory("next")).toEqual({ text: null, historyIndex: null, total: 1 })
+  })
+
+  it("integrates controller history actions with the real content-free recorder", () => {
+    const records: TelemetryRecord[] = []
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 42,
+      sessionRef: "run-1",
+    })
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      recorder,
+    })
+
+    actions.recordPromptHistory("first secret prompt")
+    actions.recordPromptHistory("second secret prompt")
+    actions.navigatePromptHistory("previous")
+    actions.recordPromptHistory("changed secret prompt")
+    actions.navigatePromptHistory("previous")
+    actions.navigatePromptHistory("next")
+
+    expect(records).toEqual([
+      { type: "prompt_history_eligible", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_recalled", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_edited_resend", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_recalled", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_cleared", agent: "claude-code", at: 42, sessionRef: "run-1" },
+    ])
+    expect(JSON.stringify(records)).not.toContain("secret prompt")
+  })
+
+  it("does not record history for direct, handoff-block, or fresh-context send paths", async () => {
+    const store = createAppStore()
+    const connection = createStubConnection("claude-code")
+    const historyEvents: string[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => ({ sessionId: "claude-code", acpSessionId: "s1", connection }),
+      resolvePermission: () => {},
+      startFreshSession: async () => true,
+      recorder: {
+        focusSwitch() {},
+        promptHistorySubmitted: () => historyEvents.push("submitted"),
+        promptHistoryRecalled: () => historyEvents.push("recalled"),
+        promptHistoryCleared: () => historyEvents.push("cleared"),
+        promptHistoryEditedResend: () => historyEvents.push("edited"),
+      },
+    })
+
+    await actions.sendPrompt("initial task")
+    await actions.sendPrompt([{ type: "text", text: "handoff bundle" }])
+    await actions.startFreshFromContext("restored context")
+
+    expect(store.getState().sessions["claude-code"]!.promptHistory.entries).toEqual([])
+    expect(historyEvents).toEqual([])
+  })
+
   it("exposes fail-soft conversation lifecycle actions", async () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     const actions = createControllerActions({

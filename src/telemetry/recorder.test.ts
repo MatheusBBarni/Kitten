@@ -86,6 +86,11 @@ describe("opt-in gating", () => {
     recorder.configWriteError("modal")
     recorder.recordSwitch("codex", "model", true, false)
     recorder.recordSwitch("codex", "effort", false, false)
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistoryRecalled("codex")
+    recorder.promptHistoryCleared("codex")
+    recorder.promptHistoryEditedResend("codex")
     recorder.resumePickerOpened()
     recorder.resumePickerInteractive()
     recorder.resumeLoadStarted()
@@ -96,6 +101,56 @@ describe("opt-in gating", () => {
     unsubscribe()
 
     expect(sink.records).toHaveLength(0)
+  })
+})
+
+describe("prompt-history events", () => {
+  it("emits eligibility once on a session's second composer submission", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.promptHistorySubmitted("codex")
+    expect(sink.records).toEqual([])
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+
+    expect(sink.records).toEqual([
+      { type: "prompt_history_eligible", agent: "codex", at: 42, sessionRef: "run-1" },
+    ])
+  })
+
+  it("starts a fresh eligibility count when the session run is replaced", () => {
+    const sink = memorySink()
+    const store = createAppStore()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    recorder.watch(store)
+
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+    store.startSession("codex", "replacement-acp-session")
+    recorder.promptHistorySubmitted("codex")
+    recorder.promptHistorySubmitted("codex")
+
+    expect(types(sink.records)).toEqual(["prompt_history_eligible", "prompt_history_eligible"])
+  })
+
+  it("emits only exact content-free recall, clear, and edited-resend records", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.promptHistoryRecalled("claude-code")
+    recorder.promptHistoryCleared("claude-code")
+    recorder.promptHistoryEditedResend("claude-code")
+
+    expect(sink.records).toEqual([
+      { type: "prompt_history_recalled", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_cleared", agent: "claude-code", at: 42, sessionRef: "run-1" },
+      { type: "prompt_history_edited_resend", agent: "claude-code", at: 42, sessionRef: "run-1" },
+    ])
+    const forbidden = ["text", "hash", "promptHash", "length", "capacity", "historyIndex", "entries", "charBucket"]
+    for (const record of sink.records) {
+      for (const key of forbidden) expect(Object.keys(record)).not.toContain(key)
+    }
   })
 })
 

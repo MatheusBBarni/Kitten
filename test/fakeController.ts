@@ -12,6 +12,7 @@
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
 import { nextSessionId, type CloseChoice, type CloseConversationResult, type PromptInput } from "../src/app/actions.ts"
+import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
 import {
@@ -31,6 +32,8 @@ export interface RecordedCalls {
   reopenConversation: SessionId[]
   closeConversation: { sessionId: SessionId; choice: CloseChoice }[]
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
+  recordPromptHistory: { text: string; sessionId: SessionId | undefined }[]
+  navigatePromptHistory: { direction: PromptHistoryDirection; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
   setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
   switchFocus: (SessionId | undefined)[]
@@ -105,6 +108,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     reopenConversation: [],
     closeConversation: [],
     sendPrompt: [],
+    recordPromptHistory: [],
+    navigatePromptHistory: [],
     cancel: [],
     setSessionConfigOption: [],
     switchFocus: [],
@@ -190,6 +195,28 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.sendPrompt.push({ input, sessionId })
         return null
+      },
+      recordPromptHistory(text: string, sessionId?: SessionId): void {
+        calls.recordPromptHistory.push({ text, sessionId })
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (!target || text.trim().length === 0 || !store.getState().sessions[target]) return
+        store.applyEvent(target, { kind: "prompt_history", action: "record", text })
+      },
+      navigatePromptHistory(direction: PromptHistoryDirection, sessionId?: SessionId): PromptHistorySelection {
+        calls.navigatePromptHistory.push({ direction, sessionId })
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (!target) return { text: null, historyIndex: null, total: 0 }
+        const before = store.getState().sessions[target]?.promptHistory
+        if (!before) return { text: null, historyIndex: null, total: 0 }
+        store.applyEvent(target, { kind: "prompt_history", action: direction })
+        const after = store.getState().sessions[target]!.promptHistory
+        if (direction === "next" && before.cursor === null) {
+          return { text: null, historyIndex: null, total: after.entries.length }
+        }
+        if (direction === "next" && before.cursor === before.entries.length - 1 && after.cursor === null) {
+          return { text: "", historyIndex: null, total: after.entries.length }
+        }
+        return selectPromptHistory(after)
       },
       async cancel(sessionId?: SessionId): Promise<void> {
         calls.cancel.push(sessionId)

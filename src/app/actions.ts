@@ -14,6 +14,11 @@
  */
 
 import type { AgentConnection, PermissionOutcome, PromptBlock, PromptResult } from "../agent/agentConnection.ts"
+import {
+  selectPromptHistory,
+  type PromptHistoryDirection,
+  type PromptHistorySelection,
+} from "../core/promptHistory.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } from "../core/types.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
@@ -44,12 +49,24 @@ export interface SwitchTelemetry {
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
 }
 
+/** Content-free prompt-history outcomes emitted by composer-only actions. */
+export interface PromptHistoryTelemetry {
+  /** Count one accepted composer submission; the recorder emits eligibility at two. */
+  promptHistorySubmitted(sessionId: SessionId): void
+  /** A history navigation selected an entry for the composer. */
+  promptHistoryRecalled(sessionId: SessionId): void
+  /** Down navigation left the newest recalled entry and cleared the composer. */
+  promptHistoryCleared(sessionId: SessionId): void
+  /** A recalled entry was changed before its next accepted composer submission. */
+  promptHistoryEditedResend(sessionId: SessionId): void
+}
+
 /**
  * The recorder surface actions drive. Switch telemetry is optional so focused action
  * unit tests can keep injecting only the focus counter; the real recorder implements
  * both slices.
  */
-export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry>
+export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry & PromptHistoryTelemetry>
 
 /** The default when no recorder is injected: record nothing. */
 const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
@@ -116,6 +133,10 @@ export interface ControllerActions {
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
   sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
+  /** Record one accepted plain-composer submission in the addressed session. */
+  recordPromptHistory(text: string, sessionId?: SessionId): void
+  /** Navigate the addressed session's history and return the post-reducer selection. */
+  navigatePromptHistory(direction: PromptHistoryDirection, sessionId?: SessionId): PromptHistorySelection
   /** Interrupt the running turn on `sessionId` (default: the focused session). */
   cancel(sessionId?: SessionId): Promise<void>
   /**
@@ -233,6 +254,45 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     else selectConversation(target, { viaOverview: true })
   }
 
+  function recordComposerPrompt(text: string, requestedSessionId?: SessionId): void {
+    const sessionId = requestedSessionId ?? focused()
+    const history = sessionId ? store.getState().sessions[sessionId]?.promptHistory : undefined
+    if (!sessionId || text.trim().length === 0 || !history) return
+
+    // Compare inside the action layer while the reducer still owns the active cursor.
+    // Prompt text remains in session memory and never crosses the recorder boundary.
+    const recalled = history.cursor === null ? undefined : history.entries[history.cursor]
+    if (recalled !== undefined && recalled !== text) recorder.promptHistoryEditedResend?.(sessionId)
+
+    store.applyEvent(sessionId, { kind: "prompt_history", action: "record", text })
+    recorder.promptHistorySubmitted?.(sessionId)
+  }
+
+  function navigateComposerHistory(
+    direction: PromptHistoryDirection,
+    requestedSessionId?: SessionId,
+  ): PromptHistorySelection {
+    const sessionId = requestedSessionId ?? focused()
+    if (!sessionId) return { text: null, historyIndex: null, total: 0 }
+    const before = store.getState().sessions[sessionId]?.promptHistory
+    if (!before) return { text: null, historyIndex: null, total: 0 }
+
+    store.applyEvent(sessionId, { kind: "prompt_history", action: direction })
+    const after = store.getState().sessions[sessionId]!.promptHistory
+
+    if (direction === "next" && before.cursor === null) {
+      return { text: null, historyIndex: null, total: after.entries.length }
+    }
+    if (direction === "next" && before.cursor === before.entries.length - 1 && after.cursor === null) {
+      recorder.promptHistoryCleared?.(sessionId)
+      return { text: "", historyIndex: null, total: after.entries.length }
+    }
+
+    const selection = selectPromptHistory(after)
+    if (selection.text !== null) recorder.promptHistoryRecalled?.(sessionId)
+    return selection
+  }
+
   return {
     async createConversation(): Promise<SessionId | null> {
       try {
@@ -264,6 +324,10 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     },
 
     sendPrompt,
+
+    recordPromptHistory: recordComposerPrompt,
+
+    navigatePromptHistory: navigateComposerHistory,
 
     async cancel(requestedSessionId?: SessionId): Promise<void> {
       const sessionId = requestedSessionId ?? focused()
