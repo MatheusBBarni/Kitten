@@ -25,6 +25,7 @@ import type {
   ToolCallContent,
   ToolCallUpdate as AcpToolCallUpdate,
   ToolKind,
+  UsageUpdate,
 } from "@agentclientprotocol/sdk"
 
 import type {
@@ -51,7 +52,7 @@ export function toAcpMcpServers(servers: McpServerConfig[]): McpServer[] {
 
 /**
  * Translate one ACP `SessionUpdate` into a domain event, or `null` for variants
- * Kitten does not surface in V1 (thoughts, plan deltas, mode/usage/session
+ * Kitten does not surface in V1 (thoughts, plan deltas, mode/session
  * notifications). Config and available-command updates are surfaced as their
  * protocol-free domain slices.
  * Returning `null` keeps the caller's dispatch loop trivial.
@@ -79,13 +80,14 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
       return { kind: "config_options", options: translateConfigOptions(update.configOptions) }
     case "available_commands_update":
       return { kind: "commands", commands: update.availableCommands.map(translateAvailableCommand) }
+    case "usage_update":
+      return translateUsage(update)
     // Deliberately not surfaced in V1 (documented in the module header).
     case "agent_thought_chunk":
     case "plan_update":
     case "plan_removed":
     case "current_mode_update":
     case "session_info_update":
-    case "usage_update":
       return null
     default:
       // A new ACP update variant appeared; ignore it rather than leak it upward.
@@ -120,6 +122,11 @@ function mapKind(kind: ToolKind): ToolCallKind {
 
 function translatePlanEntry(entry: AcpPlanEntry): PlanEntry {
   return { content: entry.content, priority: entry.priority, status: entry.status }
+}
+
+/** Copy only the content-free context counters; ACP cost and metadata stay at the boundary. */
+function translateUsage(update: UsageUpdate): Extract<DomainSessionEvent, { kind: "usage" }> {
+  return { kind: "usage", used: update.used, size: update.size }
 }
 
 /**

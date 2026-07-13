@@ -185,9 +185,32 @@ describe("translateSessionUpdate: plan, commands, and ignored variants", () => {
     { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } },
     { sessionUpdate: "current_mode_update", currentModeId: "code" },
     { sessionUpdate: "plan_update", plan: { type: "markdown", planId: "p1", content: "# plan" } },
-    { sessionUpdate: "usage_update", used: 100, size: 200000 },
+    { sessionUpdate: "session_info_update", title: "Renamed session" },
   ])("returns null for the unsurfaced variant %o", (update) => {
     expect(translateSessionUpdate(update)).toBeNull()
+  })
+})
+
+describe("translateSessionUpdate: usage", () => {
+  it("maps usage_update to content-free domain counters", () => {
+    expect(translateSessionUpdate({ sessionUpdate: "usage_update", used: 36000, size: 200000 })).toEqual({
+      kind: "usage",
+      used: 36000,
+      size: 200000,
+    })
+  })
+
+  it("drops cost and metadata from usage_update", () => {
+    const event = translateSessionUpdate({
+      sessionUpdate: "usage_update",
+      used: 36000,
+      size: 200000,
+      cost: { amount: 0.25, currency: "USD", _meta: { billingTrace: "private" } },
+      _meta: { trace: "private" },
+    })
+
+    expect(event).toEqual({ kind: "usage", used: 36000, size: 200000 })
+    expect(Object.keys(event ?? {}).sort()).toEqual(["kind", "size", "used"])
   })
 })
 
@@ -410,7 +433,7 @@ describe("translateSessionUpdate: config options", () => {
 })
 
 describe("translation completeness", () => {
-  const FORBIDDEN_ACP_KEYS = ["_meta", "sessionUpdate", "rawInput", "rawOutput", "content", "annotations", "line"]
+  const FORBIDDEN_ACP_KEYS = ["_meta", "sessionUpdate", "rawInput", "rawOutput", "content", "annotations", "line", "cost"]
 
   const collectKeys = (value: unknown, keys: Set<string> = new Set()): Set<string> => {
     if (Array.isArray(value)) {
@@ -435,8 +458,17 @@ describe("translation completeness", () => {
       rawInput: { secret: "should-not-leak" },
       _meta: { trace: "abc" },
     }
-    const event = translateSessionUpdate({ ...acpToolCall, sessionUpdate: "tool_call" })
-    const keys = collectKeys(event)
+    const events = [
+      translateSessionUpdate({ ...acpToolCall, sessionUpdate: "tool_call" }),
+      translateSessionUpdate({
+        sessionUpdate: "usage_update",
+        used: 36000,
+        size: 200000,
+        cost: { amount: 0.25, currency: "USD" },
+        _meta: { trace: "abc" },
+      }),
+    ]
+    const keys = collectKeys(events)
     for (const forbidden of FORBIDDEN_ACP_KEYS) {
       expect(keys.has(forbidden)).toBe(false)
     }

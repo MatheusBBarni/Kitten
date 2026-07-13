@@ -208,6 +208,34 @@ describe("streaming coalescing (ADR-004)", () => {
   })
 })
 
+describe("usage updates", () => {
+  it("delivers translated usage counters to onUpdate subscribers", async () => {
+    const { conn, events } = await connected({
+      onPrompt: async (_request, ctx) => {
+        await ctx.update({
+          sessionUpdate: "usage_update",
+          used: 36000,
+          size: 200000,
+          cost: { amount: 0.25, currency: "USD" },
+          _meta: { trace: "private" },
+        })
+        return "end_turn" as const
+      },
+    })
+
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "inspect usage" }])
+    await waitFor(() => events.some((event) => event.kind === "usage"))
+
+    expect(events.find((event) => event.kind === "usage")).toEqual({
+      kind: "usage",
+      used: 36000,
+      size: 200000,
+    })
+    await conn.dispose()
+  })
+})
+
 describe("permission round-trip", () => {
   it("routes requestPermission to onPermission and returns the selected outcome to the agent", async () => {
     const options: PermissionOption[] = [
