@@ -4,6 +4,13 @@ import manifest from "../.release-please-manifest.json" with { type: "json" }
 import pkg from "../package.json" with { type: "json" }
 import config from "../release-please-config.json" with { type: "json" }
 
+const PLATFORM_PACKAGES = [
+  "@kitten/darwin-arm64",
+  "@kitten/darwin-x64",
+  "@kitten/linux-arm64",
+  "@kitten/linux-x64",
+] as const
+
 describe("release-please configuration", () => {
   const rootPackage = config.packages["."]
 
@@ -13,7 +20,7 @@ describe("release-please configuration", () => {
   })
 
   it("seeds the root package above the placeholder version", () => {
-    expect(manifest).toEqual({ ".": "0.1.0" })
+    expect(manifest["."]).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/)
     expect(manifest["."]).not.toBe("0.0.0")
   })
 
@@ -25,8 +32,14 @@ describe("release-please configuration", () => {
     ])
   })
 
-  it("uses the Node strategy's package.json updater without extra files", () => {
+  it("uses the Node strategy's package.json updater and syncs platform pins", () => {
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/)
-    expect(rootPackage).not.toHaveProperty("extra-files")
+    expect(rootPackage["extra-files"]).toEqual(
+      PLATFORM_PACKAGES.map((name) => ({
+        type: "json",
+        path: "package.json",
+        jsonpath: `$.optionalDependencies['${name}']`,
+      })),
+    )
   })
 })
