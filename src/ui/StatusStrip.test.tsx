@@ -14,7 +14,7 @@ import type { ConfigOption, SessionId, SessionStatus } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { HEADROOM_UNKNOWN } from "./headroom.ts"
-import { SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
+import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import {
   BACKGROUND_STATUS_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
@@ -206,7 +206,7 @@ describe("StatusStrip headroom", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain("claude:— - idle 38% █░░")
     expect(frame).toContain("codex:— - idle 75% ██░")
-    expect(frame).toContain(tabNavigationHint("unknown"))
+    expect(frame).toContain(KEYMAP_HINT)
     expectNoOverflow(frame, 80)
 
     await destroyMounted(setup.renderer)
@@ -241,21 +241,20 @@ describe("StatusStrip model identity and discovery", () => {
     expect(claude).toContain("claude:opus:high - idle")
     expect(claude).toContain("codex:— - idle")
     expect(claude).not.toContain("codex:gpt-5.6-terra")
-    expect(claude).toContain(tabNavigationHint("unknown"))
-    expect(claude).not.toContain("^T hand off")
+    expect(claude).toContain(KEYMAP_HINT)
+    expect(claude).toContain("^T hand-off")
     expect(claude).not.toContain("^R resume")
 
     await destroyMounted(setup.renderer)
   })
 
-  it("switches from the sessions attention fallback to direct tab chords after Kitty confirmation", async () => {
+  it("keeps the hand-off and slash-menu discovery hint after Kitty confirmation", async () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller, 100, models)
 
-    expect(setup.captureCharFrame()).toContain(tabNavigationHint("unknown"))
+    expect(setup.captureCharFrame()).toContain(KEYMAP_HINT)
     await actAsync(() => controller.store.confirmKittyKeyboard())
-    const confirmed = await setup.waitForFrame((frame) => frame.includes(tabNavigationHint("kittyConfirmed")))
-    expect(confirmed).not.toContain(tabNavigationHint("unknown"))
+    expect(setup.captureCharFrame()).toContain(KEYMAP_HINT)
 
     await destroyMounted(setup.renderer)
   })
@@ -311,7 +310,7 @@ describe("StatusStrip model identity and discovery", () => {
     const setup = await renderStrip(controller)
 
     expect(setup.captureCharFrame()).toContain(SHELL_EXIT_HINT)
-    expect(setup.captureCharFrame()).not.toContain(tabNavigationHint("unknown"))
+    expect(setup.captureCharFrame()).not.toContain(KEYMAP_HINT)
 
     await destroyMounted(setup.renderer)
   })

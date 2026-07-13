@@ -35,7 +35,7 @@ import {
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
-import { HELP_ENTRIES, SHELL_EXIT_HINT, tabNavigationHint } from "./keymap.ts"
+import { HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
@@ -210,7 +210,7 @@ describe("CockpitApp layout", () => {
     const strip = rows.at(-1) ?? ""
     expect(strip).toContain(`claude:— - ${STATUS_LABELS.idle}`)
     expect(strip).toContain(`codex:— - ${STATUS_LABELS.idle} —`)
-    expect(strip).toContain(tabNavigationHint("unknown"))
+    expect(strip).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
   })
@@ -222,7 +222,7 @@ describe("CockpitApp layout", () => {
     const frame = captureCharFrame()
     expectNoOverflow(frame, 80, 24)
     expect(frame).toContain(WELCOME_KITTEN[0])
-    expect(frame).toContain(tabNavigationHint("unknown"))
+    expect(frame).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
   })
@@ -285,7 +285,7 @@ describe("CockpitApp resize", () => {
     await actAsync(() => {
       resize(64, 12)
     })
-    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(tabNavigationHint("unknown")))
+    const shrunk = await waitForFrame((f) => lines(f).length === 12 && f.includes(KEYMAP_HINT))
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
@@ -325,7 +325,7 @@ describe("CockpitApp alternate-screen layout", () => {
       const alternateSize = shell.resizes.at(-1)!
       expect(runtime.bufferType()).toBe("alternate")
       expect(alternate).not.toContain(PROMPT_PLACEHOLDER)
-      expect(alternate).not.toContain(tabNavigationHint("unknown"))
+      expect(alternate).not.toContain(KEYMAP_HINT)
       expect(alternate).not.toContain(SHELL_EXIT_HINT)
       expect(alternateSize.rows).toBeGreaterThan(primarySize.rows)
 

@@ -58,7 +58,7 @@ export type CockpitCommand =
 export type ModelSelectCommand = "prev-option" | "next-option" | "prev-tab" | "next-tab" | "confirm" | "cancel"
 
 /** Every intent the non-modal prompt slash menu handles while it is armed. */
-export type MenuCommand = "prev-option" | "next-option" | "confirm" | "dismiss"
+export type MenuCommand = "prev-item" | "next-item" | "confirm" | "dismiss"
 
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
@@ -189,6 +189,12 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     requiresKittyConfirmation: true,
   },
   {
+    command: "hand-off",
+    keys: "Ctrl+T",
+    description: "Open the curated hand-off flow",
+    matches: ctrl("t"),
+  },
+  {
     command: "toggle-shell",
     keys: "Ctrl+` / F2",
     description: "Focus or leave the shell; its keys route there and Ctrl+C interrupts",
@@ -244,13 +250,13 @@ export const EDITOR_KEYMAP: readonly HelpEntry[] = [
 /** Navigation captured only while the prompt-local slash menu is visible. */
 export const MENU_KEYMAP: readonly KeyBinding<MenuCommand>[] = [
   {
-    command: "prev-option",
+    command: "prev-item",
     keys: "↑ / Shift+Tab",
     description: "Highlight the previous command",
     matches: any(plain("up"), shiftPlain("tab")),
   },
   {
-    command: "next-option",
+    command: "next-item",
     keys: "↓ / Tab",
     description: "Highlight the next command",
     matches: any(plain("down"), plain("tab")),
@@ -617,7 +623,7 @@ function commandSlash(command: Exclude<CockpitCommand, "close-help">): string {
 export const NEW_RUN_KEY_HINT = commandSlash("start-new-run")
 
 /** The one quiet, always-visible discovery affordance in the status strip. */
-export const KEYMAP_HINT = commandSlash("toggle-help")
+export const KEYMAP_HINT = `${bindingKeys(COCKPIT_KEYMAP, "hand-off").replace("Ctrl+", "^")} hand-off  / menu  ${commandSlash("toggle-help")}`
 
 /** Direct-chord discovery after confirmation, otherwise the universal sessions/attention path. */
 export function tabNavigationHint(capability: KeyboardCapability): string {

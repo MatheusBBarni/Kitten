@@ -17,7 +17,7 @@ import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
 import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
-import { tabNavigationHint } from "../src/ui/keymap.ts"
+import { KEYMAP_HINT } from "../src/ui/keymap.ts"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted, settleMountedHighlights } from "./reactTui.ts"
@@ -222,10 +222,10 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       const resumed = await setup.waitForFrame(
-        (frame) => frame.includes("resumed") && frame.includes(tabNavigationHint("unknown")) && frame.includes("restored codex from stored-codex"),
+        (frame) => frame.includes("resumed") && frame.includes(KEYMAP_HINT) && frame.includes("restored codex from stored-codex"),
       )
       expect(resumed).toContain("resumed")
-      expect(resumed).toContain(tabNavigationHint("unknown"))
+      expect(resumed).toContain(KEYMAP_HINT)
       expect(resumed).not.toContain("/new")
       expect(resumed).toContain("restored codex from stored-codex")
 
@@ -375,8 +375,6 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       await actAsync(() => setup.mockInput.pressKey("l", { ctrl: true }))
       expect(controller.store.getState().keyboardCapability).toBe("kittyConfirmed")
       expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
-      await setup.waitForFrame((frame) => frame.includes(tabNavigationHint("kittyConfirmed")))
-
       await actAsync(() => setup.mockInput.pressKey("l", { ctrl: true }))
       expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
     } finally {

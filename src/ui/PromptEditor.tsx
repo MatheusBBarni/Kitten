@@ -278,10 +278,10 @@ function SelectedPromptEditor({
         if (command !== null) {
           key.preventDefault()
           switch (command) {
-            case "prev-option":
+            case "prev-item":
               setMenu((current) => current ? { ...current, selected: Math.max(current.selected - 1, 0) } : current)
               return
-            case "next-option":
+            case "next-item":
               setMenu((current) => current ? { ...current, selected: Math.min(current.selected + 1, Math.max(matchingRows.length - 1, 0)) } : current)
               return
             case "confirm":

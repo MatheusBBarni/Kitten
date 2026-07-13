@@ -58,8 +58,13 @@ describe("matchCommand", () => {
     expect(matchCommand(key("escape"))).toBe("close-help")
   })
 
+  it("maps Ctrl+T to the hand-off while leaving a bare t to the prompt", () => {
+    expect(matchCommand(key("t", { ctrl: true }))).toBe("hand-off")
+    expect(matchCommand(key("t"))).toBeNull()
+  })
+
   it("leaves every retired cockpit action chord to the prompt", () => {
-    for (const name of ["o", "t", "s", "r", "n", "e", ","]) {
+    for (const name of ["o", "s", "r", "n", "e", ","]) {
       expect(matchCommand(key(name, { ctrl: true }))).toBeNull()
     }
     for (const name of ["f1", "f3"]) {
@@ -102,9 +107,9 @@ describe("matchCommand", () => {
 })
 
 describe("COCKPIT_KEYMAP", () => {
-  it("registers each conditional tab chord plus the terminal-level shell and help bindings once", () => {
+  it("registers each conditional tab chord plus the retained hand-off, shell, and help bindings once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["previous-tab", "next-tab", "toggle-shell", "close-help"])
+    expect(commands).toEqual(["previous-tab", "next-tab", "hand-off", "toggle-shell", "close-help"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -116,7 +121,7 @@ describe("COCKPIT_KEYMAP", () => {
   })
 
   it("keeps slash-first compact affordances derived from the command registry", () => {
-    expect(KEYMAP_HINT).toBe("/help")
+    expect(KEYMAP_HINT).toContain("/help")
     expect(SHELL_HINT).toBe("/shell")
     expect(COCKPIT_KEYMAP.find((binding) => binding.command === "toggle-shell")?.keys).toBe("Ctrl+` / F2")
     expect(SHELL_EXIT_HINT).toBe("Ctrl+` / F2 exit shell")
@@ -175,10 +180,10 @@ describe("integration - OpenTUI KeyEvent dispatch", () => {
 
 describe("matchMenuCommand", () => {
   it("maps arrows and Tab variants to slash-menu navigation", () => {
-    expect(matchMenuCommand(key("up"))).toBe("prev-option")
-    expect(matchMenuCommand(key("down"))).toBe("next-option")
-    expect(matchMenuCommand(key("tab"))).toBe("next-option")
-    expect(matchMenuCommand(key("tab", { shift: true }))).toBe("prev-option")
+    expect(matchMenuCommand(key("up"))).toBe("prev-item")
+    expect(matchMenuCommand(key("down"))).toBe("next-item")
+    expect(matchMenuCommand(key("tab"))).toBe("next-item")
+    expect(matchMenuCommand(key("tab", { shift: true }))).toBe("prev-item")
   })
 
   it("maps either Enter variant to run or insert the highlighted command", () => {
@@ -197,8 +202,16 @@ describe("matchMenuCommand", () => {
 describe("MENU_KEYMAP", () => {
   it("binds each prompt-menu outcome exactly once", () => {
     const commands = MENU_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-option", "next-option", "confirm", "dismiss"])
+    expect(commands).toEqual(["prev-item", "next-item", "confirm", "dismiss"])
     expect(new Set(commands).size).toBe(commands.length)
+  })
+})
+
+describe("KEYMAP_HINT", () => {
+  it("advertises the hand-off chord and slash menu on one line", () => {
+    expect(KEYMAP_HINT).toContain("^T hand-off")
+    expect(KEYMAP_HINT).toContain("/ menu")
+    expect(KEYMAP_HINT).not.toContain("\n")
   })
 })
 
