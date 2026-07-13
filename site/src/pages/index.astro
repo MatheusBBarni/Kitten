@@ -1,18 +1,27 @@
 ---
-const pageTitle = "Kitten showcase";
+import {
+  assertValidShowcaseConfig,
+  showcaseConfig,
+} from "../config/showcase-config.ts";
+
+assertValidShowcaseConfig(showcaseConfig);
+
+const { site, hero } = showcaseConfig;
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang={site.language}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
-    <title>{pageTitle}</title>
+    <meta name="description" content={site.description} />
+    <title>{site.title}</title>
   </head>
   <body>
-    <main>
-      <h1>{pageTitle}</h1>
-      <p>The public showcase is taking shape.</p>
+    <main id={hero.id}>
+      <p>{hero.eyebrow}</p>
+      <h1>{hero.heading}</h1>
+      <p>{hero.body}</p>
     </main>
   </body>
 </html>
