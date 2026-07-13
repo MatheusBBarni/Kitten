@@ -91,6 +91,11 @@ describe("opt-in gating", () => {
     recorder.promptHistoryRecalled("codex")
     recorder.promptHistoryCleared("codex")
     recorder.promptHistoryEditedResend("codex")
+    recorder.fileSelectorOpened("codex")
+    recorder.fileSelectorDiscovery("codex", "unavailable", 20)
+    recorder.fileSelectorQueryRendered("codex", "empty", 3)
+    recorder.fileSelectorSelected("codex", 150)
+    recorder.fileSelectorCorrected("codex")
     recorder.resumePickerOpened()
     recorder.resumePickerInteractive()
     recorder.resumeLoadStarted()
@@ -101,6 +106,103 @@ describe("opt-in gating", () => {
     unsubscribe()
 
     expect(sink.records).toHaveLength(0)
+  })
+
+  it("does not access or construct a sink for disabled file-selector telemetry", () => {
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled telemetry must not access a sink")
+      },
+    })
+
+    recorder.fileSelectorOpened("codex")
+    recorder.fileSelectorDiscovery("codex", "ready", 10)
+    recorder.fileSelectorQueryRendered("codex", "results", 2)
+    recorder.fileSelectorSelected("codex", 25)
+    recorder.fileSelectorCorrected("codex")
+  })
+})
+
+describe("file-selector events", () => {
+  it("records every fixed interaction fact with only allowlisted metadata", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.fileSelectorOpened("codex")
+    recorder.fileSelectorDiscovery("codex", "ready", 18)
+    recorder.fileSelectorQueryRendered("codex", "empty", 4)
+    recorder.fileSelectorSelected("codex", 240)
+    recorder.fileSelectorCorrected("codex")
+
+    expect(sink.records).toEqual([
+      { type: "file_selector_opened", agent: "codex", at: 42, sessionRef: "run-1" },
+      {
+        type: "file_selector_discovery",
+        agent: "codex",
+        outcome: "ready",
+        durationMs: 18,
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "file_selector_query_rendered",
+        agent: "codex",
+        state: "empty",
+        durationMs: 4,
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "file_selector_selected",
+        agent: "codex",
+        durationMs: 240,
+        at: 42,
+        sessionRef: "run-1",
+      },
+      { type: "file_selector_corrected", agent: "codex", at: 42, sessionRef: "run-1" },
+    ])
+  })
+
+  it("serializes no query, path, prompt, count, reference, or byte fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.fileSelectorOpened("claude-code")
+    recorder.fileSelectorDiscovery("claude-code", "unavailable", 30)
+    recorder.fileSelectorQueryRendered("claude-code", "unavailable", 5)
+    recorder.fileSelectorSelected("claude-code", 350)
+    recorder.fileSelectorCorrected("claude-code")
+
+    const prohibited = [
+      "query",
+      "path",
+      "prompt",
+      "count",
+      "candidateCount",
+      "candidate_count",
+      "referenceText",
+      "reference_text",
+      "sourceBytes",
+      "source_bytes",
+      "bytes",
+    ]
+    for (const record of sink.records) {
+      for (const field of prohibited) expect(Object.keys(record)).not.toContain(field)
+    }
+    const serialized = JSON.stringify(sink.records)
+    for (const field of prohibited) expect(serialized).not.toContain(`"${field}"`)
+  })
+
+  it("keeps outcome and render state closed at the typed recorder API", () => {
+    if (false) {
+      const recorder = createTelemetryRecorder({ enabled: false })
+      // @ts-expect-error Discovery outcomes are intentionally fixed.
+      recorder.fileSelectorDiscovery("codex", "failed", 1)
+      // @ts-expect-error Render states are intentionally fixed.
+      recorder.fileSelectorQueryRendered("codex", "loading", 1)
+    }
+    expect(true).toBe(true)
   })
 })
 
@@ -453,7 +555,7 @@ describe("content-free guarantee", () => {
       expect(keys).not.toContain("summary")
       expect(
         keys.every((key) =>
-          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source", "mode", "liveCount", "continued"].includes(
+          ["type", "at", "sessionRef", "agent", "charBucket", "durationMs", "count", "themeId", "source", "mode", "liveCount", "continued", "outcome", "state"].includes(
             key,
           ),
         ),

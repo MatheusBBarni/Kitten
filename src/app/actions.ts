@@ -61,12 +61,35 @@ export interface PromptHistoryTelemetry {
   promptHistoryEditedResend(sessionId: SessionId): void
 }
 
+/** Fixed discovery outcomes allowed through the UI-facing telemetry facade. */
+export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
+
+/** Fixed warm-query render states allowed through the UI-facing telemetry facade. */
+export type FileSelectorRenderState = "results" | "empty" | "unavailable"
+
+/** Content-free file-selector facts forwarded to the recorder by controller actions. */
+export interface FileSelectorTelemetry {
+  fileSelectorOpened(sessionId: SessionId): void
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void
+  fileSelectorCorrected(sessionId: SessionId): void
+}
+
 /**
  * The recorder surface actions drive. Switch telemetry is optional so focused action
  * unit tests can keep injecting only the focus counter; the real recorder implements
  * both slices.
  */
-export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry & PromptHistoryTelemetry>
+export type ActionTelemetry = FocusTelemetry & Partial<SwitchTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry>
 
 /** The default when no recorder is injected: record nothing. */
 const NOOP_ACTION_TELEMETRY: ActionTelemetry = { focusSwitch() {} }
@@ -127,6 +150,24 @@ export interface ControllerActions {
   reopenConversation(sessionId: SessionId, options?: SwitchFocusOptions): void
   /** Apply an explicit, fail-soft close-policy outcome. */
   closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult>
+  /** Record that a valid file-selector token opened for one addressed session. */
+  fileSelectorOpened(sessionId: SessionId): void
+  /** Record a fixed discovery outcome and caller-owned duration. */
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void
+  /** Record one fixed warm-query render state and caller-owned duration. */
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void
+  /** Record acceptance and the caller-owned open-to-selection duration. */
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void
+  /** Record that one pending accepted reference was corrected before submission. */
+  fileSelectorCorrected(sessionId: SessionId): void
   /**
    * Send a prompt to `sessionId` (default: the focused session), recording the user's
    * turn in the transcript first. Resolves with the agent's stop reason, or `null`
@@ -321,6 +362,26 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
         onError(sessionId, error)
         return { outcome: "teardown-failed" }
       }
+    },
+
+    fileSelectorOpened(sessionId): void {
+      recorder.fileSelectorOpened?.(sessionId)
+    },
+
+    fileSelectorDiscovery(sessionId, outcome, durationMs): void {
+      recorder.fileSelectorDiscovery?.(sessionId, outcome, durationMs)
+    },
+
+    fileSelectorQueryRendered(sessionId, state, durationMs): void {
+      recorder.fileSelectorQueryRendered?.(sessionId, state, durationMs)
+    },
+
+    fileSelectorSelected(sessionId, durationMs): void {
+      recorder.fileSelectorSelected?.(sessionId, durationMs)
+    },
+
+    fileSelectorCorrected(sessionId): void {
+      recorder.fileSelectorCorrected?.(sessionId)
     },
 
     sendPrompt,

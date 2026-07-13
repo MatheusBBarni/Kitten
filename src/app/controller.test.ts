@@ -2163,6 +2163,60 @@ describe("createSessionController - dispose", () => {
   })
 })
 
+describe("file-selector telemetry action facade", () => {
+  it("forwards an addressed fixed fact through a controller with enabled telemetry", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 42,
+      sessionRef: "run-1",
+    })
+    const { controller } = await controllerWithStubs({}, {
+      config: { ...APP_CONFIG, telemetryEnabled: true },
+      recorder,
+      usageSeenSink: { write() {} },
+    })
+
+    controller.actions.fileSelectorDiscovery("codex", "ready", 18)
+
+    expect(records).toEqual([
+      {
+        type: "file_selector_discovery",
+        agent: "codex",
+        outcome: "ready",
+        durationMs: 18,
+        at: 42,
+        sessionRef: "run-1",
+      },
+    ])
+    await controller.dispose()
+  })
+
+  it("emits nothing when disabled while ordinary controller actions remain functional", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      sink: { write: (record) => records.push(record) },
+    })
+    const { controller } = await controllerWithStubs({}, {
+      config: { ...APP_CONFIG, telemetryEnabled: false },
+      recorder,
+    })
+
+    controller.actions.fileSelectorOpened("claude-code")
+    controller.actions.fileSelectorDiscovery("claude-code", "unavailable", 20)
+    controller.actions.fileSelectorQueryRendered("claude-code", "empty", 3)
+    controller.actions.fileSelectorSelected("claude-code", 100)
+    controller.actions.fileSelectorCorrected("claude-code")
+    controller.actions.switchFocus("codex")
+
+    expect(records).toHaveLength(0)
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    await controller.dispose()
+  })
+})
+
 describe("createControllerActions", () => {
   it("records accepted composer history before the agent prompt settles", async () => {
     const store = createAppStore()

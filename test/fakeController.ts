@@ -11,7 +11,14 @@
  */
 
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
-import { nextSessionId, type CloseChoice, type CloseConversationResult, type PromptInput } from "../src/app/actions.ts"
+import {
+  nextSessionId,
+  type CloseChoice,
+  type CloseConversationResult,
+  type FileSelectorDiscoveryOutcome,
+  type FileSelectorRenderState,
+  type PromptInput,
+} from "../src/app/actions.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { SessionId } from "../src/core/types.ts"
@@ -31,6 +38,11 @@ export interface RecordedCalls {
   backgroundConversation: SessionId[]
   reopenConversation: SessionId[]
   closeConversation: { sessionId: SessionId; choice: CloseChoice }[]
+  fileSelectorOpened: SessionId[]
+  fileSelectorDiscovery: { sessionId: SessionId; outcome: FileSelectorDiscoveryOutcome; durationMs: number }[]
+  fileSelectorQueryRendered: { sessionId: SessionId; state: FileSelectorRenderState; durationMs: number }[]
+  fileSelectorSelected: { sessionId: SessionId; durationMs: number }[]
+  fileSelectorCorrected: SessionId[]
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
   recordPromptHistory: { text: string; sessionId: SessionId | undefined }[]
   navigatePromptHistory: { direction: PromptHistoryDirection; sessionId: SessionId | undefined }[]
@@ -107,6 +119,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     backgroundConversation: [],
     reopenConversation: [],
     closeConversation: [],
+    fileSelectorOpened: [],
+    fileSelectorDiscovery: [],
+    fileSelectorQueryRendered: [],
+    fileSelectorSelected: [],
+    fileSelectorCorrected: [],
     sendPrompt: [],
     recordPromptHistory: [],
     navigatePromptHistory: [],
@@ -192,6 +209,21 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         store.reopenConversation(sessionId)
       },
       closeConversation,
+      fileSelectorOpened(sessionId): void {
+        calls.fileSelectorOpened.push(sessionId)
+      },
+      fileSelectorDiscovery(sessionId, outcome, durationMs): void {
+        calls.fileSelectorDiscovery.push({ sessionId, outcome, durationMs })
+      },
+      fileSelectorQueryRendered(sessionId, state, durationMs): void {
+        calls.fileSelectorQueryRendered.push({ sessionId, state, durationMs })
+      },
+      fileSelectorSelected(sessionId, durationMs): void {
+        calls.fileSelectorSelected.push({ sessionId, durationMs })
+      },
+      fileSelectorCorrected(sessionId): void {
+        calls.fileSelectorCorrected.push(sessionId)
+      },
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.sendPrompt.push({ input, sessionId })
         return null

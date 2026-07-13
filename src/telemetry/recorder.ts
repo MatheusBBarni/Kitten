@@ -118,6 +118,17 @@ export type TelemetryEventType =
   | "prompt_history_recalled"
   | "prompt_history_cleared"
   | "prompt_history_edited_resend"
+  | "file_selector_opened"
+  | "file_selector_discovery"
+  | "file_selector_query_rendered"
+  | "file_selector_selected"
+  | "file_selector_corrected"
+
+/** Closed discovery outcomes; no repository or query detail crosses this boundary. */
+export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
+
+/** Closed post-render states for the warm local-query latency metric. */
+export type FileSelectorRenderState = "results" | "empty" | "unavailable"
 
 /** The two entry points whose adoption the resume metrics compare. */
 export type ResumeMode = "picker" | "last-run"
@@ -160,6 +171,10 @@ export interface TelemetryRecord {
   liveCount?: ResumeLiveCount
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
+  /** Fixed file-discovery outcome; never a source error, path, or query. */
+  outcome?: FileSelectorDiscoveryOutcome
+  /** Fixed warm-query render state; never a candidate count or candidate content. */
+  state?: FileSelectorRenderState
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -212,6 +227,24 @@ export interface TelemetryRecorder {
   promptHistoryCleared(sessionId: SessionId): void
   /** Record submission of a changed recalled entry. */
   promptHistoryEditedResend(sessionId: SessionId): void
+  /** A valid file-selector token opened for the addressed session. */
+  fileSelectorOpened(sessionId: SessionId): void
+  /** Repository discovery settled with a fixed outcome and caller-owned duration. */
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void
+  /** A warm local query committed one fixed render state after the supplied duration. */
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void
+  /** One file reference was accepted after the supplied open-to-selection duration. */
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void
+  /** One pending accepted reference was edited through before submission. */
+  fileSelectorCorrected(sessionId: SessionId): void
   /** A session completed its handshake and holds a live ACP session. */
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
@@ -277,6 +310,11 @@ const NOOP_RECORDER: TelemetryRecorder = {
   promptHistoryRecalled() {},
   promptHistoryCleared() {},
   promptHistoryEditedResend() {},
+  fileSelectorOpened() {},
+  fileSelectorDiscovery() {},
+  fileSelectorQueryRendered() {},
+  fileSelectorSelected() {},
+  fileSelectorCorrected() {},
   agentReady() {},
   agentUnready() {},
   focusSwitch() {},
@@ -426,6 +464,34 @@ class ActiveRecorder implements TelemetryRecorder {
 
   promptHistoryEditedResend(sessionId: SessionId): void {
     this.record({ type: "prompt_history_edited_resend", agent: sessionId })
+  }
+
+  fileSelectorOpened(sessionId: SessionId): void {
+    this.record({ type: "file_selector_opened", agent: sessionId })
+  }
+
+  fileSelectorDiscovery(
+    sessionId: SessionId,
+    outcome: FileSelectorDiscoveryOutcome,
+    durationMs: number,
+  ): void {
+    this.record({ type: "file_selector_discovery", agent: sessionId, outcome, durationMs })
+  }
+
+  fileSelectorQueryRendered(
+    sessionId: SessionId,
+    state: FileSelectorRenderState,
+    durationMs: number,
+  ): void {
+    this.record({ type: "file_selector_query_rendered", agent: sessionId, state, durationMs })
+  }
+
+  fileSelectorSelected(sessionId: SessionId, durationMs: number): void {
+    this.record({ type: "file_selector_selected", agent: sessionId, durationMs })
+  }
+
+  fileSelectorCorrected(sessionId: SessionId): void {
+    this.record({ type: "file_selector_corrected", agent: sessionId })
   }
 
   agentReady(sessionId: SessionId): void {
