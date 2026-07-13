@@ -128,6 +128,14 @@ describe("COCKPIT_KEYMAP", () => {
     expect(COCKPIT_KEYMAP.some(({ keys }) => keys.includes("↑") || keys.includes("↓"))).toBeFalse()
   })
 
+  it("documents @ file discovery while preserving the shared menu command map", () => {
+    expect(EDITOR_KEYMAP).toContainEqual({
+      keys: "@",
+      description: "Find and insert a repository file reference",
+    })
+    expect(MENU_KEYMAP.map(({ command }) => command)).toEqual(["prev-item", "next-item", "confirm", "dismiss"])
+  })
+
   it("keeps slash-first compact affordances derived from the command registry", () => {
     expect(KEYMAP_HINT).toContain("/help")
     expect(SHELL_HINT).toBe("/shell")

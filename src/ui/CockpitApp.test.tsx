@@ -35,7 +35,7 @@ import {
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
-import { HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
+import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { SETTINGS_TITLE } from "./SettingsView.tsx"
@@ -789,6 +789,9 @@ describe("CockpitApp keymap", () => {
     }
     expect(opened).toContain("/model")
     expect(opened).toContain("/settings")
+    const fileDiscoveryHelp = EDITOR_KEYMAP.find((entry) => entry.keys === "@")
+    expect(fileDiscoveryHelp).toBeDefined()
+    expect(opened).toContain(fileDiscoveryHelp!.description)
     expect(opened).not.toContain("Ctrl+O")
 
     await destroyMounted(setup.renderer)

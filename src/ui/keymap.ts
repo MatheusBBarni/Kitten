@@ -242,6 +242,7 @@ export const PROMPT_KEY_BINDINGS: TextareaKeyBinding[] = [
  */
 export const EDITOR_KEYMAP: readonly HelpEntry[] = [
   { keys: "/", description: "Open and filter the command menu" },
+  { keys: "@", description: "Find and insert a repository file reference" },
   { keys: "Enter", description: "Send the prompt to the focused agent" },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt" },
   { keys: "↑ / ↓", description: "Recall prompts at multiline editing boundaries" },
