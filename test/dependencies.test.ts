@@ -52,7 +52,7 @@ describe("dependency pinning", () => {
     )
   })
 
-  it("requires a Bun release with native Terminal support", () => {
-    expect(pkg.engines.bun).toBe(">=1.3.5")
+  it("does not require Bun to run the published Node launcher", () => {
+    expect(pkg).not.toHaveProperty("engines.bun")
   })
 })

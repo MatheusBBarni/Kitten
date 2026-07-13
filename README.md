@@ -5,6 +5,25 @@ Kitten is a terminal cockpit for passing a live coding task from one AI agent to
 It runs **Claude Code** and **Codex** together in one terminal using the [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk).  
 If one agent stalls, you can hand its active task to the other with one action.
 
+## Try Kitten
+
+From inside a git repository, run:
+
+```bash
+npx kitten
+```
+
+The first run downloads the prebuilt standalone binary for your platform, so it can take longer than a typical JavaScript CLI. Bun is not required.
+
+For daily use, install Kitten globally:
+
+```bash
+npm i -g kitten
+kitten
+```
+
+A successful install is version-stamped: `npx kitten --version` or `kitten --version` prints the exact installed package version. `kitten --self-check` ends with `SELF-CHECK OK` when the headless startup path is healthy.
+
 ## Why this project exists
 
 Context handoff between AI agents is usually manual: copy transcripts, pull file lists, guess what matters, and hope nothing gets lost.  
@@ -73,12 +92,15 @@ When an agent asks for approval, use:
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.3.5 or newer
+- Node.js with npm
 - Claude Code and Codex installed and authenticated
+- A git repository to launch Kitten from
 
 Kitten only launches the published ACP adapters. It does not handle agent binaries or authentication secrets.
 
-## Getting started
+## Develop from source
+
+Source development requires [Bun](https://bun.sh) 1.3.5 or newer.
 
 ```bash
 bun install

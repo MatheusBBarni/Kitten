@@ -3,20 +3,20 @@
   "version": "0.0.0",
   "description": "Kitten - Cross-Agent Hand-off Cockpit: a terminal cockpit that hands a live coding task between AI agents over ACP.",
   "type": "module",
-  "module": "src/index.ts",
   "bin": {
-    "kitten": "src/index.ts"
+    "kitten": "bin/kitten.mjs"
   },
   "files": [
-    "src",
-    "bunfig.toml",
-    "tsconfig.json"
+    "bin"
   ],
-  "engines": {
-    "bun": ">=1.3.5"
-  },
   "publishConfig": {
     "access": "public"
+  },
+  "optionalDependencies": {
+    "@kitten/darwin-arm64": "0.0.0",
+    "@kitten/darwin-x64": "0.0.0",
+    "@kitten/linux-arm64": "0.0.0",
+    "@kitten/linux-x64": "0.0.0"
   },
   "scripts": {
     "start": "bun run src/index.ts",
