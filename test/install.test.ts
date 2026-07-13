@@ -13,8 +13,11 @@ const INSTALLER = join(import.meta.dir, "..", "scripts", "install.sh")
 
 /** Source the installer, then run `snippet` with `set -e` relaxed so `$?` survives. */
 function inInstaller(snippet: string, env: Record<string, string> = {}): { stdout: string; exitCode: number } {
+  const spawnEnv = { ...process.env }
+  delete spawnEnv.KITTEN_REPO
+  Object.assign(spawnEnv, env)
   const result = Bun.spawnSync(["bash", "-c", `source "${INSTALLER}"; set +e; ${snippet}`], {
-    env: { ...process.env, ...env },
+    env: spawnEnv,
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -68,6 +71,14 @@ describe("install.sh helpers", () => {
     expect(exitCode).toBe(0)
   })
 
+  it("honors a KITTEN_REPO override", () => {
+    const { stdout, exitCode } = inInstaller('printf "%s" "$REPO"', {
+      KITTEN_REPO: "example/kitten-fork",
+    })
+    expect(stdout).toBe("example/kitten-fork")
+    expect(exitCode).toBe(0)
+  })
+
   it("extracts the checksum for a named artifact from the manifest", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-manifest-"))
     try {
@@ -85,4 +96,19 @@ describe("install.sh helpers", () => {
     const { stdout } = inInstaller(`detect_platform`, { KITTEN_PLATFORM: "linux-arm64" })
     expect(stdout.trim()).toBe("linux-arm64")
   })
+
+  for (const [os, arch, expected] of [
+    ["Darwin", "arm64", "darwin-arm64"],
+    ["Darwin", "x86_64", "darwin-x64"],
+    ["Linux", "aarch64", "linux-arm64"],
+    ["Linux", "amd64", "linux-x64"],
+  ] as const) {
+    it(`maps ${os} ${arch} to ${expected}`, () => {
+      const { stdout, exitCode } = inInstaller(
+        `uname() { if [ "$1" = "-s" ]; then printf '%s' "${os}"; else printf '%s' "${arch}"; fi; }; detect_platform`,
+      )
+      expect(stdout).toBe(expected)
+      expect(exitCode).toBe(0)
+    })
+  }
 })

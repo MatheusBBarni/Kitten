@@ -10,21 +10,48 @@ Keep only task-local execution context here. Do not duplicate facts that are obv
 
 ## Important Decisions
 
+- Keep the checksummed curl installer as the visitor-facing hero until task 07
+  publishes and verifies the npm native-binary path; mention npm only as a
+  future documented channel.
+- Preserve the showcase's separately verified source-checkout CTA while making
+  the README's general install guidance curl-first.
+- Validate the README through one injectable resolver that rejects placeholders
+  and canonical-slug drift before checking both the repository and raw installer
+  URLs. This keeps unit tests deterministic while CI performs the live check.
+
 ## Learnings
 
 - `origin` is `MatheusBBarni/Kitten`, the default branch is `main`, and the
-  installer exists on remote `main`, but GitHub reports the repository as private.
+  repository is now public. Both the repository page and raw installer resolve
+  without authentication.
+- `scripts/install.sh` already contained the canonical default and curl comment
+  when this run began; the remaining work was documentation, CI enforcement,
+  and complete default/override/platform test coverage.
 
 ## Files / Surfaces
 
+- `README.md`
+- `.github/workflows/ci.yml`
+- `scripts/check-readme-install.ts`
+- `scripts/install.sh` (verified, unchanged)
+- `test/install.test.ts`
+- `test/readmeInstall.test.ts`
+- `test/ciWorkflow.test.ts`
+- `test/package-shim.test.ts`
+
 ## Errors / Corrections
 
-- Baseline URL checks returned 404 for both the placeholder raw URL and the real
-  raw URL; the real repository page also returns 404 without authentication.
-- Implementation stopped before code edits because a CI check that rejects 404
-  would fail the same README command the task requires us to advertise as working.
+- Corrected stale workflow memory after live GitHub and raw URL checks showed
+  that the repository had become public.
+- Added a default-fetch test after focused coverage initially reported only 75%
+  function coverage for the resolver; final focused coverage is 100% functions
+  and 90% lines.
+- Detected concurrent README product-copy and keybinding edits outside this
+  task. Preserved them in the working tree and kept them out of this task's
+  staged README patch.
 
 ## Ready for Next Run
 
-- Resume after the repository is public, or after the PRD explicitly defines an
-  authenticated/private distribution path and corresponding CI contract.
+- Task complete. Task 07 can promote npm only after its binary path is published
+  and verified; task 08 can reuse the canonical repository/install contract for
+  post-publish smoke validation.

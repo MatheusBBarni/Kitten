@@ -12,13 +12,6 @@ Keep only durable, cross-task context here. Do not duplicate facts that are obvi
 
 ## Open Risks
 
-- The GitHub repository is currently private. Unauthenticated requests to both
-  `https://github.com/MatheusBBarni/Kitten` and its raw `main/scripts/install.sh`
-  URL return 404, so public curl-install and post-merge URL resolution checks
-  remain blocked until repository visibility or the distribution contract changes.
-- npm provenance is also unavailable while the GitHub repository is private;
-  Trusted Publishing can publish from a private repository but npm does not
-  generate provenance for it.
 - The unscoped npm package `kitten` is owned by `benng` and points to
   `github.com/ben-ng/kitten-js`. The release train needs a transfer or a different
   main package name before it can publish the shim. The four `@kitten/<slug>`

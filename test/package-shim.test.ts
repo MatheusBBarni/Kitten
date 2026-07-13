@@ -2,8 +2,6 @@ import { describe, expect, it } from "bun:test"
 import { readFileSync } from "node:fs"
 
 import pkg from "../package.json" with { type: "json" }
-import { primaryInstallCmd } from "../site/src/config/showcase-config.ts"
-
 const README = readFileSync(new URL("../README.md", import.meta.url), "utf8")
 
 const PLATFORM_PACKAGES = [
@@ -34,13 +32,17 @@ describe("main npm package shim contract", () => {
     expect(pkg.scripts).not.toHaveProperty("postinstall")
   })
 
-  it("does not promote the npm shim before the Kitten package route is public", () => {
+  it("leads with curl without promoting an unverified npm command", () => {
     const firstShellCommand = README.match(/```bash\n([^\n]+)/)?.[1]
     const visitorInstallDocs = README.slice(0, README.indexOf("## Contributing"))
 
-    expect(firstShellCommand).toBe(primaryInstallCmd)
+    expect(firstShellCommand).toBe(
+      "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+    )
     expect(visitorInstallDocs).not.toContain("npm i -g kitten")
     expect(visitorInstallDocs).not.toContain("npx kitten --version")
-    expect(README).toContain("Do not use `npx kitten` for Kitten yet")
+    expect(README).toContain(
+      "The npm channel will be documented here when its native-binary install path is published and verified.",
+    )
   })
 })

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Honest install: installer slug fix, README rewrite, CI resolve-check"
 type: docs
 complexity: medium
@@ -29,11 +29,11 @@ This task fixes the installer slug, rewrites the README to lead with the working
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Fix the `install.sh` repo slug to `MatheusBBarni/Kitten`
-- [ ] 2.2 Rewrite the README to lead with the working curl install and accurate requirements
-- [ ] 2.3 Reference the npm channel as landing with the binary, without a not-yet-working command
-- [ ] 2.4 Add a CI check that the README install URL/slug resolve (no placeholder, no 404)
-- [ ] 2.5 Update the installer unit test for the real slug
+- [x] 2.1 Fix the `install.sh` repo slug to `MatheusBBarni/Kitten`
+- [x] 2.2 Rewrite the README to lead with the working curl install and accurate requirements
+- [x] 2.3 Reference the npm channel as landing with the binary, without a not-yet-working command
+- [x] 2.4 Add a CI check that the README install URL/slug resolve (no placeholder, no 404)
+- [x] 2.5 Update the installer unit test for the real slug
 
 ## Implementation Details
 Modify `scripts/install.sh` (the `REPO="${KITTEN_REPO:-OWNER/kitten}"` default ~L21, plus the comment ~L6), `README.md` (Requirements ~L38-41, Getting started ~L43-56), `.github/workflows/ci.yml` (add a resolve-check step), and `test/install.test.ts`.
@@ -62,12 +62,12 @@ The real slug from `git remote` is `MatheusBBarni/Kitten` (capital K); pin it ex
 
 ## Tests
 - Unit tests:
-  - [ ] sourcing `install.sh` with `KITTEN_REPO` unset resolves `REPO` to `MatheusBBarni/Kitten`
-  - [ ] a `KITTEN_REPO` override still takes precedence over the default
-  - [ ] `detect_platform` maps `uname` outputs to the four `BUILD_TARGETS` slugs (darwin/linux x arm64/x64) - existing assertions preserved
-  - [ ] the resolve-check script flags a README containing `OWNER/` as failing
+  - [x] sourcing `install.sh` with `KITTEN_REPO` unset resolves `REPO` to `MatheusBBarni/Kitten`
+  - [x] a `KITTEN_REPO` override still takes precedence over the default
+  - [x] `detect_platform` maps `uname` outputs to the four `BUILD_TARGETS` slugs (darwin/linux x arm64/x64) - existing assertions preserved
+  - [x] the resolve-check script flags a README containing `OWNER/` as failing
 - Integration tests:
-  - [ ] the CI resolve-check passes against the real slug fixture and fails against a placeholder/404 fixture
+  - [x] the CI resolve-check passes against the real slug fixture and fails against a placeholder/404 fixture
 - Test coverage target: >=80%
 - All tests must pass
 
