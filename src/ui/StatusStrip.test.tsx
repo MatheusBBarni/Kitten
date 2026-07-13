@@ -132,7 +132,6 @@ describe("StatusStrip agent state", () => {
     { status: "idle", tone: "idle" },
     { status: "working", tone: "working" },
     { status: "awaiting_approval", tone: "awaiting_approval" },
-    { status: "awaiting_clarification", tone: "awaiting_clarification" },
   ] as const satisfies readonly { status: SessionStatus; tone: StatusTone }[]) {
     it(`renders ${status} with an inline label and semantic color`, async () => {
       const controller = createFakeController()
@@ -145,6 +144,22 @@ describe("StatusStrip agent state", () => {
       await destroyMounted(setup.renderer)
     })
   }
+
+  it("renders clarification with a question-mark label and its clarification tone", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "awaiting_clarification" })
+    const setup = await renderStrip(controller)
+
+    expect(STATUS_LABELS.awaiting_clarification).toStartWith("? ")
+    expect(STATUS_LABELS.awaiting_clarification).toContain("clarification")
+    expect(STATUS_LABELS.awaiting_clarification).not.toBe(STATUS_LABELS.awaiting_approval)
+    expect(setup.captureCharFrame()).toContain(`claude:— - ${STATUS_LABELS.awaiting_clarification}`)
+    expect(foregroundOf(setup, STATUS_LABELS.awaiting_clarification)).toBe(
+      paletteColor(DARK_PALETTE.status.awaiting_clarification),
+    )
+
+    await destroyMounted(setup.renderer)
+  })
 
   it("renders an unavailable runtime as not ready", async () => {
     const [claude, codex] = readyRuntimes()

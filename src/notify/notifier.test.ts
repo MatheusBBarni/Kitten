@@ -33,6 +33,44 @@ function harness(store: AppStore, focus: FocusState) {
 }
 
 describe("attention notifier", () => {
+  it("alerts exactly once on an unfocused working-to-clarification transition", () => {
+    const store = soloStore()
+    const h = harness(store, "unfocused")
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
+
+    expect(h.bells()).toBe(1)
+    expect(h.channel.calls).toEqual([
+      { title: "Alpha", provider: "claude-code", cwd: "/work/alpha", state: "awaiting_clarification" },
+    ])
+  })
+
+  it("keeps a focused working-to-clarification transition in-app", () => {
+    const store = soloStore()
+    const h = harness(store, "focused")
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
+
+    expect(h.bells()).toBe(0)
+    expect(h.channel.calls).toHaveLength(0)
+  })
+
+  it("does not re-alert when clarification moves to another needy status", () => {
+    const store = soloStore()
+    const h = harness(store, "unfocused")
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_clarification" })
+    store.applyEvent("a", { kind: "status", status: "awaiting_approval" })
+    store.applyEvent("a", { kind: "status", status: "error" })
+    store.applyEvent("a", { kind: "status", status: "finished" })
+
+    expect(h.bells()).toBe(1)
+    expect(h.channel.calls).toHaveLength(1)
+  })
+
   it("fires exactly one bell and one channel call on a needy transition while unfocused", () => {
     const store = soloStore()
     const h = harness(store, "unfocused")

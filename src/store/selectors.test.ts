@@ -458,6 +458,24 @@ describe("selectSessionList", () => {
 })
 
 describe("selectNextNeedy (ADR-006)", () => {
+  it("returns clarification ahead of simultaneous approval, error, and finished sessions", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "pivot", providerKind: "claude-code", title: "Pivot", cwd: "/w" },
+        { id: "done", providerKind: "codex", title: "Done", cwd: "/w" },
+        { id: "failed", providerKind: "claude-code", title: "Failed", cwd: "/w" },
+        { id: "approval", providerKind: "codex", title: "Approval", cwd: "/w" },
+        { id: "clarification", providerKind: "claude-code", title: "Clarification", cwd: "/w" },
+      ],
+    })
+    store.applyEvent("done", { kind: "status", status: "finished" })
+    store.applyEvent("failed", { kind: "status", status: "error" })
+    store.applyEvent("approval", { kind: "status", status: "awaiting_approval" })
+    store.applyEvent("clarification", { kind: "status", status: "awaiting_clarification" })
+
+    expect(selectNextNeedy("pivot")(store.getState())).toBe("clarification")
+  })
+
   it("returns an awaiting_approval session ahead of a finished one", () => {
     const store = fleetStore()
     store.applyEvent("b", { kind: "status", status: "finished" })

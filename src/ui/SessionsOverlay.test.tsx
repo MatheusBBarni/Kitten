@@ -173,6 +173,26 @@ describe("SessionsOverlay card list", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("renders clarification vocabulary with exactly one shared needs-you badge", async () => {
+    const controller = fleetController()
+    setStatus(controller, "b", "awaiting_clarification")
+    const setup = await renderCockpit(controller)
+
+    const frame = await openOverview(setup)
+    const lines = frame.split("\n")
+    const betaRow = lines.findIndex((line) => line.includes("Beta"))
+    const gammaRow = lines.findIndex((line) => line.includes("Gamma"))
+    const clarificationCard = lines.slice(betaRow, gammaRow).join("\n")
+
+    expect(betaRow).toBeGreaterThanOrEqual(0)
+    expect(gammaRow).toBeGreaterThan(betaRow)
+    expect(clarificationCard).toContain(STATUS_LABELS.awaiting_clarification)
+    expect(clarificationCard).toContain(NEEDS_YOU_LABEL)
+    expect(frame.split(NEEDS_YOU_LABEL)).toHaveLength(2)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders workspace-order lifecycle, selection, attention, and duplicate-name cues without color", async () => {
     const controller = fleetController()
     for (const id of ["a", "b", "c"]) controller.store.renameConversation(id, "Work")
