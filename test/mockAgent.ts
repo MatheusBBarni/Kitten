@@ -90,6 +90,8 @@ export interface MockAgentHandle {
   readonly permissionOutcomes: RequestPermissionOutcome[]
   /** Every elicitation response the client returned to the agent, in order. */
   readonly elicitationOutcomes: CreateElicitationResponse[]
+  /** Every scripted elicitation request issued by the agent, in order. */
+  readonly elicitationRequests: CreateElicitationRequest[]
   /** The working directory of every `session/new` the agent received, in order. */
   readonly newSessionCwds: string[]
   /** Every `session/load` request the agent received, in order. */
@@ -98,6 +100,8 @@ export interface MockAgentHandle {
   readonly configOptionRequests: SetSessionConfigOptionRequest[]
   /** The agent's current config options, as mutated by `setSessionConfigOption`. */
   readonly configOptions: SessionConfigOption[]
+  /** Issue an agent-initiated elicitation outside a prompt script and capture its outcome. */
+  createElicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse>
   /**
    * Push an agent-initiated `config_option_update` notification to the client, carrying
    * the current (or a supplied) full option set - the after-the-switch case.
@@ -112,6 +116,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const prompts: PromptRequest[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
   const elicitationOutcomes: CreateElicitationResponse[] = []
+  const elicitationRequests: CreateElicitationRequest[] = []
   const newSessionCwds: string[] = []
   const loadSessionRequests: LoadSessionRequest[] = []
   const configOptionRequests: SetSessionConfigOptionRequest[] = []
@@ -120,6 +125,13 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const advertisesConfig = options.configOptions !== undefined
 
   let connection!: AgentSideConnection
+
+  async function createElicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse> {
+    elicitationRequests.push(request)
+    const response = await connection.unstable_createElicitation(request)
+    elicitationOutcomes.push(response)
+    return response
+  }
 
   const agent: Agent = {
     initialize: (request: InitializeRequest) =>
@@ -167,9 +179,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
           return response.outcome
         },
         async createElicitation(elicitationRequest) {
-          const response = await connection.unstable_createElicitation(elicitationRequest)
-          elicitationOutcomes.push(response)
-          return response
+          return createElicitation(elicitationRequest)
         },
         async readTextFile(path, opts) {
           const response = await connection.readTextFile({
@@ -195,10 +205,12 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
     prompts,
     permissionOutcomes,
     elicitationOutcomes,
+    elicitationRequests,
     newSessionCwds,
     loadSessionRequests,
     configOptionRequests,
     configOptions,
+    createElicitation,
     emitConfigOptionUpdate: (next) =>
       connection.sessionUpdate({
         sessionId,
