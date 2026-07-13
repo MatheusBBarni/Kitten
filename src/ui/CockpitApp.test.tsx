@@ -203,7 +203,8 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
-    expect(frame).not.toContain("Claude Code")
+    expect(frame).toContain("[selected] Claude Code")
+    expect(frame).toContain("[tab] Codex")
 
     // The strip keeps the focused provider, model, and status in one bottom row.
     const strip = rows.at(-1) ?? ""

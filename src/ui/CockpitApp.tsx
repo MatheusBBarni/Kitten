@@ -44,6 +44,7 @@ import {
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController, useShellBufferType } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
+import { EmptyWorkspace } from "./EmptyWorkspace.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
 import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
 import { ModelSelect } from "./ModelSelect.tsx"
@@ -53,6 +54,7 @@ import { ShellPane } from "./ShellPane.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
+import { TabWorkspace } from "./TabWorkspace.tsx"
 import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
@@ -307,10 +309,17 @@ function CockpitFrame({
       >
         {isShellFocused ? (
           <ShellPane />
-        ) : focused && !focused.ready && focusedRestoration !== "unavailable" ? (
-          <NotReadyNotice error={focused.error} />
         ) : (
-          (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
+          <>
+            <TabWorkspace />
+            {focusedSessionId === null ? (
+              <EmptyWorkspace />
+            ) : focused && !focused.ready && focusedRestoration !== "unavailable" ? (
+              <NotReadyNotice error={focused.error} />
+            ) : (
+              (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
+            )}
+          </>
         )}
         {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
       </box>

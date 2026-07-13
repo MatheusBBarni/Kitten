@@ -201,11 +201,27 @@ describe("SessionsOverlay routing", () => {
     const closed = await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
 
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
-    expect(controller.calls.switchFocus).toEqual(["b"])
+    expect(controller.calls.selectConversation).toEqual(["b"])
     // The pane stays Kitten-branded after the focus change, and the composer is back.
     expect(closed.split("\n")[0]).toContain("Kitten")
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
+    await destroyMounted(setup.renderer)
+  })
+
+  it("reopens highlighted background work on Enter", async () => {
+    const controller = fleetController()
+    controller.store.backgroundConversation("b")
+    const setup = await renderCockpit(controller)
+    await openOverview(setup)
+
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
+
+    expect(controller.calls.reopenConversation).toEqual(["b"])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
+    expect(controller.store.getState().workspace.conversations.b?.lifecycle).toBe("visible")
     await destroyMounted(setup.renderer)
   })
 

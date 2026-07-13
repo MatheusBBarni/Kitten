@@ -130,7 +130,7 @@ describe("ConversationView turns", () => {
     expect(frame).toContain("Agents: ready · ready")
     expect(frame).toContain(`Working directory: ${process.cwd()}`)
     expect(frame).toContain(WELCOME_ON_RAMP)
-    expect(frame).not.toContain("Claude Code")
+    expect(frame).toContain("[selected] Claude Code")
     expect(frame).not.toContain("Codex")
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
 
@@ -429,7 +429,7 @@ describe("ConversationView streaming", () => {
     expect(userFrame).toContain("ping")
     expect(userFrame).not.toContain("Hello")
     expect(userFrame).toContain("Kitten")
-    expect(userFrame).not.toContain("Claude Code")
+    expect(userFrame).toContain("[selected] Claude Code")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))
     await waitForFrame((f) => f.includes("Hello"))
@@ -446,7 +446,7 @@ describe("ConversationView streaming", () => {
     expect(settled).toContain("Hello, world.")
     expect(settled.match(/Hello, world\./g)).toHaveLength(1)
     expect(settled).toContain(tabNavigationHint("unknown"))
-    expect(settled).not.toContain("Claude Code")
+    expect(settled).toContain("[selected] Claude Code")
 
     await destroyMounted(renderer)
   })

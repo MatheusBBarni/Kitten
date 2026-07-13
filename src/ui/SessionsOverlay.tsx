@@ -85,8 +85,13 @@ function SessionsDialog(): ReactNode {
   const jumpInto = useCallback((): void => {
     const target = sessions[clamped]
     controller.store.closeSessions()
-    // A jump made through the overview, not a direct `/switch` cycle (task_09).
-    if (target) controller.actions.switchFocus(target.id, { viaOverview: true })
+    if (!target) return
+    // The universal fallback can reopen background work as well as select a visible tab.
+    if (target.lifecycle === "background") {
+      controller.actions.reopenConversation(target.id, { viaOverview: true })
+    } else {
+      controller.actions.selectConversation(target.id, { viaOverview: true })
+    }
   }, [clamped, controller, sessions])
 
   const jumpNextNeedy = useCallback((): void => {

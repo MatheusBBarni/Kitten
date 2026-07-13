@@ -94,6 +94,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   // explicit so production's Codex-first default is covered by real-store tests.
   const store = options.store ?? createAppStore({ selectedVisibleId: "claude-code" })
   const runtimes = options.runtimes ?? readyRuntimes()
+  for (const runtime of runtimes) {
+    if (runtime.ready) store.setConversationAvailability(runtime.sessionId, { kind: "ready" })
+  }
   const calls: RecordedCalls = {
     createConversation: 0,
     renameConversation: [],
@@ -144,7 +147,10 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         const source = selected
           ? store.getState().sessions[selected]
           : store.getState().sessions[runtimes[0]?.sessionId ?? ""]
-        if (!source) return null
+        if (!source) {
+          store.setWorkspaceNotice({ code: "no-provider-available" })
+          return null
+        }
         created += 1
         const sessionId = `fake-created-${created}`
         store.addSession({
