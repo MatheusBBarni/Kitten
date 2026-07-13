@@ -113,6 +113,15 @@ export const selectSessionStatus =
   (state) =>
     (sessionId ? state.sessions[sessionId]?.status : undefined) ?? "idle"
 
+/** One session's rounded remaining-context percentage, or `null` when unknown. */
+export const selectSessionHeadroom =
+  (sessionId: SessionId): Selector<number | null> =>
+  (state) => {
+    const usage = state.sessions[sessionId]?.usage
+    if (!usage || usage.size <= 0) return null
+    return Math.round(((usage.size - usage.used) / usage.size) * 100)
+  }
+
 /** One session's live-restore outcome, or `null` during a normal non-restored run. */
 export const selectRestoration =
   (sessionId: SessionId | null): Selector<RestorationMode | null> =>

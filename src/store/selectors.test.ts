@@ -18,6 +18,7 @@ import {
   selectSessionCommands,
   selectSessionReferencedFiles,
   selectSessionState,
+  selectSessionHeadroom,
   selectSessionStatus,
   selectSessionTurns,
   selectApprovalOverlay,
@@ -190,6 +191,39 @@ describe("per-agent session selectors", () => {
       },
     }
     expect(selectSessionBranch("claude-code")(withBranch)).toBe("feature/status-bar")
+  })
+
+  it("derives rounded remaining-context headroom from reported usage", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    store.applyEvent("codex", { kind: "usage", used: 200_000, size: 200_000 })
+
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBe(38)
+    expect(selectSessionHeadroom("codex")(store.getState())).toBe(0)
+  })
+
+  it("returns null when usage is absent or its size is not positive", () => {
+    const store = createAppStore()
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+
+    store.applyEvent("claude-code", { kind: "usage", used: 0, size: 0 })
+    store.applyEvent("codex", { kind: "usage", used: 0, size: -1 })
+
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+    expect(selectSessionHeadroom("codex")(store.getState())).toBeNull()
+  })
+
+  it("preserves another agent's headroom value and session identity across a usage update", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const codexHeadroom = selectSessionHeadroom("codex")
+    const beforeHeadroom = codexHeadroom(before)
+
+    store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+
+    const after = store.getState()
+    expect(codexHeadroom(after)).toBe(beforeHeadroom)
+    expect(selectSessionState("codex")(after)).toBe(before.sessions.codex!)
   })
 
   it("keeps delegated model and context slots hidden", () => {
