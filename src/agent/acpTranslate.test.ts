@@ -1,16 +1,194 @@
 import { describe, expect, it } from "bun:test"
 
-import type { SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
+import type { ElicitationSchema, SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
 
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
-import type { DomainSessionEvent, McpServerConfig } from "../core/types.ts"
+import type { ClarificationPayload, DomainSessionEvent, McpServerConfig } from "../core/types.ts"
 import {
+  toAcpElicitationOutcome,
   toAcpMcpServers,
   toUnifiedDiff,
   translateCommand,
+  translateElicitationForm,
   translateSessionUpdate,
   translateToolCall,
 } from "./acpTranslate.ts"
+
+describe("elicitation form translation", () => {
+  const schema = (value: ElicitationSchema): ElicitationSchema => value
+
+  it("normalizes text, single-select, and string-array multi-select fields", () => {
+    expect(
+      translateElicitationForm(
+        "Choose the implementation shape",
+        schema({
+          type: "object",
+          required: ["strategy", "targets", "notes"],
+          properties: {
+            notes: { type: "string", title: "Notes", description: "Add context" },
+            strategy: {
+              type: "string",
+              title: "Strategy",
+              oneOf: [
+                { const: "safe", title: "Safe", description: "Smallest change" },
+                { const: "fast", title: "Fast" },
+              ],
+            },
+            targets: {
+              type: "array",
+              title: "Targets",
+              items: {
+                anyOf: [
+                  { const: "tests", title: "Tests" },
+                  { const: "docs", title: "Docs", description: "Update guidance" },
+                ],
+              },
+            },
+            optional: { type: "string", enum: ["alpha", "beta"] },
+          },
+        }),
+      ),
+    ).toEqual({
+      prompt: "Choose the implementation shape",
+      fields: [
+        { id: "notes", label: "Notes", description: "Add context", required: true, mode: "text" },
+        {
+          id: "strategy",
+          label: "Strategy",
+          required: true,
+          mode: "single",
+          options: [
+            { id: "safe", label: "Safe", description: "Smallest change" },
+            { id: "fast", label: "Fast" },
+          ],
+        },
+        {
+          id: "targets",
+          label: "Targets",
+          required: true,
+          mode: "multi",
+          options: [
+            { id: "tests", label: "Tests" },
+            { id: "docs", label: "Docs", description: "Update guidance" },
+          ],
+        },
+        {
+          id: "optional",
+          label: "optional",
+          required: false,
+          mode: "single",
+          options: [
+            { id: "alpha", label: "alpha" },
+            { id: "beta", label: "beta" },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("normalizes string-array enum items", () => {
+    expect(
+      translateElicitationForm("Pick", {
+        properties: {
+          choices: { type: "array", items: { type: "string", enum: ["one", "two"] } },
+        },
+      }),
+    ).toEqual({
+      prompt: "Pick",
+      fields: [
+        {
+          id: "choices",
+          label: "choices",
+          required: false,
+          mode: "multi",
+          options: [
+            { id: "one", label: "one" },
+            { id: "two", label: "two" },
+          ],
+        },
+      ],
+    })
+  })
+
+  it.each([
+    ["empty prompt", "", { properties: { note: { type: "string" } } }],
+    ["empty properties", "Ask", { properties: {} }],
+    ["unknown required field", "Ask", { required: ["missing"], properties: { note: { type: "string" } } }],
+    ["unsupported number", "Ask", { properties: { count: { type: "number" } } }],
+    ["empty enum", "Ask", { properties: { choice: { type: "string", enum: [] } } }],
+    ["duplicate enum", "Ask", { properties: { choice: { type: "string", enum: ["x", "x"] } } }],
+    ["ambiguous string choices", "Ask", { properties: { choice: { type: "string", enum: ["x"], oneOf: [{ const: "x", title: "X" }] } } }],
+    ["constrained text", "Ask", { properties: { note: { type: "string", minLength: 1 } } }],
+    ["non-string array", "Ask", { properties: { choice: { type: "array", items: { type: "number" } } } }],
+    ["unbounded array", "Ask", { properties: { choice: { type: "array", items: { type: "string", enum: ["x"] }, maxItems: 1 } } }],
+  ])("rejects malformed or unsupported schema: %s", (_label, message, rawSchema) => {
+    expect(translateElicitationForm(message, rawSchema as ElicitationSchema)).toBeNull()
+  })
+})
+
+describe("elicitation outcome translation", () => {
+  const payload: ClarificationPayload = {
+    prompt: "Choose",
+    fields: [
+      {
+        id: "strategy",
+        label: "Strategy",
+        required: true,
+        mode: "single",
+        options: [
+          { id: "safe", label: "Safe" },
+          { id: "fast", label: "Fast" },
+        ],
+      },
+      {
+        id: "targets",
+        label: "Targets",
+        required: true,
+        mode: "multi",
+        options: [
+          { id: "tests", label: "Tests" },
+          { id: "docs", label: "Docs" },
+        ],
+      },
+      { id: "notes", label: "Notes", required: false, mode: "text" },
+    ],
+  }
+
+  it("maps one valid answered outcome to ACP accept content", () => {
+    expect(
+      toAcpElicitationOutcome(payload, {
+        kind: "answered",
+        values: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it small" },
+      }),
+    ).toEqual({
+      action: "accept",
+      content: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it small" },
+    })
+  })
+
+  it("maps cancellation directly to ACP cancel", () => {
+    expect(toAcpElicitationOutcome(payload, { kind: "cancelled" })).toEqual({ action: "cancel" })
+  })
+
+  it.each([
+    ["missing required", { strategy: "safe" }],
+    ["unknown field", { strategy: "safe", targets: ["tests"], extra: "no" }],
+    ["wrong single type", { strategy: ["safe"], targets: ["tests"] }],
+    ["unknown single option", { strategy: "other", targets: ["tests"] }],
+    ["wrong multi type", { strategy: "safe", targets: "tests" }],
+    ["unknown multi option", { strategy: "safe", targets: ["other"] }],
+    ["duplicate multi option", { strategy: "safe", targets: ["tests", "tests"] }],
+    ["empty required multi", { strategy: "safe", targets: [] }],
+    ["undefined optional value", { strategy: "safe", targets: ["tests"], notes: undefined }],
+  ])("terminally cancels invalid submitted values: %s", (_label, values) => {
+    expect(
+      toAcpElicitationOutcome(payload, {
+        kind: "answered",
+        values: values as Record<string, string | string[]>,
+      }),
+    ).toEqual({ action: "cancel" })
+  })
+})
 
 /**
  * Unit tests for the pure ACP → domain translator. These assert that every

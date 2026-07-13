@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
 
-import type { PermissionOption } from "@agentclientprotocol/sdk"
+import type { CreateElicitationRequest, PermissionOption } from "@agentclientprotocol/sdk"
 
-import type { DomainSessionEvent } from "../core/types.ts"
+import type { AgentConfig, ClarificationPayload, DomainSessionEvent, ResolvedAgentConfig } from "../core/types.ts"
 import { startMockAgent, type MockAgentOptions } from "../../test/mockAgent.ts"
 import {
   createAgentConnection,
@@ -20,7 +20,19 @@ import { createInMemoryTransportPair } from "./transport.ts"
  * of streamed deltas, and the ordered domain-event stream of a full prompt turn.
  */
 
-const CONFIG = { id: "claude-code" as const, displayName: "Claude", command: "unused", args: [], env: {} }
+const CONFIG: AgentConfig = { id: "claude-code", displayName: "Claude", command: "unused", args: [], env: {} }
+const SUPPORTED_CONFIG: ResolvedAgentConfig = {
+  ...CONFIG,
+  clarificationCapability: {
+    status: "supported",
+    adapterPackage: "@agentclientprotocol/claude-agent-acp",
+    adapterVersion: "0.14.1",
+  },
+}
+const UNSUPPORTED_CONFIG: ResolvedAgentConfig = {
+  ...CONFIG,
+  clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+}
 
 /** A hand-driven frame scheduler: `tick()` runs the single coalesced flush. */
 function manualScheduler() {
@@ -47,12 +59,16 @@ function manualScheduler() {
 }
 
 /** Wire the adapter to a fresh mock agent over an in-memory transport pair. */
-function setup(mockOptions: MockAgentOptions = {}, scheduler?: FrameScheduler) {
+function setup(
+  mockOptions: MockAgentOptions = {},
+  scheduler?: FrameScheduler,
+  config: AgentConfig | ResolvedAgentConfig = CONFIG,
+) {
   const pair = createInMemoryTransportPair()
   const mock = startMockAgent(pair.agent, mockOptions)
   const events: DomainSessionEvent[] = []
   const conn = createAgentConnection({
-    config: CONFIG,
+    config,
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler,
   })
@@ -81,8 +97,12 @@ function lastStatus(events: DomainSessionEvent[]): string | undefined {
   return undefined
 }
 
-async function connected(mockOptions?: MockAgentOptions, scheduler?: FrameScheduler): Promise<ReturnType<typeof setup>> {
-  const ctx = setup(mockOptions, scheduler)
+async function connected(
+  mockOptions?: MockAgentOptions,
+  scheduler?: FrameScheduler,
+  config?: AgentConfig | ResolvedAgentConfig,
+): Promise<ReturnType<typeof setup>> {
+  const ctx = setup(mockOptions, scheduler, config)
   await ctx.conn.connect()
   return ctx
 }
@@ -114,6 +134,34 @@ describe("connect / session lifecycle", () => {
 
     expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
     await conn.dispose()
+  })
+
+  it("advertises form elicitation only for a verified supported capability", async () => {
+    const supported = setup(
+      {
+        onInitialize(request) {
+          expect(request.clientCapabilities?.elicitation).toEqual({ form: {} })
+          return { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: "mock-agent", version: "0.0.0" } }
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    expect((await supported.conn.connect()).ready).toBe(true)
+    await supported.conn.dispose()
+
+    const unsupported = setup(
+      {
+        onInitialize(request) {
+          expect(request.clientCapabilities?.elicitation).toBeUndefined()
+          return { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: "mock-agent", version: "0.0.0" } }
+        },
+      },
+      undefined,
+      UNSUPPORTED_CONFIG,
+    )
+    expect((await unsupported.conn.connect()).ready).toBe(true)
+    await unsupported.conn.dispose()
   })
 
   it("reports not-ready with a legible error when the transport fails to start", async () => {
@@ -280,6 +328,263 @@ describe("permission round-trip", () => {
     const sessionId = await conn.newSession("/tmp")
     await conn.prompt(sessionId, [{ type: "text", text: "edit" }])
     expect(mock.permissionOutcomes).toEqual([{ outcome: "cancelled" }])
+    await conn.dispose()
+  })
+})
+
+describe("verified clarification elicitation", () => {
+  const validForm = (sessionId: string): CreateElicitationRequest => ({
+    mode: "form",
+    sessionId,
+    message: "How should Kitten proceed?",
+    requestedSchema: {
+      type: "object",
+      required: ["strategy", "targets"],
+      properties: {
+        strategy: {
+          type: "string",
+          title: "Strategy",
+          oneOf: [
+            { const: "safe", title: "Safe" },
+            { const: "fast", title: "Fast" },
+          ],
+        },
+        targets: {
+          type: "array",
+          title: "Targets",
+          items: { type: "string", enum: ["tests", "docs"] },
+        },
+        notes: { type: "string", title: "Notes" },
+      },
+    },
+  })
+
+  it("delivers a normalized payload once and maps one valid answer back to ACP", async () => {
+    let calls = 0
+    let seen: ClarificationPayload | null = null
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (request, ctx) => {
+          await ctx.createElicitation(validForm(request.sessionId))
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    conn.onClarification(async (payload) => {
+      calls += 1
+      seen = payload
+      return {
+        kind: "answered",
+        values: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it focused" },
+      }
+    })
+
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "ask" }])
+
+    expect(calls).toBe(1)
+    expect(seen as ClarificationPayload | null).toEqual({
+      prompt: "How should Kitten proceed?",
+      fields: [
+        {
+          id: "strategy",
+          label: "Strategy",
+          required: true,
+          mode: "single",
+          options: [
+            { id: "safe", label: "Safe" },
+            { id: "fast", label: "Fast" },
+          ],
+        },
+        {
+          id: "targets",
+          label: "Targets",
+          required: true,
+          mode: "multi",
+          options: [
+            { id: "tests", label: "tests" },
+            { id: "docs", label: "docs" },
+          ],
+        },
+        { id: "notes", label: "Notes", required: false, mode: "text" },
+      ],
+    })
+    expect(mock.elicitationOutcomes).toEqual([
+      {
+        action: "accept",
+        content: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it focused" },
+      },
+    ])
+    await conn.dispose()
+  })
+
+  it("maps a protocol-free cancellation back to ACP cancellation", async () => {
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (request, ctx) => {
+          await ctx.createElicitation(validForm(request.sessionId))
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    conn.onClarification(async () => ({ kind: "cancelled" }))
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "ask" }])
+    expect(mock.elicitationOutcomes).toEqual([{ action: "cancel" }])
+    await conn.dispose()
+  })
+
+  it("cancels when no clarification handler is registered", async () => {
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (request, ctx) => {
+          await ctx.createElicitation(validForm(request.sessionId))
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "ask" }])
+    expect(mock.elicitationOutcomes).toEqual([{ action: "cancel" }])
+    await conn.dispose()
+  })
+
+  it.each([
+    [
+      "URL mode",
+      (sessionId: string): CreateElicitationRequest => ({
+        mode: "url",
+        sessionId,
+        message: "Open this",
+        elicitationId: "elicit-1",
+        url: "https://example.test",
+      }),
+    ],
+    [
+      "custom mode",
+      (sessionId: string): CreateElicitationRequest =>
+        ({ mode: "_future", sessionId, message: "Future" }) as CreateElicitationRequest,
+    ],
+    [
+      "request scope",
+      (): CreateElicitationRequest => ({
+        mode: "form",
+        requestId: "request-1",
+        message: "Configure",
+        requestedSchema: { properties: { note: { type: "string" } } },
+      }),
+    ],
+    [
+      "mismatched session",
+      (): CreateElicitationRequest => validForm("another-session"),
+    ],
+    [
+      "malformed field",
+      (sessionId: string): CreateElicitationRequest => ({
+        mode: "form",
+        sessionId,
+        message: "Choose",
+        requestedSchema: { properties: { enabled: { type: "boolean" } } },
+      }),
+    ],
+  ])("terminally cancels unsupported %s without invoking the handler", async (_label, request) => {
+    let handlerCalls = 0
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (prompt, ctx) => {
+          await ctx.createElicitation(request(prompt.sessionId))
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    conn.onClarification(async () => {
+      handlerCalls += 1
+      return { kind: "cancelled" }
+    })
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "ask" }])
+    expect(handlerCalls).toBe(0)
+    expect(mock.elicitationOutcomes).toEqual([{ action: "cancel" }])
+    await conn.dispose()
+  })
+
+  it("cancels a matching-looking request when no ACP session is active", async () => {
+    let handlerCalls = 0
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (request, ctx) => {
+          await ctx.createElicitation(validForm(request.sessionId))
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    conn.onClarification(async () => {
+      handlerCalls += 1
+      return { kind: "cancelled" }
+    })
+    await conn.prompt("not-opened", [{ type: "text", text: "ask" }])
+    expect(handlerCalls).toBe(0)
+    expect(mock.elicitationOutcomes).toEqual([{ action: "cancel" }])
+    await conn.dispose()
+  })
+
+  it("cancels an invalid submitted value instead of accepting malformed content", async () => {
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (request, ctx) => {
+          await ctx.createElicitation(validForm(request.sessionId))
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      SUPPORTED_CONFIG,
+    )
+    conn.onClarification(async () => ({
+      kind: "answered",
+      values: { strategy: "unknown", targets: ["tests"] },
+    }))
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "ask" }])
+    expect(mock.elicitationOutcomes).toEqual([{ action: "cancel" }])
+    await conn.dispose()
+  })
+
+  it("does not register the ACP callback for an unsupported capability", async () => {
+    let handlerCalls = 0
+    let rejected = false
+    const { conn, mock } = await connected(
+      {
+        onPrompt: async (request, ctx) => {
+          try {
+            await ctx.createElicitation(validForm(request.sessionId))
+          } catch {
+            rejected = true
+          }
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      UNSUPPORTED_CONFIG,
+    )
+    conn.onClarification(async () => {
+      handlerCalls += 1
+      return { kind: "cancelled" }
+    })
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "ask" }])
+    expect(rejected).toBe(true)
+    expect(handlerCalls).toBe(0)
+    expect(mock.elicitationOutcomes).toEqual([])
     await conn.dispose()
   })
 })

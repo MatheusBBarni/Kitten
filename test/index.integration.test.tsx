@@ -55,6 +55,7 @@ function resumableFakeConnection(
       return () => subscribers.delete(callback)
     },
     onPermission() {},
+    onClarification: () => () => {},
     dispose: async () => {},
   }
 }

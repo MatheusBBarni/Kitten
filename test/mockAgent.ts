@@ -13,6 +13,8 @@ import {
   AgentSideConnection,
   PROTOCOL_VERSION,
   type Agent,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
   type InitializeRequest,
   type InitializeResponse,
   type LoadSessionRequest,
@@ -34,6 +36,8 @@ export interface MockAgentContext {
   update(update: SessionUpdate): Promise<void>
   /** Ask the client for permission and return the user's decision. */
   requestPermission(toolCall: ToolCallUpdate, options: PermissionOption[]): Promise<RequestPermissionOutcome>
+  /** Ask the client for structured input through ACP's experimental elicitation callback. */
+  createElicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse>
   /** Read a file through the client's filesystem callback. */
   readTextFile(path: string, opts?: { line?: number; limit?: number }): Promise<string>
   /** Write a file through the client's filesystem callback. */
@@ -84,6 +88,8 @@ export interface MockAgentHandle {
   readonly prompts: PromptRequest[]
   /** Every permission outcome the client returned to the agent, in order. */
   readonly permissionOutcomes: RequestPermissionOutcome[]
+  /** Every elicitation response the client returned to the agent, in order. */
+  readonly elicitationOutcomes: CreateElicitationResponse[]
   /** The working directory of every `session/new` the agent received, in order. */
   readonly newSessionCwds: string[]
   /** Every `session/load` request the agent received, in order. */
@@ -105,6 +111,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION
   const prompts: PromptRequest[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
+  const elicitationOutcomes: CreateElicitationResponse[] = []
   const newSessionCwds: string[] = []
   const loadSessionRequests: LoadSessionRequest[] = []
   const configOptionRequests: SetSessionConfigOptionRequest[] = []
@@ -159,6 +166,11 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
           permissionOutcomes.push(response.outcome)
           return response.outcome
         },
+        async createElicitation(elicitationRequest) {
+          const response = await connection.unstable_createElicitation(elicitationRequest)
+          elicitationOutcomes.push(response)
+          return response
+        },
         async readTextFile(path, opts) {
           const response = await connection.readTextFile({
             sessionId: request.sessionId,
@@ -182,6 +194,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
     connection,
     prompts,
     permissionOutcomes,
+    elicitationOutcomes,
     newSessionCwds,
     loadSessionRequests,
     configOptionRequests,

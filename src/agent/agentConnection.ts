@@ -15,6 +15,8 @@ import {
   ClientSideConnection,
   PROTOCOL_VERSION,
   type Client,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
   type ReadTextFileRequest,
   type ReadTextFileResponse,
   type RequestPermissionRequest,
@@ -25,8 +27,24 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
 
-import type { AgentConfig, ConfigOption, ProviderKind, SessionStatus, DomainSessionEvent, ToolCallUpdate } from "../core/types.ts"
-import { translateConfigOptions, translateSessionUpdate, translateToolCall } from "./acpTranslate.ts"
+import type {
+  AgentConfig,
+  ClarificationOutcome,
+  ClarificationPayload,
+  ConfigOption,
+  DomainSessionEvent,
+  ProviderKind,
+  ResolvedAgentConfig,
+  SessionStatus,
+  ToolCallUpdate,
+} from "../core/types.ts"
+import {
+  toAcpElicitationOutcome,
+  translateConfigOptions,
+  translateElicitationForm,
+  translateSessionUpdate,
+  translateToolCall,
+} from "./acpTranslate.ts"
 import { spawnAgentTransport, type AgentTransport, type TransportFactory } from "./transport.ts"
 
 /** A block of prompt content sent to an agent. V1 sends plain text. */
@@ -74,6 +92,9 @@ export interface PermissionRequest {
 /** The user's decision on a permission request, returned to the agent. */
 export type PermissionOutcome = { outcome: "selected"; optionId: string } | { outcome: "cancelled" }
 
+/** Protocol-free clarification callback consumed by the controller coordinator. */
+export type ClarificationHandler = (payload: ClarificationPayload) => Promise<ClarificationOutcome>
+
 type Unsubscribe = () => void
 
 /** The adapter boundary the rest of the app depends on (TechSpec "Core Interfaces"). */
@@ -94,6 +115,7 @@ export interface AgentConnection {
   setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[]>
   onUpdate(cb: (event: DomainSessionEvent) => void): Unsubscribe
   onPermission(handler: (req: PermissionRequest) => Promise<PermissionOutcome>): void
+  onClarification(handler: ClarificationHandler): Unsubscribe
   dispose(): Promise<void>
 }
 
@@ -128,7 +150,8 @@ export function createFrameScheduler(frameMs = 16): FrameScheduler {
 
 /** Construction options for an {@link AgentConnection}. Seams are injectable for tests. */
 export interface AgentConnectionOptions {
-  config: AgentConfig
+  /** A resolved config carries the verified capability; a bare config fails closed. */
+  config: AgentConfig | ResolvedAgentConfig
   /** Transport factory; defaults to a real `Bun.spawn` stdio transport. */
   transport?: TransportFactory
   /** Frame scheduler for coalescing; defaults to a real timer-based scheduler. */
@@ -150,6 +173,7 @@ class AgentConnectionImpl implements AgentConnection {
   readonly id: ProviderKind
 
   private readonly config: AgentConfig
+  private readonly clarificationSupported: boolean
   private readonly transportFactory: TransportFactory
   private readonly scheduler: FrameScheduler
 
@@ -162,6 +186,8 @@ class AgentConnectionImpl implements AgentConnection {
 
   private readonly subscribers = new Set<(event: DomainSessionEvent) => void>()
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
+  private clarificationHandler: ClarificationHandler | null = null
+  private activeSessionId: string | null = null
 
   /** Contiguous, not-yet-flushed agent-message deltas for the current frame. */
   private readonly messageBuffer: BufferedMessage[] = []
@@ -169,6 +195,8 @@ class AgentConnectionImpl implements AgentConnection {
   constructor(options: AgentConnectionOptions) {
     this.id = options.config.id
     this.config = options.config
+    this.clarificationSupported =
+      "clarificationCapability" in options.config && options.config.clarificationCapability.status === "supported"
     this.transportFactory = options.transport ?? spawnAgentTransport
     this.scheduler = options.scheduler ?? createFrameScheduler()
   }
@@ -194,6 +222,7 @@ class AgentConnectionImpl implements AgentConnection {
           // that surface so ACP agents can safely return model and reasoning controls.
           // Boolean options remain intentionally unsupported by the V1 UI.
           session: { configOptions: {} },
+          ...(this.clarificationSupported ? { elicitation: { form: {} } } : {}),
         },
         clientInfo: { name: "kitten", version: "0.0.0" },
       })
@@ -218,6 +247,7 @@ class AgentConnectionImpl implements AgentConnection {
     if (result.configOptions != null) {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
+    this.activeSessionId = result.sessionId
     return result.sessionId
   }
 
@@ -229,6 +259,7 @@ class AgentConnectionImpl implements AgentConnection {
     if (result.configOptions != null) {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
+    this.activeSessionId = sessionId
   }
 
   async prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult> {
@@ -282,11 +313,20 @@ class AgentConnectionImpl implements AgentConnection {
     this.permissionHandler = handler
   }
 
+  onClarification(handler: ClarificationHandler): Unsubscribe {
+    this.clarificationHandler = handler
+    return () => {
+      if (this.clarificationHandler === handler) this.clarificationHandler = null
+    }
+  }
+
   async dispose(): Promise<void> {
     this.closing = true
     this.scheduler.dispose()
     this.subscribers.clear()
     this.permissionHandler = null
+    this.clarificationHandler = null
+    this.activeSessionId = null
     this.connection = null
     const transport = this.transport
     this.transport = null
@@ -295,12 +335,16 @@ class AgentConnectionImpl implements AgentConnection {
 
   /** Build the ACP `Client` handler wired back into this adapter's routing. */
   private buildClient(): Client {
-    return {
+    const client: Client = {
       sessionUpdate: (params: SessionNotification) => this.onSessionUpdate(params),
       requestPermission: (params: RequestPermissionRequest) => this.onRequestPermission(params),
       readTextFile: (params: ReadTextFileRequest) => readTextFile(params),
       writeTextFile: (params: WriteTextFileRequest) => writeTextFile(params),
     }
+    if (this.clarificationSupported) {
+      client.unstable_createElicitation = (params: CreateElicitationRequest) => this.onCreateElicitation(params)
+    }
+    return client
   }
 
   /** Translate an incoming `session/update` and route it through coalescing. */
@@ -336,6 +380,29 @@ class AgentConnectionImpl implements AgentConnection {
       return { outcome: toAcpOutcome(outcome) }
     } finally {
       this.emit({ kind: "status", status: "working" })
+    }
+  }
+
+  /** Normalize one verified, active-session form request and settle it exactly once. */
+  private async onCreateElicitation(params: CreateElicitationRequest): Promise<CreateElicitationResponse> {
+    if (
+      params.mode !== "form" ||
+      !("sessionId" in params) ||
+      this.activeSessionId === null ||
+      params.sessionId !== this.activeSessionId
+    ) {
+      return { action: "cancel" }
+    }
+
+    const payload = translateElicitationForm(params.message, params.requestedSchema)
+    const handler = this.clarificationHandler
+    if (payload === null || handler === null) return { action: "cancel" }
+
+    try {
+      return toAcpElicitationOutcome(payload, await handler(payload))
+    } catch {
+      // A failed consumer cannot leave the agent's original callback unresolved.
+      return { action: "cancel" }
     }
   }
 

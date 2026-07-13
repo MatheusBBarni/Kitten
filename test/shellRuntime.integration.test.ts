@@ -48,6 +48,7 @@ function createReadyConnection(): AgentConnection {
     setSessionConfigOption: async () => [],
     onUpdate: () => () => {},
     onPermission() {},
+    onClarification: () => () => {},
     dispose: async () => {},
   }
 }

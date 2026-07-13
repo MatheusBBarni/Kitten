@@ -236,6 +236,7 @@ export function createOfflineConnection(config: AgentConfig): AgentConnection {
       return () => {}
     },
     onPermission() {},
+    onClarification: () => () => {},
     async dispose() {},
   }
 }

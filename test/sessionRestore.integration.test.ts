@@ -68,6 +68,7 @@ function fakeConnection(id: ProviderKind): AgentConnection {
       return () => subscribers.delete(callback)
     },
     onPermission(_handler: (request: PermissionRequest) => Promise<PermissionOutcome>) {},
+    onClarification: () => () => {},
     dispose: async () => {},
   }
 }
@@ -176,6 +177,7 @@ describe("unavailable-pane fresh-start integration", () => {
             return () => subscribers.delete(callback)
           },
           onPermission(_handler: (request: PermissionRequest) => Promise<PermissionOutcome>) {},
+          onClarification: () => () => {},
           dispose: async () => {},
         }
       },

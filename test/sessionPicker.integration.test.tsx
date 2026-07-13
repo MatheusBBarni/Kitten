@@ -57,6 +57,7 @@ function fakeConnection(id: ProviderKind, loadUnavailable = false): AgentConnect
       return () => subscribers.delete(callback)
     },
     onPermission(_handler: (request: PermissionRequest) => Promise<PermissionOutcome>) {},
+    onClarification: () => () => {},
     dispose: async () => {},
   }
 }

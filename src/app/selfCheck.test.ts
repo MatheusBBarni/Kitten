@@ -72,6 +72,7 @@ function fakeConnection(options: FakeConnectionOptions = {}): AgentConnection {
       return () => subscribers.delete(subscriber)
     },
     onPermission() {},
+    onClarification: () => () => {},
     async dispose() {
       calls.push("dispose")
     },

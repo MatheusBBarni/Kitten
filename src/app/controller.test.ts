@@ -256,6 +256,9 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     onPermission(handler) {
       permissionHandler = handler
     },
+    onClarification() {
+      return () => {}
+    },
     async dispose() {
       disposals += 1
       await options.disposeWait
