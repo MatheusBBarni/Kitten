@@ -99,7 +99,7 @@ const NOOP_RUN_COMMAND = (_command: CockpitCommand): void => {}
 export const MIN_EDITOR_ROWS = 2
 
 /** How tall the editor may grow before it scrolls its own content. */
-export const MAX_EDITOR_ROWS = 8
+export const MAX_EDITOR_ROWS = 5
 
 /** Keep command discovery compact; longer result sets scroll inside this viewport. */
 export const MAX_SLASH_MENU_ROWS = 16
@@ -169,6 +169,23 @@ export function slashTokenAt(text: string, cursorOffset: number): SlashToken | n
   const token = text.slice(start, end)
   if (cursor === start || !token.startsWith("/") || token.indexOf("/", 1) !== -1) return null
   return { start, end, filter: token.slice(1) }
+}
+
+/**
+ * Resolve a complete cockpit command directly from the editor buffer.
+ *
+ * The menu normally owns Enter. This exact-draft fallback covers the tiny interval
+ * where native textarea submission arrives before React has committed the menu state,
+ * without claiming agent commands or slash text with arguments. Trailing whitespace
+ * is accepted because it dismisses the menu while the developer still intends to run
+ * the cockpit command.
+ */
+export function cockpitCommandForDraft(text: string, cursorOffset: number): CockpitCommand | null {
+  if (cursorOffset !== text.length) return null
+  const commandEnd = text.trimEnd().length
+  const token = slashTokenAt(text.slice(0, commandEnd), commandEnd)
+  if (!token || token.start !== 0 || token.end !== commandEnd) return null
+  return COCKPIT_COMMANDS.find((command) => command.name === token.filter)?.command ?? null
 }
 
 /** Build the deterministic cockpit-first command rows, filtering a slash token. */
@@ -613,9 +630,25 @@ function SelectedPromptEditor({
 
   const submit = useCallback((): void => {
     const editor = textarea.current
-    if (!editor || !ready || restorationContextOpen) return
+    if (!editor) return
 
     const text = editor.plainText
+    const cockpitCommand = cockpitCommandForDraft(text, editor.cursorOffset)
+    if (cockpitCommand !== null) {
+      acceptingFileReference.current = true
+      editor.clear()
+      previousDraft.current = ""
+      acceptingFileReference.current = false
+      activeFileInteraction.current = null
+      fileSuppression.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
+      setRows(MIN_EDITOR_ROWS)
+      onRunCommand(cockpitCommand)
+      return
+    }
+    if (!ready || restorationContextOpen) return
+
     // A stray Enter on an empty or whitespace-only buffer must not start a turn.
     if (text.trim().length === 0) return
 
@@ -636,7 +669,7 @@ function SelectedPromptEditor({
     acceptingFileReference.current = false
     setRows(MIN_EDITOR_ROWS)
     void controller.actions.sendPrompt(text)
-  }, [commitCompletion, controller, focusedSessionId, ready, restorationContextOpen])
+  }, [commitCompletion, controller, focusedSessionId, onRunCommand, ready, restorationContextOpen])
 
   const selectSlashMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current

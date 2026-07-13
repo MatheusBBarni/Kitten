@@ -112,9 +112,10 @@ export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: Sla
           id={SLASH_MENU_SCROLLBOX_ID}
           ref={attachScrollbox}
           // `height: 100%` makes the ScrollBox viewport fill the bounded menu.
-          // Without it, the list's intrinsic height owns the scrollbar geometry,
-          // leaving the scrollbar only beside the tail of a long command list.
-          style={{ height: "100%", flexGrow: 1, flexShrink: 1, flexDirection: "column" }}
+          // Keep ScrollBox's own row layout intact: it places the content wrapper
+          // beside its vertical scrollbar. Overriding it to a column stacks the
+          // scrollbar beneath the list instead.
+          style={{ height: "100%", flexGrow: 1, flexShrink: 1 }}
           scrollX={false}
           horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
         >

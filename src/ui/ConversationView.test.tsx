@@ -53,13 +53,11 @@ async function renderConversation(
 ) {
   const setup = await testRender(
     <CockpitApp controller={controller}>
-      <ConversationView welcomeBannerVariant={welcomeBannerVariant} />
+      <ConversationView welcomeBannerVariant={welcomeBannerVariant} workspaceChrome />
     </CockpitApp>,
     { width, height },
   )
-  // The frame title is present for both the normal banner and degraded restoration
-  // states; the latter intentionally omit the greeting.
-  await setup.waitForFrame((f) => f.includes("Kitten"))
+  await setup.waitForFrame((f) => f.includes(KEYMAP_HINT))
   return setup
 }
 
@@ -428,7 +426,7 @@ describe("ConversationView streaming", () => {
     const userFrame = captureCharFrame()
     expect(userFrame).toContain("ping")
     expect(userFrame).not.toContain("Hello")
-    expect(userFrame).toContain("Kitten")
+    expect(userFrame).toContain("[selected] Claude Code")
     expect(userFrame).toContain("[selected] Claude Code")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))

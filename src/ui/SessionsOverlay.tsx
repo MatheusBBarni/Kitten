@@ -131,6 +131,15 @@ function SessionsDialog(): ReactNode {
     controller.actions.jumpToNextAttention()
   }, [controller])
 
+  const closeHighlighted = useCallback((): void => {
+    const target = sessions[clamped]
+    if (!target) return
+    controller.store.closeSessions()
+    // Reuse the captured-target close policy so working conversations still offer
+    // background, deliberate cancellation, or keeping the work open.
+    controller.store.openTabDialog({ kind: "close", sessionId: target.id })
+  }, [clamped, controller, sessions])
+
   const onKey = useCallback(
     (key: KeyEvent): void => {
       // Clarification owns top modal priority. Return before claiming or interpreting
@@ -156,6 +165,9 @@ function SessionsDialog(): ReactNode {
         case "jump-next-needy":
           jumpNextNeedy()
           return
+        case "close-session":
+          closeHighlighted()
+          return
         case "cancel":
           controller.store.closeSessions()
           return
@@ -163,7 +175,7 @@ function SessionsDialog(): ReactNode {
           return
       }
     },
-    [clarificationOpen, controller, jumpInto, jumpNextNeedy, sessions.length],
+    [clarificationOpen, closeHighlighted, controller, jumpInto, jumpNextNeedy, sessions.length],
   )
   useKeyboard(onKey)
 

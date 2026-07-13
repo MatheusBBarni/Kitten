@@ -29,6 +29,7 @@ import {
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { NEW_RUN_KEY_HINT } from "./keymap.ts"
 import { MessageView } from "./MessageView.tsx"
+import { TabWorkspace } from "./TabWorkspace.tsx"
 import { usePalette } from "./theme.ts"
 import { ToolCallRow } from "./ToolCallRow.tsx"
 import { WelcomeBanner } from "./WelcomeBanner.tsx"
@@ -58,8 +59,11 @@ const HIDDEN_SCROLLBAR = { visible: false } as const
 /** The scrollable transcript of whichever agent currently has focus. */
 export function ConversationView({
   welcomeBannerVariant = "full",
+  workspaceChrome = false,
 }: {
   welcomeBannerVariant?: BannerVariant
+  /** Render tab navigation as transcript content instead of a fixed application header. */
+  workspaceChrome?: boolean
 }): ReactNode {
   const controller = useController()
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
@@ -75,7 +79,7 @@ export function ConversationView({
   const restoration = useAppSelector(restorationSelector)
   const bundle = useAppSelector(selectRestorationBundle)
   if (focusedSessionId === null) return null
-  const content = renderConversationContent(controller, focusedSessionId, turns, welcomeBannerVariant)
+  const chrome = workspaceChrome ? <TabWorkspace /> : null
 
   if (restoration === "unavailable") {
     // A provider that cannot restore at all stays on the explicit degraded pane.
@@ -83,23 +87,27 @@ export function ConversationView({
     // stale Codex rollout), keep the cockpit usable and surface that truth as a
     // compact notice above the normal fresh-session view.
     if (controller.isReady(focusedSessionId) && bundle === null) {
-      return (
-        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
-          <FreshRestorationBadge />
-          {content}
-        </box>
+      return renderConversationContent(
+        controller,
+        focusedSessionId,
+        turns,
+        welcomeBannerVariant,
+        <>{chrome}<FreshRestorationBadge /></>,
       )
     }
-    return <UnavailableRestoration bundle={bundle} />
+    return <UnavailableRestoration bundle={bundle} chrome={chrome} />
   }
 
-  if (restoration === null) return content
+  if (restoration === null) {
+    return renderConversationContent(controller, focusedSessionId, turns, welcomeBannerVariant, chrome)
+  }
 
-  return (
-    <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
-      <LiveRestorationBadge />
-      {content}
-    </box>
+  return renderConversationContent(
+    controller,
+    focusedSessionId,
+    turns,
+    welcomeBannerVariant,
+    <>{chrome}<LiveRestorationBadge /></>,
   )
 }
 
@@ -108,9 +116,14 @@ function renderConversationContent(
   focusedSessionId: SessionId,
   turns: Turn[],
   welcomeBannerVariant: BannerVariant,
+  chrome: ReactNode,
 ): ReactNode {
   if (turns.length === 0) {
-    if (welcomeBannerVariant === "none") return null
+    if (welcomeBannerVariant === "none") {
+      return chrome ? (
+        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>{chrome}</box>
+      ) : null
+    }
 
     const focused = controller.runtime(focusedSessionId)
     const agents = controller.runtimes().map((runtime) => ({
@@ -119,11 +132,14 @@ function renderConversationContent(
     }))
 
     return (
-      <WelcomeBanner
-        variant={welcomeBannerVariant}
-        agents={agents}
-        cwd={focused?.cwd ?? controller.runtimes()[0]?.cwd ?? ""}
-      />
+      <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
+        {chrome}
+        <WelcomeBanner
+          variant={welcomeBannerVariant}
+          agents={agents}
+          cwd={focused?.cwd ?? controller.runtimes()[0]?.cwd ?? ""}
+        />
+      </box>
     )
   }
 
@@ -133,8 +149,9 @@ function renderConversationContent(
       stickyScroll
       stickyStart="bottom"
       scrollX={false}
-      horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
-    >
+    horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
+  >
+      {chrome}
       {turns.map((turn, index) => (
         <TurnView key={keyFor(turn, index)} turn={turn} />
       ))}
@@ -161,32 +178,31 @@ function FreshRestorationBadge(): ReactNode {
   )
 }
 
-function UnavailableRestoration({ bundle }: { bundle: HandoffBundle | null }): ReactNode {
+function UnavailableRestoration({ bundle, chrome }: { bundle: HandoffBundle | null; chrome: ReactNode }): ReactNode {
   const palette = usePalette()
   return (
-    <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", gap: 1, paddingTop: 1 }}>
-      <text style={{ flexShrink: 0 }} fg={palette.status.error}>
+    <scrollbox
+      style={{ flexGrow: 1, flexShrink: 1 }}
+      scrollX={false}
+      horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
+    >
+      {chrome}
+      <text style={{ marginTop: 1 }} fg={palette.status.error}>
         {RESTORATION_UNAVAILABLE_LABEL}
       </text>
       {bundle ? (
         <>
-          <text style={{ flexShrink: 0 }} fg={palette.muted}>
+          <text style={{ marginTop: 1 }} fg={palette.muted}>
             {RESTORATION_CONTEXT_LABEL}
           </text>
-          <scrollbox
-            style={{ flexGrow: 1, flexShrink: 1 }}
-            scrollX={false}
-            horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
-          >
-            <text fg={palette.text}>{bundle.summary}</text>
-          </scrollbox>
-          <text style={{ flexShrink: 0 }}>
+          <text fg={palette.text}>{bundle.summary}</text>
+          <text style={{ marginTop: 1 }}>
             <span fg={palette.accent}>{NEW_RUN_KEY_HINT}</span>
             <span fg={palette.text}>{` ${START_FRESH_LABEL}`}</span>
           </text>
         </>
       ) : null}
-    </box>
+    </scrollbox>
   )
 }
 

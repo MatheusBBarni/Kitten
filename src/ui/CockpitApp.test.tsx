@@ -91,7 +91,7 @@ async function renderCockpitApp(
     kittyKeyboard: true,
     exitOnCtrlC: false,
   })
-  await setup.waitForFrame((f) => f.includes("Kitten"))
+  await setup.waitForFrame((f) => f.includes(KEYMAP_HINT))
   return setup
 }
 
@@ -223,8 +223,8 @@ describe("CockpitApp layout", () => {
     const frame = captureCharFrame()
     const rows = lines(frame)
 
-    // The focused pane is product-branded; the banner shows Kitten in ASCII.
-    expect(rows[0]).toContain("Kitten")
+    // Workspace controls are transcript content, not a fixed pane header.
+    expect(rows[0]).not.toContain("Kitten")
     for (const line of WELCOME_KITTEN) expect(frame).toContain(line)
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)

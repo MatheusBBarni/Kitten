@@ -13,6 +13,7 @@ import { createAppStore } from "../store/appStore.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import { SESSIONS_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
+import { CLOSE_DIALOG_TITLE } from "./TabDialog.tsx"
 import {
   BACKGROUND_LABEL,
   NEEDS_YOU_LABEL,
@@ -313,8 +314,7 @@ describe("SessionsOverlay routing", () => {
 
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
     expect(controller.calls.selectConversation).toEqual(["b"])
-    // The pane stays Kitten-branded after the focus change, and the composer is back.
-    expect(closed.split("\n")[0]).toContain("Kitten")
+    // The fixed pane title is gone; the transcript and composer remain usable.
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(setup.renderer)
@@ -333,6 +333,19 @@ describe("SessionsOverlay routing", () => {
     expect(controller.calls.reopenConversation).toEqual(["b"])
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
     expect(controller.store.getState().workspace.conversations.b?.lifecycle).toBe("visible")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the captured session's safe close dialog on d", async () => {
+    const controller = fleetController()
+    const setup = await renderCockpit(controller)
+    await openOverview(setup)
+
+    await actAsync(() => setup.mockInput.pressKeys(["d"]))
+    await setup.waitForFrame((frame) => frame.includes(CLOSE_DIALOG_TITLE) && frame.includes("Alpha · a"))
+
+    expect(controller.store.getState().overlays.sessions).toBe(false)
+    expect(controller.calls.closeConversation).toEqual([])
     await destroyMounted(setup.renderer)
   })
 

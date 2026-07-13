@@ -10,7 +10,7 @@ import {
   writePlatformPackage,
   type BuildTarget,
 } from "../scripts/build.ts"
-import { SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
+import { SELF_CHECK_DEFAULT_TOKEN, SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
 import pkg from "../package.json" with { type: "json" }
 
 /**
@@ -41,7 +41,7 @@ describe("compiled artifact self-check (ADR-006)", () => {
       if (run.exitCode !== 0) throw new Error(`compiled self-check failed:\n${stderr}`)
       expect(run.exitCode).toBe(0)
       expect(stdout).toContain("SELF-CHECK OK")
-      expect(stdout).toContain("Kitten")
+      expect(stdout).toContain(SELF_CHECK_DEFAULT_TOKEN)
       expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
       expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
 

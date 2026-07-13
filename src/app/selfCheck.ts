@@ -311,7 +311,7 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
   try {
     let result: SelfCheckResult | undefined
     await act(async () => {
-      await waitForFrame((candidate) => candidate.includes("Kitten") && candidate.includes(SELF_CHECK_DEFAULT_TOKEN))
+      await waitForFrame((candidate) => candidate.includes(SELF_CHECK_DEFAULT_TOKEN))
       await Promise.all(collectCodeRenderables(renderer.root).map((code) => code.highlightingDone))
       await flush()
       const frame = await waitForFrame(

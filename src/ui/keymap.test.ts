@@ -479,6 +479,10 @@ describe("matchSessionsCommand", () => {
     expect(matchSessionsCommand(key("n"))).toBe("jump-next-needy")
   })
 
+  it("maps d to the highlighted session's safe close flow", () => {
+    expect(matchSessionsCommand(key("d"))).toBe("close-session")
+  })
+
   it("maps Escape to cancel, dismissing the overview without switching", () => {
     expect(matchSessionsCommand(key("escape"))).toBe("cancel")
   })
@@ -499,7 +503,7 @@ describe("matchSessionsCommand", () => {
 describe("SESSIONS_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = SESSIONS_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-session", "next-session", "jump-into", "jump-next-needy", "cancel"])
+    expect(commands).toEqual(["prev-session", "next-session", "jump-into", "jump-next-needy", "close-session", "cancel"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 

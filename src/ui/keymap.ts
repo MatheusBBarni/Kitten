@@ -89,7 +89,13 @@ export type HandoffCommand =
   | "cancel"
 
 /** Every intent the `/sessions` overview handles while it is on screen. */
-export type SessionsCommand = "prev-session" | "next-session" | "jump-into" | "jump-next-needy" | "cancel"
+export type SessionsCommand =
+  | "prev-session"
+  | "next-session"
+  | "jump-into"
+  | "jump-next-needy"
+  | "close-session"
+  | "cancel"
 
 /** Every intent the `/resume` saved-run picker handles while it is on screen. */
 export type SessionPickerCommand =
@@ -492,6 +498,12 @@ export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
     matches: plain("n"),
   },
   {
+    command: "close-session",
+    keys: "d",
+    description: "Choose how to close the highlighted session",
+    matches: plain("d"),
+  },
+  {
     command: "cancel",
     keys: "Esc",
     description: "Dismiss the overview without switching",
@@ -716,7 +728,7 @@ export const HANDOFF_HINT = "↑↓ move  Space keep/drop  m model/effort  e edi
 export const HANDOFF_CONFIG_HINT = "↑↓ move  Enter set target option  Esc back"
 
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
-export const SESSIONS_HINT = "↑↓ move  Enter jump  n next attention  Esc close"
+export const SESSIONS_HINT = "↑↓ move  Enter jump  n next attention  d close  Esc close"
 
 /** The hint printed inside the saved-run picker while its filter owns text input. */
 export const SESSION_PICKER_HINT =

@@ -2,7 +2,12 @@ import { describe, expect, it, spyOn } from "bun:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
 
-import { createOfflineConnection, formatMcpSelfCheckLine, runSelfCheck } from "../src/app/selfCheck.ts"
+import {
+  createOfflineConnection,
+  formatMcpSelfCheckLine,
+  runSelfCheck,
+  SELF_CHECK_DEFAULT_TOKEN,
+} from "../src/app/selfCheck.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, type FirstRunGuidanceOptions } from "../src/config/firstRun.ts"
 import {
@@ -393,12 +398,12 @@ describe("createOfflineConnection", () => {
 })
 
 describe("runSelfCheck", () => {
-  it("loads config, mounts the cockpit headlessly, and paints the Kitten frame", async () => {
+  it("loads config, mounts the cockpit headlessly, and paints the transcript fixture", async () => {
     const { frame, highlights } = await runSelfCheck({
       loadConfig: async () => defaultAppConfig(),
       configureWorker: async () => null,
     })
-    expect(frame).toContain("Kitten")
+    expect(frame).toContain(SELF_CHECK_DEFAULT_TOKEN)
     expect(highlights.markdownForeground).not.toBe(highlights.defaultForeground)
     expect(highlights.diffForeground).not.toBe(highlights.defaultForeground)
   })

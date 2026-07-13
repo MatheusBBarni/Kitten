@@ -143,10 +143,12 @@ describe("SlashMenu", () => {
     expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(10)
     expect(frame).not.toContain("਀")
     expect(menu?.height).toBe(6)
-    // The ScrollBox itself fills the menu interior; OpenTUI reserves one of
-    // those rows inside its own viewport for scrollbar machinery.
+    // The content and vertical scrollbar share the same row, so the viewport
+    // retains the full interior height instead of stacking the bar below it.
     expect(scrollbox?.height).toBe(menu!.height - 2)
-    expect(scrollbox?.viewport.height).toBe(scrollbox!.height - 1)
+    expect(scrollbox?.viewport.height).toBe(scrollbox!.height)
+    expect(scrollbox?.verticalScrollBar.height).toBe(scrollbox?.height)
+    expect(scrollbox?.verticalScrollBar.y).toBe(scrollbox?.y)
 
     await destroyMounted(setup.renderer)
   })

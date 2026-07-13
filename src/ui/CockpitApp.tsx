@@ -58,7 +58,6 @@ import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { TabDialog } from "./TabDialog.tsx"
-import { TabWorkspace } from "./TabWorkspace.tsx"
 import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
@@ -289,7 +288,9 @@ function CockpitFrame({
   )
   const focusedAvailability = useAppSelector(focusedAvailabilitySelector)
   const focused = focusedSessionId ? controller.runtime(focusedSessionId) : undefined
-  const paneTitle = isShellFocused ? "Shell · focused" : "Kitten"
+  // Conversation chrome belongs to the transcript so it moves with the history;
+  // only the transient shell mode needs a fixed pane title.
+  const paneTitle = isShellFocused ? "Shell · focused" : undefined
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
 
   return (
@@ -323,14 +324,13 @@ function CockpitFrame({
           <ShellPane />
         ) : (
           <>
-            <TabWorkspace />
             <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
               {focusedSessionId === null ? (
                 <EmptyWorkspace />
               ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
                 <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
               ) : (
-                (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
+                (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} workspaceChrome />)
               )}
             </box>
             <ConversationActivity />

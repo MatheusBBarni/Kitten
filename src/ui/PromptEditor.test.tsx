@@ -29,8 +29,10 @@ import {
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
   PROMPT_WORKSPACE_TITLE,
+  MAX_EDITOR_ROWS,
   MAX_SLASH_MENU_ROWS,
   PromptEditor,
+  cockpitCommandForDraft,
   slashMenuRows,
   slashTokenAt,
 } from "./PromptEditor.tsx"
@@ -282,6 +284,21 @@ describe("PromptEditor submit", () => {
 
     await destroyMounted(setup.renderer)
   })
+
+  it("caps a long multiline draft and keeps the remaining text in the editor", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller, 20)
+    const draft = Array.from({ length: MAX_EDITOR_ROWS + 3 }, (_, index) => `line ${index}`).join("\n")
+
+    await actAsync(() => {
+      setup.renderer.currentFocusedEditor!.setText(draft)
+    })
+    await setup.waitFor(() => setup.renderer.currentFocusedEditor?.height === MAX_EDITOR_ROWS)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe(draft)
+    expect(setup.renderer.currentFocusedEditor?.height).toBe(MAX_EDITOR_ROWS)
+    await destroyMounted(setup.renderer)
+  })
 })
 
 describe("PromptEditor interrupt", () => {
@@ -346,6 +363,15 @@ describe("PromptEditor slash commands", () => {
     expect(slashTokenAt("/review ", 8)).toBeNull()
   })
 
+  it("recognizes only complete cockpit-command drafts for immediate submission", () => {
+    expect(cockpitCommandForDraft("/sessions", 9)).toBe("sessions")
+    expect(cockpitCommandForDraft("/new", 4)).toBe("start-new-run")
+    expect(cockpitCommandForDraft("/clear", 6)).toBe("clear-run")
+    expect(cockpitCommandForDraft("/model ", 7)).toBe("model-select")
+    expect(cockpitCommandForDraft("/review", 7)).toBeNull()
+    expect(cockpitCommandForDraft("/sessions now", 13)).toBeNull()
+  })
+
   it("produces no candidates for an unmatched token", () => {
     expect(slashMenuRows("xyz", agentCommands)).toEqual([])
   })
@@ -377,6 +403,9 @@ describe("PromptEditor slash commands", () => {
 
     expect(menu?.height).toBe(MAX_SLASH_MENU_ROWS)
     expect(scrollbox?.height).toBe(menu!.height - 2)
+    expect(scrollbox?.verticalScrollBar.height).toBe(scrollbox?.height)
+    expect(scrollbox?.verticalScrollBar.y).toBe(scrollbox?.y)
+    expect(scrollbox?.scrollTop).toBe(0)
     await destroyMounted(setup.renderer)
   })
 
@@ -439,6 +468,36 @@ describe("PromptEditor slash commands", () => {
     expect(controller.calls.sendPrompt).toEqual([])
     expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/handoff")
 
+    await destroyMounted(setup.renderer)
+  })
+
+  it("runs a complete cockpit draft through the same submission path as an armed menu", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
+
+    await type(setup, "/sessions")
+    await pressEnter(setup)
+
+    await setup.waitFor(() => dispatched.length === 1)
+    expect(dispatched).toEqual(["sessions"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("runs a cockpit draft with trailing whitespace instead of sending it to the agent", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
+
+    await type(setup, "/model ")
+    await pressEnter(setup)
+
+    await setup.waitFor(() => dispatched.length === 1)
+    expect(dispatched).toEqual(["model-select"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
     await destroyMounted(setup.renderer)
   })
 

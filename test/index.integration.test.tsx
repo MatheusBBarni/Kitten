@@ -16,11 +16,11 @@ import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createTelemetryRecorder } from "../src/telemetry/recorder.ts"
-import { EMPTY_TRANSCRIPT_HINT, RESTORATION_LIVE_LABEL } from "../src/ui/ConversationView.tsx"
+import { EMPTY_TRANSCRIPT_HINT } from "../src/ui/ConversationView.tsx"
 import { KEYMAP_HINT } from "../src/ui/keymap.ts"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
-import { actAsync, destroyMounted, settleMountedHighlights } from "./reactTui.ts"
+import { actAsync, destroyMounted } from "./reactTui.ts"
 
 function resumableFakeConnection(
   id: ProviderKind,
@@ -83,7 +83,7 @@ function bootRun(cwd: string): PersistedRunRecordV1 {
  * tears down cleanly - renderer destroyed, agents disposed, exit handler run.
  */
 describe("cockpit entry integration (non-TTY test renderer)", () => {
-  it("suppresses configured opening tasks when a saved run will be restored", async () => {
+  it("starts configured opening tasks instead of restoring a saved run", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-opening-task-"))
     const cwd = process.cwd()
     const config = {
@@ -122,9 +122,12 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         watchConfig: () => ({ close() {} }),
       })
 
-      expect(prompts).toEqual([])
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(prompts).toEqual([
+        { id: "codex", sessionId: "codex-fresh-0", blocks: [{ type: "text", text: "start the build" }] },
+      ])
       expect(session.controller.store.getState().sessions.codex!.turns).toEqual([
-        { kind: "agent", messageId: "codex-restored", text: "restored codex from stored-codex" },
+        expect.objectContaining({ kind: "user", text: "start the build" }),
       ])
     } finally {
       await session?.controller.dispose()
@@ -180,7 +183,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     }
   })
 
-  it("boots fake agents from the newest persisted run and exposes the new-conversation escape hatch", async () => {
+  it("boots fresh agents even when the project has a saved run", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-resume-"))
     const setup = await createTestRenderer({ width: 100, height: 24 })
     const cwd = process.cwd()
@@ -222,30 +225,13 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         })
       })
 
-      const resumed = await setup.waitForFrame(
-        (frame) => frame.includes(RESTORATION_LIVE_LABEL) && frame.includes(KEYMAP_HINT) && frame.includes("restored codex from stored-codex"),
-      )
-      expect(resumed).toContain(RESTORATION_LIVE_LABEL)
-      expect(resumed).toContain(KEYMAP_HINT)
-      expect(resumed).not.toContain("/new")
-      expect(resumed).toContain("restored codex from stored-codex")
-
-      // `/new` unmounts the restored Markdown leaf. Settle its async syntax work
-      // while it is still reachable; renderer teardown alone can only see live nodes.
-      await settleMountedHighlights(setup.renderer)
-      await actAsync(async () => {
-        await setup.mockInput.typeText("/new")
-      })
-      await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/new"))
-      await actAsync(() => setup.mockInput.pressEnter())
-      const fresh = await setup.waitForFrame(
-        (frame) => !frame.includes(RESTORATION_LIVE_LABEL) && !frame.includes("restored codex from stored-codex"),
-      )
+      const fresh = await setup.waitForFrame((frame) => frame.includes(KEYMAP_HINT))
       expect(fresh).not.toContain("restored codex from stored-codex")
-      expect(freshStarts.filter((start) => start.generation === 2)).toEqual([
-        { id: "codex", cwd, generation: 2 },
+      expect(freshStarts).toEqual([
+        { id: "codex", cwd, generation: 0 },
+        { id: "claude-code", cwd, generation: 0 },
       ])
-      expect(booted?.controller.store.getState().workspace.order).toHaveLength(3)
+      expect(booted?.controller.store.getState().workspace.order).toHaveLength(2)
     } finally {
       if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
       await booted?.closed
@@ -541,7 +527,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
     })
 
-    const frame = await setup.waitForFrame((candidate) => candidate.includes("Kitten"))
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(KEYMAP_HINT))
     expect(frame).not.toContain(WELCOME_GREETING)
     expect(frame).not.toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
