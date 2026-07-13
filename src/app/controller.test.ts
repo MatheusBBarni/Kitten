@@ -19,6 +19,8 @@ import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
   AgentConfig,
   AppConfig,
+  ClarificationOutcome,
+  ClarificationPayload,
   ConfigOption,
   DomainSessionEvent,
   ProviderKind,
@@ -42,7 +44,12 @@ import {
 } from "../telemetry/recorder.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
 import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
-import { createSessionController, type SessionController } from "./controller.ts"
+import {
+  createInteractionCoordinator,
+  createSessionController,
+  type ActiveAgentInteraction,
+  type SessionController,
+} from "./controller.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 
 /**
@@ -85,6 +92,152 @@ const PERMISSION_REQUEST: PermissionRequest = {
     { optionId: "reject", name: "Reject", kind: "reject_once" },
   ],
 }
+
+const CLARIFICATION_PAYLOAD: ClarificationPayload = {
+  prompt: "Choose the implementation boundary",
+  fields: [
+    {
+      id: "boundary",
+      label: "Boundary",
+      mode: "single",
+      required: true,
+      options: [
+        { id: "controller", label: "Controller" },
+        { id: "store", label: "Store" },
+      ],
+    },
+  ],
+}
+
+describe("interaction coordinator", () => {
+  function setupCoordinator() {
+    const ids = ["request-1", "request-2", "request-3", "request-4", "request-5"]
+    const active: Array<ActiveAgentInteraction | null> = []
+    const coordinator = createInteractionCoordinator({
+      newRequestId: () => ids.shift()!,
+      onActiveChanged: (interaction) => active.push(interaction),
+    })
+    return { coordinator, active }
+  }
+
+  it("keeps permissions FIFO and advances only after the displayed request settles", async () => {
+    const { coordinator, active } = setupCoordinator()
+    const first = coordinator.enqueuePermission("alpha", 1, PERMISSION_REQUEST)
+    const secondRequest = { ...PERMISSION_REQUEST, sessionId: "beta-session" }
+    const second = coordinator.enqueuePermission("beta", 1, secondRequest)
+
+    expect(active.at(-1)).toMatchObject({
+      kind: "permission",
+      requestId: "request-1",
+      sessionId: "alpha",
+      generation: 1,
+      request: PERMISSION_REQUEST,
+    })
+    expect(coordinator.resolveActive("request-2", 1, { outcome: "cancelled" })).toBe(false)
+    expect(active.at(-1)?.requestId).toBe("request-1")
+
+    expect(coordinator.resolveActive("request-1", 1, { outcome: "selected", optionId: "allow" })).toBe(true)
+    expect(await first).toEqual({ outcome: "selected", optionId: "allow" })
+    expect(active.at(-1)).toMatchObject({
+      kind: "permission",
+      requestId: "request-2",
+      sessionId: "beta",
+      request: secondRequest,
+    })
+
+    expect(coordinator.resolveActive("request-2", 1, { outcome: "cancelled" })).toBe(true)
+    expect(await second).toEqual({ outcome: "cancelled" })
+    expect(active.at(-1)).toBeNull()
+  })
+
+  it("integrates permission preemption and unchanged resumption through the active projection", async () => {
+    const { coordinator, active } = setupCoordinator()
+    const permission = coordinator.enqueuePermission("alpha", 7, PERMISSION_REQUEST)
+    const originalPermission = active.at(-1)
+    const clarification = coordinator.enqueueClarification("beta", 3, CLARIFICATION_PAYLOAD)
+
+    expect(active.at(-1)).toMatchObject({
+      kind: "clarification",
+      requestId: "request-2",
+      sessionId: "beta",
+      generation: 3,
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    let permissionSettled = false
+    void permission.then(() => {
+      permissionSettled = true
+    })
+    await Bun.sleep(0)
+    expect(permissionSettled).toBe(false)
+
+    const answer: ClarificationOutcome = {
+      kind: "answered",
+      values: { boundary: "controller" },
+    }
+    expect(coordinator.resolveActive("request-2", 3, answer)).toBe(true)
+    expect(await clarification).toEqual(answer)
+    expect(active.at(-1)).toEqual(originalPermission)
+
+    expect(coordinator.resolveActive("request-1", 7, { outcome: "cancelled" })).toBe(true)
+    expect(await permission).toEqual({ outcome: "cancelled" })
+  })
+
+  it("rejects wrong request IDs, old generations, wrong outcome kinds, and duplicate answers", async () => {
+    const { coordinator, active } = setupCoordinator()
+    const clarification = coordinator.enqueueClarification("alpha", 4, CLARIFICATION_PAYLOAD)
+    const answer: ClarificationOutcome = { kind: "answered", values: { boundary: "controller" } }
+
+    expect(coordinator.resolveActive("missing", 4, answer)).toBe(false)
+    expect(coordinator.resolveActive("request-1", 3, answer)).toBe(false)
+    expect(coordinator.resolveActive("request-1", 4, { outcome: "cancelled" })).toBe(false)
+    expect(active.at(-1)?.requestId).toBe("request-1")
+
+    expect(coordinator.resolveActive("request-1", 4, answer)).toBe(true)
+    expect(await clarification).toEqual(answer)
+    expect(coordinator.resolveActive("request-1", 4, { kind: "cancelled" })).toBe(false)
+  })
+
+  it("cancels matching active, queued, and suspended entries once while a sibling stays usable", async () => {
+    const { coordinator, active } = setupCoordinator()
+    const suspended = coordinator.enqueuePermission("alpha", 9, PERMISSION_REQUEST)
+    const sibling = coordinator.enqueuePermission("beta", 2, {
+      ...PERMISSION_REQUEST,
+      sessionId: "beta-session",
+    })
+    const queued = coordinator.enqueuePermission("alpha", 9, {
+      ...PERMISSION_REQUEST,
+      sessionId: "alpha-queued",
+    })
+    const clarification = coordinator.enqueueClarification("alpha", 9, CLARIFICATION_PAYLOAD)
+    const settlementCounts = { suspended: 0, queued: 0, clarification: 0, sibling: 0 }
+    void suspended.then(() => settlementCounts.suspended += 1)
+    void queued.then(() => settlementCounts.queued += 1)
+    void clarification.then(() => settlementCounts.clarification += 1)
+    void sibling.then(() => settlementCounts.sibling += 1)
+
+    coordinator.cancelSession("alpha", 8)
+    expect(active.at(-1)).toMatchObject({ kind: "clarification", sessionId: "alpha", generation: 9 })
+    coordinator.cancelSession("alpha", 9)
+    coordinator.cancelSession("alpha", 9)
+    await Bun.sleep(0)
+
+    expect(await suspended).toEqual({ outcome: "cancelled" })
+    expect(await queued).toEqual({ outcome: "cancelled" })
+    expect(await clarification).toEqual({ kind: "cancelled" })
+    expect(settlementCounts).toEqual({ suspended: 1, queued: 1, clarification: 1, sibling: 0 })
+    expect(active.at(-1)).toMatchObject({ kind: "permission", sessionId: "beta", generation: 2 })
+
+    expect(coordinator.resolveActive("request-2", 2, { outcome: "selected", optionId: "allow" })).toBe(true)
+    expect(await sibling).toEqual({ outcome: "selected", optionId: "allow" })
+    expect(settlementCounts.sibling).toBe(1)
+
+    const afterDispose = coordinator.enqueueClarification("beta", 2, CLARIFICATION_PAYLOAD)
+    coordinator.dispose()
+    coordinator.dispose()
+    expect(await afterDispose).toEqual({ kind: "cancelled" })
+    expect(await coordinator.enqueuePermission("beta", 2, PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+  })
+})
 
 /** A `model`-category config option with the given confirmed value, for seeding/switch tests. */
 function modelOption(currentValue: string): ConfigOption {
@@ -452,7 +605,11 @@ async function controllerForRestore(
   restoreOptions: Partial<Record<ProviderKind, StubOptions>> = {},
   onError?: (sessionId: SessionId, error: unknown) => void,
   recorder?: TelemetryRecorder,
-): Promise<{ controller: SessionController; restored: Record<ProviderKind, StubConnection> }> {
+): Promise<{
+  controller: SessionController
+  startup: Record<ProviderKind, StubConnection>
+  restored: Record<ProviderKind, StubConnection>
+}> {
   const startup = {
     "claude-code": createStubConnection("claude-code"),
     codex: createStubConnection("codex"),
@@ -476,7 +633,7 @@ async function controllerForRestore(
     readBranch: async () => null,
     createShellRuntime: createTestShellFactory(),
   })
-  return { controller, restored }
+  return { controller, startup, restored }
 }
 
 /** Poll until `predicate` holds, so a test can await an async round-trip. */
@@ -666,6 +823,32 @@ describe("createSessionController - startup", () => {
 })
 
 describe("createSessionController - persisted restore", () => {
+  it("terminally cancels the replaced connection generation and keeps restored siblings usable", async () => {
+    const { controller, startup, restored } = await controllerForRestore()
+    const settlements = { claude: 0, codex: 0 }
+    const oldClaude = startup["claude-code"].ask(PERMISSION_REQUEST).then((outcome) => {
+      settlements.claude += 1
+      return outcome
+    })
+    const oldCodex = startup.codex.ask({ ...PERMISSION_REQUEST, sessionId: "codex-session" }).then((outcome) => {
+      settlements.codex += 1
+      return outcome
+    })
+
+    await controller.restore(persistedRun())
+
+    expect(await oldClaude).toEqual({ outcome: "cancelled" })
+    expect(await oldCodex).toEqual({ outcome: "cancelled" })
+    expect(settlements).toEqual({ claude: 1, codex: 1 })
+
+    const restoredCodex = restored.codex.ask({ ...PERMISSION_REQUEST, sessionId: "codex-restored" })
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("codex")
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    expect(await restoredCodex).toEqual({ outcome: "selected", optionId: "allow" })
+
+    await controller.dispose()
+  })
+
   it("Should restore record-only conversations in persisted order with isolated same-provider runtimes", async () => {
     const created: StubConnection[] = []
     const branchReads: string[] = []
@@ -1744,6 +1927,21 @@ describe("actions - respondPermission", () => {
 
     controller.actions.respondPermission({ outcome: "cancelled" })
     expect(controller.store.getState().overlays.approval).toBeNull()
+
+    await controller.dispose()
+  })
+
+  it("cancels a disconnected generation and advances a sibling permission", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    const disconnected = connections["claude-code"].ask(PERMISSION_REQUEST)
+    const sibling = connections.codex.ask({ ...PERMISSION_REQUEST, sessionId: "codex-session" })
+
+    connections["claude-code"].emit({ kind: "status", status: "error" })
+
+    expect(await disconnected).toEqual({ outcome: "cancelled" })
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("codex")
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    expect(await sibling).toEqual({ outcome: "selected", optionId: "allow" })
 
     await controller.dispose()
   })

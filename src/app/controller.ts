@@ -22,7 +22,7 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type DomainSessionEvent, type ProviderKind, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
   type PersistedAgent,
@@ -96,6 +96,8 @@ export interface SessionControllerOptions {
   newMessageId?: () => string
   /** Ids for dynamically created conversations. Defaults to a random UUID. */
   newSessionId?: () => SessionId
+  /** Stable ids for controller-owned permission and clarification lifecycles. */
+  newInteractionId?: () => string
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
   /** Off-render-path git branch reader. Defaults to the fail-soft production reader. */
@@ -128,15 +130,246 @@ export interface SessionController {
   restore(record: PersistedRunRecord, mode?: ResumeMode): Promise<void>
   /** Apply one explicit close outcome without affecting any sibling conversation. */
   closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult>
-  /** Cancel pending approvals and tear every connection down. Never throws. */
+  /** Cancel pending agent interactions and tear every connection down. Never throws. */
   dispose(): Promise<void>
 }
 
-/** A permission request waiting on the user, and the promise the agent is blocked on. */
-interface PendingPermission {
+/** The resolver-free projection consumers may render for the currently active request. */
+export type ActiveAgentInteraction =
+  | {
+      readonly kind: "permission"
+      readonly requestId: string
+      readonly sessionId: SessionId
+      readonly generation: number
+      readonly request: PermissionRequest
+    }
+  | {
+      readonly kind: "clarification"
+      readonly requestId: string
+      readonly sessionId: SessionId
+      readonly generation: number
+      readonly payload: ClarificationPayload
+    }
+
+/** Outcomes remain semantically distinct even though one coordinator validates both. */
+export type AgentInteractionOutcome = PermissionOutcome | ClarificationOutcome
+
+/** Opaque lifecycle operations; pending resolvers and collections never escape the controller. */
+export interface InteractionCoordinator {
+  enqueuePermission(
+    sessionId: SessionId,
+    generation: number,
+    request: PermissionRequest,
+  ): Promise<PermissionOutcome>
+  enqueueClarification(
+    sessionId: SessionId,
+    generation: number,
+    payload: ClarificationPayload,
+  ): Promise<ClarificationOutcome>
+  resolveActive(requestId: string, generation: number, outcome: AgentInteractionOutcome): boolean
+  cancelSession(sessionId: SessionId, generation: number): void
+  cancelAll(): void
+  dispose(): void
+}
+
+export interface InteractionCoordinatorOptions {
+  /** Stable ids attached at enqueue time. Defaults to a random UUID. */
+  newRequestId?: () => string
+  /** Receives only the resolver-free active projection. */
+  onActiveChanged?: (interaction: ActiveAgentInteraction | null) => void
+}
+
+type InteractionLifecycle = "queued" | "active" | "suspended" | "terminal"
+
+interface PendingInteractionBase {
+  requestId: string
   sessionId: SessionId
-  request: PermissionRequest
-  resolve: (outcome: PermissionOutcome) => void
+  generation: number
+  lifecycle: InteractionLifecycle
+}
+
+type PendingInteraction =
+  | (PendingInteractionBase & {
+      kind: "permission"
+      request: PermissionRequest
+      resolve: (outcome: PermissionOutcome) => void
+    })
+  | (PendingInteractionBase & {
+      kind: "clarification"
+      payload: ClarificationPayload
+      resolve: (outcome: ClarificationOutcome) => void
+    })
+
+/**
+ * Coordinate agent-originated interactions without exposing their blocked promises.
+ *
+ * Permissions retain FIFO order. A clarification immediately suspends the active
+ * interaction without settling it; terminal settlement resumes the most recently
+ * suspended interaction before advancing the ordinary queue. Every settlement is
+ * guarded by both stable request identity and connection generation.
+ */
+export function createInteractionCoordinator(
+  options: InteractionCoordinatorOptions = {},
+): InteractionCoordinator {
+  const newRequestId = options.newRequestId ?? (() => crypto.randomUUID())
+  const onActiveChanged = options.onActiveChanged ?? (() => {})
+  const queued: PendingInteraction[] = []
+  const suspended: PendingInteraction[] = []
+  let active: PendingInteraction | null = null
+  let disposed = false
+
+  function projection(entry: PendingInteraction): ActiveAgentInteraction {
+    return entry.kind === "permission"
+      ? {
+          kind: "permission",
+          requestId: entry.requestId,
+          sessionId: entry.sessionId,
+          generation: entry.generation,
+          request: entry.request,
+        }
+      : {
+          kind: "clarification",
+          requestId: entry.requestId,
+          sessionId: entry.sessionId,
+          generation: entry.generation,
+          payload: entry.payload,
+        }
+  }
+
+  function publishActive(): void {
+    onActiveChanged(active ? projection(active) : null)
+  }
+
+  function activate(entry: PendingInteraction): void {
+    entry.lifecycle = "active"
+    active = entry
+  }
+
+  function advance(): void {
+    const next = suspended.pop() ?? queued.shift() ?? null
+    if (next) activate(next)
+    publishActive()
+  }
+
+  function cancel(entry: PendingInteraction): void {
+    if (entry.lifecycle === "terminal") return
+    entry.lifecycle = "terminal"
+    if (entry.kind === "permission") entry.resolve({ outcome: "cancelled" })
+    else entry.resolve({ kind: "cancelled" })
+  }
+
+  function removeMatching(
+    entries: PendingInteraction[],
+    matches: (entry: PendingInteraction) => boolean,
+  ): PendingInteraction[] {
+    const removed: PendingInteraction[] = []
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]
+      if (!entry || !matches(entry)) continue
+      entries.splice(index, 1)
+      removed.push(entry)
+    }
+    return removed
+  }
+
+  function cancelWhere(matches: (entry: PendingInteraction) => boolean): void {
+    const activeMatched = active !== null && matches(active)
+    const removed: PendingInteraction[] = []
+    if (activeMatched) {
+      removed.push(active!)
+      active = null
+    }
+    removed.push(...removeMatching(queued, matches), ...removeMatching(suspended, matches))
+    for (const entry of removed) cancel(entry)
+    if (activeMatched) advance()
+  }
+
+  function cancelAll(): void {
+    const hadActive = active !== null
+    const removed = [
+      ...(active ? [active] : []),
+      ...queued.splice(0),
+      ...suspended.splice(0),
+    ]
+    active = null
+    for (const entry of removed) cancel(entry)
+    if (hadActive) publishActive()
+  }
+
+  return {
+    enqueuePermission(sessionId, generation, request) {
+      if (disposed) return Promise.resolve({ outcome: "cancelled" })
+      return new Promise<PermissionOutcome>((resolve) => {
+        const entry: PendingInteraction = {
+          kind: "permission",
+          requestId: newRequestId(),
+          sessionId,
+          generation,
+          lifecycle: active ? "queued" : "active",
+          request,
+          resolve,
+        }
+        if (active) queued.push(entry)
+        else {
+          activate(entry)
+          publishActive()
+        }
+      })
+    },
+
+    enqueueClarification(sessionId, generation, payload) {
+      if (disposed) return Promise.resolve({ kind: "cancelled" })
+      return new Promise<ClarificationOutcome>((resolve) => {
+        const entry: PendingInteraction = {
+          kind: "clarification",
+          requestId: newRequestId(),
+          sessionId,
+          generation,
+          lifecycle: "active",
+          payload,
+          resolve,
+        }
+        if (active) {
+          active.lifecycle = "suspended"
+          suspended.push(active)
+        }
+        activate(entry)
+        publishActive()
+      })
+    },
+
+    resolveActive(requestId, generation, outcome) {
+      const current = active
+      if (
+        !current
+        || current.requestId !== requestId
+        || current.generation !== generation
+        || (current.kind === "permission") !== ("outcome" in outcome)
+      ) {
+        return false
+      }
+
+      active = null
+      current.lifecycle = "terminal"
+      if (current.kind === "permission" && "outcome" in outcome) current.resolve(outcome)
+      else if (current.kind === "clarification" && "kind" in outcome) current.resolve(outcome)
+      else return false
+      advance()
+      return true
+    },
+
+    cancelSession(sessionId, generation) {
+      cancelWhere((entry) => entry.sessionId === sessionId && entry.generation === generation)
+    },
+
+    cancelAll,
+
+    dispose() {
+      if (disposed) return
+      disposed = true
+      cancelAll()
+    },
+  }
 }
 
 /** Everything the controller owns for one session. */
@@ -150,6 +383,8 @@ interface AgentRuntime {
   closing: boolean
   acceptEvents: boolean
   cancelCompleted: boolean
+  /** Monotonic identity of the connection currently owned by this runtime. */
+  generation: number
 }
 
 /**
@@ -180,8 +415,20 @@ export async function createSessionController(options: SessionControllerOptions)
 
   const runtimes = new Map<SessionId, AgentRuntime>()
   const branchReadGenerations = new Map<SessionId, number>()
-  const pending: PendingPermission[] = []
+  const connectionGenerations = new Map<SessionId, number>()
   const closePromises = new Map<SessionId, Promise<CloseConversationResult>>()
+  let activeInteraction: ActiveAgentInteraction | null = null
+  const interactionCoordinator = createInteractionCoordinator({
+    newRequestId: options.newInteractionId,
+    onActiveChanged(interaction) {
+      activeInteraction = interaction
+      if (interaction?.kind === "permission") {
+        store.openApproval(approvalOverlay(interaction.sessionId, interaction.request))
+      } else {
+        store.closeApproval()
+      }
+    },
+  })
   let disposed = false
   let ownedShell: ShellRuntime | null = null
   let unsubscribeShell: Unsubscribe | null = null
@@ -243,6 +490,9 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function applyRuntimeEvent(runtime: AgentRuntime, event: DomainSessionEvent): void {
     if (!acceptsRuntimeEvents(runtime)) return
+    if (event.kind === "status" && event.status === "error") {
+      interactionCoordinator.cancelSession(runtime.seed.id, runtime.generation)
+    }
     if (event.kind === "usage") {
       logUsageSeen(
         { provider: runtime.seed.providerKind, used: event.used, size: event.size },
@@ -255,36 +505,17 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function enqueuePermission(runtime: AgentRuntime, request: PermissionRequest): Promise<PermissionOutcome> {
     if (!acceptsRuntimeEvents(runtime)) return Promise.resolve({ outcome: "cancelled" })
-    return new Promise<PermissionOutcome>((resolve) => {
-      pending.push({ sessionId: runtime.seed.id, request, resolve })
-      if (pending.length === 1) store.openApproval(approvalOverlay(runtime.seed.id, request))
-    })
+    return interactionCoordinator.enqueuePermission(runtime.seed.id, runtime.generation, request)
   }
 
-  function showPendingPermission(): void {
-    const next = pending[0]
-    if (next) store.openApproval(approvalOverlay(next.sessionId, next.request))
-    else store.closeApproval()
-  }
-
-  /** Settle the on-screen request, then show the next queued one (or close the slot). */
+  /** Settle only the coordinator request currently projected into the approval slot. */
   function resolvePermission(outcome: PermissionOutcome): void {
-    const current = pending.shift()
-    if (!current) return
-    current.resolve(outcome)
-    showPendingPermission()
-  }
-
-  /** Cancel every parked request owned by one conversation while preserving sibling FIFO order. */
-  function settlePermissionsForSession(sessionId: SessionId): void {
-    const remaining: PendingPermission[] = []
-    for (const request of pending) {
-      if (request.sessionId === sessionId) request.resolve({ outcome: "cancelled" })
-      else remaining.push(request)
-    }
-    if (remaining.length === pending.length) return
-    pending.splice(0, pending.length, ...remaining)
-    showPendingPermission()
+    if (activeInteraction?.kind !== "permission") return
+    interactionCoordinator.resolveActive(
+      activeInteraction.requestId,
+      activeInteraction.generation,
+      outcome,
+    )
   }
 
   /**
@@ -330,6 +561,7 @@ export async function createSessionController(options: SessionControllerOptions)
       closing: false,
       acceptEvents: true,
       cancelCompleted: false,
+      generation: 0,
     }
     runtimes.set(seed.id, runtime)
     return runtime
@@ -339,6 +571,7 @@ export async function createSessionController(options: SessionControllerOptions)
   async function startSession(seed: SessionSeed, config: AgentConfig): Promise<void> {
     let connection: AgentConnection | undefined
     const runtime = runtimes.get(seed.id) ?? registerRuntime(seed, config)
+    runtime.generation = nextConnectionGeneration(seed.id, connectionGenerations)
     runtime.config = config
     store.setConversationAvailability(seed.id, { kind: "starting" })
     try {
@@ -392,6 +625,7 @@ export async function createSessionController(options: SessionControllerOptions)
     error: string,
     reasonCode: "connection-failed" | "restore-unavailable" | "provider-unavailable",
   ): Promise<void> {
+    interactionCoordinator.cancelSession(runtime.seed.id, runtime.generation)
     runtime.state = {
       sessionId: runtime.seed.id,
       providerKind: runtime.seed.providerKind,
@@ -448,6 +682,7 @@ export async function createSessionController(options: SessionControllerOptions)
    */
   async function restoreSession(seed: SessionSeed, config: AgentConfig, stored: PersistedAgent | undefined): Promise<void> {
     const previous = runtimes.get(seed.id) ?? registerRuntime(seed, config)
+    interactionCoordinator.cancelSession(seed.id, previous.generation)
     previous.closing = true
     previous.acceptEvents = false
     previous?.unsubscribe?.()
@@ -457,6 +692,7 @@ export async function createSessionController(options: SessionControllerOptions)
     previous.acpSessionId = null
     await disposeQuietly(previousConnection ?? undefined)
     previous.config = config
+    previous.generation = nextConnectionGeneration(seed.id, connectionGenerations)
     previous.closing = false
     previous.acceptEvents = true
     previous.cancelCompleted = false
@@ -597,10 +833,13 @@ export async function createSessionController(options: SessionControllerOptions)
     runtime.closing = true
     runtime.acceptEvents = false
     store.setConversationTeardown(sessionId, "closing")
-    settlePermissionsForSession(sessionId)
+    interactionCoordinator.cancelSession(sessionId, runtime.generation)
 
     try {
-      if ((status === "working" || status === "awaiting_approval") && !runtime.cancelCompleted) {
+      if (
+        (status === "working" || status === "awaiting_approval" || status === "awaiting_clarification")
+        && !runtime.cancelCompleted
+      ) {
         if (!runtime.connection || runtime.acpSessionId === null) {
           throw new Error("Targeted cancellation is unavailable")
         }
@@ -740,11 +979,10 @@ export async function createSessionController(options: SessionControllerOptions)
       const restoredRecord = record.version === 1
         ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
         : record
+      interactionCoordinator.cancelAll()
       await disposeAgentRuntimes(runtimes)
       runtimes.clear()
       branchReadGenerations.clear()
-      for (const request of pending.splice(0)) request.resolve({ outcome: "cancelled" })
-      store.closeApproval()
 
       const entries = restoreEntries(restoredRecord)
       store.replaceSessions(
@@ -779,14 +1017,11 @@ export async function createSessionController(options: SessionControllerOptions)
     },
     async dispose(): Promise<void> {
       disposed = true
+      interactionCoordinator.dispose()
       unsubscribeShell?.()
       unsubscribeShell = null
       const shellRuntime = ownedShell
       ownedShell = null
-      // Nothing will ever answer these now; unblock the agents rather than leak
-      // their in-flight `requestPermission` calls.
-      for (const request of pending.splice(0)) request.resolve({ outcome: "cancelled" })
-      store.closeApproval()
       await Promise.all(
         [
           disposeQuietly(shellRuntime ?? undefined),
@@ -795,6 +1030,16 @@ export async function createSessionController(options: SessionControllerOptions)
       )
     },
   }
+}
+
+/** Advance one session's connection identity without ever reusing an old generation. */
+function nextConnectionGeneration(
+  sessionId: SessionId,
+  generations: Map<SessionId, number>,
+): number {
+  const generation = (generations.get(sessionId) ?? 0) + 1
+  generations.set(sessionId, generation)
+  return generation
 }
 
 /**
