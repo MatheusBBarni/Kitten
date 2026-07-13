@@ -29,6 +29,8 @@ import { createWorkspaceState, workspaceReducer } from "../core/workspace.ts"
 import {
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_KINDS,
+  type ClarificationCapability,
+  type ClarificationPayload,
   type ConfigOption,
   type DomainSessionEvent,
   type HandoffBundle,
@@ -64,6 +66,16 @@ export interface ApprovalOverlay {
   title: string
   cwd: string
   request: PermissionRequest
+}
+
+/** Resolver-free view of the controller's currently active clarification request. */
+export interface ClarificationOverlay {
+  requestId: string
+  generation: number
+  sessionId: SessionId
+  title: string
+  cwd: string
+  payload: ClarificationPayload
 }
 
 /** The hand-off preview slot: the bundle awaiting the user's curation and confirm. */
@@ -135,6 +147,7 @@ export type TabDialogOverlay =
  */
 export interface OverlayState {
   approval: ApprovalOverlay | null
+  clarification: ClarificationOverlay | null
   handoffPreview: HandoffPreviewOverlay | null
   /** The hand-off target picker, open only while the developer is choosing a recipient. */
   handoffTarget: HandoffTargetOverlay | null
@@ -170,6 +183,8 @@ export interface AppState {
   focusedPane: FocusedPane
   shell: ShellState
   preferences: Preferences
+  /** Protocol-free capability classification exposed per configured session. */
+  clarificationCapabilities: Record<SessionId, ClarificationCapability>
   overlays: OverlayState
   restoration: Record<SessionId, RestorationMode | null>
   /** The persisted hand-off context for the currently restored cockpit run. */
@@ -234,6 +249,10 @@ export interface AppStore {
   openApproval(overlay: ApprovalOverlay): void
   /** Clear the approval slot. Closing a closed slot is a no-op. */
   closeApproval(): void
+  /** Project the controller-owned active clarification without storing its resolver. */
+  openClarification(overlay: ClarificationOverlay): void
+  /** Clear only the clarification projection. */
+  closeClarification(): void
   /** Open the hand-off preview overlay for the assembled bundle. */
   openHandoffPreview(overlay: HandoffPreviewOverlay): void
   /** Clear the hand-off preview slot. Closing a closed slot is a no-op. */
@@ -261,6 +280,8 @@ export interface AppStore {
   openSessionPicker(): void
   /** Close the resumable-session picker. Closing a closed picker is a no-op. */
   closeSessionPicker(): void
+  /** Publish one session's resolved structured-clarification capability. */
+  setClarificationCapability(sessionId: SessionId, capability: ClarificationCapability): void
   /** Set one session's restoration status without changing its transcript. */
   setRestoration(sessionId: SessionId, mode: RestorationMode | null): void
   /** Replace the persisted context exposed by degraded restored panes. */
@@ -295,9 +316,11 @@ class AppStoreImpl implements AppStore {
     const seeds = options.seeds ?? defaultSessionSeeds()
     const sessions = {} as Record<SessionId, SessionState>
     const restoration = {} as Record<SessionId, RestorationMode | null>
+    const clarificationCapabilities = {} as Record<SessionId, ClarificationCapability>
     for (const seed of seeds) {
       sessions[seed.id] = createSessionState(seed)
       restoration[seed.id] = null
+      clarificationCapabilities[seed.id] = unknownClarificationCapability()
     }
     const workspace = createWorkspaceState({
       conversations: seeds.map((seed) => ({
@@ -317,8 +340,10 @@ class AppStoreImpl implements AppStore {
         : { kind: "workspace" },
       shell: createShellState(),
       preferences: { theme: options.preferences?.theme ?? "auto" },
+      clarificationCapabilities,
       overlays: {
         approval: null,
+        clarification: null,
         handoffPreview: null,
         handoffTarget: null,
         modelSelect: null,
@@ -433,6 +458,10 @@ class AppStoreImpl implements AppStore {
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
       workspace,
       restoration: { ...this.state.restoration, [seed.id]: null },
+      clarificationCapabilities: {
+        ...this.state.clarificationCapabilities,
+        [seed.id]: unknownClarificationCapability(),
+      },
       focusedPane: { kind: "agent", sessionId: seed.id },
     })
   }
@@ -443,9 +472,11 @@ class AppStoreImpl implements AppStore {
   ): void {
     const sessions: Record<SessionId, SessionState> = {}
     const restoration: Record<SessionId, RestorationMode | null> = {}
+    const clarificationCapabilities: Record<SessionId, ClarificationCapability> = {}
     for (const entry of entries) {
       sessions[entry.seed.id] = createSessionState(entry.seed)
       restoration[entry.seed.id] = null
+      clarificationCapabilities[entry.seed.id] = unknownClarificationCapability()
     }
     const workspace = createWorkspaceState({
       conversations: entries.map((entry) => entry.workspace),
@@ -457,6 +488,7 @@ class AppStoreImpl implements AppStore {
       workspace,
       workspaceNotice: null,
       restoration,
+      clarificationCapabilities,
       focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
   }
@@ -466,17 +498,25 @@ class AppStoreImpl implements AppStore {
     const workspace = workspaceReducer(this.state.workspace, { kind: "close_succeeded", sessionId })
     const sessions = { ...this.state.sessions }
     const restoration = { ...this.state.restoration }
+    const clarificationCapabilities = { ...this.state.clarificationCapabilities }
     delete sessions[sessionId]
     delete restoration[sessionId]
+    delete clarificationCapabilities[sessionId]
     this.commit({
       ...this.state,
       sessions,
       workspace,
       overlays:
-        this.state.overlays.tabDialog?.sessionId === sessionId
-          ? { ...this.state.overlays, tabDialog: null }
+        this.state.overlays.tabDialog?.sessionId === sessionId ||
+        this.state.overlays.clarification?.sessionId === sessionId
+          ? {
+              ...this.state.overlays,
+              ...(this.state.overlays.tabDialog?.sessionId === sessionId ? { tabDialog: null } : {}),
+              ...(this.state.overlays.clarification?.sessionId === sessionId ? { clarification: null } : {}),
+            }
           : this.state.overlays,
       restoration,
+      clarificationCapabilities,
       focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
   }
@@ -578,6 +618,15 @@ class AppStoreImpl implements AppStore {
     this.setOverlays({ approval: null })
   }
 
+  openClarification(overlay: ClarificationOverlay): void {
+    this.setOverlays({ clarification: overlay })
+  }
+
+  closeClarification(): void {
+    if (this.state.overlays.clarification === null) return
+    this.setOverlays({ clarification: null })
+  }
+
   openHandoffPreview(overlay: HandoffPreviewOverlay): void {
     this.setOverlays({ handoffPreview: overlay })
   }
@@ -663,6 +712,19 @@ class AppStoreImpl implements AppStore {
     this.setOverlays({ sessionPicker: false })
   }
 
+  setClarificationCapability(sessionId: SessionId, capability: ClarificationCapability): void {
+    if (!this.state.sessions[sessionId]) return
+    const current = this.state.clarificationCapabilities[sessionId]
+    if (sameClarificationCapability(current, capability)) return
+    this.commit({
+      ...this.state,
+      clarificationCapabilities: {
+        ...this.state.clarificationCapabilities,
+        [sessionId]: capability,
+      },
+    })
+  }
+
   setRestoration(sessionId: SessionId, mode: RestorationMode | null): void {
     if (!this.state.sessions[sessionId] || this.state.restoration[sessionId] === mode) return
     this.commit({
@@ -721,6 +783,7 @@ function reconcilePane(pane: FocusedPane, workspace: WorkspaceState): FocusedPan
 function hasOpenOverlay(overlays: OverlayState): boolean {
   return (
     overlays.approval !== null ||
+    overlays.clarification !== null ||
     overlays.handoffPreview !== null ||
     overlays.handoffTarget !== null ||
     overlays.modelSelect !== null ||
@@ -729,6 +792,21 @@ function hasOpenOverlay(overlays: OverlayState): boolean {
     overlays.sessions ||
     overlays.sessionPicker
   )
+}
+
+function unknownClarificationCapability(): ClarificationCapability {
+  return { status: "unsupported", reason: "unknown_recipe" }
+}
+
+function sameClarificationCapability(
+  left: ClarificationCapability | undefined,
+  right: ClarificationCapability,
+): boolean {
+  if (!left || left.status !== right.status) return false
+  if (left.status === "supported" && right.status === "supported") {
+    return left.adapterPackage === right.adapterPackage && left.adapterVersion === right.adapterVersion
+  }
+  return left.status === "unsupported" && right.status === "unsupported" && left.reason === right.reason
 }
 
 /**

@@ -18,6 +18,7 @@ describe("createFakeController", () => {
     controller.actions.fileSelectorCorrected("codex")
     await controller.actions.cancel("codex")
     controller.actions.respondPermission({ outcome: "cancelled" })
+    controller.actions.respondClarification("clarification-1", 3, { kind: "cancelled" })
     await controller.dispose()
 
     expect(controller.calls.sendPrompt).toEqual([{ input: "hello", sessionId: undefined }])
@@ -28,6 +29,11 @@ describe("createFakeController", () => {
     expect(controller.calls.fileSelectorCorrected).toEqual(["codex"])
     expect(controller.calls.cancel).toEqual(["codex"])
     expect(controller.calls.respondPermission).toEqual([{ outcome: "cancelled" }])
+    expect(controller.calls.respondClarification).toEqual([{
+      requestId: "clarification-1",
+      generation: 3,
+      outcome: { kind: "cancelled" },
+    }])
     expect(controller.calls.dispose).toBe(1)
   })
 
@@ -87,6 +93,27 @@ describe("createFakeController", () => {
     controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
 
     expect(controller.store.getState().overlays.approval).toBeNull()
+  })
+
+  it("closes only the matching clarification projection", () => {
+    const controller = createFakeController()
+    controller.store.openClarification({
+      requestId: "clarification-1",
+      generation: 4,
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      payload: {
+        prompt: "Choose",
+        fields: [{ id: "choice", label: "Choice", mode: "text", required: true }],
+      },
+    })
+
+    controller.actions.respondClarification("missing", 4, { kind: "cancelled" })
+    expect(controller.store.getState().overlays.clarification?.requestId).toBe("clarification-1")
+
+    controller.actions.respondClarification("clarification-1", 4, { kind: "cancelled" })
+    expect(controller.store.getState().overlays.clarification).toBeNull()
   })
 
   it("cycles focus in the store, like the real controller does", () => {

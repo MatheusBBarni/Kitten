@@ -22,7 +22,7 @@ import {
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
-import type { SessionId } from "../src/core/types.ts"
+import type { ClarificationOutcome, SessionId } from "../src/core/types.ts"
 import {
   persistedSelectedConversationId,
   type PersistedRunRecord,
@@ -58,6 +58,11 @@ export interface RecordedCalls {
   restore: PersistedRunRecord[]
   restoreModes: ResumeMode[]
   respondPermission: PermissionOutcome[]
+  respondClarification: Array<{
+    requestId: string
+    generation: number
+    outcome: ClarificationOutcome
+  }>
   dispose: number
 }
 
@@ -144,6 +149,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     restore: [],
     restoreModes: [],
     respondPermission: [],
+    respondClarification: [],
     dispose: 0,
   }
 
@@ -312,6 +318,13 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         // clearing the slot when nothing else is waiting. With no queue here, an answer
         // always closes the overlay - which is what lets a view test observe it close.
         store.closeApproval()
+      },
+      respondClarification(requestId, generation, outcome): void {
+        calls.respondClarification.push({ requestId, generation, outcome })
+        const active = store.getState().overlays.clarification
+        if (active?.requestId === requestId && active.generation === generation) {
+          store.closeClarification()
+        }
       },
     },
     runtimes: () => runtimes,

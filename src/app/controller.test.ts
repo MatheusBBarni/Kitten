@@ -259,6 +259,8 @@ interface StubConnection extends AgentConnection {
   emit(event: DomainSessionEvent): void
   /** Raise a permission request through the handler the controller registered. */
   ask(request: PermissionRequest): Promise<PermissionOutcome>
+  /** Raise a normalized clarification through the handler the controller registered. */
+  clarify(payload: ClarificationPayload): Promise<ClarificationOutcome>
   readonly prompts: Array<{ sessionId: string; blocks: PromptBlock[] }>
   readonly cancels: string[]
   readonly newSessionCwds: string[]
@@ -348,6 +350,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
   const loadSessionCalls: Array<{ sessionId: string; cwd: string }> = []
   const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
+  let clarificationHandler: ((payload: ClarificationPayload) => Promise<ClarificationOutcome>) | null = null
   let disposed = false
   let disposals = 0
 
@@ -409,8 +412,11 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     onPermission(handler) {
       permissionHandler = handler
     },
-    onClarification() {
-      return () => {}
+    onClarification(handler) {
+      clarificationHandler = handler
+      return () => {
+        if (clarificationHandler === handler) clarificationHandler = null
+      }
     },
     async dispose() {
       disposals += 1
@@ -422,6 +428,10 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     ask(request) {
       if (!permissionHandler) throw new Error("no permission handler registered")
       return permissionHandler(request)
+    },
+    clarify(payload) {
+      if (!clarificationHandler) throw new Error("no clarification handler registered")
+      return clarificationHandler(payload)
     },
   }
 }
@@ -437,6 +447,7 @@ async function controllerWithStubs(
     readBranch?: (cwd: string) => Promise<string | null>
     createShellRuntime?: ShellRuntimeFactory
     store?: AppStore
+    newInteractionId?: () => string
     /** Exercise the controller's real default-store construction. */
     useProductionStore?: boolean
   } = {},
@@ -452,6 +463,7 @@ async function controllerWithStubs(
     store: overrides.useProductionStore ? undefined : overrides.store ?? createAppStore({ selectedVisibleId: "claude-code" }),
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
+    newInteractionId: overrides.newInteractionId,
     onError: overrides.onError,
     recorder: overrides.recorder,
     usageSeenSink: overrides.usageSeenSink,
@@ -823,6 +835,23 @@ describe("createSessionController - startup", () => {
 })
 
 describe("createSessionController - persisted restore", () => {
+  it("binds clarification callbacks on a loaded replacement generation", async () => {
+    const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": { ready: readyToLoad },
+      codex: { ready: readyToLoad },
+    })
+    await controller.restore(persistedRun())
+
+    const pending = restored["claude-code"].clarify(CLARIFICATION_PAYLOAD)
+    const overlay = controller.store.getState().overlays.clarification
+    expect(overlay).toMatchObject({ sessionId: "claude-code", generation: 2 })
+
+    controller.actions.respondClarification(overlay!.requestId, overlay!.generation, { kind: "cancelled" })
+    expect(await pending).toEqual({ kind: "cancelled" })
+    await controller.dispose()
+  })
+
   it("terminally cancels the replaced connection generation and keeps restored siblings usable", async () => {
     const { controller, startup, restored } = await controllerForRestore()
     const settlements = { claude: 0, codex: 0 }
@@ -1985,6 +2014,113 @@ describe("actions - respondPermission", () => {
   })
 })
 
+describe("actions - respondClarification", () => {
+  it("contains resolver failures instead of throwing into the UI", () => {
+    const actions = createControllerActions({
+      store: createAppStore(),
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      resolveClarification: () => {
+        throw new Error("stale resolver")
+      },
+    })
+
+    expect(() => actions.respondClarification("request-1", 1, { kind: "cancelled" })).not.toThrow()
+  })
+
+  it("projects session attribution and preserves a suspended approval by reference", async () => {
+    const ids = ["permission-1", "clarification-1"]
+    const { controller, connections } = await controllerWithStubs({}, {
+      newInteractionId: () => ids.shift()!,
+    })
+    const permission = connections["claude-code"].ask(PERMISSION_REQUEST)
+    const approval = controller.store.getState().overlays.approval
+
+    const clarification = connections.codex.clarify(CLARIFICATION_PAYLOAD)
+    const projected = controller.store.getState().overlays.clarification
+
+    expect(projected).toEqual({
+      requestId: "clarification-1",
+      generation: 1,
+      sessionId: "codex",
+      title: "Codex",
+      cwd: CWD,
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    expect(controller.store.getState().overlays.approval).toBe(approval)
+    expect(controller.store.getState().sessions.codex?.status).toBe("awaiting_clarification")
+
+    const answer: ClarificationOutcome = {
+      kind: "answered",
+      values: { boundary: "controller" },
+    }
+    controller.actions.respondClarification(projected!.requestId, projected!.generation, answer)
+
+    expect(await clarification).toEqual(answer)
+    expect(controller.store.getState().overlays.clarification).toBeNull()
+    expect(controller.store.getState().overlays.approval).toBe(approval)
+    expect(controller.store.getState().sessions.codex?.status).toBe("working")
+    expect(controller.store.getState().sessions["claude-code"]?.status).toBe("awaiting_approval")
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    expect(await permission).toEqual({ outcome: "cancelled" })
+    await controller.dispose()
+  })
+
+  it("ignores wrong and duplicate responses without settling the resumed request", async () => {
+    const ids = ["clarification-1", "clarification-2"]
+    const { controller, connections } = await controllerWithStubs({}, {
+      newInteractionId: () => ids.shift()!,
+    })
+    let firstSettled = false
+    const first = connections["claude-code"].clarify(CLARIFICATION_PAYLOAD).then((outcome) => {
+      firstSettled = true
+      return outcome
+    })
+    const secondPayload = { ...CLARIFICATION_PAYLOAD, prompt: "Choose the test boundary" }
+    const second = connections.codex.clarify(secondPayload)
+    const active = controller.store.getState().overlays.clarification!
+    const secondAnswer: ClarificationOutcome = {
+      kind: "answered",
+      values: { boundary: "store" },
+    }
+
+    controller.actions.respondClarification("missing", active.generation, secondAnswer)
+    controller.actions.respondClarification(active.requestId, active.generation + 1, secondAnswer)
+    expect(controller.store.getState().overlays.clarification).toBe(active)
+
+    controller.actions.respondClarification(active.requestId, active.generation, secondAnswer)
+    expect(await second).toEqual(secondAnswer)
+    expect(controller.store.getState().overlays.clarification).toMatchObject({
+      requestId: "clarification-1",
+      sessionId: "claude-code",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+
+    controller.actions.respondClarification(active.requestId, active.generation, { kind: "cancelled" })
+    await Bun.sleep(0)
+    expect(firstSettled).toBe(false)
+    expect(controller.store.getState().overlays.clarification?.requestId).toBe("clarification-1")
+
+    const resumed = controller.store.getState().overlays.clarification!
+    controller.actions.respondClarification(resumed.requestId, resumed.generation, { kind: "cancelled" })
+    expect(await first).toEqual({ kind: "cancelled" })
+    expect(controller.store.getState().overlays.clarification).toBeNull()
+    await controller.dispose()
+  })
+
+  it("publishes the resolved capability for every configured session", async () => {
+    const { controller } = await controllerWithStubs()
+
+    expect(controller.store.getState().clarificationCapabilities).toEqual({
+      "claude-code": { status: "unsupported", reason: "unknown_recipe" },
+      codex: { status: "unsupported", reason: "unknown_recipe" },
+    })
+
+    await controller.dispose()
+  })
+})
+
 describe("createSessionController - per-conversation close", () => {
   it("closes one idle conversation only after its runtime is disposed and selects the next visible sibling", async () => {
     const { controller, connections } = await controllerWithStubs()
@@ -2807,6 +2943,80 @@ function connectionToMockAgent(
 }
 
 describe("integration - two mock ACP agents", () => {
+  it("round-trips ACP elicitation through the controller projection and dedicated response action", async () => {
+    const supportedConfig = {
+      ...CLAUDE,
+      clarificationCapability: {
+        status: "supported" as const,
+        adapterPackage: "@agentclientprotocol/claude-agent-acp",
+        adapterVersion: "0.57.0",
+      },
+    }
+    const claude = connectionToMockAgent(supportedConfig, {
+      sessionId: "claude-session",
+      onPrompt: async (request, ctx) => {
+        await ctx.createElicitation({
+          mode: "form",
+          sessionId: request.sessionId,
+          message: "Choose the implementation boundary",
+          requestedSchema: {
+            type: "object",
+            required: ["boundary"],
+            properties: {
+              boundary: {
+                type: "string",
+                title: "Boundary",
+                oneOf: [
+                  { const: "controller", title: "Controller" },
+                  { const: "store", title: "Store" },
+                ],
+              },
+            },
+          },
+        })
+      },
+    })
+    const config: AppConfig = {
+      ...APP_CONFIG,
+      providers: PROVIDERS,
+      sessions: [{ provider: "claude-code", cwd: process.cwd(), title: "Planner" }],
+    }
+    const controller = await createSessionController({
+      config,
+      cwd: CWD,
+      createConnection: () => claude.connection,
+      createShellRuntime: createTestShellFactory(),
+      newInteractionId: () => "clarification-integration",
+    })
+
+    const prompt = controller.actions.sendPrompt("ask me", "claude-code")
+    await waitFor(
+      () => controller.store.getState().overlays.clarification !== null,
+      "the clarification overlay to open",
+    )
+    const overlay = controller.store.getState().overlays.clarification!
+    expect(overlay).toMatchObject({
+      requestId: "clarification-integration",
+      sessionId: "claude-code",
+      title: "Planner",
+      payload: { prompt: "Choose the implementation boundary" },
+    })
+
+    controller.actions.respondClarification(overlay.requestId, overlay.generation, {
+      kind: "answered",
+      values: { boundary: "controller" },
+    })
+    await prompt
+
+    expect(claude.agent.elicitationOutcomes).toEqual([{
+      action: "accept",
+      content: { boundary: "controller" },
+    }])
+    expect(controller.store.getState().overlays.clarification).toBeNull()
+    expect(controller.store.getState().sessions["claude-code"]?.status).toBe("finished")
+    await controller.dispose()
+  })
+
   it("Should stream a prompt into the addressed agent's slice while the other stays idle", async () => {
     const claude = connectionToMockAgent(CLAUDE, {
       sessionId: "claude-session",

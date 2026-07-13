@@ -22,7 +22,7 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
   type PersistedAgent,
@@ -35,7 +35,7 @@ import {
   type ShellRuntime,
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
-import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
+import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type Unsubscribe } from "../store/appStore.ts"
 import {
   createUsageSeenJsonlFileSink,
   logUsageSeen,
@@ -407,7 +407,7 @@ export async function createSessionController(options: SessionControllerOptions)
   // The resolved fleet, in declared order (ADR-005): one session per configured
   // provider in the launch directory when the config declares none, else each
   // declared session with its own `cwd`/`title`/`task` and a distinct session id.
-  const initialPlan: { seed: SessionSeed; config: AgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
+  const initialPlan: { seed: SessionSeed; config: ResolvedAgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
     (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
   )
 
@@ -417,13 +417,26 @@ export async function createSessionController(options: SessionControllerOptions)
   const branchReadGenerations = new Map<SessionId, number>()
   const connectionGenerations = new Map<SessionId, number>()
   const closePromises = new Map<SessionId, Promise<CloseConversationResult>>()
+  const pendingClarificationCounts = new Map<string, number>()
   let activeInteraction: ActiveAgentInteraction | null = null
   const interactionCoordinator = createInteractionCoordinator({
     newRequestId: options.newInteractionId,
     onActiveChanged(interaction) {
       activeInteraction = interaction
+      if (interaction?.kind === "clarification") {
+        store.openClarification(clarificationOverlay(interaction))
+        return
+      }
+
+      store.closeClarification()
       if (interaction?.kind === "permission") {
-        store.openApproval(approvalOverlay(interaction.sessionId, interaction.request))
+        if (store.getState().sessions[interaction.sessionId]?.status !== "awaiting_approval") {
+          store.applyEvent(interaction.sessionId, { kind: "status", status: "awaiting_approval" })
+        }
+        const current = store.getState().overlays.approval
+        if (current?.sessionId !== interaction.sessionId || current.request !== interaction.request) {
+          store.openApproval(approvalOverlay(interaction.sessionId, interaction.request))
+        }
       } else {
         store.closeApproval()
       }
@@ -508,6 +521,36 @@ export async function createSessionController(options: SessionControllerOptions)
     return interactionCoordinator.enqueuePermission(runtime.seed.id, runtime.generation, request)
   }
 
+  async function enqueueClarification(
+    runtime: AgentRuntime,
+    payload: ClarificationPayload,
+  ): Promise<ClarificationOutcome> {
+    if (!acceptsRuntimeEvents(runtime)) return { kind: "cancelled" }
+    const generation = runtime.generation
+    const key = clarificationCountKey(runtime.seed.id, generation)
+    pendingClarificationCounts.set(key, (pendingClarificationCounts.get(key) ?? 0) + 1)
+    store.applyEvent(runtime.seed.id, { kind: "status", status: "awaiting_clarification" })
+    try {
+      return await interactionCoordinator.enqueueClarification(
+        runtime.seed.id,
+        generation,
+        payload,
+      )
+    } finally {
+      const remaining = (pendingClarificationCounts.get(key) ?? 1) - 1
+      if (remaining > 0) pendingClarificationCounts.set(key, remaining)
+      else pendingClarificationCounts.delete(key)
+      if (
+        remaining === 0 &&
+        runtime.generation === generation &&
+        acceptsRuntimeEvents(runtime) &&
+        store.getState().sessions[runtime.seed.id]?.status === "awaiting_clarification"
+      ) {
+        store.applyEvent(runtime.seed.id, { kind: "status", status: "working" })
+      }
+    }
+  }
+
   /** Settle only the coordinator request currently projected into the approval slot. */
   function resolvePermission(outcome: PermissionOutcome): void {
     if (activeInteraction?.kind !== "permission") return
@@ -518,6 +561,15 @@ export async function createSessionController(options: SessionControllerOptions)
     )
   }
 
+  /** Settle only the clarification identity captured by the rendering UI. */
+  function resolveClarification(
+    requestId: string,
+    generation: number,
+    outcome: ClarificationOutcome,
+  ): void {
+    interactionCoordinator.resolveActive(requestId, generation, outcome)
+  }
+
   /**
    * Label a parked approval with the session it belongs to. `title` and `cwd` come
    * from the session's seed so the prompt names which agent, in which directory, is
@@ -526,6 +578,18 @@ export async function createSessionController(options: SessionControllerOptions)
   function approvalOverlay(sessionId: SessionId, request: PermissionRequest): ApprovalOverlay {
     const seed = runtimes.get(sessionId)?.seed
     return { sessionId, title: seed?.title ?? sessionId, cwd: seed?.cwd ?? "", request }
+  }
+
+  function clarificationOverlay(interaction: Extract<ActiveAgentInteraction, { kind: "clarification" }>): ClarificationOverlay {
+    const seed = runtimes.get(interaction.sessionId)?.seed
+    return {
+      requestId: interaction.requestId,
+      generation: interaction.generation,
+      sessionId: interaction.sessionId,
+      title: seed?.title ?? interaction.sessionId,
+      cwd: seed?.cwd ?? "",
+      payload: interaction.payload,
+    }
   }
 
   function getSession(sessionId: SessionId): AgentSession | undefined {
@@ -564,6 +628,7 @@ export async function createSessionController(options: SessionControllerOptions)
       generation: 0,
     }
     runtimes.set(seed.id, runtime)
+    store.setClarificationCapability(seed.id, clarificationCapabilityFor(config))
     return runtime
   }
 
@@ -599,6 +664,7 @@ export async function createSessionController(options: SessionControllerOptions)
       if (seededConfig) store.applyEvent(seed.id, seededConfig)
       const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
       connection.onPermission((request) => enqueuePermission(runtime, request))
+      connection.onClarification((payload) => enqueueClarification(runtime, payload))
       runtime.state = {
         sessionId: seed.id,
         providerKind: seed.providerKind,
@@ -671,6 +737,7 @@ export async function createSessionController(options: SessionControllerOptions)
     if (seededConfig) store.applyEvent(seed.id, seededConfig)
     const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
     connection.onPermission((request) => enqueuePermission(runtime, request))
+    connection.onClarification((payload) => enqueueClarification(runtime, payload))
     return { acpSessionId: acpSessionId!, unsubscribe }
   }
 
@@ -720,6 +787,7 @@ export async function createSessionController(options: SessionControllerOptions)
         store.startSession(seed.id, acpSessionId, { preserveWorkspaceAttention: true })
         unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(previous, event))
         connection.onPermission((request) => enqueuePermission(previous, request))
+        connection.onClarification((payload) => enqueueClarification(previous, payload))
         try {
           await connection.loadSession(acpSessionId, seed.cwd)
           store.setRestoration(seed.id, "live")
@@ -916,6 +984,7 @@ export async function createSessionController(options: SessionControllerOptions)
     store,
     getSession,
     resolvePermission,
+    resolveClarification,
     newMessageId: options.newMessageId,
     onError,
     refreshBranch,
@@ -983,6 +1052,7 @@ export async function createSessionController(options: SessionControllerOptions)
       await disposeAgentRuntimes(runtimes)
       runtimes.clear()
       branchReadGenerations.clear()
+      pendingClarificationCounts.clear()
 
       const entries = restoreEntries(restoredRecord)
       store.replaceSessions(
@@ -1018,6 +1088,7 @@ export async function createSessionController(options: SessionControllerOptions)
     async dispose(): Promise<void> {
       disposed = true
       interactionCoordinator.dispose()
+      pendingClarificationCounts.clear()
       unsubscribeShell?.()
       unsubscribeShell = null
       const shellRuntime = ownedShell
@@ -1040,6 +1111,20 @@ function nextConnectionGeneration(
   const generation = (generations.get(sessionId) ?? 0) + 1
   generations.set(sessionId, generation)
   return generation
+}
+
+function clarificationCountKey(sessionId: SessionId, generation: number): string {
+  return `${sessionId}\u0000${generation}`
+}
+
+function clarificationCapabilityFor(config: AgentConfig | null): ClarificationCapability {
+  return isResolvedAgentConfig(config)
+    ? config.clarificationCapability
+    : { status: "unsupported", reason: "unknown_recipe" }
+}
+
+function isResolvedAgentConfig(config: AgentConfig | null): config is ResolvedAgentConfig {
+  return config !== null && "clarificationCapability" in config
 }
 
 /**

@@ -20,6 +20,7 @@ import type { PromptHistoryState } from "../core/promptHistory.ts"
 import type {
   AvailableCommand,
   ConfigOption,
+  ClarificationCapability,
   ContextUsage,
   PendingDiff,
   PlanEntry,
@@ -40,6 +41,7 @@ import type {
 import type {
   AppState,
   ApprovalOverlay,
+  ClarificationOverlay,
   FocusedPane,
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
@@ -66,6 +68,10 @@ const EMPTY_PENDING_DIFFS: PendingDiff[] = []
 const EMPTY_REFERENCED_FILES = new Map<string, "read" | "edited">()
 const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
 const EMPTY_PROMPT_HISTORY: PromptHistoryState = { entries: [], cursor: null }
+const UNKNOWN_CLARIFICATION_CAPABILITY: ClarificationCapability = {
+  status: "unsupported",
+  reason: "unknown_recipe",
+}
 
 /** The active conversation, retained while the shell owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
@@ -348,6 +354,20 @@ export const selectNextNeedy =
 /** The pending permission request, or `null` when the approval overlay is closed. */
 export const selectApprovalOverlay: Selector<ApprovalOverlay | null> = (state) => state.overlays.approval
 
+/** The active resolver-free clarification projection, or `null` while none is shown. */
+export const selectClarificationOverlay: Selector<ClarificationOverlay | null> = (state) =>
+  state.overlays.clarification
+
+/** Whether clarification currently owns top modal priority. */
+export const selectIsClarificationOpen: Selector<boolean> = (state) =>
+  state.overlays.clarification !== null
+
+/** One configured session's protocol-free structured-clarification capability. */
+export const selectClarificationCapability =
+  (sessionId: SessionId): Selector<ClarificationCapability> =>
+  (state) =>
+    state.clarificationCapabilities[sessionId] ?? UNKNOWN_CLARIFICATION_CAPABILITY
+
 /**
  * Whether a permission request is awaiting the user. The shell reads this to stand
  * down its own key bindings, since the approval overlay is modal while it is open.
@@ -389,6 +409,7 @@ export const selectTabDialogOverlay: Selector<TabDialogOverlay | null> = (state)
   state.overlays.tabDialog
 
 export type ActiveModal =
+  | { kind: "clarification"; sessionId: SessionId; requestId: string }
   | { kind: "approval"; sessionId: SessionId }
   | { kind: "tab-dialog"; sessionId: SessionId }
   | { kind: "sessions" }
@@ -401,6 +422,13 @@ export type ActiveModal =
 /** Explicit modal precedence; approval identity always wins over a captured tab target. */
 export const selectActiveModal: Selector<ActiveModal> = (state) => {
   const overlays = state.overlays
+  if (overlays.clarification) {
+    return {
+      kind: "clarification",
+      sessionId: overlays.clarification.sessionId,
+      requestId: overlays.clarification.requestId,
+    }
+  }
   if (overlays.approval) return { kind: "approval", sessionId: overlays.approval.sessionId }
   if (overlays.tabDialog) return { kind: "tab-dialog", sessionId: overlays.tabDialog.sessionId }
   if (overlays.sessions) return { kind: "sessions" }
@@ -413,6 +441,7 @@ export const selectActiveModal: Selector<ActiveModal> = (state) => {
 
 /** Whether any overlay is open, for views that dim or disable the cockpit beneath. */
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
+  state.overlays.clarification !== null ||
   state.overlays.approval !== null ||
   state.overlays.handoffPreview !== null ||
   state.overlays.handoffTarget !== null ||

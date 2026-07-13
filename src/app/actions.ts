@@ -19,7 +19,7 @@ import {
   type PromptHistoryDirection,
   type PromptHistorySelection,
 } from "../core/promptHistory.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption, type SessionId } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ClarificationOutcome, type ConfigOption, type SessionId } from "../core/types.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
@@ -119,6 +119,12 @@ export interface ActionDeps {
   getSession(sessionId: SessionId): AgentSession | undefined
   /** Settle the permission request currently shown in the approval overlay. */
   resolvePermission(outcome: PermissionOutcome): void
+  /** Settle only the active clarification whose stable identity still matches. */
+  resolveClarification?: (
+    requestId: string,
+    generation: number,
+    outcome: ClarificationOutcome,
+  ) => void
   /** Ids for the user turns this surface records. Defaults to a random UUID. */
   newMessageId?: () => string
   /** Where a failing connection is reported. Defaults to swallowing the failure. */
@@ -215,6 +221,12 @@ export interface ControllerActions {
   startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
   /** Answer the pending permission request with the user's decision. */
   respondPermission(outcome: PermissionOutcome): void
+  /** Answer or cancel only the matching active clarification request. */
+  respondClarification(
+    requestId: string,
+    generation: number,
+    outcome: ClarificationOutcome,
+  ): void
 }
 
 /**
@@ -503,6 +515,14 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
     respondPermission(outcome: PermissionOutcome): void {
       deps.resolvePermission(outcome)
+    },
+
+    respondClarification(requestId, generation, outcome): void {
+      try {
+        deps.resolveClarification?.(requestId, generation, outcome)
+      } catch {
+        // UI callbacks are fail-soft; a stale or failed resolver never escapes the view.
+      }
     },
   }
 }

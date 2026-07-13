@@ -3,11 +3,13 @@ import { describe, expect, it } from "bun:test"
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState } from "../core/shellReducer.ts"
-import type { DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
+import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import { createAppStore, defaultSessionSeeds, type AppStore, type AppState } from "./appStore.ts"
 import {
   selectApprovalOverlay,
   selectActiveModal,
+  selectClarificationCapability,
+  selectClarificationOverlay,
   selectHandoffPreview,
   selectFocusedPane,
   selectHasOpenOverlay,
@@ -61,6 +63,17 @@ const HANDOFF_BUNDLE: HandoffBundle = {
   redactionCount: 0,
 }
 
+const CLARIFICATION_PAYLOAD: ClarificationPayload = {
+  prompt: "Choose a boundary",
+  fields: [{
+    id: "boundary",
+    label: "Boundary",
+    mode: "single",
+    required: true,
+    options: [{ id: "controller", label: "Controller" }],
+  }],
+}
+
 const message = (messageId: string, textDelta: string): DomainSessionEvent => ({
   kind: "agent_message",
   messageId,
@@ -86,6 +99,7 @@ describe("createAppStore", () => {
     expect(selectKeyboardCapability(state)).toBe("unknown")
     expect(state.overlays).toEqual({
       approval: null,
+      clarification: null,
       handoffPreview: null,
       handoffTarget: null,
       modelSelect: null,
@@ -97,6 +111,10 @@ describe("createAppStore", () => {
     expect(state.restoration).toEqual({ "claude-code": null, codex: null })
     expect(state.restorationBundle).toBeNull()
     expect(state.preferences).toEqual({ theme: "auto" })
+    expect(selectClarificationCapability("claude-code")(state)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
+    })
   })
 
   it("promotes Kitty keyboard capability once without disturbing durable workspace state", () => {
@@ -437,6 +455,55 @@ describe("setFocusedPane", () => {
 })
 
 describe("overlay slots", () => {
+  it("projects clarification independently and preserves every unrelated reference on open and close", () => {
+    const store = createAppStore()
+    store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
+    store.openHandoffPreview({ sourceSessionId: "codex", targetSessionId: "claude-code", bundle: HANDOFF_BUNDLE, targetConfigOptions: [] })
+    store.openHandoffTarget({ sourceSessionId: "codex" })
+    store.openSettings()
+    store.openSessions()
+    store.openSessionPicker()
+    const before = store.getState()
+    const overlay = {
+      requestId: "clarification-1",
+      generation: 7,
+      sessionId: "claude-code" as SessionId,
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      payload: CLARIFICATION_PAYLOAD,
+    }
+
+    store.openClarification(overlay)
+
+    const opened = store.getState()
+    expect(selectClarificationOverlay(opened)).toBe(overlay)
+    expect(opened.overlays.approval).toBe(before.overlays.approval)
+    expect(opened.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(opened.overlays.handoffTarget).toBe(before.overlays.handoffTarget)
+    expect(opened.overlays.settings).toBe(before.overlays.settings)
+    expect(opened.overlays.sessions).toBe(before.overlays.sessions)
+    expect(opened.overlays.sessionPicker).toBe(before.overlays.sessionPicker)
+    expect(opened.sessions).toBe(before.sessions)
+    expect(opened.workspace).toBe(before.workspace)
+    expect(opened.preferences).toBe(before.preferences)
+    expect(opened.restoration).toBe(before.restoration)
+    expect(opened.clarificationCapabilities).toBe(before.clarificationCapabilities)
+
+    store.closeClarification()
+
+    const closed = store.getState()
+    expect(selectClarificationOverlay(closed)).toBeNull()
+    expect(closed.overlays.approval).toBe(before.overlays.approval)
+    expect(closed.overlays.handoffPreview).toBe(before.overlays.handoffPreview)
+    expect(closed.overlays.handoffTarget).toBe(before.overlays.handoffTarget)
+    expect(closed.overlays.settings).toBe(before.overlays.settings)
+    expect(closed.overlays.sessions).toBe(before.overlays.sessions)
+    expect(closed.overlays.sessionPicker).toBe(before.overlays.sessionPicker)
+    expect(closed.sessions).toBe(before.sessions)
+    expect(closed.workspace).toBe(before.workspace)
+    expect(closed.preferences).toBe(before.preferences)
+  })
+
   it("exposes an opened approval request and clears it on close", () => {
     const store = createAppStore()
     const overlay = { sessionId: "claude-code" as SessionId, title: "Claude Code", cwd: "/workspace/kitten", request: APPROVAL_REQUEST }
@@ -445,6 +512,7 @@ describe("overlay slots", () => {
     expect(selectApprovalOverlay(store.getState())).toEqual(overlay)
 
     store.closeApproval()
+    store.closeClarification()
     expect(selectApprovalOverlay(store.getState())).toBeNull()
   })
 
@@ -609,6 +677,34 @@ describe("overlay slots", () => {
     store.openSessions()
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("clarification capability state", () => {
+  it("updates one session capability without disturbing overlays or session state", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const capability = {
+      status: "supported" as const,
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+    }
+
+    store.setClarificationCapability("codex", capability)
+
+    const after = store.getState()
+    expect(selectClarificationCapability("codex")(after)).toEqual(capability)
+    expect(selectClarificationCapability("claude-code")(after)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
+    })
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.workspace).toBe(before.workspace)
+    expect(after.overlays).toBe(before.overlays)
+    expect(after.preferences).toBe(before.preferences)
+
+    store.setClarificationCapability("codex", capability)
+    expect(store.getState()).toBe(after)
   })
 })
 

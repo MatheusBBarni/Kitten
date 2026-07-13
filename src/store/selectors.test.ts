@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import type { AvailableCommand, ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
+import type { AvailableCommand, ClarificationPayload, ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
@@ -23,12 +23,15 @@ import {
   selectSessionStatus,
   selectSessionTurns,
   selectApprovalOverlay,
+  selectClarificationCapability,
+  selectClarificationOverlay,
   selectFocusedPane,
   selectFocusedSessionId,
   selectFocusedSession,
   selectHandoffPreview,
   selectHasOpenOverlay,
   selectIsApprovalOpen,
+  selectIsClarificationOpen,
   selectIsFocused,
   selectIsShellFocused,
   selectIsSessionsOpen,
@@ -69,6 +72,17 @@ const EFFORT_OPTION: ConfigOption = {
     { value: "medium", name: "Medium" },
     { value: "high", name: "High" },
   ],
+}
+
+const CLARIFICATION_PAYLOAD: ClarificationPayload = {
+  prompt: "Choose a boundary",
+  fields: [{
+    id: "boundary",
+    label: "Boundary",
+    mode: "single",
+    required: true,
+    options: [{ id: "controller", label: "Controller" }],
+  }],
 }
 
 /**
@@ -518,12 +532,45 @@ describe("overlay selectors", () => {
   it("report closed slots as null and no open overlay", () => {
     const state = createAppStore().getState()
     expect(selectApprovalOverlay(state)).toBeNull()
+    expect(selectClarificationOverlay(state)).toBeNull()
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectSettingsOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
+    expect(selectIsClarificationOpen(state)).toBe(false)
     expect(selectIsSessionsOpen(state)).toBe(false)
     expect(selectSessionPicker(state)).toBe(false)
+  })
+
+  it("gives clarification modal priority and reports it as the only open-overlay gate", () => {
+    const store = createAppStore()
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      request: { sessionId: "s1", toolCall: { toolCallId: "c1" }, options: [] },
+    })
+    store.openSettings()
+    store.openClarification({
+      requestId: "clarification-1",
+      generation: 2,
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    const state = store.getState()
+
+    expect(selectClarificationOverlay(state)?.payload).toBe(CLARIFICATION_PAYLOAD)
+    expect(selectIsClarificationOpen(state)).toBe(true)
+    expect(selectHasOpenOverlay(state)).toBe(true)
+    expect(selectActiveModal(state)).toEqual({
+      kind: "clarification",
+      sessionId: "claude-code",
+      requestId: "clarification-1",
+    })
+    expect(selectApprovalOverlay(state)?.sessionId).toBe("codex")
+    expect(selectSettingsOverlay(state)).toEqual({ tab: "theme" })
   })
 
   it("report an open sessions overview as an open, modal overlay", () => {
@@ -608,6 +655,27 @@ describe("overlay selectors", () => {
     const state = createAppStore().getState()
     expect(selectModelSelectOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
+  })
+})
+
+describe("clarification capability selector", () => {
+  it("returns a stable per-session supported or unsupported view", () => {
+    const store = createAppStore()
+    const unsupported = selectClarificationCapability("claude-code")
+    const supported = selectClarificationCapability("codex")
+
+    expect(unsupported(store.getState())).toEqual({ status: "unsupported", reason: "unknown_recipe" })
+    store.setClarificationCapability("codex", {
+      status: "supported",
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+    })
+    expect(supported(store.getState())).toEqual({
+      status: "supported",
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+    })
+    expect(unsupported(store.getState())).toEqual({ status: "unsupported", reason: "unknown_recipe" })
   })
 })
 
