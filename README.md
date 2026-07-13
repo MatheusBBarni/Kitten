@@ -5,21 +5,35 @@ Kitten is a terminal cockpit for passing a live coding task from one AI agent to
 It runs **Claude Code** and **Codex** together in one terminal using the [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk).  
 If one agent stalls, you can hand its active task to the other with one action.
 
-## Try Kitten
+## Install Kitten
 
-The only route approved for launch verification is the source checkout. It requires Bun 1.3.5 or newer and starts Kitten inside the cloned Git repository:
+Install the latest standalone binary with the checksummed installer:
 
 ```bash
-git clone https://github.com/MatheusBBarni/Kitten.git && cd Kitten && bun install && bun start
+curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash
 ```
 
-Do not use `npx kitten` for Kitten yet: the public npm name still belongs to an unrelated project. An npm or release installer becomes a supported route only after Kitten owns it publicly and the complete install path has been verified.
+The installer uses `~/.local/bin` by default and tells you how to add it to `PATH` when needed. Launch Kitten from inside the Git repository where you want the agents to work:
+
+```bash
+cd path/to/your/repository
+kitten
+```
+
+### Requirements
+
+- macOS or Linux on arm64 or x64
+- Claude Code installed and authenticated
+- Codex installed and authenticated
+- A git repository to launch Kitten from
+
+Kitten launches the agents' published [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk) adapters. It does not install the agent CLIs or manage their authentication. The npm channel will be documented here when its native-binary install path is published and verified.
 
 ## Showcase Site
 
 The canonical showcase URL is [https://matheusbbarni.github.io/Kitten/](https://matheusbbarni.github.io/Kitten/). It becomes a public entry point only after the launch gate below passes. The static Astro project lives in `site/` and deploys through `.github/workflows/showcase-site.yml`.
 
-At launch, the showcase must have exactly one verified install CTA: the source-checkout command under [Try Kitten](#try-kitten). Keep `site/src/config/showcase-config.ts` and this README aligned, and do not add npm, curl, or release CTAs until that route is publicly available and freshly tested.
+At launch, the showcase must have exactly one verified install CTA: the source-checkout command under [Develop from source](#develop-from-source). Keep that site-specific CTA separate from the curl-first install guidance above.
 
 ### Launch gate
 
@@ -28,7 +42,7 @@ Do not publish or announce the showcase until every item is checked:
 - [ ] **Repository visibility:** `gh repo view MatheusBBarni/Kitten --json visibility --jq .visibility` reports `PUBLIC`, and the repository CTA works without authentication.
 - [ ] **License presence:** an explicit open-source `LICENSE` or `LICENSE.md` is committed and GitHub detects it.
 - [ ] **Recording availability:** `site/src/config/showcase-config.ts` references a real 20–30 second handoff recording and captions; the referenced files exist and visibly cover prepare, review/trim, confirm, and continue. The poster-only fallback is not launch proof.
-- [ ] **Command verification:** the sole source-checkout command under [Try Kitten](#try-kitten) succeeds from a clean environment with the documented Bun and agent prerequisites.
+- [ ] **Command verification:** the sole source-checkout command under [Develop from source](#develop-from-source) succeeds from a clean environment with the documented Bun and agent prerequisites.
 - [ ] **Claim review:** page copy matches released behavior and does not imply complete context transfer, automatic sending, or guaranteed secret removal.
 
 Before launch, at least 8 of 10 target developers should be able to explain the reviewed handoff after 30 seconds. The first 30-day review targets are at least 12 install-intent actions per 100 sessions, 40% proof engagement, 25 net-new GitHub stars, and no more than 20% of the first 20 substantive feedback items caused by unclear setup.
@@ -139,21 +153,12 @@ When an agent asks for approval, use:
 - `Enter` to confirm
 - `Esc` to dismiss
 
-## Requirements
-
-- Bun 1.3.5 or newer
-- Claude Code and Codex installed and authenticated
-- A git repository to launch Kitten from
-
-Kitten only launches the published ACP adapters. It does not handle agent binaries or authentication secrets.
-
 ## Develop from source
 
 Source development requires [Bun](https://bun.sh) 1.3.5 or newer.
 
 ```bash
-bun install
-bun start
+git clone https://github.com/MatheusBBarni/Kitten.git && cd Kitten && bun install && bun start
 ```
 
 On first launch, Kitten checks each configured agent and reports readiness. If one adapter cannot start, the other stays usable.
