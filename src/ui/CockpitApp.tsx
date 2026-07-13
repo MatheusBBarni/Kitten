@@ -42,6 +42,7 @@ import {
   selectRestoration,
 } from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
+import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController, useShellBufferType } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
 import { EmptyWorkspace } from "./EmptyWorkspace.tsx"
@@ -345,8 +346,11 @@ function CockpitFrame({
 
       <TabDialog />
 
-      {/* Last, so a pending permission request paints over anything else on screen. */}
+      {/* Permission remains above ordinary cockpit overlays. */}
       <ApprovalPrompt />
+
+      {/* Last: clarification is the product's top-priority interaction. */}
+      <ClarificationPrompt />
     </box>
   )
 }

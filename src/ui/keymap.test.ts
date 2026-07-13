@@ -10,6 +10,9 @@ import {
   APPROVAL_HINT,
   APPROVAL_KEYMAP,
   approvalOptionIndex,
+  CLARIFICATION_HINT,
+  CLARIFICATION_KEYMAP,
+  clarificationOptionIndex,
   COCKPIT_COMMANDS,
   COCKPIT_KEYMAP,
   EDITOR_KEYMAP,
@@ -21,6 +24,7 @@ import {
   helpEntries,
   KEYMAP_HINT,
   matchApprovalCommand,
+  matchClarificationCommand,
   matchCommand,
   matchHandoffCommand,
   matchMenuCommand,
@@ -298,6 +302,7 @@ describe("HELP_ENTRIES", () => {
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {
     for (const binding of [
       ...APPROVAL_KEYMAP,
+      ...CLARIFICATION_KEYMAP,
       ...HANDOFF_KEYMAP,
       ...SESSION_PICKER_KEYMAP,
       ...SESSIONS_KEYMAP,
@@ -349,6 +354,51 @@ describe("APPROVAL_KEYMAP", () => {
     }
     // The digit shortcut has no binding of its own, so pin it here.
     expect(APPROVAL_HINT).toContain("1-9")
+  })
+})
+
+describe("clarification keymap", () => {
+  it("maps navigation, field focus, toggle, submission, and cancellation", () => {
+    expect(matchClarificationCommand(key("up"))).toBe("prev-option")
+    expect(matchClarificationCommand(key("down"))).toBe("next-option")
+    expect(matchClarificationCommand(key("tab", { shift: true }))).toBe("prev-field")
+    expect(matchClarificationCommand(key("tab"))).toBe("next-field")
+    expect(matchClarificationCommand(key("space"))).toBe("toggle-option")
+    expect(matchClarificationCommand(key("return"))).toBe("confirm")
+    expect(matchClarificationCommand(key("kpenter"))).toBe("confirm")
+    expect(matchClarificationCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("leaves printable text and modified commands to the focused clarification input", () => {
+    expect(matchClarificationCommand(key("a"))).toBeNull()
+    expect(matchClarificationCommand(key("space", { ctrl: true }))).toBeNull()
+    expect(matchClarificationCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchClarificationCommand(key("escape", { meta: true }))).toBeNull()
+  })
+
+  it("resolves only plain digits 1 through 9 to stable zero-based option indices", () => {
+    expect(clarificationOptionIndex(key("1"))).toBe(0)
+    expect(clarificationOptionIndex(key("9"))).toBe(8)
+    expect(clarificationOptionIndex(key("0"))).toBeNull()
+    expect(clarificationOptionIndex(key("2", { ctrl: true }))).toBeNull()
+    expect(clarificationOptionIndex(key("f1"))).toBeNull()
+  })
+
+  it("binds each clarification command once and documents every command plus digits", () => {
+    const commands = CLARIFICATION_KEYMAP.map((binding) => binding.command)
+    expect(commands).toEqual([
+      "prev-option",
+      "next-option",
+      "prev-field",
+      "next-field",
+      "toggle-option",
+      "confirm",
+      "cancel",
+    ])
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const binding of CLARIFICATION_KEYMAP) expect(CLARIFICATION_HINT).toContain(binding.keys)
+    expect(CLARIFICATION_HINT).toContain("1-9")
+    expect(CLARIFICATION_HINT).toContain("cancel request")
   })
 })
 

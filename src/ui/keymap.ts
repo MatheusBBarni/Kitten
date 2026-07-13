@@ -63,6 +63,16 @@ export type MenuCommand = "prev-item" | "next-item" | "confirm" | "dismiss"
 /** Every intent the approval overlay handles while it is on screen. */
 export type ApprovalCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
+/** Every intent the clarification dialog handles while it owns the keyboard. */
+export type ClarificationCommand =
+  | "prev-option"
+  | "next-option"
+  | "prev-field"
+  | "next-field"
+  | "toggle-option"
+  | "confirm"
+  | "cancel"
+
 /** Every intent the rename/close tab dialog handles while it owns the modal slot. */
 export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "cancel"
 
@@ -309,6 +319,52 @@ export const APPROVAL_KEYMAP: readonly KeyBinding<ApprovalCommand>[] = [
     command: "cancel",
     keys: "Esc",
     description: "Dismiss the request without deciding",
+    matches: plain("escape"),
+  },
+]
+
+/** The clarification dialog's complete keyboard contract. */
+export const CLARIFICATION_KEYMAP: readonly KeyBinding<ClarificationCommand>[] = [
+  {
+    command: "prev-option",
+    keys: "↑",
+    description: "Highlight the previous clarification option",
+    matches: plain("up"),
+  },
+  {
+    command: "next-option",
+    keys: "↓",
+    description: "Highlight the next clarification option",
+    matches: plain("down"),
+  },
+  {
+    command: "prev-field",
+    keys: "Shift+Tab",
+    description: "Focus the previous clarification field",
+    matches: shiftPlain("tab"),
+  },
+  {
+    command: "next-field",
+    keys: "Tab",
+    description: "Focus the next clarification field",
+    matches: plain("tab"),
+  },
+  {
+    command: "toggle-option",
+    keys: "Space",
+    description: "Toggle the highlighted multi-select option",
+    matches: plain("space"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Submit the clarification response",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Cancel the clarification request",
     matches: plain("escape"),
   },
 ]
@@ -645,6 +701,10 @@ export const RESUME_KEY_HINT = commandSlash("resume-session")
 /** The hint printed inside the approval overlay, where those keys are the only live ones. */
 export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} pick  Esc cancel`
 
+/** The complete keyboard teaching surface shown only while clarification owns input. */
+export const CLARIFICATION_HINT =
+  `↑↓ move  Tab/Shift+Tab field/text  1-${MAX_DIGIT_OPTIONS} pick  Space toggle  Enter submit  Esc cancel request`
+
 /** The hint printed while the rename input owns ordinary text keys. */
 export const TAB_RENAME_HINT = "Enter rename  Esc keep current name"
 
@@ -708,6 +768,9 @@ export const matchMenuCommand = makeMatcher(MENU_KEYMAP)
 /** The overlay command a keypress maps to, or `null` when the overlay does not claim it. */
 export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)
 
+/** The clarification command a keypress maps to, or null for focused text editing. */
+export const matchClarificationCommand = makeMatcher(CLARIFICATION_KEYMAP)
+
 /** The rename/close dialog command a keypress maps to, or `null` for input text. */
 export const matchTabDialogCommand = makeMatcher(TAB_DIALOG_KEYMAP)
 
@@ -733,6 +796,15 @@ export const matchSettingsCommand = makeMatcher(SETTINGS_KEYMAP)
  * which is not a trade worth making on a dialog this small.
  */
 export function approvalOptionIndex(key: CockpitKey): number | null {
+  return directOptionIndex(key)
+}
+
+/** The zero-based clarification option named by a plain digit, or null. */
+export function clarificationOptionIndex(key: CockpitKey): number | null {
+  return directOptionIndex(key)
+}
+
+function directOptionIndex(key: CockpitKey): number | null {
   if (key.ctrl || key.meta || key.shift || key.name.length !== 1) return null
   const digit = Number.parseInt(key.name, 10)
   if (!Number.isInteger(digit) || digit < 1 || digit > MAX_DIGIT_OPTIONS) return null
