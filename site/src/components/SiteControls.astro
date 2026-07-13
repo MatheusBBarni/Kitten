@@ -1,0 +1,24 @@
+---
+import type { ShowcaseConfig } from "../config/showcase-config.ts";
+
+interface Props {
+  repository: ShowcaseConfig["repository"];
+  hero: ShowcaseConfig["hero"];
+  install: ShowcaseConfig["install"];
+}
+
+const { repository, hero, install } = Astro.props;
+---
+
+<div data-site-controls>
+  <a href={`#${install.id}`}>{hero.primaryCtaLabel}</a>
+  <a
+    href={repository.url}
+    aria-label={repository.star.accessibleLabel}
+    data-repo-owner={repository.owner}
+    data-repo-name={repository.name}
+    data-star-status="unavailable"
+  >
+    {repository.star.fallbackText}
+  </a>
+</div>

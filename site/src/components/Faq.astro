@@ -1,0 +1,23 @@
+---
+import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import Section from "./Section.astro";
+
+interface Props {
+  section: ShowcaseConfig["faq"];
+}
+
+const { section } = Astro.props;
+---
+
+<Section id={section.id} heading={section.heading} body={section.body}>
+  <dl>
+    {
+      section.items.map((item) => (
+        <div>
+          <dt>{item.question}</dt>
+          <dd>{item.answer}</dd>
+        </div>
+      ))
+    }
+  </dl>
+</Section>

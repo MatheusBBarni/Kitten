@@ -1,0 +1,45 @@
+---
+import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import Section from "./Section.astro";
+
+interface Props {
+  section: ShowcaseConfig["proof"];
+}
+
+const { section } = Astro.props;
+const descriptionId = `${section.id}-description`;
+---
+
+<Section id={section.id} heading={section.heading} body={section.body}>
+  <figure data-proof-media>
+    {
+      section.videoUrl ? (
+        <video
+          controls
+          preload="metadata"
+          poster={section.posterUrl ?? undefined}
+          aria-describedby={descriptionId}
+        >
+          <source src={section.videoUrl} />
+          <p>{section.fallbackLabel}</p>
+        </video>
+      ) : (
+        <p data-proof-fallback>
+          {section.fallbackLabel}
+        </p>
+      )
+    }
+    <figcaption id={descriptionId}>{section.accessibleDescription}</figcaption>
+  </figure>
+
+  <ol aria-label={section.accessibleDescription}>
+    {
+      section.steps.map((step, index) => (
+        <li data-proof-step data-proof-stage={index + 1}>
+          <h3>{step.label}</h3>
+          <p>{step.description}</p>
+        </li>
+      ))
+    }
+  </ol>
+</Section>

@@ -1,0 +1,21 @@
+---
+import type { ShowcaseConfig } from "../config/showcase-config.ts";
+
+interface Props {
+  section: ShowcaseConfig["hero"];
+  install: ShowcaseConfig["install"];
+}
+
+const { section, install } = Astro.props;
+---
+
+<section
+  id={section.id}
+  aria-labelledby={`${section.id}-heading`}
+  data-section-key={section.id}
+>
+  <p>{section.eyebrow}</p>
+  <h1 id={`${section.id}-heading`}>{section.heading}</h1>
+  <p>{section.body}</p>
+  <a href={`#${install.id}`}>{section.primaryCtaLabel}</a>
+</section>

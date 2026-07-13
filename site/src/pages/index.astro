@@ -1,4 +1,10 @@
 ---
+import Faq from "../components/Faq.astro";
+import Hero from "../components/Hero.astro";
+import Install from "../components/Install.astro";
+import Proof from "../components/Proof.astro";
+import Requirements from "../components/Requirements.astro";
+import SiteControls from "../components/SiteControls.astro";
 import {
   assertValidShowcaseConfig,
   showcaseConfig,
@@ -6,7 +12,8 @@ import {
 
 assertValidShowcaseConfig(showcaseConfig);
 
-const { site, hero } = showcaseConfig;
+const { site, hero, proof, install, requirements, faq, repository } =
+  showcaseConfig;
 ---
 
 <!doctype html>
@@ -18,10 +25,13 @@ const { site, hero } = showcaseConfig;
     <title>{site.title}</title>
   </head>
   <body>
-    <main id={hero.id}>
-      <p>{hero.eyebrow}</p>
-      <h1>{hero.heading}</h1>
-      <p>{hero.body}</p>
+    <main>
+      <Hero section={hero} install={install} />
+      <Proof section={proof} />
+      <Install section={install} />
+      <SiteControls repository={repository} hero={hero} install={install} />
+      <Requirements section={requirements} />
+      <Faq section={faq} />
     </main>
   </body>
 </html>
