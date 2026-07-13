@@ -99,6 +99,7 @@ export const DARK_PALETTE: CockpitPalette = {
   status: {
     idle: "#5FA8D3",
     working: "#4EC9B0",
+    awaiting_clarification: "#C586C0",
     awaiting_approval: "#F5C542",
     // Done, your move: a calm green, distinct from working's teal.
     finished: "#6FBF73",
@@ -146,6 +147,7 @@ export const LIGHT_PALETTE: CockpitPalette = {
   status: {
     idle: "#1F5C86",
     working: "#136B55",
+    awaiting_clarification: "#7B2D8E",
     awaiting_approval: "#8A5D00",
     // Done, your move: a darkened green for contrast on a light terminal.
     finished: "#2E6B33",
@@ -193,6 +195,7 @@ export const CATPPUCCIN_MOCHA_PALETTE: CockpitPalette = {
   status: {
     idle: "#89B4FA",
     working: "#94E2D5",
+    awaiting_clarification: "#CBA6F7",
     awaiting_approval: "#F9E2AF",
     finished: "#A6E3A1",
     error: "#F38BA8",
@@ -236,6 +239,7 @@ export const CATPPUCCIN_LATTE_PALETTE: CockpitPalette = {
   status: {
     idle: "#1E5ACC",
     working: "#0E6F73",
+    awaiting_clarification: "#8839EF",
     awaiting_approval: "#946000",
     finished: "#2B7A34",
     error: "#D20F39",

@@ -19,9 +19,10 @@ import type {
 } from "./types.ts"
 
 const ATTENTION_RANK: Readonly<Partial<Record<SessionStatus, number>>> = {
-  awaiting_approval: 0,
-  error: 1,
-  finished: 2,
+  awaiting_clarification: 0,
+  awaiting_approval: 1,
+  error: 2,
+  finished: 3,
 }
 
 export interface CreateWorkspaceStateOptions {

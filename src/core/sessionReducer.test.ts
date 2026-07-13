@@ -332,11 +332,37 @@ describe("plan and status events", () => {
     expect(state.turns).toEqual(withTurn.turns)
   })
 
-  it("updates status without altering turns", () => {
-    const withTurn = fold([{ kind: "agent_message", messageId: "m1", textDelta: "hi" }])
-    const state = sessionReducer(withTurn, { kind: "status", status: "awaiting_approval" })
-    expect(state.status).toBe("awaiting_approval")
-    expect(state.turns).toEqual(withTurn.turns)
+  it("enters and leaves clarification without replacing session content", () => {
+    const withWork = fold([
+      { kind: "agent_message", messageId: "m1", textDelta: "hi" },
+      { kind: "plan", entries: [{ content: "Wait for input", status: "in_progress" }] },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          kind: "edit",
+          title: "Prepare edit",
+          status: "pending",
+          locations: ["src/core/types.ts"],
+          diff: { path: "src/core/types.ts", unified: "diff" },
+        },
+      },
+    ])
+
+    const awaiting = sessionReducer(withWork, { kind: "status", status: "awaiting_clarification" })
+    const resumed = sessionReducer(awaiting, { kind: "status", status: "working" })
+
+    expect(awaiting.status).toBe("awaiting_clarification")
+    expect(resumed.status).toBe("working")
+    for (const state of [awaiting, resumed]) {
+      expect(state.turns).toBe(withWork.turns)
+      expect(state.plan).toBe(withWork.plan)
+      expect(state.referencedFiles).toBe(withWork.referencedFiles)
+      expect(state.pendingDiffs).toBe(withWork.pendingDiffs)
+      expect(state.configOptions).toBe(withWork.configOptions)
+      expect(state.commands).toBe(withWork.commands)
+      expect(state.promptHistory).toBe(withWork.promptHistory)
+    }
   })
 })
 

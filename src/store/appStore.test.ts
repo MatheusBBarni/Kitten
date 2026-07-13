@@ -155,6 +155,27 @@ describe("createAppStore", () => {
 })
 
 describe("applyEvent", () => {
+  it("routes clarification status through the reducer and preserves the other session identity", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", message("m1", "Need input"))
+    store.applyEvent("claude-code", { kind: "plan", entries: [{ content: "Await decision" }] })
+    const before = store.getState()
+    const targetBefore = before.sessions["claude-code"]!
+    const otherBefore = before.sessions.codex
+
+    store.applyEvent("claude-code", { kind: "status", status: "awaiting_clarification" })
+
+    const after = store.getState()
+    expect(after.sessions["claude-code"]!.status).toBe("awaiting_clarification")
+    expect(after.sessions["claude-code"]!.turns).toBe(targetBefore.turns)
+    expect(after.sessions["claude-code"]!.plan).toBe(targetBefore.plan)
+    expect(after.sessions.codex).toBe(otherBefore)
+    expect(after.workspace.conversations["claude-code"]!.attention).toMatchObject({
+      status: "awaiting_clarification",
+      seen: false,
+    })
+  })
+
   it("routes prompt history to the addressed session and preserves the other session identity", () => {
     const store = createAppStore()
     const before = store.getState()

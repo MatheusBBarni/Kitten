@@ -132,6 +132,7 @@ describe("StatusStrip agent state", () => {
     { status: "idle", tone: "idle" },
     { status: "working", tone: "working" },
     { status: "awaiting_approval", tone: "awaiting_approval" },
+    { status: "awaiting_clarification", tone: "awaiting_clarification" },
   ] as const satisfies readonly { status: SessionStatus; tone: StatusTone }[]) {
     it(`renders ${status} with an inline label and semantic color`, async () => {
       const controller = createFakeController()

@@ -394,6 +394,7 @@ function fleetStore(): AppStore {
 
 describe("needsAttention (ADR-006)", () => {
   it("is true for the states the developer must act on", () => {
+    expect(needsAttention("awaiting_clarification")).toBe(true)
     expect(needsAttention("awaiting_approval")).toBe(true)
     expect(needsAttention("error")).toBe(true)
     expect(needsAttention("finished")).toBe(true)

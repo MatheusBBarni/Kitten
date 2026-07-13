@@ -53,7 +53,13 @@ export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
  * The adapter derives `finished`/`error` only from terminal signals, never from a
  * streaming update, so `finished` cannot flicker mid-turn.
  */
-export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished" | "error"
+export type SessionStatus =
+  | "idle"
+  | "working"
+  | "awaiting_clarification"
+  | "awaiting_approval"
+  | "finished"
+  | "error"
 
 /**
  * Whether a session's status is one the developer must act on: an approval to
@@ -63,7 +69,61 @@ export type SessionStatus = "idle" | "working" | "awaiting_approval" | "finished
  * about which sessions need you.
  */
 export const needsAttention = (status: SessionStatus): boolean =>
-  status === "awaiting_approval" || status === "error" || status === "finished"
+  status === "awaiting_clarification" ||
+  status === "awaiting_approval" ||
+  status === "error" ||
+  status === "finished"
+
+/** One protocol-free choice presented by a structured clarification field. */
+export interface ClarificationOption {
+  /** Stable adapter-normalized identifier returned in an answered outcome. */
+  id: string
+  label: string
+  description?: string
+}
+
+interface ClarificationFieldBase {
+  /** Stable adapter-normalized identifier used as the outcome-values key. */
+  id: string
+  label: string
+  description?: string
+  required: boolean
+}
+
+/** A field whose answer must reference one normalized option identifier. */
+export interface ClarificationSingleField extends ClarificationFieldBase {
+  mode: "single"
+  options: ClarificationOption[]
+}
+
+/** A field whose answer may reference several normalized option identifiers. */
+export interface ClarificationMultiField extends ClarificationFieldBase {
+  mode: "multi"
+  options: ClarificationOption[]
+}
+
+/** A field answered with protocol-free text rather than a choice identifier. */
+export interface ClarificationTextField extends ClarificationFieldBase {
+  mode: "text"
+  options?: never
+}
+
+/** Every adapter-normalized field shape accepted by the core and downstream UI. */
+export type ClarificationField =
+  | ClarificationSingleField
+  | ClarificationMultiField
+  | ClarificationTextField
+
+/** Adapter-normalized clarification content with no request or connection lifecycle data. */
+export interface ClarificationPayload {
+  prompt: string
+  fields: ClarificationField[]
+}
+
+/** The only terminal user outcomes exposed beyond the adapter/controller boundary. */
+export type ClarificationOutcome =
+  | { kind: "answered"; values: Record<string, string | string[]> }
+  | { kind: "cancelled" }
 
 /** User-owned lifecycle for one conversation in the workspace. */
 export type ConversationLifecycle = "visible" | "background" | "closed"
@@ -413,7 +473,7 @@ export type DomainSessionEvent =
   | { kind: "user_message"; messageId: string; text: string }
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
-  | { kind: "status"; status: SessionStatus } // idle | working | awaiting_approval | finished | error
+  | { kind: "status"; status: SessionStatus }
   | { kind: "usage"; used: number; size: number }
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set

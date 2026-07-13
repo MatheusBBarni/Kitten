@@ -297,13 +297,14 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
 
 /**
  * The rank a needs-you status carries when several sessions want attention at once
- * (ADR-006): an approval blocks an agent and is answered first, a crash is next, a
- * finished turn last. Non-attention statuses never appear as candidates.
+ * (ADR-006): a clarification blocks an agent and is answered first, then approval,
+ * a crash, and a finished turn. Non-attention statuses never appear as candidates.
  */
 const ATTENTION_RANK: Readonly<Record<SessionStatus, number>> = {
-  awaiting_approval: 0,
-  error: 1,
-  finished: 2,
+  awaiting_clarification: 0,
+  awaiting_approval: 1,
+  error: 2,
+  finished: 3,
   working: Number.POSITIVE_INFINITY,
   idle: Number.POSITIVE_INFINITY,
 }
@@ -313,10 +314,10 @@ const ATTENTION_RANK: Readonly<Record<SessionStatus, number>> = {
  * (ADR-006). This is what the jump-to-next action (task_05) sets focus to.
  *
  * Candidates are every needs-you session except `afterSessionId` itself. They are
- * ranked first by status priority (`awaiting_approval` before `error` before
- * `finished`), then by distance walking the `order` array forward from the pivot and
- * wrapping around - so among equal-priority sessions the one just after the pivot
- * wins, and a lone needy session earlier in the order is still found by wrapping.
+ * ranked first by status priority (`awaiting_clarification`, then approval, error,
+ * and finished), then by distance walking the `order` array forward from the pivot
+ * and wrapping around - so among equal-priority sessions the one just after the
+ * pivot wins, and a lone needy session earlier in the order is still found by wrapping.
  */
 export const selectNextNeedy =
   (afterSessionId: SessionId | null): Selector<SessionId | null> =>

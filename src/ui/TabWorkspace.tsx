@@ -21,6 +21,7 @@ export const TAB_OVERFLOW_LABEL = "Sessions"
 const STATUS_CUES: Readonly<Record<SessionStatus, string>> = {
   idle: "idle",
   working: "working",
+  awaiting_clarification: "clarification",
   awaiting_approval: "approval",
   error: "error",
   finished: "finished",

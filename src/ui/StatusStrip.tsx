@@ -28,10 +28,11 @@ import { formatHeadroom } from "./headroom.ts"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { usePalette, type StatusTone } from "./theme.ts"
 
-/** User-facing run-state vocabulary; awaiting approval is explicitly the user's turn. */
+/** User-facing run-state vocabulary for the compact session chips. */
 export const STATUS_LABELS: Readonly<Record<StatusTone, string>> = {
   idle: "idle",
   working: "working",
+  awaiting_clarification: "? clarification",
   awaiting_approval: "waiting",
   finished: "finished",
   error: "error",

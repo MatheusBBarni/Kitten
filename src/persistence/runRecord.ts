@@ -2,7 +2,14 @@ import { z } from "zod"
 
 import type { ResolvedSession } from "../core/types.ts"
 
-const SESSION_STATUS_SCHEMA = z.enum(["idle", "working", "awaiting_approval", "finished", "error"])
+const SESSION_STATUS_SCHEMA = z.enum([
+  "idle",
+  "working",
+  "awaiting_clarification",
+  "awaiting_approval",
+  "finished",
+  "error",
+])
 const PROVIDER_KIND_SCHEMA = z.enum(["claude-code", "codex"])
 
 const HANDOFF_FILE_SCHEMA = z.strictObject({

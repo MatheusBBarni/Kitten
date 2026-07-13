@@ -304,10 +304,11 @@ describe("availability, teardown, and structural sharing", () => {
 })
 
 describe("attention epochs and ordering", () => {
-  it("ranks approval, error, and finished ahead of non-attention statuses", () => {
-    expect(attentionRank("awaiting_approval")).toBe(0)
-    expect(attentionRank("error")).toBe(1)
-    expect(attentionRank("finished")).toBe(2)
+  it("ranks clarification, approval, error, and finished ahead of non-attention statuses", () => {
+    expect(attentionRank("awaiting_clarification")).toBe(0)
+    expect(attentionRank("awaiting_approval")).toBe(1)
+    expect(attentionRank("error")).toBe(2)
+    expect(attentionRank("finished")).toBe(3)
     expect(attentionRank("working")).toBeNull()
     expect(attentionRank("idle")).toBeNull()
   })

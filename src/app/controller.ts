@@ -22,7 +22,7 @@ import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../a
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type DomainSessionEvent, type ProviderKind, type SessionId, type SessionSeed, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type DomainSessionEvent, type ProviderKind, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
   type PersistedAgent,
@@ -591,7 +591,7 @@ export async function createSessionController(options: SessionControllerOptions)
 
   async function teardownConversation(
     runtime: AgentRuntime,
-    status: "idle" | "working" | "awaiting_approval" | "finished" | "error",
+    status: SessionStatus,
   ): Promise<CloseConversationResult> {
     const sessionId = runtime.seed.id
     runtime.closing = true
