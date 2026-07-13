@@ -34,6 +34,7 @@ import {
   EFFORT_CATEGORY,
   needsAttention,
   type ConfigOption,
+  type ProviderKind,
   type SessionId,
   type SessionStatus,
   type ThemePreference,
@@ -46,6 +47,37 @@ import {
   type EffortRetentionEvent,
 } from "../core/telemetryHeuristics.ts"
 import type { AppStore, Unsubscribe } from "../store/appStore.ts"
+
+/** The exact content-free debug record used to validate adapter usage emission. */
+export interface UsageSeenRecord {
+  evt: "usage_seen"
+  provider: ProviderKind
+  used: number
+  size: number
+}
+
+/** Injectable output boundary for the usage-emission debug log. */
+export interface UsageSeenSink {
+  write(record: UsageSeenRecord): void
+}
+
+/** Inputs copied field-by-field into a usage-emission debug record. */
+export type UsageSeenInput = Omit<UsageSeenRecord, "evt">
+
+/**
+ * Pure opt-in gate for usage-emission validation. Disabled is the default and does
+ * not construct a record, matching the recorder's existing opt-in discipline.
+ */
+export function createUsageSeenRecord(input: UsageSeenInput, enabled = false): UsageSeenRecord | null {
+  if (!enabled) return null
+  return { evt: "usage_seen", provider: input.provider, used: input.used, size: input.size }
+}
+
+/** Emit one structured debug record when the pure opt-in gate allows it. */
+export function logUsageSeen(input: UsageSeenInput, enabled = false, sink?: UsageSeenSink): void {
+  const record = createUsageSeenRecord(input, enabled)
+  if (record) sink?.write(record)
+}
 
 /** Every telemetry event Kitten records. Names match the TechSpec metric set. */
 export type TelemetryEventType =
@@ -616,9 +648,18 @@ export function resolveTelemetryPath(env: Record<string, string | undefined> = p
  * juggling an async write queue on exit.
  */
 export function createJsonlFileSink(path: string): TelemetrySink {
+  return createLocalJsonlSink<TelemetryRecord>(path)
+}
+
+/** Local JSONL sink for the exact usage-emission debug record shape. */
+export function createUsageSeenJsonlFileSink(path: string): UsageSeenSink {
+  return createLocalJsonlSink<UsageSeenRecord>(path)
+}
+
+function createLocalJsonlSink<T>(path: string): { write(record: T): void } {
   mkdirSync(dirname(path), { recursive: true })
   return {
-    write(record: TelemetryRecord): void {
+    write(record: T): void {
       appendFileSync(path, `${JSON.stringify(record)}\n`)
     },
   }

@@ -36,7 +36,15 @@ import {
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
 import { createAppStore, type AppStore, type ApprovalOverlay, type Unsubscribe } from "../store/appStore.ts"
-import type { ResumeLiveCount, ResumeMode, SessionResumedInput } from "../telemetry/recorder.ts"
+import {
+  createUsageSeenJsonlFileSink,
+  logUsageSeen,
+  resolveTelemetryPath,
+  type ResumeLiveCount,
+  type ResumeMode,
+  type SessionResumedInput,
+  type UsageSeenSink,
+} from "../telemetry/recorder.ts"
 import {
   createControllerActions,
   type ActionTelemetry,
@@ -90,6 +98,8 @@ export interface SessionControllerOptions {
   readBranch?: (cwd: string) => Promise<string | null>
   /** The telemetry recorder actions report navigation and switch outcomes to. */
   recorder?: ControllerTelemetry
+  /** Optional output seam for the gated, content-free usage-emission debug log. */
+  usageSeenSink?: UsageSeenSink
   /** Whether configured first tasks should be sent after startup. Defaults to true. */
   sendInitialTasks?: boolean
 }
@@ -148,6 +158,9 @@ export async function createSessionController(options: SessionControllerOptions)
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
   const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
+  const usageSeenSink = options.config.telemetryEnabled
+    ? options.usageSeenSink ?? createUsageSeenJsonlFileSink(resolveTelemetryPath())
+    : undefined
 
   // The resolved fleet, in declared order (ADR-005): one session per configured
   // provider in the launch directory when the config declares none, else each
@@ -222,7 +235,15 @@ export async function createSessionController(options: SessionControllerOptions)
   }
 
   function applyRuntimeEvent(runtime: AgentRuntime, event: DomainSessionEvent): void {
-    if (acceptsRuntimeEvents(runtime)) store.applyEvent(runtime.seed.id, event)
+    if (!acceptsRuntimeEvents(runtime)) return
+    if (event.kind === "usage") {
+      logUsageSeen(
+        { provider: runtime.seed.providerKind, used: event.used, size: event.size },
+        options.config.telemetryEnabled,
+        usageSeenSink,
+      )
+    }
+    store.applyEvent(runtime.seed.id, event)
   }
 
   function enqueuePermission(runtime: AgentRuntime, request: PermissionRequest): Promise<PermissionOutcome> {

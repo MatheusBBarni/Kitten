@@ -11,8 +11,11 @@ import { join } from "node:path"
 import { bucketChars, CHAR_BUCKETS, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
 import { createAppStore } from "../store/appStore.ts"
 import {
+  createUsageSeenRecord,
   createJsonlFileSink,
   createTelemetryRecorder,
+  createUsageSeenJsonlFileSink,
+  logUsageSeen,
   recordReadiness,
   resolveTelemetryPath,
   TELEMETRY_PATH_ENV_VAR,
@@ -35,6 +38,31 @@ function fakeClock(start = 1000): { now: () => number; advance: (ms: number) => 
 const types = (records: TelemetryRecord[]): string[] => records.map((record) => record.type)
 
 describe("opt-in gating", () => {
+  it("produces one exact content-free usage record when enabled", () => {
+    const record = createUsageSeenRecord(
+      { provider: "claude-code", used: 124_000, size: 200_000 },
+      true,
+    )
+
+    expect(record).toEqual({
+      evt: "usage_seen",
+      provider: "claude-code",
+      used: 124_000,
+      size: 200_000,
+    })
+    expect(Object.keys(record!)).toEqual(["evt", "provider", "used", "size"])
+  })
+
+  it("suppresses usage records by default", () => {
+    const records: unknown[] = []
+    const input = { provider: "codex", used: 10, size: 20 } as const
+
+    expect(createUsageSeenRecord(input)).toBeNull()
+    logUsageSeen(input, false, { write: (record) => records.push(record) })
+
+    expect(records).toHaveLength(0)
+  })
+
   it("writes nothing across a full sequence when telemetry is disabled", () => {
     const sink = memorySink()
     const store = createAppStore()
@@ -568,11 +596,23 @@ describe("local JSONL sink", () => {
       const sink = createJsonlFileSink(path)
       sink.write({ type: "handoff_invoked", at: 1, sessionRef: "r" })
       sink.write({ type: "agent_ready", at: 2, sessionRef: "r", agent: "codex" })
+      createUsageSeenJsonlFileSink(path).write({
+        evt: "usage_seen",
+        provider: "claude-code",
+        used: 124_000,
+        size: 200_000,
+      })
 
       const lines = readFileSync(path, "utf8").trimEnd().split("\n")
-      expect(lines).toHaveLength(2)
+      expect(lines).toHaveLength(3)
       expect(JSON.parse(lines[0]!)).toEqual({ type: "handoff_invoked", at: 1, sessionRef: "r" })
       expect(JSON.parse(lines[1]!).agent).toBe("codex")
+      expect(JSON.parse(lines[2]!)).toEqual({
+        evt: "usage_seen",
+        provider: "claude-code",
+        used: 124_000,
+        size: 200_000,
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

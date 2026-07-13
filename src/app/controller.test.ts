@@ -33,7 +33,13 @@ import {
 } from "../shell/shellRuntime.ts"
 import { selectAgentModel } from "../store/selectors.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
-import { createTelemetryRecorder, type TelemetryRecord, type TelemetryRecorder } from "../telemetry/recorder.ts"
+import {
+  createTelemetryRecorder,
+  type TelemetryRecord,
+  type TelemetryRecorder,
+  type UsageSeenRecord,
+  type UsageSeenSink,
+} from "../telemetry/recorder.ts"
 import { startMockAgent, type MockAgentHandle, type MockAgentOptions } from "../../test/mockAgent.ts"
 import { composePromptBlocks, createControllerActions, nextSessionId, type ActionTelemetry } from "./actions.ts"
 import { createSessionController, type SessionController } from "./controller.ts"
@@ -265,8 +271,10 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
 async function controllerWithStubs(
   stubs: Partial<Record<ProviderKind, StubOptions>> = {},
   overrides: {
+    config?: AppConfig
     onError?: (sessionId: SessionId, error: unknown) => void
     recorder?: ActionTelemetry
+    usageSeenSink?: UsageSeenSink
     readBranch?: (cwd: string) => Promise<string | null>
     createShellRuntime?: ShellRuntimeFactory
     store?: AppStore
@@ -280,13 +288,14 @@ async function controllerWithStubs(
   } satisfies Record<ProviderKind, StubConnection>
 
   const controller = await createSessionController({
-    config: APP_CONFIG,
+    config: overrides.config ?? APP_CONFIG,
     cwd: CWD,
     store: overrides.useProductionStore ? undefined : overrides.store ?? createAppStore({ selectedVisibleId: "claude-code" }),
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
     onError: overrides.onError,
     recorder: overrides.recorder,
+    usageSeenSink: overrides.usageSeenSink,
     readBranch: overrides.readBranch ?? (async () => null),
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
   })
@@ -493,6 +502,25 @@ describe("nextSessionId", () => {
 })
 
 describe("createSessionController - startup", () => {
+  it("Should log one content-free usage record with the emitting provider before store dispatch", async () => {
+    const records: UsageSeenRecord[] = []
+    const { controller, connections } = await controllerWithStubs({}, {
+      config: { ...APP_CONFIG, telemetryEnabled: true },
+      usageSeenSink: { write: (record) => records.push(record) },
+    })
+
+    connections["claude-code"].emit({ kind: "usage", used: 124_000, size: 200_000 })
+
+    expect(records).toEqual([
+      { evt: "usage_seen", provider: "claude-code", used: 124_000, size: 200_000 },
+    ])
+    expect(controller.store.getState().sessions["claude-code"]!.usage).toEqual({
+      used: 124_000,
+      size: 200_000,
+    })
+    await controller.dispose()
+  })
+
   it("Should pass resolved command and scrollback config to the shell runtime factory", async () => {
     let received: Parameters<ShellRuntimeFactory>[0] | undefined
     const shell = createStubShellRuntime()
