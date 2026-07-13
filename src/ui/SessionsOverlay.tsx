@@ -34,6 +34,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
 import {
   selectIsApprovalOpen,
+  selectIsClarificationOpen,
   selectIsSessionsOpen,
   selectSessionList,
   type SessionListItem,
@@ -92,6 +93,7 @@ function SessionsDialog(): ReactNode {
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const sessions = useAppSelector(selectSessionList)
 
   const [selected, setSelected] = useState(0)
@@ -125,6 +127,10 @@ function SessionsDialog(): ReactNode {
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification owns top modal priority. Return before claiming or interpreting
+      // this key so the mounted overview and its highlight resume unchanged.
+      if (clarificationOpen) return
+
       // Modal: no key reaches the focused textarea while the overview is open, whether
       // or not this dialog claims it. The shell stands its own chords down separately.
       key.preventDefault()
@@ -151,7 +157,7 @@ function SessionsDialog(): ReactNode {
           return
       }
     },
-    [controller, jumpInto, jumpNextNeedy, sessions.length],
+    [clarificationOpen, controller, jumpInto, jumpNextNeedy, sessions.length],
   )
   useKeyboard(onKey)
 

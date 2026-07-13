@@ -104,6 +104,32 @@ async function openOverview(setup: TestRendererSetup): Promise<string> {
   return setup.waitForFrame((frame) => frame.includes(SESSIONS_HINT))
 }
 
+/** Open the real top-priority clarification overlay over the mounted overview. */
+async function openClarification(controller: FakeController, requestId: string): Promise<void> {
+  await actAsync(() => {
+    controller.store.openClarification({
+      requestId,
+      generation: 1,
+      sessionId: "b",
+      title: "Beta",
+      cwd: "/work/beta",
+      payload: {
+        prompt: "Choose a boundary",
+        fields: [{
+          id: "boundary",
+          label: "Boundary",
+          mode: "single",
+          required: true,
+          options: [
+            { id: "controller", label: "Controller" },
+            { id: "store", label: "Store" },
+          ],
+        }],
+      },
+    })
+  })
+}
+
 describe("SessionsOverlay visibility", () => {
   it("renders nothing until /sessions is run", async () => {
     const controller = fleetController()
@@ -374,6 +400,60 @@ describe("SessionsOverlay routing", () => {
 })
 
 describe("SessionsOverlay modality", () => {
+  it("preserves its highlight and blocks Enter, n, arrows, and Escape until clarification settles", async () => {
+    const controller = fleetController()
+    setStatus(controller, "c", "finished")
+    const setup = await renderCockpit(controller)
+    await openOverview(setup)
+
+    await actAsync(() => {
+      setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes("Beta") && line.includes(SESSION_MARKER)),
+    )
+
+    await openClarification(controller, "clarification-sessions-enter")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressArrow("up")
+      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressKey("n")
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.clarification === null)
+
+    expect(controller.calls.respondClarification).toHaveLength(1)
+    expect(controller.calls.jumpToNextAttention).toBe(0)
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
+    expect(controller.store.getState().overlays.sessions).toBe(true)
+    await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes("Beta") && line.includes(SESSION_MARKER)),
+    )
+
+    await openClarification(controller, "clarification-sessions-escape")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.clarification === null)
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({ kind: "cancelled" })
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
+    expect(controller.store.getState().overlays.sessions).toBe(true)
+    await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes("Beta") && line.includes(SESSION_MARKER)),
+    )
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitFor(() => controller.store.getState().overlays.sessions === false)
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("keeps every key from the shell and the prompt editor while it is open", async () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)

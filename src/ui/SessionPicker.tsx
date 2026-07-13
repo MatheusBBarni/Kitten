@@ -19,7 +19,11 @@ import {
   type PersistedRunSummary,
 } from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
-import { selectIsApprovalOpen, selectSessionPicker } from "../store/selectors.ts"
+import {
+  selectIsApprovalOpen,
+  selectIsClarificationOpen,
+  selectSessionPicker,
+} from "../store/selectors.ts"
 import type { TelemetryRecorder } from "../telemetry/recorder.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { matchSessionPickerCommand, SESSION_PICKER_HINT } from "./keymap.ts"
@@ -104,6 +108,7 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
   const palette = usePalette()
   const { height } = useTerminalDimensions()
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
+  const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState(0)
   const selectedRef = useRef(0)
@@ -238,6 +243,9 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
+      // Clarification owns top modal priority. Return before matching or claiming this
+      // key so the mounted filter, selection, preview, and delete confirmation survive.
+      if (clarificationOpen) return
       if (approvalOpen) return
       const command = matchSessionPickerCommand(key)
 
@@ -289,6 +297,7 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
     },
     [
       approvalOpen,
+      clarificationOpen,
       controller,
       deleteAll,
       deleteSelected,
@@ -327,7 +336,7 @@ function SessionPickerDialog({ source, recorder }: { source?: SessionPickerSourc
       <box style={{ flexDirection: "row", flexShrink: 0 }}>
         <text fg={palette.accent}>Filter: </text>
         <input
-          focused={!approvalOpen}
+          focused={!approvalOpen && !clarificationOpen}
           value={query}
           placeholder={SESSION_PICKER_FILTER_PLACEHOLDER}
           onInput={changeQuery}
