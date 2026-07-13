@@ -12,6 +12,7 @@ import {
   type PermissionRequest,
 } from "./agentConnection.ts"
 import { createInMemoryTransportPair } from "./transport.ts"
+import { KITTEN_VERSION } from "../version.ts"
 
 /**
  * Integration tests that drive the `AgentConnection` adapter against the in-process
@@ -133,6 +134,22 @@ describe("connect / session lifecycle", () => {
     })
 
     expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
+    await conn.dispose()
+  })
+
+  it("identifies the ACP client with the package version", async () => {
+    const { conn } = setup({
+      onInitialize(request) {
+        expect(request.clientInfo).toEqual({ name: "kitten", version: KITTEN_VERSION })
+        return {
+          protocolVersion: 1,
+          agentCapabilities: {},
+          agentInfo: { name: "mock-agent", version: "0.0.0" },
+        }
+      },
+    })
+
+    expect((await conn.connect()).ready).toBe(true)
     await conn.dispose()
   })
 

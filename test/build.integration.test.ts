@@ -5,6 +5,7 @@ import { join } from "node:path"
 
 import { compileCommand, type BuildTarget } from "../scripts/build.ts"
 import { SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
+import pkg from "../package.json" with { type: "json" }
 
 /**
  * The ADR-006 acceptance test: a real `bun build --compile` artifact must boot
@@ -37,6 +38,18 @@ describe("compiled artifact self-check (ADR-006)", () => {
       expect(stdout).toContain("Kitten")
       expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
       expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
+
+      const versionRun = Bun.spawnSync([outfile, "--version"], { stdout: "pipe", stderr: "pipe" })
+      expect(versionRun.exitCode).toBe(0)
+      expect(versionRun.stdout.toString()).toBe(`${pkg.version}\n`)
+      expect(versionRun.stderr.toString()).toBe("")
+
+      const helpRun = Bun.spawnSync([outfile, "--help"], { stdout: "pipe", stderr: "pipe" })
+      expect(helpRun.exitCode).toBe(0)
+      expect(helpRun.stdout.toString()).toStartWith("Examples:\n")
+      expect(helpRun.stdout.toString()).toContain("npx kitten")
+      expect(helpRun.stdout.toString()).toContain("--self-check")
+      expect(helpRun.stderr.toString()).toBe("")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

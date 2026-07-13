@@ -38,6 +38,7 @@ import type {
   SessionStatus,
   ToolCallUpdate,
 } from "../core/types.ts"
+import { KITTEN_VERSION } from "../version.ts"
 import {
   toAcpElicitationOutcome,
   translateConfigOptions,
@@ -224,7 +225,7 @@ class AgentConnectionImpl implements AgentConnection {
           session: { configOptions: {} },
           ...(this.clarificationSupported ? { elicitation: { form: {} } } : {}),
         },
-        clientInfo: { name: "kitten", version: "0.0.0" },
+        clientInfo: { name: "kitten", version: KITTEN_VERSION },
       })
       return {
         ready: true,

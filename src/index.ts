@@ -49,6 +49,7 @@ import { selectThemePreference } from "./store/selectors.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderBootBanner, type BootBannerDisposer, type BootBannerOptions } from "./ui/bootBanner.tsx"
 import { renderCockpit } from "./ui/main.tsx"
+import { KITTEN_VERSION } from "./version.ts"
 
 export { renderCockpit }
 
@@ -543,13 +544,71 @@ export function wantsSelfCheck(argv: readonly string[]): boolean {
   return argv.includes("--self-check")
 }
 
+/** Whether the CLI was asked to print Kitten's release version. */
+export function wantsVersion(argv: readonly string[]): boolean {
+  return argv.includes("--version")
+}
+
+/** Whether the CLI was asked to print usage and install guidance. */
+export function wantsHelp(argv: readonly string[]): boolean {
+  return argv.includes("--help")
+}
+
+export interface CliFlagDispatchOptions {
+  /** Output seam used by tests and the real stdout stream. */
+  write?: (output: string) => void
+  /** Exit seam used by tests and the real process. */
+  exit?: (code: number) => void
+}
+
+function formatCliHelp(): string {
+  return `Examples:
+  npx kitten                      Try Kitten without installing
+  kitten                          Launch in the current Git repository
+  kitten --self-check             Run the headless boot check
+
+Kitten ${KITTEN_VERSION}
+
+Usage:
+  kitten [--version | --help | --self-check]
+
+Options:
+  --version                       Print the installed version
+  --help                          Print this help
+  --self-check                    Verify Kitten can boot headlessly
+
+Install or upgrade:
+  npm / npx channel:              npm i -g kitten@latest
+  standalone binary channel:     curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | sh
+`
+}
+
+/** Handle metadata-only flags before boot; return false to continue into the cockpit. */
+export function dispatchCliFlags(argv: readonly string[], options: CliFlagDispatchOptions = {}): boolean {
+  const write = options.write ?? ((output: string) => process.stdout.write(output))
+  const exit = options.exit ?? ((code: number) => process.exit(code))
+
+  if (wantsVersion(argv)) {
+    write(`${KITTEN_VERSION}\n`)
+    exit(0)
+    return true
+  }
+  if (wantsHelp(argv)) {
+    write(formatCliHelp())
+    exit(0)
+    return true
+  }
+  return false
+}
+
 /** Whether self-check should run the manual/nightly real-adapter reload gate. */
 export function wantsReloadProbe(argv: readonly string[]): boolean {
   return argv.includes("--reload-probe")
 }
 
 if (import.meta.main) {
-  if (wantsSelfCheck(process.argv)) {
+  const cliFlagHandled = dispatchCliFlags(process.argv)
+  if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
     try {
       const { frame, reloadProbe } = await runSelfCheck({
         reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
@@ -566,7 +625,7 @@ if (import.meta.main) {
       process.stderr.write(`SELF-CHECK FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
       process.exit(1)
     }
-  } else {
+  } else if (!cliFlagHandled) {
     await main()
   }
 }

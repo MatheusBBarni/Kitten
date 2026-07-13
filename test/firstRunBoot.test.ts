@@ -6,13 +6,17 @@ import { createOfflineConnection, runSelfCheck } from "../src/app/selfCheck.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, type FirstRunGuidanceOptions } from "../src/config/firstRun.ts"
 import {
+  dispatchCliFlags,
   exitBlocked,
   main,
   runtimeSetup,
+  wantsHelp,
   wantsReloadProbe,
   wantsSelfCheck,
+  wantsVersion,
 } from "../src/index.ts"
 import type { AgentRuntimeState } from "../src/app/controller.ts"
+import { KITTEN_VERSION } from "../src/version.ts"
 import { createFakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted } from "./reactTui.ts"
 
@@ -209,6 +213,63 @@ describe("wantsSelfCheck", () => {
   it("detects the opt-in real-adapter reload probe flag independently", () => {
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check", "--reload-probe"])).toBe(true)
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check"])).toBe(false)
+  })
+})
+
+describe("CLI metadata flags", () => {
+  it("detects --version independently from --self-check", () => {
+    expect(wantsVersion(["--version"])).toBe(true)
+    expect(wantsVersion(["--self-check"])).toBe(false)
+  })
+
+  it("prints exactly the package version and exits successfully", () => {
+    const writes: string[] = []
+    const exits: number[] = []
+
+    expect(
+      dispatchCliFlags(["--version"], {
+        write: (output) => writes.push(output),
+        exit: (code) => exits.push(code),
+      }),
+    ).toBe(true)
+    expect(writes).toEqual([`${KITTEN_VERSION}\n`])
+    expect(exits).toEqual([0])
+  })
+
+  it("prints examples-first help with install and self-check guidance, then exits successfully", () => {
+    const writes: string[] = []
+    const exits: number[] = []
+
+    expect(
+      dispatchCliFlags(["--help"], {
+        write: (output) => writes.push(output),
+        exit: (code) => exits.push(code),
+      }),
+    ).toBe(true)
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toStartWith("Examples:\n")
+    expect(writes[0]).toContain("npx kitten")
+    expect(writes[0]).toContain("--self-check")
+    expect(writes[0]).toContain("npm i -g kitten@latest")
+    expect(exits).toEqual([0])
+  })
+
+  it("leaves unknown flags for cockpit boot without writing or exiting", () => {
+    const writes: string[] = []
+    const exits: number[] = []
+    const argv = ["--nope"]
+
+    expect(wantsVersion(argv)).toBe(false)
+    expect(wantsHelp(argv)).toBe(false)
+    expect(wantsSelfCheck(argv)).toBe(false)
+    expect(
+      dispatchCliFlags(argv, {
+        write: (output) => writes.push(output),
+        exit: (code) => exits.push(code),
+      }),
+    ).toBe(false)
+    expect(writes).toEqual([])
+    expect(exits).toEqual([])
   })
 })
 
