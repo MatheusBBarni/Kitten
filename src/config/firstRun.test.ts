@@ -14,12 +14,25 @@ import {
 
 /** A ready readiness verdict for `agentId`. */
 function ready(agentId: ProviderKind, displayName: string): AgentReadiness {
-  return { agentId, displayName, ready: true, protocolVersion: 1 }
+  return {
+    agentId,
+    displayName,
+    clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+    ready: true,
+    protocolVersion: 1,
+  }
 }
 
 /** A not-ready readiness verdict carrying the setup gap message. */
 function notReady(agentId: ProviderKind, displayName: string, message: string): AgentReadiness {
-  return { agentId, displayName, ready: false, reason: "binary_not_found", message }
+  return {
+    agentId,
+    displayName,
+    clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+    ready: false,
+    reason: "binary_not_found",
+    message,
+  }
 }
 
 describe("readinessSetup", () => {

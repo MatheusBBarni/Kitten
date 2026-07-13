@@ -31,12 +31,14 @@ import type {
   McpServerConfig,
   ProviderKind,
   ProviderRecipe,
+  ResolvedAgentConfig,
   ResolvedSession,
   SessionDescriptor,
   ThemePreference,
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import { classifyClarificationCapability } from "./clarificationCapability.ts"
 
 /**
  * The pinned ACP adapter packages the default config launches through `npx`.
@@ -331,10 +333,14 @@ export async function loadAppConfig(options: LoadAppConfigOptions = {}): Promise
 }
 
 /** The spawn recipe for one provider, paired with its id. `undefined` when omitted. */
-export function findAgentConfig(config: AppConfig, id: ProviderKind): AgentConfig | undefined {
+export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAgentConfig | undefined {
   const recipe = config.providers[id]
   if (!recipe) return undefined
-  return { id, ...recipe }
+  const resolved = { id, ...recipe }
+  return {
+    ...resolved,
+    clarificationCapability: classifyClarificationCapability(resolved),
+  }
 }
 
 /** Seams so {@link resolveSessions} can validate `cwd` without touching the real disk. */
@@ -393,7 +399,7 @@ export function resolveSessions(config: AppConfig, options: ResolveSessionsOptio
         cwd,
         ...(descriptor.task !== undefined ? { task: descriptor.task } : {}),
       },
-      spawn: { id: descriptor.provider, ...recipe },
+      spawn: findAgentConfig(config, descriptor.provider)!,
     }
   })
 }

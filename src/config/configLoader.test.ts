@@ -69,6 +69,7 @@ describe("defaults", () => {
       command: "npx",
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
     })
     expect(findAgentConfig(config, "codex")).toEqual({
       id: "codex",
@@ -76,6 +77,7 @@ describe("defaults", () => {
       command: "npx",
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
     })
   })
 
@@ -222,6 +224,17 @@ describe("user overrides", () => {
     expect(claude?.displayName).toBe("Claude")
     expect(claude?.command).toBe("npx")
     expect(claude?.args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
+    expect(claude?.clarificationCapability).toEqual({ status: "unsupported", reason: "unverified_recipe" })
+  })
+
+  it("Should classify capability after merging every identity-bearing override", () => {
+    const command = parseAppConfig(JSON.stringify({ providers: { codex: { command: "/opt/bin/npx" } } }))
+    const args = parseAppConfig(JSON.stringify({ providers: { codex: { args: ["-y", CODEX_ACP_PACKAGE, "--debug"] } } }))
+    const env = parseAppConfig(JSON.stringify({ providers: { codex: { env: { CODEX_PATH: "/opt/codex" } } } }))
+
+    expect(findAgentConfig(command, "codex")?.clarificationCapability.status).toBe("unsupported")
+    expect(findAgentConfig(args, "codex")?.clarificationCapability.status).toBe("unsupported")
+    expect(findAgentConfig(env, "codex")?.clarificationCapability.status).toBe("unsupported")
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {
@@ -314,6 +327,7 @@ describe("resolveSessions", () => {
     expect(resolved.map((session) => session.seed.title)).toEqual(["Codex", "Claude Code"])
     // The resolved spawn recipe carries the provider's id for the connection factory.
     expect(resolved[0]!.spawn).toEqual(findAgentConfig(config, "codex")!)
+    expect(resolved.every((session) => session.spawn.clarificationCapability.status === "unsupported")).toBe(true)
   })
 
   it("Should resolve two sessions of the same provider into distinct ids, titles, and directories", () => {

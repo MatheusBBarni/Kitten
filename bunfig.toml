@@ -14,6 +14,13 @@ minimumReleaseAgeExcludes = [
   "@opentui/core",
   "@opentui/react",
   "@agentclientprotocol/sdk",
+  # Exact built-in adapter releases exercised by the credentialed clarification contract gate.
+  "@agentclientprotocol/claude-agent-acp",
+  "@agentclientprotocol/codex-acp",
+  # Adapter runtime dependencies required by those exact contract packages.
+  "@anthropic-ai/claude-agent-sdk",
+  "@openai/codex",
+  "vscode-jsonrpc",
   # Transitive native dependency hard-pinned by @opentui/core.
   "bun-ffi-structs",
   # Platform-specific native (Zig) cores that @opentui/core loads via FFI.

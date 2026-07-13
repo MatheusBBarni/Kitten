@@ -448,6 +448,17 @@ export interface ProviderRecipe {
   env: Record<string, string>
 }
 
+/**
+ * Whether a resolved provider recipe may use Kitten's structured clarification
+ * path. This stays protocol-free; ACP capability types remain in `src/agent`.
+ */
+export type ClarificationCapability =
+  | { status: "supported"; adapterPackage: string; adapterVersion: string }
+  | {
+      status: "unsupported"
+      reason: "unknown_recipe" | "recipe_overridden" | "unverified_recipe"
+    }
+
 /** A protocol-free stdio MCP server declaration shared by every agent session. */
 export interface McpServerConfig {
   name: string
@@ -464,6 +475,11 @@ export interface McpServerConfig {
  */
 export interface AgentConfig extends ProviderRecipe {
   id: ProviderKind
+}
+
+/** A provider config after exact clarification capability classification. */
+export interface ResolvedAgentConfig extends AgentConfig {
+  clarificationCapability: ClarificationCapability
 }
 
 /**
@@ -519,7 +535,7 @@ export interface AppConfig {
  */
 export interface ResolvedSession {
   seed: SessionSeed
-  spawn: AgentConfig
+  spawn: ResolvedAgentConfig
 }
 
 /** A content-free telemetry record (opt-in, local JSONL only). */

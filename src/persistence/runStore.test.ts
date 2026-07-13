@@ -128,7 +128,14 @@ function makeV2Record(cwd: string, overrides: Partial<PersistedRunRecordV2> = {}
 function resolvedSession(id: string, providerKind: "claude-code" | "codex", cwd: string): ResolvedSession {
   return {
     seed: { id, providerKind, cwd, title: `${id} configured` },
-    spawn: { id: providerKind, displayName: id, command: "agent", args: [], env: {} },
+    spawn: {
+      id: providerKind,
+      displayName: id,
+      command: "agent",
+      args: [],
+      env: {},
+      clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+    },
   }
 }
 
