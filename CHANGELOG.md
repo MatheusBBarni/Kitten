@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.2.0...kitten-v0.2.1) (2026-07-13)
+
+
+### Fixes
+
+* recover component-tagged npm releases ([353bf0a](https://github.com/MatheusBBarni/Kitten/commit/353bf0a1eedec7f5e60091cbcf420aea51a73786))
+* recover component-tagged npm releases ([9686178](https://github.com/MatheusBBarni/Kitten/commit/9686178ecae961e23a6646400b2b8b204d6dcdc8))
+
 ## [0.2.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.1.0...kitten-v0.2.0) (2026-07-13)
 
 
