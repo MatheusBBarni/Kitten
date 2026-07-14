@@ -507,6 +507,7 @@ describe("clarification lifecycle over controller and local JSONL", () => {
         .map((line) => JSON.parse(line) as TelemetryRecord)
       expect(records.map((record) => record.type)).toEqual([
         "clarification_capability_classified",
+        "provider_readiness",
         "clarification_presented",
         "clarification_settled",
       ])

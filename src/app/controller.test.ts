@@ -69,6 +69,7 @@ import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.t
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
+const CURSOR: AgentConfig = { id: "cursor", displayName: "Cursor", command: "agent", args: ["acp"], env: {} }
 const PROVIDERS = {
   "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
   codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
@@ -82,6 +83,18 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+}
+const CURSOR_APP_CONFIG: AppConfig = {
+  ...APP_CONFIG,
+  providers: {
+    ...PROVIDERS,
+    cursor: {
+      displayName: CURSOR.displayName,
+      command: CURSOR.command,
+      args: CURSOR.args,
+      env: CURSOR.env,
+    },
+  },
 }
 const CWD = "/workspace/kitten"
 
@@ -1404,6 +1417,207 @@ describe("createSessionController - persisted restore", () => {
     expect(controller.store.getState().restoration).toMatchObject({ "claude-code": null, codex: null })
     expect(controller.store.getState().sessions["claude-code"]!.acpSessionId).toBe("claude-code-fresh-2")
     expect(controller.store.getState().sessions.codex!.acpSessionId).toBe("codex-fresh-2")
+    await controller.dispose()
+  })
+})
+
+describe("createSessionController - Cursor preflight and readiness telemetry", () => {
+  it("preflights before constructing exactly one long-lived Cursor connection and keeps all three providers live", async () => {
+    const events: Array<{ kind: "preflight" | "create"; config: unknown }> = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        events.push({ kind: "preflight", config })
+        return { ready: true }
+      },
+      createConnection: (config) => {
+        events.push({ kind: "create", config })
+        const connection = createStubConnection(config.id)
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    const cursorEvents = events.filter(({ config }) => (config as { id: ProviderKind }).id === "cursor")
+    expect(cursorEvents.map(({ kind }) => kind)).toEqual(["preflight", "create"])
+    expect(cursorEvents[0]!.config).toBe(cursorEvents[1]!.config)
+    expect(cursorEvents[0]!.config).toHaveProperty("runtimeProfile")
+    expect(controller.runtimes().map(({ providerKind, ready }) => ({ providerKind, ready }))).toEqual([
+      { providerKind: "codex", ready: true },
+      { providerKind: "claude-code", ready: true },
+      { providerKind: "cursor", ready: true },
+    ])
+    expect(await controller.actions.sendPrompt("sibling prompt", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it.each([
+    ["binary_not_found", "binary_missing"],
+    ["version_mismatch", "version_mismatch"],
+    ["uncertified_recipe", "uncertified_recipe"],
+  ] as const)("isolates Cursor %s before construction and emits only %s", async (reason, outcome) => {
+    const sinkRecords: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => sinkRecords.push(record) },
+      sessionRef: "cursor-preflight",
+    })
+    const created: ProviderKind[] = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      recorder,
+      preflightAgentReadiness: async () => ({
+        ready: false,
+        reason,
+        message: `Cursor recovery for ${reason}`,
+      }),
+      createConnection: (config) => {
+        created.push(config.id)
+        const connection = createStubConnection(config.id)
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    expect(created).not.toContain("cursor")
+    expect(controller.runtime("cursor")).toMatchObject({ ready: false, error: `Cursor recovery for ${reason}` })
+    expect(controller.isReady("codex")).toBe(true)
+    expect(await controller.actions.sendPrompt("still usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
+    expect(sinkRecords).toContainEqual(expect.objectContaining({
+      type: "provider_readiness",
+      provider: "cursor",
+      readinessOutcome: outcome,
+    }))
+    await controller.dispose()
+  })
+
+  it("normalizes Cursor authentication failure without disturbing a ready sibling", async () => {
+    const records: TelemetryRecord[] = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+      }),
+      preflightAgentReadiness: async () => ({ ready: true }),
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, config.id === "cursor"
+          ? { ready: { ready: false, reason: "authentication_required", error: "login rejected" } }
+          : {})
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    expect(controller.runtime("cursor")).toMatchObject({
+      ready: false,
+      error: "Cursor: authentication is required: login rejected. Sign in to Cursor, then restart Kitten.",
+    })
+    expect(records).toContainEqual(expect.objectContaining({
+      type: "provider_readiness",
+      provider: "cursor",
+      readinessOutcome: "authentication_required",
+    }))
+    expect(await controller.actions.sendPrompt("continue", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("claude-code")?.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it("preflights dynamic, fresh-run, fresh-context, and restored Cursor replacements and emits Cursor tab creation", async () => {
+    const cursorOnly: AppConfig = {
+      ...CURSOR_APP_CONFIG,
+      sessions: [{ provider: "cursor", cwd: process.cwd(), title: "Cursor" }],
+    }
+    const lifecycle: Array<{ kind: "preflight" | "create"; config: unknown }> = []
+    const records: TelemetryRecord[] = []
+    const ids = ["cursor-dynamic"]
+    const controller = await createSessionController({
+      config: cursorOnly,
+      cwd: CWD,
+      recorder: createTelemetryRecorder({ enabled: true, sink: { write: (record) => records.push(record) } }),
+      preflightAgentReadiness: async (config) => {
+        lifecycle.push({ kind: "preflight", config })
+        return { ready: true }
+      },
+      createConnection: (config) => {
+        lifecycle.push({ kind: "create", config })
+        return createStubConnection(config.id, { sessionId: `cursor-acp-${lifecycle.length}` })
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+    })
+
+    expect(await controller.actions.createConversation()).toBe("cursor-dynamic")
+    expect(await controller.actions.startFreshFromContext("saved", "cursor-dynamic")).toEqual({ stopReason: "end_turn" })
+    await controller.actions.startNewRun()
+    await controller.restore({
+      version: 2,
+      runId: "cursor-run",
+      cwd: CWD,
+      gitBranch: "feat/cursor",
+      createdAt: 1,
+      updatedAt: 2,
+      conversations: {
+        cursor: {
+          sessionId: "cursor",
+          providerKind: "cursor",
+          cwd: process.cwd(),
+          initialTitle: "Cursor",
+          acpSessionId: "cursor-stored",
+          lastPrompt: "continue",
+          messageCount: 1,
+          status: "idle",
+        },
+      },
+      workspace: {
+        conversations: {
+          cursor: {
+            sessionId: "cursor",
+            displayName: "Cursor",
+            lifecycle: "visible",
+            createdOrdinal: 1,
+            attention: { seen: true, sequence: 0 },
+          },
+        },
+        order: ["cursor"],
+        selectedVisibleId: "cursor",
+      },
+      handoffBundle: null,
+    })
+
+    const preflights = lifecycle.filter(({ kind }) => kind === "preflight")
+    const constructions = lifecycle.filter(({ kind }) => kind === "create")
+    expect(preflights).toHaveLength(constructions.length)
+    for (const construction of constructions) {
+      const index = lifecycle.indexOf(construction)
+      expect(lifecycle.slice(0, index).filter(({ kind }) => kind === "preflight").length)
+        .toBeGreaterThan(lifecycle.slice(0, index).filter(({ kind }) => kind === "create").length)
+      expect(construction.config).toHaveProperty("runtimeProfile")
+    }
+    expect(records).toContainEqual(expect.objectContaining({
+      type: "tab_created",
+      provider: "cursor",
+      creationSource: "inherited",
+    }))
     await controller.dispose()
   })
 })

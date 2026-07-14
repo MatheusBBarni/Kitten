@@ -99,6 +99,7 @@ describe("opt-in gating", () => {
     recorder.fileSelectorSelected("codex", 150)
     recorder.fileSelectorCorrected("codex")
     recorder.clarificationCapabilityClassified("codex", "unsupported", "unknown_recipe")
+    recorder.providerReadiness("cursor", "authentication_required")
     recorder.clarificationPresented({
       requestId: "request-secret",
       sessionId: "codex",
@@ -701,6 +702,48 @@ describe("kept effort changes (store-derived over the heuristic)", () => {
 })
 
 describe("readiness events", () => {
+  it("records only provider and a fixed readiness outcome", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "readiness-run",
+    })
+
+    recorder.providerReadiness("cursor", "ready")
+    recorder.providerReadiness("cursor", "binary_missing")
+    recorder.providerReadiness("cursor", "version_mismatch")
+    recorder.providerReadiness("cursor", "uncertified_recipe")
+    recorder.providerReadiness("cursor", "authentication_required")
+    recorder.providerReadiness("cursor", "handshake_failed")
+
+    const outcomes = [
+      "ready",
+      "binary_missing",
+      "version_mismatch",
+      "uncertified_recipe",
+      "authentication_required",
+      "handshake_failed",
+    ] as const
+    expect(sink.records).toEqual(outcomes.map((readinessOutcome) => ({
+      type: "provider_readiness",
+      provider: "cursor",
+      readinessOutcome,
+      at: 42,
+      sessionRef: "readiness-run",
+    })))
+    for (const record of sink.records) {
+      expect(Object.keys(record).sort()).toEqual([
+        "at",
+        "provider",
+        "readinessOutcome",
+        "sessionRef",
+        "type",
+      ])
+    }
+  })
+
   it("records agent_ready and agent_unready from a runtimes snapshot", () => {
     const sink = memorySink()
     const recorder = createTelemetryRecorder({ enabled: true, sink })

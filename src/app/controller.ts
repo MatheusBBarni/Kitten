@@ -21,6 +21,12 @@
 import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
+import {
+  connectionReadinessFailure,
+  preflightAgentReadiness,
+  type AgentReadinessPreflight,
+  type ReadinessPreflightOptions,
+} from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
@@ -48,6 +54,7 @@ import {
   type ClarificationCapabilityDiagnostic,
   type ClarificationSessionLossReason,
   type UsageSeenSink,
+  type ProviderReadinessOutcome,
 } from "../telemetry/recorder.ts"
 import {
   createControllerActions,
@@ -66,6 +73,7 @@ export type { CloseChoice, CloseConversationResult } from "./actions.ts"
 
 /** The additional content-free telemetry emitted by resume orchestration. */
 export interface ControllerTelemetry extends ActionTelemetry {
+  providerReadiness?(provider: ProviderKind, outcome: ProviderReadinessOutcome): void
   resumeLoadStarted?(): void
   sessionResumed?(input: SessionResumedInput): void
   resumePaneUnavailable?(sessionId: SessionId): void
@@ -145,7 +153,12 @@ export interface SessionControllerOptions {
   /** The store to drive. Defaults to one seeded from the config's providers. */
   store?: AppStore
   /** How to build a connection for a provider. Defaults to a real spawning connection. */
-  createConnection?: (config: AgentConfig) => AgentConnection
+  createConnection?: (config: ResolvedAgentConfig) => AgentConnection
+  /** Lightweight recipe/binary/version check used before every Cursor connection. */
+  preflightAgentReadiness?: (
+    config: ResolvedAgentConfig,
+    options?: ReadinessPreflightOptions,
+  ) => Promise<AgentReadinessPreflight>
   /** How to build the persistent shell. Defaults to the real PTY-backed runtime. */
   createShellRuntime?: ShellRuntimeFactory
   /** Ids for recorded user turns. Defaults to a random UUID. */
@@ -469,7 +482,7 @@ export function createInteractionCoordinator(
 /** Everything the controller owns for one session. */
 interface AgentRuntime {
   seed: SessionSeed
-  config: AgentConfig | null
+  config: ResolvedAgentConfig | null
   state: AgentRuntimeState
   connection: AgentConnection | null
   acpSessionId: string | null
@@ -489,6 +502,7 @@ interface AgentRuntime {
 export async function createSessionController(options: SessionControllerOptions): Promise<SessionController> {
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
+  const preflight = options.preflightAgentReadiness ?? preflightAgentReadiness
   // Resolve once per cockpit boot so every fresh, restored, and dynamically added
   // session receives the same validated stdio server list.
   const mcpResolution = resolveMcpServers(options.config.mcpServers)
@@ -738,7 +752,7 @@ export async function createSessionController(options: SessionControllerOptions)
     return { sessionId, acpSessionId: runtime.acpSessionId, connection: runtime.connection }
   }
 
-  function registerRuntime(seed: SessionSeed, config: AgentConfig | null): AgentRuntime {
+  function registerRuntime(seed: SessionSeed, config: ResolvedAgentConfig | null): AgentRuntime {
     const runtime: AgentRuntime = {
       seed,
       config,
@@ -772,20 +786,33 @@ export async function createSessionController(options: SessionControllerOptions)
   }
 
   /** Bring one session up, or record precisely why it did not come up. */
-  async function startSession(seed: SessionSeed, config: AgentConfig): Promise<void> {
+  async function startSession(seed: SessionSeed, config: ResolvedAgentConfig): Promise<void> {
     let connection: AgentConnection | undefined
+    let readinessRecorded = false
     const runtime = runtimes.get(seed.id) ?? registerRuntime(seed, config)
     runtime.generation = nextConnectionGeneration(seed.id, connectionGenerations)
     runtime.config = config
     store.setConversationAvailability(seed.id, { kind: "starting" })
     try {
+      const preflightResult = await preflightCursor(config, preflight)
+      if (!preflightResult.ready) {
+        options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
+        readinessRecorded = true
+        await failSession(runtime, undefined, preflightResult.message, "connection-failed")
+        return
+      }
       connection = create(config)
       runtime.connection = connection
       const ready = await connection.connect()
       if (!ready.ready) {
-        await failSession(runtime, connection, ready.error, "connection-failed")
+        const failure = longLivedReadinessFailure(config, ready)
+        options.recorder?.providerReadiness?.(config.id, failure.reason)
+        readinessRecorded = true
+        await failSession(runtime, connection, failure.message, "connection-failed")
         return
       }
+      options.recorder?.providerReadiness?.(config.id, "ready")
+      readinessRecorded = true
       // The agent may advertise its current model/effort in the `session/new` response,
       // which the adapter emits as a `config_options` event *during* `newSession`. The
       // permanent subscription below is bound only after `startSession` resets the slice,
@@ -819,6 +846,7 @@ export async function createSessionController(options: SessionControllerOptions)
       runtime.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
     } catch (error) {
+      if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
       onError(seed.id, error)
       await failSession(runtime, connection, errorMessage(error), "connection-failed")
     }
@@ -892,7 +920,7 @@ export async function createSessionController(options: SessionControllerOptions)
    * replay emitted synchronously by the adapter cannot arrive before its owner is
    * bound (ADR-004).
    */
-  async function restoreSession(seed: SessionSeed, config: AgentConfig, stored: PersistedAgent | undefined): Promise<void> {
+  async function restoreSession(seed: SessionSeed, config: ResolvedAgentConfig, stored: PersistedAgent | undefined): Promise<void> {
     const previous = runtimes.get(seed.id) ?? registerRuntime(seed, config)
     interactionCoordinator.cancelSession(
       seed.id,
@@ -916,15 +944,29 @@ export async function createSessionController(options: SessionControllerOptions)
 
     let connection: AgentConnection | undefined
     let unsubscribe: Unsubscribe | undefined
+    let readinessRecorded = false
     try {
+      const preflightResult = await preflightCursor(config, preflight)
+      if (!preflightResult.ready) {
+        options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
+        readinessRecorded = true
+        store.setRestoration(seed.id, "unavailable")
+        await failSession(previous, undefined, preflightResult.message, "restore-unavailable")
+        return
+      }
       connection = create(config)
       previous.connection = connection
       const ready = await connection.connect()
       if (!ready.ready) {
+        const failure = longLivedReadinessFailure(config, ready)
+        options.recorder?.providerReadiness?.(config.id, failure.reason)
+        readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
-        await failSession(previous, connection, ready.error, "restore-unavailable")
+        await failSession(previous, connection, failure.message, "restore-unavailable")
         return
       }
+      options.recorder?.providerReadiness?.(config.id, "ready")
+      readinessRecorded = true
 
       let acpSessionId: string
       // A zero-turn record has no history to restore. Some ACP adapters (including
@@ -975,6 +1017,7 @@ export async function createSessionController(options: SessionControllerOptions)
       previous.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
     } catch (error) {
+      if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
       unsubscribe?.()
       store.setRestoration(seed.id, "unavailable")
       onError(seed.id, error)
@@ -1151,7 +1194,7 @@ export async function createSessionController(options: SessionControllerOptions)
       if (disposed) return
       store.setRestorationBundle(null)
       const entries = orderedRuntimes(store, runtimes).filter(
-        (runtime): runtime is AgentRuntime & { config: AgentConfig } => runtime.config !== null,
+        (runtime): runtime is AgentRuntime & { config: ResolvedAgentConfig } => runtime.config !== null,
       )
       await Promise.all(entries.map((entry) => restoreSession(entry.seed, entry.config, undefined)))
       for (const entry of entries) {
@@ -1270,6 +1313,29 @@ export async function createSessionController(options: SessionControllerOptions)
   }
 }
 
+/** Non-Cursor providers retain their established one-connection lifecycle. */
+async function preflightCursor(
+  config: ResolvedAgentConfig,
+  preflight: typeof preflightAgentReadiness = preflightAgentReadiness,
+): Promise<AgentReadinessPreflight> {
+  return config.id === "cursor" ? preflight(config) : { ready: true }
+}
+
+function preflightOutcome(
+  reason: Extract<AgentReadinessPreflight, { ready: false }>["reason"],
+): ProviderReadinessOutcome {
+  return reason === "binary_not_found" ? "binary_missing" : reason
+}
+
+function longLivedReadinessFailure(
+  config: ResolvedAgentConfig,
+  state: Extract<Awaited<ReturnType<AgentConnection["connect"]>>, { ready: false }>,
+): { reason: "authentication_required" | "handshake_failed"; message: string } {
+  return config.id === "cursor"
+    ? connectionReadinessFailure(config, state)
+    : { reason: "handshake_failed", message: state.error }
+}
+
 /** Advance one session's connection identity without ever reusing an old generation. */
 function nextConnectionGeneration(
   sessionId: SessionId,
@@ -1378,7 +1444,7 @@ async function disposeAgentRuntimes(runtimes: Map<SessionId, AgentRuntime>): Pro
   )
 }
 
-function defaultCreateConnection(config: AgentConfig): AgentConnection {
+function defaultCreateConnection(config: ResolvedAgentConfig): AgentConnection {
   return createAgentConnection({ config })
 }
 

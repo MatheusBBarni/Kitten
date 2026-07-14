@@ -94,6 +94,7 @@ export type TelemetryEventType =
   | "effort_change_kept"
   | "agent_ready"
   | "agent_unready"
+  | "provider_readiness"
   | "first_response_ms"
   // The multi-session attention metrics (task_09). Each measures whether the fleet
   // stays productive; all are content-free (durations, counts, and session ids only).
@@ -154,6 +155,15 @@ export type ClarificationSessionLossReason =
   | "controller_disposed"
 export type ClarificationFieldCountBucket = "zero" | "one" | "two_to_three" | "four_or_more"
 export type ClarificationDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+/** The complete readiness taxonomy permitted in local telemetry. */
+export type ProviderReadinessOutcome =
+  | "ready"
+  | "binary_missing"
+  | "version_mismatch"
+  | "uncertified_recipe"
+  | "authentication_required"
+  | "handshake_failed"
 
 /** Content-free presentation metadata; request/session identities are never serialized. */
 export interface ClarificationPresentedInput {
@@ -257,6 +267,8 @@ export interface TelemetryRecord {
   lossReason?: ClarificationSessionLossReason
   /** Provider classification is safe only as Kitten's closed provider enum. */
   provider?: ProviderKind
+  /** Fixed readiness result; never a command, version, profile, path, or error string. */
+  readinessOutcome?: ProviderReadinessOutcome
   /** Closed Session Tabs dimensions; none can contain user or adapter content. */
   creationSource?: TabCreationSource
   selectionSource?: TabSelectionSource
@@ -360,6 +372,8 @@ export interface TelemetryRecorder {
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
   agentUnready(sessionId: SessionId): void
+  /** One provider lifecycle attempt settled with a fixed, content-free outcome. */
+  providerReadiness(provider: ProviderKind, outcome: ProviderReadinessOutcome): void
   /**
    * A developer moved keyboard focus to `sessionId`. `viaOverview` marks a switch made
    * through `/sessions` (jump-into or jump-to-next) rather than a direct `/switch`
@@ -450,6 +464,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   clarificationCancelledOnSessionLoss() {},
   agentReady() {},
   agentUnready() {},
+  providerReadiness() {},
   focusSwitch() {},
   maxConcurrentSessions() {},
   resumeLoadStarted() {},
@@ -722,6 +737,10 @@ class ActiveRecorder implements TelemetryRecorder {
 
   agentUnready(sessionId: SessionId): void {
     this.record({ type: "agent_unready", agent: sessionId })
+  }
+
+  providerReadiness(provider: ProviderKind, readinessOutcome: ProviderReadinessOutcome): void {
+    this.record({ type: "provider_readiness", provider, readinessOutcome })
   }
 
   focusSwitch(sessionId: SessionId, viaOverview: boolean): void {

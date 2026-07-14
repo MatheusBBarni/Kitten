@@ -165,6 +165,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         createRunStore: () => unavailableStore,
         buildController: (options) => createSessionController({
           ...options,
+          preflightAgentReadiness: async () => ({ ready: true }),
           createConnection: (agentConfig) => resumableFakeConnection(
             agentConfig.id,
             generations[agentConfig.id]++,
@@ -210,6 +211,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
             createRunStore: () => runStore,
             buildController: (options) => createSessionController({
               ...options,
+              preflightAgentReadiness: async () => ({ ready: true }),
               createConnection: (agentConfig) => {
                 const generation = generations[agentConfig.id]++
                 return resumableFakeConnection(agentConfig.id, generation, freshStarts)

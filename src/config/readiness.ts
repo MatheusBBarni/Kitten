@@ -90,6 +90,12 @@ export type AgentReadinessPreflight =
       message: string
     }
 
+/** Controller-facing normalized failure after the one long-lived connection attempts login/handshake. */
+export type ConnectionReadinessFailure = {
+  reason: "authentication_required" | "handshake_failed"
+  message: string
+}
+
 /** Dependencies used by the preflight without constructing an ACP connection. */
 export interface ReadinessPreflightOptions {
   /** Whether a resolved command is executable; defaults to `Bun.which`. */
@@ -200,6 +206,24 @@ export async function checkAgentReadiness(
   }
 }
 
+/** Normalize a failed long-lived adapter handshake without exposing ACP details upstream. */
+export function connectionReadinessFailure(
+  config: ResolvedAgentConfig,
+  state: Extract<ReadyState, { ready: false }>,
+): ConnectionReadinessFailure {
+  if (config.id === "cursor" && authenticationRequired(state)) {
+    return {
+      reason: "authentication_required",
+      message: `${config.displayName}: authentication is required: ${state.error}. Sign in to Cursor, then restart Kitten.`,
+    }
+  }
+  return {
+    reason: "handshake_failed",
+    message: `${config.displayName}: the ACP \"initialize\" handshake failed: ${state.error}. ` +
+      "The agent may need authentication, or its adapter version may be incompatible.",
+  }
+}
+
 /**
  * Probe every configured provider concurrently and independently.
  *
@@ -223,19 +247,14 @@ export async function checkAllAgentsReadiness(
 /** Turn a completed `connect()` into a verdict, rejecting versions we cannot speak. */
 function verdict(config: ResolvedAgentConfig, state: ReadyState): AgentReadiness {
   if (!state.ready) {
-    if (config.id === "cursor" && authenticationRequired(state)) {
-      return notReady(
-        config,
-        "authentication_required",
-        `authentication is required: ${state.error}. Sign in to Cursor, then restart Kitten.`,
-      )
+    const failure = connectionReadinessFailure(config, state)
+    return {
+      agentId: config.id,
+      displayName: config.displayName,
+      clarificationCapability: config.clarificationCapability,
+      ready: false,
+      ...failure,
     }
-    return notReady(
-      config,
-      "handshake_failed",
-      `the ACP "initialize" handshake failed: ${state.error}. ` +
-        `The agent may need authentication, or its adapter version may be incompatible.`,
-    )
   }
   if (state.protocolVersion !== SUPPORTED_PROTOCOL_VERSION) {
     return notReady(
