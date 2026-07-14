@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import type { AgentConfig } from "../core/types.ts"
+import type { AgentConfig, ResolvedAgentConfig } from "../core/types.ts"
 import {
   CLARIFICATION_CONTRACT_SDK_VERSION,
   VERIFIED_CLARIFICATION_RECIPES,
@@ -17,6 +17,14 @@ const CODEX_RECIPE = {
   command: "npx",
   args: ["-y", "@agentclientprotocol/codex-acp@1.1.2"],
   env: { INITIAL_AGENT_MODE: "agent-full-access" },
+} satisfies AgentConfig
+
+const CURSOR_RECIPE = {
+  id: "cursor",
+  displayName: "Cursor",
+  command: "agent",
+  args: ["acp"],
+  env: {},
 } satisfies AgentConfig
 
 const VERIFIED_CODEX: ExactClarificationRecipeIdentity = {
@@ -111,6 +119,52 @@ describe("clarification capability classification", () => {
     expect(classifyClarificationCapability(CODEX_RECIPE)).toEqual({
       status: "unsupported",
       reason: "unverified_recipe",
+    })
+  })
+
+  it("keeps native Cursor ACP outside package-backed clarification evidence", () => {
+    expect(exactRecipeIdentity(CURSOR_RECIPE)).toBeNull()
+    expect(VERIFIED_CLARIFICATION_RECIPES.some((recipe) => recipe.providerKind === "cursor")).toBe(false)
+    expect(classifyClarificationCapability(CURSOR_RECIPE, verified)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
+    })
+  })
+
+  it.each([
+    ["command", { ...CURSOR_RECIPE, command: "/opt/cursor/agent" }],
+    ["arguments", { ...CURSOR_RECIPE, args: ["acp", "--debug"] }],
+    ["environment", { ...CURSOR_RECIPE, env: { CURSOR_CONFIG: "/tmp/cursor" } }],
+  ])("keeps Cursor unsupported when its %s are overridden", (_part, recipe) => {
+    expect(exactRecipeIdentity(recipe)).toBeNull()
+    expect(classifyClarificationCapability(recipe, verified)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
+    })
+  })
+
+  it("does not infer Cursor clarification support from display or runtime-profile metadata", () => {
+    const resolvedCursor: ResolvedAgentConfig = {
+      ...CURSOR_RECIPE,
+      displayName: "Verified structured clarification",
+      clarificationCapability: {
+        status: "supported",
+        adapterPackage: "untrusted-display-metadata",
+        adapterVersion: "9.9.9",
+      },
+      runtimeProfile: {
+        kind: "cursor-certified",
+        command: "agent",
+        args: ["acp"],
+        env: {},
+        certifiedVersion: "9.9.9",
+        authenticationMethod: "cursor_login",
+      },
+    }
+
+    expect(classifyClarificationCapability(resolvedCursor, verified)).toEqual({
+      status: "unsupported",
+      reason: "unknown_recipe",
     })
   })
 

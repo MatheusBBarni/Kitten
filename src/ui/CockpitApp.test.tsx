@@ -4,6 +4,7 @@
 // Boundary OUT: config persistence/watching and agent subprocess transport, owned by their integration suites.
 
 import { describe, expect, it, spyOn } from "bun:test"
+import { basename } from "node:path"
 
 import { createTestRenderer } from "@opentui/core/testing"
 import { KeyEvent } from "@opentui/core"
@@ -12,6 +13,8 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import { buildStatuslineProposalPrompt } from "../app/statuslineFlow.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
 import { wireKeyboardCapability } from "../index.ts"
 import type {
@@ -43,7 +46,10 @@ import { SETTINGS_TITLE } from "./SettingsView.tsx"
 import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.tsx"
 import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
+import { STATUSLINE_PREVIEW_LABEL, STATUSLINE_REQUEST_PROMPT, STATUSLINE_TITLE } from "./StatuslineOverlay.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
+
+const PROJECT_FOLDER = basename(process.cwd())
 
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
 function lines(frame: string): string[] {
@@ -230,12 +236,12 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
     expect(frame).toContain("[selected] Claude Code")
-    expect(frame).toContain("[tab] Codex")
+    expect(frame).toContain("shared×3 Sessions +2")
 
     // The strip keeps selected-provider context only; live work is transcript-local.
     const strip = rows.at(-1) ?? ""
-    expect(strip).toContain("claude:—")
-    expect(strip).not.toContain("codex:")
+    expect(strip).toContain("Claude:—")
+    expect(strip).not.toContain("Codex:")
     expect(strip).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
@@ -259,25 +265,25 @@ describe("CockpitApp layout", () => {
     controller.store.applyEvent("codex", { kind: "config_options", options: configOptions("gpt-5.1-codex-max", "medium") })
     const { renderer, waitForFrame } = await renderCockpitApp(controller)
 
-    const initial = await waitForFrame((f) => f.includes("claude:claude-fable-5[1m]"))
+    const initial = await waitForFrame((f) => f.includes("Claude:claude-fable-5[1m]"))
     expectNoOverflow(initial, 80, 24)
-    expect(initial).toContain("claude:claude-fable-5[1m]")
+    expect(initial).toContain("Claude:claude-fable-5[1m]")
     expect(initial).not.toContain("/high")
-    expect(initial).not.toContain("codex:gpt-5.1-codex-max")
+    expect(initial).not.toContain("Codex:gpt-5.1-codex-max")
 
     await actAsync(() => {
       controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("sonnet", "low") })
     })
 
-    const updated = await waitForFrame((f) => f.includes("claude:sonnet"))
+    const updated = await waitForFrame((f) => f.includes("Claude:sonnet"))
     expectNoOverflow(updated, 80, 24)
-    expect(updated).toContain("claude:sonnet")
+    expect(updated).toContain("Claude:sonnet")
     expect(updated).not.toContain("/low")
-    expect(updated).not.toContain("codex:gpt-5.1-codex-max")
+    expect(updated).not.toContain("Codex:gpt-5.1-codex-max")
 
     await actAsync(() => controller.actions.switchFocus("codex"))
-    const codex = await waitForFrame((f) => f.includes("codex:gpt-5.1-codex-max"))
-    expect(codex).not.toContain("claude:sonnet")
+    const codex = await waitForFrame((f) => f.includes("Codex:gpt-5.1-codex-max"))
+    expect(codex).not.toContain("Claude:sonnet")
 
     await destroyMounted(renderer)
   })
@@ -328,6 +334,29 @@ describe("CockpitApp layout", () => {
 describe("CockpitApp resize", () => {
   it("re-lays out the frame on a resize without overflow artifacts", async () => {
     const controller = createFakeController()
+    controller.store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: [
+        {
+          id: "model",
+          category: MODEL_CATEGORY,
+          label: "Model",
+          currentValue: "opus",
+          options: [{ value: "opus", name: "Opus" }],
+        },
+        {
+          id: "effort",
+          category: EFFORT_CATEGORY,
+          label: "Reasoning effort",
+          currentValue: "medium",
+          options: [{ value: "medium", name: "Medium" }],
+        },
+      ],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "partial", model: "opus", unavailable: "effort" },
+    })
     const { renderer, captureCharFrame, resize, waitForFrame } = await renderCockpitApp(controller, 100, 30)
 
     expectNoOverflow(captureCharFrame(), 100, 30)
@@ -340,7 +369,9 @@ describe("CockpitApp resize", () => {
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
-    expect(lines(shrunk).at(-1)).toContain("claude:—")
+    expect(lines(shrunk).at(-1)).toContain("Claude:Opus:Medium")
+    expect(lines(shrunk).at(-1)).toContain("effort unavailable")
+    expect(lines(shrunk).at(-1)).toContain(KEYMAP_HINT)
 
     await actAsync(() => {
       resize(120, 40)
@@ -348,7 +379,8 @@ describe("CockpitApp resize", () => {
     const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(WELCOME_GREETING))
 
     expectNoOverflow(grown, 120, 40)
-    expect(lines(grown).at(-1)).toContain("claude:—")
+    expect(lines(grown).at(-1)).toContain("Claude:Opus:Medium")
+    expect(lines(grown).at(-1)).toContain("effort unavailable")
 
     await destroyMounted(renderer)
   })
@@ -1107,6 +1139,134 @@ describe("CockpitApp keymap", () => {
     expect(frame).toContain(SETTINGS_TITLE)
     expect(frame).toContain("[Theme]")
     expect(frame).not.toContain(HELP_TITLE)
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("/statusline cockpit integration", () => {
+  it("runs the exact cockpit command through disclosure, one transcript proposal, and one confirmation", async () => {
+    const layout: StatuslineLayout = { separator: " · ", line: ["FOLDER", "MODEL"] }
+    const proposal = `\`\`\`json\n${JSON.stringify({ statusline: layout })}\n\`\`\``
+    const controller = createFakeController({
+      sendPrompt(input, sessionId, store) {
+        expect(sessionId).toBe("claude-code")
+        store.applyEvent("claude-code", { kind: "agent_message", messageId: "statusline-proposal", textDelta: proposal })
+        return { stopReason: "end_turn" }
+      },
+    })
+    const setup = await renderCockpitApp(controller)
+    expect(setup.renderer.currentFocusedEditor).not.toBeNull()
+
+    await runSlashCommand(setup, "statusline")
+    await setup.waitForFrame((frame) => frame.includes(STATUSLINE_TITLE))
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(setup.renderer.currentFocusedEditor).toBeNull()
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(STATUSLINE_REQUEST_PROMPT))
+    await actAsync(async () => setup.mockInput.typeText("folder and model"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(STATUSLINE_PREVIEW_LABEL))
+
+    expect(controller.calls.sendPrompt).toEqual([{
+      input: buildStatuslineProposalPrompt("folder and model"),
+      sessionId: "claude-code",
+    }])
+    expect(controller.calls.confirmStatusline).toHaveLength(0)
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => !frame.includes(STATUSLINE_TITLE))
+    await setup.waitFor(() => setup.renderer.currentFocusedEditor !== null)
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect(controller.calls.confirmStatusline).toEqual([layout])
+    expect(controller.store.getState().preferences.statusline).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout,
+    })
+    const applied = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes(PROJECT_FOLDER))
+    expect(lines(applied).at(-1)).not.toContain("Claude:")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps the prompt focused across resize before opening and uses the resized width for preview", async () => {
+    const controller = createFakeController()
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
+    const setup = await renderCockpitApp(controller, 80, 24)
+    await actAsync(async () => setup.mockInput.typeText("draft stays here"))
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("draft stays here")
+
+    await actAsync(() => setup.resize(48, 24))
+    await setup.waitForFrame((frame) => frame.includes("draft stays here"))
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("draft stays here")
+
+    await actAsync(() => {
+      setup.renderer.currentFocusedEditor?.clear()
+    })
+    await runSlashCommand(setup, "statusline")
+    await setup.waitForFrame((frame) => frame.includes("Describe the fields"))
+    expect(setup.renderer.currentFocusedEditor).toBeNull()
+    await actAsync(() => controller.store.updateStatusline({
+      phase: "preview",
+      requestText: "full path",
+      layout: { separator: " · ", line: ["FULL_PATH"] },
+      preset: null,
+    }))
+    const resizedPreview = await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    expectNoOverflow(resizedPreview, 48, 24)
+    await actAsync(() => setup.resize(80, 24))
+    await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a saved footer bottom-pinned through 100-to-64-to-120 resize and returns to legacy when cleared", async () => {
+    const statuslineCwd = "/workspace/kitten-statusline-preview"
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd })),
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "branch",
+      branch: "feat/statusline-ui",
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: configOptions("opus", "high"),
+    })
+    controller.store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: ["FULL_PATH", "BRANCH", "PROVIDER", "MODEL"],
+      },
+    })
+    const setup = await renderCockpitApp(controller, 100, 24)
+
+    const wide = setup.captureCharFrame()
+    expect(lines(wide).at(-1)).toContain(`${statuslineCwd} · feat/statusline-ui · Claude · opus`)
+    expectNoOverflow(wide, 100, 24)
+
+    await actAsync(() => setup.resize(64, 24))
+    const narrow = await setup.waitForFrame((frame) => {
+      const footer = lines(frame).at(-1) ?? ""
+      return footer.includes(statuslineCwd) && !footer.includes("feat/statusline-ui")
+    })
+    expect(lines(narrow).at(-1)).toContain(KEYMAP_HINT)
+    expectNoOverflow(narrow, 64, 24)
+
+    await actAsync(() => setup.resize(120, 24))
+    const expanded = await setup.waitForFrame((frame) =>
+      (lines(frame).at(-1) ?? "").includes(`${statuslineCwd} · feat/statusline-ui · Claude · opus`),
+    )
+    expectNoOverflow(expanded, 120, 24)
+
+    await actAsync(() => controller.store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: null,
+    }))
+    const legacy = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes("Claude:opus:high"))
+    expect(lines(legacy).at(-1)).toContain(KEYMAP_HINT)
+    expect(lines(legacy).at(-1)).not.toContain("feat/statusline-ui")
+    expectNoOverflow(legacy, 120, 24)
 
     await destroyMounted(setup.renderer)
   })

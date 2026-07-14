@@ -17,6 +17,12 @@ import { TextAttributes } from "@opentui/core"
 import { type ReactNode } from "react"
 
 import type { ToolCallDiff, ToolCallKind, ToolCallRecord } from "../core/types.ts"
+import {
+  registerSyntaxParsers,
+  resolveSyntaxPresentation,
+  type SyntaxDiagnosticReporter,
+  type SyntaxParserStatusResolver,
+} from "./syntaxParsers.ts"
 import { usePalette, useSyntaxStyle } from "./theme.ts"
 
 /**
@@ -93,10 +99,12 @@ export function filetypeFor(path: string): string | undefined {
 /** Props for {@link ToolCallRow}. */
 export interface ToolCallRowProps {
   record: ToolCallRecord
+  diagnosticReporter?: SyntaxDiagnosticReporter
+  parserStatus?: SyntaxParserStatusResolver
 }
 
 /** A tool call: its one-line header, plus the detail it left behind. */
-export function ToolCallRow({ record }: ToolCallRowProps): ReactNode {
+export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCallRowProps): ReactNode {
   const palette = usePalette()
   const { kind, title, status, locations, diff } = record
 
@@ -113,7 +121,7 @@ export function ToolCallRow({ record }: ToolCallRowProps): ReactNode {
       </text>
 
       {kind === "edit" && diff ? (
-        <ToolCallDiffConnector diff={diff} />
+        <ToolCallDiffConnector diff={diff} diagnosticReporter={diagnosticReporter} parserStatus={parserStatus} />
       ) : (
         <ToolCallLocations title={title} locations={locations} />
       )}
@@ -142,13 +150,19 @@ function ToolCallLocations({ title, locations }: { title: string; locations: str
  * body ({@link ToolCallDiffBody}) is shared. Restyling the transcript row therefore
  * leaves the approval and hand-off previews pixel-for-pixel unchanged.
  */
-function ToolCallDiffConnector({ diff }: { diff: ToolCallDiff }): ReactNode {
+interface ToolCallDiffSyntaxProps {
+  diff: ToolCallDiff
+  diagnosticReporter?: SyntaxDiagnosticReporter
+  parserStatus?: SyntaxParserStatusResolver
+}
+
+function ToolCallDiffConnector({ diff, diagnosticReporter, parserStatus }: ToolCallDiffSyntaxProps): ReactNode {
   const palette = usePalette()
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
       <text fg={palette.muted}>{`${CONNECTOR}${diff.path}`}</text>
       <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: CONNECTOR.length }}>
-        <ToolCallDiffBody diff={diff} />
+        <ToolCallDiffBody diff={diff} diagnosticReporter={diagnosticReporter} parserStatus={parserStatus} />
       </box>
     </box>
   )
@@ -159,12 +173,12 @@ function ToolCallDiffConnector({ diff }: { diff: ToolCallDiff }): ReactNode {
  * overlay and the hand-off preview, which show the same diff a moment earlier - before
  * the user has agreed to it - and label its path in accent above the body.
  */
-export function ToolCallDiffView({ diff }: { diff: ToolCallDiff }): ReactNode {
+export function ToolCallDiffView({ diff, diagnosticReporter, parserStatus }: ToolCallDiffSyntaxProps): ReactNode {
   const palette = usePalette()
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
       <text fg={palette.accent}>{diff.path}</text>
-      <ToolCallDiffBody diff={diff} />
+      <ToolCallDiffBody diff={diff} diagnosticReporter={diagnosticReporter} parserStatus={parserStatus} />
     </box>
   )
 }
@@ -179,7 +193,13 @@ export function ToolCallDiffView({ diff }: { diff: ToolCallDiff }): ReactNode {
  * gutter off would also drop the signs, leaving added and removed lines told apart by
  * background color alone.
  */
-function ToolCallDiffBody({ diff }: { diff: ToolCallDiff }): ReactNode {
+function ToolCallDiffBody({ diff, diagnosticReporter, parserStatus }: ToolCallDiffSyntaxProps): ReactNode {
   const syntaxStyle = useSyntaxStyle()
-  return <diff diff={diff.unified} view="unified" filetype={filetypeFor(diff.path)} syntaxStyle={syntaxStyle} />
+  registerSyntaxParsers()
+  const extension = filetypeFor(diff.path)
+  const filetype =
+    extension === undefined
+      ? undefined
+      : resolveSyntaxPresentation(extension, "diff", diagnosticReporter, parserStatus).filetype
+  return <diff diff={diff.unified} view="unified" filetype={filetype} syntaxStyle={syntaxStyle} />
 }

@@ -8,6 +8,12 @@
 
 import { type ReactNode } from "react"
 
+import {
+  registerSyntaxParsers,
+  resolveSyntaxPresentation,
+  type SyntaxDiagnosticReporter,
+  type SyntaxParserStatusResolver,
+} from "./syntaxParsers.ts"
 import { usePalette, useSyntaxStyle } from "./theme.ts"
 
 /**
@@ -98,20 +104,127 @@ export interface MarkdownProps {
   content: string
   /** Foreground for unhighlighted text. Defaults to the active reading color. */
   fg?: string
+  /** Optional content-free diagnostics sink. No telemetry is enabled by default. */
+  diagnosticReporter?: SyntaxDiagnosticReporter
+  /** Injectable capability outcome seam for deterministic fallback tests. */
+  parserStatus?: SyntaxParserStatusResolver
 }
 
-/** Render theme-reactive, concealed Markdown with the compatibility pin enforced. */
-export function Markdown({ content, fg }: MarkdownProps): ReactNode {
-  const palette = usePalette()
-  const syntaxStyle = useSyntaxStyle()
+interface MarkdownSourceSegment {
+  readonly kind: "markdown"
+  readonly content: string
+}
+
+interface MarkdownFallbackSegment {
+  readonly kind: "fallback"
+  readonly label: string
+  readonly source: string
+}
+
+type MarkdownSegment = MarkdownSourceSegment | MarkdownFallbackSegment
+
+/** Split only complete fallback fences; every source byte between their delimiters is retained. */
+function splitFallbackFences(
+  content: string,
+  reporter: SyntaxDiagnosticReporter | undefined,
+  parserStatus: SyntaxParserStatusResolver | undefined,
+): readonly MarkdownSegment[] {
+  const opener = /^(?: {0,3})(`{3,}|~{3,})([^\r\n]*)\r?\n/gm
+  const segments: MarkdownSegment[] = []
+  let outputStart = 0
+  let scanStart = 0
+
+  while (scanStart < content.length) {
+    opener.lastIndex = scanStart
+    const match = opener.exec(content)
+    if (match === null) break
+    const marker = match[1]!
+    const label = match[2]!.trim()
+    if (label.length === 0) {
+      scanStart = opener.lastIndex
+      continue
+    }
+
+    const presentation = resolveSyntaxPresentation(label, "markdown", reporter, parserStatus)
+    const closing = new RegExp(`^(?: {0,3})${marker[0]}{${marker.length},}[ \\t]*(?:\\r?\\n|$)`, "gm")
+    closing.lastIndex = opener.lastIndex
+    const closingMatch = closing.exec(content)
+    if (closingMatch === null) break
+
+    if (!presentation.fallback) {
+      scanStart = closing.lastIndex
+      continue
+    }
+
+    if (match.index > outputStart) {
+      segments.push({ kind: "markdown", content: content.slice(outputStart, match.index) })
+    }
+    const sourceWithDelimiter = content.slice(opener.lastIndex, closingMatch.index)
+    const source = sourceWithDelimiter.replace(/\r?\n$/, "")
+    segments.push({ kind: "fallback", label, source })
+    outputStart = closing.lastIndex
+    scanStart = closing.lastIndex
+  }
+
+  if (segments.length === 0) return [{ kind: "markdown", content }]
+  if (outputStart < content.length) segments.push({ kind: "markdown", content: content.slice(outputStart) })
+  return segments
+}
+
+function MarkdownLeaf({
+  content,
+  fg,
+  syntaxStyle,
+}: {
+  content: string
+  fg: string
+  syntaxStyle: ReturnType<typeof useSyntaxStyle>
+}): ReactNode {
   return (
     <markdown
       content={normalizeMarkdownForDisplay(content)}
       syntaxStyle={syntaxStyle}
       streaming={MARKDOWN_STREAMING}
       conceal
-      fg={fg ?? palette.text}
+      fg={fg}
       tableOptions={MARKDOWN_TABLE_OPTIONS}
     />
+  )
+}
+
+/** Render theme-reactive, concealed Markdown with the compatibility pin enforced. */
+export function Markdown({ content, fg, diagnosticReporter, parserStatus }: MarkdownProps): ReactNode {
+  const palette = usePalette()
+  const syntaxStyle = useSyntaxStyle()
+  registerSyntaxParsers()
+  const foreground = fg ?? palette.text
+  const segments = splitFallbackFences(content, diagnosticReporter, parserStatus)
+  if (segments.length === 1 && segments[0]?.kind === "markdown") {
+    return <MarkdownLeaf content={segments[0].content} fg={foreground} syntaxStyle={syntaxStyle} />
+  }
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+      {segments.map((segment, index) =>
+        segment.kind === "markdown" ? (
+          <MarkdownLeaf key={`markdown-${index}`} content={segment.content} fg={foreground} syntaxStyle={syntaxStyle} />
+        ) : (
+          <box
+            key={`fallback-${index}`}
+            style={{ flexDirection: "column", flexShrink: 0, border: ["left"], paddingLeft: 1 }}
+          >
+            <text fg={palette.muted}>{segment.label}</text>
+            <code
+              content={segment.source}
+              syntaxStyle={syntaxStyle}
+              fg={foreground}
+              conceal={false}
+              drawUnstyledText
+              streaming={false}
+              width="100%"
+            />
+          </box>
+        ),
+      )}
+    </box>
   )
 }

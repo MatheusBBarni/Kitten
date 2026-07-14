@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test"
 
-import { destroyTreeSitterClient, RGBA } from "@opentui/core"
+import { destroyTreeSitterClient, getTreeSitterClient, RGBA } from "@opentui/core"
 import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, settleMountedHighlights } from "../../test/reactTui.ts"
 import { composeHandoffBlocks, createHandoffEdits } from "../app/handoff.ts"
 import { bannerVariant, type BannerVariant } from "../config/appState.ts"
 import type { HandoffBundle, ProviderKind, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
@@ -35,6 +35,10 @@ const HEIGHT = 20
 
 /** A unified diff of the shape `toUnifiedDiff` produces in the adapter. */
 const UNIFIED = ["--- a/src/app.ts", "+++ b/src/app.ts", "@@ -1,2 +1,2 @@", " const a = 1", "-const b = 2", "+const b = 3"].join("\n")
+
+function singleLineDiff(path: string, before: string, after: string): string {
+  return [`--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", `-${before}`, `+${after}`].join("\n")
+}
 
 const RESTORED_BUNDLE: HandoffBundle = {
   intent: "continue",
@@ -663,6 +667,180 @@ describe("ConversationView tool calls", () => {
     await destroyMounted(renderer)
   })
 
+  for (const { path, before, after, sentinel, plaintext } of [
+    {
+      path: "src/lib.rs",
+      before: "fn old() {}",
+      after: "fn build() { let ordinary = RustSentinel {}; }",
+      sentinel: "RustSentinel",
+      plaintext: "ordinary",
+    },
+    {
+      path: "cmd/main.go",
+      before: "func old() {}",
+      after: "func build() { var ordinary GoSentinel }",
+      sentinel: "GoSentinel",
+      plaintext: "ordinary",
+    },
+    {
+      path: "lib/model.ml",
+      before: "module Old = struct end",
+      after: "module MlSentinel = struct let ordinary = 1 end",
+      sentinel: "MlSentinel",
+      plaintext: "ordinary",
+    },
+    {
+      path: "lib/model.mli",
+      before: "module Old : sig end",
+      after: "module MliSentinel : sig val ordinary : int end",
+      sentinel: "MliSentinel",
+      plaintext: "ordinary",
+    },
+    {
+      path: "config/settings.json",
+      before: '{"ordinary": "old"}',
+      after: '{"ordinary": "new", "count": 424242}',
+      sentinel: "424242",
+      plaintext: "ordinary",
+    },
+    {
+      path: "scripts/setup.sh",
+      before: "OLD_VALUE=ordinary",
+      after: "export SH_DIFF_SENTINEL=ordinary",
+      sentinel: "SH_DIFF_SENTINEL",
+      plaintext: "ordinary",
+    },
+    {
+      path: "src/main.py",
+      before: "ordinary = 0",
+      after: 'ordinary = "PY_DIFF_SENTINEL"',
+      sentinel: "PY_DIFF_SENTINEL",
+      plaintext: "ordinary",
+    },
+  ]) {
+    it(`highlights ${path.slice(path.lastIndexOf("."))} diff tokens from the file extension`, async () => {
+      const controller = createFakeController()
+      const { renderer, waitForFrame, waitFor, captureSpans } = await renderConversation(controller)
+
+      await actAsync(() =>
+        toolCall(controller, "claude-code", {
+          toolCallId: "language-diff",
+          kind: "edit",
+          title: `Update ${path}`,
+          status: "completed",
+          diff: { path, unified: singleLineDiff(path, before, after) },
+        }),
+      )
+      await waitForFrame((frame) => frame.includes(sentinel))
+      await settleMountedHighlights(renderer)
+      expect(await getTreeSitterClient().preloadParser(filetypeFor(path)!)).toBeTrue()
+      renderer.requestRender()
+      await renderer.idle()
+
+      const token = () =>
+        captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.includes(sentinel))
+      const plainToken = () =>
+        captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.includes(plaintext))
+      await waitFor(() => {
+        const styled = token()?.fg?.toString() !== plainToken()?.fg?.toString()
+        if (!styled) renderer.requestRender()
+        return styled
+      })
+
+      expect(token()).toBeDefined()
+      expect(plainToken()).toBeDefined()
+      expect(token()?.fg?.toString()).not.toBe(plainToken()?.fg?.toString())
+
+      await destroyMounted(renderer)
+    })
+  }
+
+  for (const path of ["src/model.res", "src/model.resi"]) {
+    it(`keeps a blocked ${path.slice(path.lastIndexOf("."))} diff plaintext and copy-safe`, async () => {
+      const before = "let fallbackBefore = 0"
+      const after = "let rescriptFallbackSentinel = 1"
+      const controller = createFakeController()
+      const { renderer, waitForFrame, captureSpans, captureCharFrame } = await renderConversation(controller)
+
+      await actAsync(() =>
+        toolCall(controller, "claude-code", {
+          toolCallId: "rescript-fallback-diff",
+          kind: "edit",
+          title: `Update ${path}`,
+          status: "completed",
+          diff: { path, unified: singleLineDiff(path, before, after) },
+        }),
+      )
+      await waitForFrame((frame) => frame.includes("rescriptFallbackSentinel"))
+      await settleMountedHighlights(renderer)
+      renderer.requestRender()
+      await renderer.idle()
+
+      const spans = captureSpans().lines.flatMap((line) => line.spans)
+      const token = spans.find((span) => span.text.includes("rescriptFallbackSentinel"))
+      const plaintext = spans.find((span) => span.text.includes("fallbackBefore"))
+      expect(filetypeFor(path)).toBe(path.endsWith(".resi") ? "resi" : "res")
+      expect(token).toBeDefined()
+      expect(plaintext).toBeDefined()
+      expect(token?.fg?.toString()).toBe(plaintext?.fg?.toString())
+
+      const rows = captureCharFrame().split("\n")
+      const first = rows.findIndex((row) => row.includes(before))
+      const last = rows.findIndex((row) => row.includes(after))
+      const codeColumn = rows[first]!.indexOf(before)
+      expect(await selectText(renderer, [codeColumn, first], [rows[last]!.length, last])).toBe(`${before}\n${after}`)
+
+      await destroyMounted(renderer)
+    })
+  }
+
+  for (const path of ["Makefile", ".gitignore"]) {
+    it(`keeps an untyped ${path} diff unguessed`, async () => {
+      const sentinel = path === "Makefile" ? "ExtensionlessSentinel" : "DotfileSentinel"
+      const controller = createFakeController()
+      const { renderer, waitForFrame, captureSpans, captureCharFrame } = await renderConversation(controller)
+
+      await actAsync(() =>
+        toolCall(controller, "claude-code", {
+          toolCallId: "untyped-diff",
+          kind: "edit",
+          title: `Update ${path}`,
+          status: "completed",
+          diff: { path, unified: singleLineDiff(path, "plain old", `struct ${sentinel} {}`) },
+        }),
+      )
+      await waitForFrame((frame) => frame.includes(sentinel))
+      await settleMountedHighlights(renderer)
+      renderer.requestRender()
+      await renderer.idle()
+
+      const token = captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes(sentinel))
+      const plaintext = captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes("plain old"))
+      expect(filetypeFor(path)).toBeUndefined()
+      expect(token).toBeDefined()
+      expect(plaintext).toBeDefined()
+      expect(token?.fg?.toString()).toBe(plaintext?.fg?.toString())
+
+      const rows = captureCharFrame().split("\n")
+      const before = "plain old"
+      const after = `struct ${sentinel} {}`
+      const first = rows.findIndex((row) => row.includes(before))
+      const last = rows.findIndex((row) => row.includes(after))
+      const codeColumn = rows[first]!.indexOf(before)
+      expect(await selectText(renderer, [codeColumn, first], [rows[last]!.length, last])).toBe(`${before}\n${after}`)
+
+      await destroyMounted(renderer)
+    })
+  }
+
   it("hangs an edit call's diff path off a `└ ` connector, above the diff body", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame } = await renderConversation(controller)
@@ -820,6 +998,14 @@ describe("filetypeFor", () => {
   it("reads the extension off a path", () => {
     expect(filetypeFor("src/app.ts")).toBe("ts")
     expect(filetypeFor("a/b/c/main.py")).toBe("py")
+    expect(filetypeFor("src/lib.rs")).toBe("rs")
+    expect(filetypeFor("cmd/main.go")).toBe("go")
+    expect(filetypeFor("lib/model.ml")).toBe("ml")
+    expect(filetypeFor("lib/model.mli")).toBe("mli")
+    expect(filetypeFor("src/model.res")).toBe("res")
+    expect(filetypeFor("src/model.resi")).toBe("resi")
+    expect(filetypeFor("config/settings.json")).toBe("json")
+    expect(filetypeFor("scripts/setup.sh")).toBe("sh")
     expect(filetypeFor("archive.tar.gz")).toBe("gz")
   })
 

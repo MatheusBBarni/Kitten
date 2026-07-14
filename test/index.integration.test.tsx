@@ -10,8 +10,9 @@ import { CockpitApp } from "../src/ui/CockpitApp.tsx"
 import type { AgentConnection, PromptBlock } from "../src/agent/agentConnection.ts"
 import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
+import type { StatuslineLayout } from "../src/core/statusline.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
-import { createCockpitRenderer, createCockpitSession, main, wireKeyboardCapability } from "../src/index.ts"
+import { createCockpitRenderer, createCockpitSession, main, renderCockpit, wireKeyboardCapability } from "../src/index.ts"
 import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
@@ -77,12 +78,149 @@ function bootRun(cwd: string): PersistedRunRecordV1 {
   }
 }
 
+const SAVED_STATUSLINE: StatuslineLayout = {
+  separator: " | ",
+  line: ["FOLDER", "MODEL"],
+}
+
+const EXTERNAL_STATUSLINE: StatuslineLayout = {
+  separator: " · ",
+  line: ["PROVIDER", "EFFORT"],
+}
+
+describe("statusline config lifecycle", () => {
+  it("persists explicit actions before apply, ignores previews, and reloads externally without write-back", async () => {
+    let onConfig: ((config: ReturnType<typeof defaultAppConfig>) => void) | undefined
+    const writes: unknown[] = []
+    const resolvers: Array<() => void> = []
+    const config = {
+      ...defaultAppConfig(),
+      statusline: { llmDisclosureAcknowledged: false, layout: SAVED_STATUSLINE },
+    }
+    const session = await createCockpitSession({
+      config,
+      buildController: async (options) => createFakeController({ store: options.store! }),
+      persistConfig: async () => {},
+      persistStatuslineConfig: async (patch) => {
+        writes.push(patch)
+        await new Promise<void>((resolve) => resolvers.push(resolve))
+      },
+      watchConfig: (callback) => {
+        onConfig = callback
+        return { close() {} }
+      },
+    })
+
+    try {
+      expect(session.controller.store.getState().preferences.statusline).toEqual(config.statusline)
+
+      session.controller.store.openStatusline({
+        sessionId: "codex",
+        phase: "preview",
+        requestText: "compact",
+        layout: EXTERNAL_STATUSLINE,
+        preset: null,
+      })
+      session.controller.store.updateStatusline({ phase: "request", requestText: "compact" })
+      expect(writes).toEqual([])
+
+      const acknowledgement = session.controller.actions.acknowledgeStatuslineDisclosure()
+      const confirmation = session.controller.actions.confirmStatusline(EXTERNAL_STATUSLINE)
+      await Promise.resolve()
+      expect(writes).toEqual([{ llmDisclosureAcknowledged: true }])
+      expect(session.controller.store.getState().preferences.statusline.llmDisclosureAcknowledged).toBe(false)
+      resolvers.shift()!()
+      expect(await acknowledgement).toEqual({ outcome: "saved" })
+      expect(session.controller.store.getState().preferences.statusline).toEqual({
+        llmDisclosureAcknowledged: true,
+        layout: SAVED_STATUSLINE,
+      })
+
+      await Promise.resolve()
+      expect(writes).toEqual([
+        { llmDisclosureAcknowledged: true },
+        {
+          llmDisclosureAcknowledged: true,
+          separator: EXTERNAL_STATUSLINE.separator,
+          line: EXTERNAL_STATUSLINE.line,
+        },
+      ])
+      expect(session.controller.store.getState().preferences.statusline.layout).toBe(SAVED_STATUSLINE)
+      resolvers.shift()!()
+      expect(await confirmation).toEqual({ outcome: "saved" })
+      expect(session.controller.store.getState().preferences.statusline.layout).toBe(EXTERNAL_STATUSLINE)
+
+      const reloadedLayout: StatuslineLayout = { separator: " / ", line: ["FULL_PATH"] }
+      onConfig!({
+        ...config,
+        statusline: { llmDisclosureAcknowledged: true, layout: reloadedLayout },
+      })
+      expect(session.controller.store.getState().preferences.statusline.layout).toBe(reloadedLayout)
+      expect(writes).toHaveLength(2)
+    } finally {
+      await session.controller.dispose()
+    }
+  })
+
+  it("returns a legible writer failure and leaves acknowledgement and layout unchanged", async () => {
+    const config = {
+      ...defaultAppConfig(),
+      statusline: { llmDisclosureAcknowledged: false, layout: SAVED_STATUSLINE },
+    }
+    const session = await createCockpitSession({
+      config,
+      buildController: async (options) => createFakeController({ store: options.store! }),
+      persistConfig: async () => {},
+      persistStatuslineConfig: async () => {
+        throw new Error("config directory is read-only")
+      },
+      watchConfig: () => ({ close() {} }),
+    })
+
+    try {
+      expect(await session.controller.actions.acknowledgeStatuslineDisclosure()).toEqual({
+        outcome: "error",
+        message: "config directory is read-only",
+      })
+      expect(await session.controller.actions.confirmStatusline(EXTERNAL_STATUSLINE)).toEqual({
+        outcome: "error",
+        message: "config directory is read-only",
+      })
+      expect(session.controller.store.getState().preferences.statusline).toEqual(config.statusline)
+    } finally {
+      await session.controller.dispose()
+    }
+  })
+})
+
 /**
  * Integration: boot the cockpit against an in-memory ("main-screen", memory
  * output) test renderer so nothing touches the real terminal, then confirm it
  * tears down cleanly - renderer destroyed, agents disposed, exit handler run.
  */
 describe("cockpit entry integration (non-TTY test renderer)", () => {
+  it("does not register syntax parsers when the entry module is imported", async () => {
+    const child = Bun.spawn({
+      cmd: [
+        process.execPath,
+        "-e",
+        'import { mock } from "bun:test"; let calls = 0; mock.module("./src/ui/syntaxParsers.ts", () => ({ registerSyntaxParsers: () => { calls += 1 }, resolveSyntaxPresentation: () => ({ filetype: undefined, fallback: true }), syntaxParserManifest: { capabilities: [], plaintextFallbacks: [], parsers: [] } })); await import("./src/index.ts"); console.log(`calls=${calls}`)',
+      ],
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(stderr).toBe("")
+    expect(stdout.trim()).toBe("calls=0")
+  })
+
   it("starts configured opening tasks instead of restoring a saved run", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-opening-task-"))
     const cwd = process.cwd()
@@ -100,7 +238,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     runStore.save(record)
     const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
     const prompts: Array<{ id: ProviderKind; sessionId: string; blocks: PromptBlock[] }> = []
-    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     let session: Awaited<ReturnType<typeof createCockpitSession>> | undefined
 
     try {
@@ -143,7 +281,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       shell: { ...defaultAppConfig().shell, enabled: false },
     }
     const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
-    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     const unavailableStore: RunStore = {
       save() {},
       list() {
@@ -165,6 +303,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         createRunStore: () => unavailableStore,
         buildController: (options) => createSessionController({
           ...options,
+          preflightAgentReadiness: async () => ({ ready: true }),
           createConnection: (agentConfig) => resumableFakeConnection(
             agentConfig.id,
             generations[agentConfig.id]++,
@@ -177,7 +316,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       expect(session.controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
-      expect(freshStarts).toHaveLength(2)
+      expect(freshStarts).toHaveLength(3)
     } finally {
       await session?.controller.dispose()
     }
@@ -194,7 +333,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     }
     const runStore = createRunStore({ enabled: true, path: base })
     runStore.save(bootRun(cwd))
-    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
     let booted: Awaited<ReturnType<typeof main>> | undefined
 
@@ -210,6 +349,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
             createRunStore: () => runStore,
             buildController: (options) => createSessionController({
               ...options,
+              preflightAgentReadiness: async () => ({ ready: true }),
               createConnection: (agentConfig) => {
                 const generation = generations[agentConfig.id]++
                 return resumableFakeConnection(agentConfig.id, generation, freshStarts)
@@ -230,8 +370,9 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       expect(freshStarts).toEqual([
         { id: "codex", cwd, generation: 0 },
         { id: "claude-code", cwd, generation: 0 },
+        { id: "cursor", cwd, generation: 0 },
       ])
-      expect(booted?.controller.store.getState().workspace.order).toHaveLength(2)
+      expect(booted?.controller.store.getState().workspace.order).toHaveLength(3)
     } finally {
       if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
       await booted?.closed
@@ -375,7 +516,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     }
   })
 
-  it("mounts boot feedback before preparing the tree-sitter worker", async () => {
+  it("configures the worker before parser registration and cockpit rendering", async () => {
     const setup = await createTestRenderer({ width: 80, height: 24 })
     const controller = createFakeController()
     const order: string[] = []
@@ -399,10 +540,16 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         loadConfig: async () => defaultAppConfig(),
         readFirstRunSeen: () => true,
         configureTreeSitterWorker: async () => {
-          order.push("worker")
+          order.push("worker-start")
           signalWorkerStarted()
           await workerReleased
+          order.push("worker-complete")
           return null
+        },
+        registerSyntaxParsers: () => order.push("register"),
+        renderCockpit: (...args) => {
+          order.push("render")
+          return renderCockpit(...args)
         },
         onExit: () => {},
         wireNotifier: () => {},
@@ -413,13 +560,15 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     await setup.renderOnce()
     expect(setup.captureCharFrame()).toContain(WELCOME_GREETING)
     // The boot root is already visible while independent startup work overlaps.
-    expect(order).toEqual(["worker", "controller"])
+    expect(order).toEqual(["worker-start", "controller"])
 
     let booted: Awaited<ReturnType<typeof main>> | undefined
     await actAsync(async () => {
       releaseWorker()
       booted = await bootPromise
     })
+
+    expect(order).toEqual(["worker-start", "controller", "worker-complete", "register", "render"])
 
     await destroyMounted(setup.renderer)
     await booted?.closed

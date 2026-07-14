@@ -3,7 +3,6 @@ import { join } from "node:path"
 import { describe, expect, it } from "bun:test"
 
 import type { TestRendererSetup } from "@opentui/core/testing"
-import { testRender } from "@opentui/react/test-utils"
 
 import { createAgentConnection, type AgentConnection, type PermissionRequest } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
@@ -12,7 +11,7 @@ import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionStatus } f
 import type { AppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, testRender } from "../../test/reactTui.ts"
 import { APPROVAL_HINT } from "./keymap.ts"
 import { approvalTitleFor, OPTION_MARKER, UNTITLED_ACTION } from "./ApprovalPrompt.tsx"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
@@ -535,7 +534,8 @@ const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-  },
+  } as AppConfig["providers"],
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -543,6 +543,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
@@ -563,10 +564,10 @@ describe("integration - a mock agent's permission request", () => {
       await ctx.requestPermission({ toolCallId: "call-1", kind: "edit", title: "Bump b" }, [ALLOW, REJECT])
     })
     const codex = connectionToMockAgent(CODEX)
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -625,6 +626,7 @@ describe("integration - two sessions of the same provider requesting permission 
 
     const config: AppConfig = {
       providers: APP_CONFIG.providers,
+      providerDefaults: {},
       sessions: [
         { provider: "claude-code", cwd: dirA, title: "repo-a" },
         { provider: "claude-code", cwd: dirB, title: "repo-b" },
@@ -635,6 +637,7 @@ describe("integration - two sessions of the same provider requesting permission 
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
     const controller = await createSessionController({ config, cwd: root, createConnection: () => queue.shift()! })
 

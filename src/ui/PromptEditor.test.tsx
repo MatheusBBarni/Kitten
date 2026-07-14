@@ -368,6 +368,8 @@ describe("PromptEditor slash commands", () => {
     expect(cockpitCommandForDraft("/new", 4)).toBe("start-new-run")
     expect(cockpitCommandForDraft("/clear", 6)).toBe("clear-run")
     expect(cockpitCommandForDraft("/model ", 7)).toBe("model-select")
+    expect(cockpitCommandForDraft("/statusline", 11)).toBe("statusline")
+    expect(cockpitCommandForDraft("/statusline describe compact", 28)).toBeNull()
     expect(cockpitCommandForDraft("/review", 7)).toBeNull()
     expect(cockpitCommandForDraft("/sessions now", 13)).toBeNull()
   })

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Complete fixture migration and make provider defaults required"
 type: refactor
 complexity: high

@@ -5,14 +5,16 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { CodeRenderable, destroyTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
+import { CodeRenderable, destroyTreeSitterClient, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
 import { createMockMouse, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
+import { useState } from "react"
 
 import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { Markdown } from "./Markdown.tsx"
+import { registerSyntaxParsers, type SyntaxDiagnostic } from "./syntaxParsers.ts"
 import { DARK_PALETTE, LIGHT_PALETTE } from "./theme.ts"
 
 const WIDTH = 52
@@ -61,6 +63,22 @@ function collectCodeRenderables(root: BaseRenderable): CodeRenderable[] {
   return codes
 }
 
+async function settleMarkdownHighlights(setup: TestRendererSetup): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const codes = collectCodeRenderables(setup.renderer.root)
+    if (codes.length > 0) {
+      await Promise.all(codes.map((code) => code.highlightingDone))
+      setup.renderer.requestRender()
+      await setup.flush()
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    setup.renderer.requestRender()
+    await setup.flush()
+  }
+  throw new Error("Markdown code renderable did not mount")
+}
+
 async function destroyMarkdown(setup: TestRendererSetup): Promise<void> {
   await Promise.all(collectCodeRenderables(setup.renderer.root).map((code) => code.highlightingDone))
   await setup.flush()
@@ -68,6 +86,46 @@ async function destroyMarkdown(setup: TestRendererSetup): Promise<void> {
 }
 
 describe("Markdown", () => {
+  it("registers capabilities on a direct multi-block mount before code rendering", async () => {
+    const controller = createFakeController()
+    let updateContent: (content: string) => void = () => {}
+    function DirectMountHarness() {
+      const [content, setContent] = useState("DIRECT_WARMUP")
+      updateContent = setContent
+      return <Markdown content={content} />
+    }
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <DirectMountHarness />
+      </CockpitProvider>,
+      { width: WIDTH, height: HEIGHT },
+    )
+    await setup.waitForFrame((candidate) => candidate.includes("DIRECT_WARMUP"))
+
+    const content = [
+      "# DIRECT_HEADING",
+      "",
+      "DIRECT_PROSE",
+      "",
+      "```rust",
+      "fn direct_rust() {}",
+      "```",
+    ].join("\n")
+    await actAsync(() => updateContent(content))
+    await settleMarkdownHighlights(setup)
+    const frame = await setup.waitForFrame(
+      (candidate) =>
+        candidate.includes("DIRECT_HEADING") &&
+        candidate.includes("DIRECT_PROSE") &&
+        candidate.includes("fn direct_rust() {}"),
+    )
+
+    expect(frame).toContain("DIRECT_PROSE")
+    expect(collectCodeRenderables(setup.renderer.root).some((code) => code.content.includes("direct_rust"))).toBeTrue()
+
+    await destroyMarkdown(setup)
+  })
+
   it("styles a heading with the theme accent instead of the reading foreground", async () => {
     await destroyTreeSitterClient()
     const setup = await renderMarkdown("# HEADING_SENTINEL")
@@ -84,6 +142,111 @@ describe("Markdown", () => {
 
     await destroyMarkdown(setup)
   })
+
+  for (const { label, source, sentinel } of [
+    { label: "rust", source: "struct RustSentinel {}", sentinel: "RustSentinel" },
+    { label: "rs", source: "struct RsSentinel {}", sentinel: "RsSentinel" },
+    { label: "go", source: "type GoSentinel struct {}", sentinel: "GoSentinel" },
+    { label: "golang", source: "type GolangSentinel struct {}", sentinel: "GolangSentinel" },
+    { label: "ocaml", source: "type ocamlSentinel = string", sentinel: "ocamlSentinel" },
+    { label: "ml", source: "type mlSentinel = string", sentinel: "mlSentinel" },
+    { label: "mli", source: "type mliSentinel = string", sentinel: "mliSentinel" },
+    { label: "json", source: '{"jsonSentinel": 424242}', sentinel: "424242" },
+    { label: "bash", source: "BASH_SENTINEL=value", sentinel: "BASH_SENTINEL" },
+    { label: "sh", source: "SH_SENTINEL=value", sentinel: "SH_SENTINEL" },
+    { label: "shell", source: "SHELL_SENTINEL=value", sentinel: "SHELL_SENTINEL" },
+    { label: "python", source: "class PythonSentinel: pass", sentinel: "PythonSentinel" },
+    { label: "py", source: "class PySentinel: pass", sentinel: "PySentinel" },
+  ]) {
+    it(`highlights a ${label} fence with a non-prose foreground`, async () => {
+      registerSyntaxParsers()
+      const client = getTreeSitterClient()
+      await client.initialize()
+      expect(await client.preloadParser(label)).toBeTrue()
+      const setup = await renderMarkdown(`\`\`\`${label}\n${source}\n\`\`\``)
+      await settleMarkdownHighlights(setup)
+      await setup.waitForFrame((frame) => frame.includes(source))
+      await setup.waitFor(() => {
+        const styled = spanContaining(setup, sentinel)?.fg.toString() !== paletteColor(DARK_PALETTE.text)
+        if (!styled) setup.renderer.requestRender()
+        return styled
+      })
+
+      const token = spanContaining(setup, sentinel)
+      expect(token).toBeDefined()
+      expect(token?.fg.toString()).not.toBe(paletteColor(DARK_PALETTE.text))
+
+      await destroyMarkdown(setup)
+    })
+  }
+
+  it("keeps a blocked ReScript fence declared, plaintext, and copy-safe", async () => {
+    const source = "let rescriptFallbackSentinel = 1"
+    const setup = await renderMarkdown(`\`\`\`rescript\n${source}\n\`\`\``)
+    await settleMarkdownHighlights(setup)
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(source))
+    const code = collectCodeRenderables(setup.renderer.root).find((candidate) => candidate.content.includes(source))
+    const token = spanContaining(setup, "rescriptFallbackSentinel")
+
+    expect(code?.filetype).toBeUndefined()
+    expect(frame).toContain("rescript")
+    expect(token).toBeDefined()
+    expect(token?.fg.toString()).toBe(paletteColor(DARK_PALETTE.text))
+
+    const rows = frame.split("\n")
+    const row = rows.findIndex((candidate) => candidate.includes(source))
+    const start = rows[row]!.indexOf(source)
+    const mouse = createMockMouse(setup.renderer)
+    await mouse.drag(start, row, start + source.length, row)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe(source)
+
+    await destroyMarkdown(setup)
+  })
+
+  for (const { label, expected } of [
+    {
+      label: "private-unknown-label",
+      expected: { kind: "unknown_label", surface: "markdown" },
+    },
+    {
+      label: "resi",
+      expected: { kind: "parser_unavailable", filetype: "rescript", surface: "markdown" },
+    },
+  ] as const) {
+    it(`keeps a complete ${label} fence labelled, bounded, visible, and copy-safe`, async () => {
+      const source = "first fallback byte\nsecond fallback byte"
+      const events: SyntaxDiagnostic[] = []
+      const controller = createFakeController()
+      const setup = await testRender(
+        <CockpitProvider controller={controller}>
+          <Markdown content={`\`\`\`${label}\n${source}\n\`\`\``} diagnosticReporter={(event) => events.push(event)} />
+        </CockpitProvider>,
+        { width: WIDTH, height: HEIGHT },
+      )
+      const frame = await setup.waitForFrame(
+        (candidate) => candidate.includes(label) && candidate.includes("second fallback byte"),
+      )
+      const code = collectCodeRenderables(setup.renderer.root).find((candidate) => candidate.content === source)
+
+      expect(code).toBeDefined()
+      expect(code?.filetype).toBeUndefined()
+      expect(frame).toContain(label)
+      expect(frame).toContain("first fallback byte")
+      expect(events).toContainEqual(expected)
+      expect(JSON.stringify(events)).not.toContain("fallback byte")
+      if (expected.kind === "unknown_label") expect(JSON.stringify(events)).not.toContain(label)
+
+      const rows = frame.split("\n")
+      const first = rows.findIndex((row) => row.includes("first fallback byte"))
+      const last = rows.findIndex((row) => row.includes("second fallback byte"))
+      const column = rows[first]!.indexOf("first fallback byte")
+      const mouse = createMockMouse(setup.renderer)
+      await mouse.drag(column, first, column + "second fallback byte".length, last)
+      expect(setup.renderer.getSelection()?.getSelectedText()).toBe(source)
+
+      await destroyMarkdown(setup)
+    })
+  }
 
   it("renders strong Markdown with the bold text attribute", async () => {
     const setup = await renderMarkdown("**BOLD_SENTINEL**")
@@ -252,6 +415,40 @@ describe("Markdown", () => {
 
     await destroyMarkdown(setup)
   })
+
+  for (const { label, source } of [
+    { label: "rust", source: "fn rust_copy_sentinel() {}" },
+    { label: "go", source: "func goCopySentinel() {}" },
+    { label: "ocaml", source: "let ocaml_copy_sentinel = 1" },
+    { label: "json", source: '{"json_copy_sentinel": 424242}' },
+    { label: "bash", source: "BASH_COPY_SENTINEL=value" },
+    { label: "sh", source: "SH_COPY_SENTINEL=value" },
+    { label: "shell", source: "SHELL_COPY_SENTINEL=value" },
+    { label: "python", source: "class PythonCopySentinel: pass" },
+    { label: "py", source: "class PyCopySentinel: pass" },
+  ]) {
+    it(`copies ${label} fenced source without renderer chrome`, async () => {
+      registerSyntaxParsers()
+      const client = getTreeSitterClient()
+      await client.initialize()
+      expect(await client.preloadParser(label)).toBeTrue()
+      const setup = await renderMarkdown(`\`\`\`${label}\n${source}\n\`\`\``)
+      await settleMarkdownHighlights(setup)
+      const frame = await setup.waitForFrame((candidate) => candidate.includes(source))
+      const rows = frame.split("\n")
+      const row = rows.findIndex((candidate) => candidate.includes(source))
+      const start = rows[row]!.indexOf(source)
+
+      const mouse = createMockMouse(setup.renderer)
+      await mouse.drag(start, row, start + source.length, row)
+      const selected = setup.renderer.getSelection()?.getSelectedText() ?? ""
+
+      expect(selected).toBe(source)
+      expect(selected).not.toMatch(/[│┌┐└┘─█▄▌▸]/)
+
+      await destroyMarkdown(setup)
+    })
+  }
 
   it("recolors its default foreground when the terminal theme changes", async () => {
     const setup = await renderMarkdown("THEME_SENTINEL")

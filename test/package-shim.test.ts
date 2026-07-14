@@ -40,6 +40,8 @@ describe("main npm package shim contract", () => {
     expect(firstShellCommand).toBe(
       "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
     )
+    expect(visitorInstallDocs).not.toContain("npm i -g kitten")
+    expect(visitorInstallDocs).not.toContain("npx kitten --version")
     expect(visitorInstallDocs).not.toContain("npm i -g @matheusbbarni/kitten")
     expect(visitorInstallDocs).not.toContain("npx @matheusbbarni/kitten --version")
     expect(README).toContain(

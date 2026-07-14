@@ -15,6 +15,7 @@
  */
 
 import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
+import type { StatuslinePreference } from "../core/statusline.ts"
 import { attentionConversationIds } from "../core/workspace.ts"
 import type { PromptHistoryState } from "../core/promptHistory.ts"
 import type {
@@ -22,6 +23,7 @@ import type {
   ConfigOption,
   ClarificationCapability,
   ContextUsage,
+  DefaultApplyResult,
   PendingDiff,
   PlanEntry,
   ProviderKind,
@@ -50,6 +52,7 @@ import type {
   RestorationMode,
   SettingsOverlay,
   Selector,
+  StatuslineOverlay,
   TabDialogOverlay,
 } from "./appStore.ts"
 
@@ -102,6 +105,10 @@ export const selectIsShellFocused: Selector<boolean> = (state) => state.focusedP
 
 /** The user-selected theme preference that drives the live cockpit palette. */
 export const selectThemePreference: Selector<ThemePreference> = (state) => state.preferences.theme
+
+/** The resolved saved statusline preference; `layout: null` retains the legacy footer. */
+export const selectStatuslinePreference: Selector<StatuslinePreference> = (state) =>
+  state.preferences.statusline
 
 /** Whether the given session owns keyboard focus. For the status strip's focus marker. */
 export const selectIsFocused =
@@ -221,6 +228,12 @@ export const selectAgentConfigOptions =
   (sessionId: SessionId | null): Selector<ConfigOption[]> =>
   (state) =>
     (sessionId ? state.sessions[sessionId]?.configOptions : undefined) ?? EMPTY_CONFIG_OPTIONS
+
+/** One session's stored terminal provider-default result, without deriving display state. */
+export const selectSessionDefaultApplyResult =
+  (sessionId: SessionId | null): Selector<DefaultApplyResult | null> =>
+  (state) =>
+    (sessionId ? state.sessions[sessionId]?.defaultApplyResult : null) ?? null
 
 /**
  * One session's confirmed model, or `undefined` when the agent advertises no `model`
@@ -410,6 +423,10 @@ export const selectModelSelectOverlay: Selector<ModelSelectOverlay | null> = (st
 /** The active settings tab, or `null` while the settings modal is closed. */
 export const selectSettingsOverlay: Selector<SettingsOverlay | null> = (state) => state.overlays.settings
 
+/** The transient `/statusline` flow, or `null` while its modal is closed. */
+export const selectStatuslineOverlay: Selector<StatuslineOverlay | null> = (state) =>
+  state.overlays.statusline
+
 /** The captured-target rename/close dialog, below approval in modal precedence. */
 export const selectTabDialogOverlay: Selector<TabDialogOverlay | null> = (state) =>
   state.overlays.tabDialog
@@ -423,6 +440,7 @@ export type ActiveModal =
   | { kind: "model-select"; sessionId: SessionId }
   | { kind: "settings" }
   | { kind: "handoff-target"; sessionId: SessionId }
+  | { kind: "statusline"; sessionId: SessionId }
   | null
 
 /** Explicit modal precedence; approval identity always wins over a captured tab target. */
@@ -442,6 +460,7 @@ export const selectActiveModal: Selector<ActiveModal> = (state) => {
   if (overlays.modelSelect) return { kind: "model-select", sessionId: overlays.modelSelect.sessionId }
   if (overlays.settings) return { kind: "settings" }
   if (overlays.handoffTarget) return { kind: "handoff-target", sessionId: overlays.handoffTarget.sourceSessionId }
+  if (overlays.statusline) return { kind: "statusline", sessionId: overlays.statusline.sessionId }
   return null
 }
 
@@ -453,6 +472,7 @@ export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.handoffTarget !== null ||
   state.overlays.modelSelect !== null ||
   state.overlays.settings !== null ||
+  state.overlays.statusline !== null ||
   state.overlays.tabDialog !== null ||
   state.overlays.sessions ||
   state.overlays.sessionPicker

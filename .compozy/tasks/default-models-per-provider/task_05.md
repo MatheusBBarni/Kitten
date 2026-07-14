@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add controller-owned default application and content-free outcome telemetry"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ Add the controller action that resolves one session's provider default and appli
 
 ## Subtasks
 
-- [ ] 5.1 Add controller-owned provider-default snapshot ownership.
-- [ ] 5.2 Add one fail-soft action to ControllerActions.
-- [ ] 5.3 Preserve model-before-refreshed-effort confirmation.
-- [ ] 5.4 Record reducer-owned terminal outcomes.
-- [ ] 5.5 Add opt-in content-free outcome observation.
-- [ ] 5.6 Cover success, partial, unavailable, and error paths.
+- [x] 5.1 Add controller-owned provider-default snapshot ownership.
+- [x] 5.2 Add one fail-soft action to ControllerActions.
+- [x] 5.3 Preserve model-before-refreshed-effort confirmation.
+- [x] 5.4 Record reducer-owned terminal outcomes.
+- [x] 5.5 Add opt-in content-free outcome observation.
+- [x] 5.6 Cover success, partial, unavailable, and error paths.
 
 ## Implementation Details
 
@@ -73,15 +73,15 @@ Implement TechSpec Default Application Algorithm, Integration Points, and Monito
 ## Tests
 
 - Unit tests:
-  - [ ] No default emits none, makes no adapter call, and retains confirmed state.
-  - [ ] A stale model emits unavailable-model with no adapter call.
-  - [ ] A valid pair calls model before refreshed effort.
-  - [ ] Confirmed model plus unavailable/rejected effort emits partial with no rollback or substitution.
-  - [ ] Not-ready session and model transport failure fail softly with existing error routing.
-  - [ ] Duplicate-provider sessions share the default but target only their addressed runtime.
+  - [x] No default emits none, makes no adapter call, and retains confirmed state.
+  - [x] A stale model emits unavailable-model with no adapter call.
+  - [x] A valid pair calls model before refreshed effort.
+  - [x] Confirmed model plus unavailable/rejected effort emits partial with no rollback or substitution.
+  - [x] Not-ready session and model transport failure fail softly with existing error routing.
+  - [x] Duplicate-provider sessions share the default but target only their addressed runtime.
 - Integration tests:
-  - [ ] Enabled telemetry records only none, applied, partial, or unavailable.
-  - [ ] Sentinel model, effort, prompt, error, and adapter data never occur in JSONL output.
+  - [x] Enabled telemetry records only none, applied, partial, or unavailable.
+  - [x] Sentinel model, effort, prompt, error, and adapter data never occur in JSONL output.
 - Test coverage target: >=80%
 - All tests must pass
 

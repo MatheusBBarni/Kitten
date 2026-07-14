@@ -25,6 +25,11 @@
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
+import type {
+  StatuslineLayout,
+  StatuslinePreference,
+  StatuslinePreset,
+} from "../core/statusline.ts"
 import { createWorkspaceState, workspaceReducer } from "../core/workspace.ts"
 import {
   PROVIDER_DISPLAY_NAMES,
@@ -115,9 +120,38 @@ export interface SettingsOverlay {
   tab: "theme"
 }
 
+/** Product-owned recovery layout names; no arbitrary preset data enters the store. */
+export type StatuslinePresetName = StatuslinePreset["name"]
+
+/**
+ * One valid phase of the transient `/statusline` workflow. Request text, failure
+ * details, preset choice, and preview data live only here; none are preferences.
+ */
+export type StatuslineModalPhase =
+  | { readonly phase: "disclosure" }
+  | { readonly phase: "request"; readonly requestText: string }
+  | { readonly phase: "waiting"; readonly requestText: string }
+  | {
+      readonly phase: "preview"
+      readonly requestText: string
+      readonly layout: StatuslineLayout
+      readonly preset: StatuslinePresetName | null
+    }
+  | { readonly phase: "failure"; readonly requestText: string; readonly reason: string }
+  | {
+      readonly phase: "presets"
+      readonly requestText: string
+      readonly reason: string
+      readonly selectedPreset: StatuslinePresetName | null
+    }
+
+/** The selected session plus its current transient `/statusline` modal phase. */
+export type StatuslineOverlay = StatuslineModalPhase & { readonly sessionId: SessionId }
+
 /** Reactive user preferences that views can subscribe to independently of sessions. */
 export interface Preferences {
   theme: ThemePreference
+  statusline: StatuslinePreference
 }
 
 /** Whether a restored session is promptable or only its saved context remains. */
@@ -155,6 +189,8 @@ export interface OverlayState {
   modelSelect: ModelSelectOverlay | null
   /** The settings modal, open on its active settings tab. */
   settings: SettingsOverlay | null
+  /** The transient `/statusline` customization flow. */
+  statusline: StatuslineOverlay | null
   tabDialog: TabDialogOverlay | null
   sessions: boolean
   /** The resumable-session picker carries no payload; it reads runs from the run store. */
@@ -269,6 +305,12 @@ export interface AppStore {
   openSettings(overlay?: SettingsOverlay): void
   /** Clear the settings slot. Closing a closed slot is a no-op. */
   closeSettings(): void
+  /** Open the transient `/statusline` flow for one selected session. */
+  openStatusline(overlay: StatuslineOverlay): void
+  /** Advance an open `/statusline` flow without changing its captured session. */
+  updateStatusline(state: StatuslineModalPhase): void
+  /** Clear all transient `/statusline` data without changing the saved preference. */
+  closeStatusline(): void
   /** Open a captured-target tab dialog unless approval currently owns modal precedence. */
   openTabDialog(overlay: TabDialogOverlay): void
   closeTabDialog(): void
@@ -288,6 +330,8 @@ export interface AppStore {
   setRestorationBundle(bundle: HandoffBundle | null): void
   /** Change the reactive theme preference. Reapplying the current value is a no-op. */
   setThemePreference(theme: ThemePreference): void
+  /** Replace the resolved statusline preference. Equal resolved values are no-ops. */
+  setStatuslinePreference(preference: StatuslinePreference): void
 }
 
 /** Construction options. Defaults to one seeded session per provider kind. */
@@ -300,7 +344,7 @@ export interface AppStoreOptions {
   /** Which session holds focus at startup. Defaults to the first seeded session. */
   selectedVisibleId?: SessionId
   /** Reactive user-preference seed. Defaults to following the terminal theme. */
-  preferences?: Preferences
+  preferences?: Partial<Preferences>
 }
 
 /** Create an {@link AppStore} holding one empty session slice per seed. */
@@ -339,7 +383,13 @@ class AppStoreImpl implements AppStore {
         ? { kind: "agent", sessionId: workspace.selectedVisibleId }
         : { kind: "workspace" },
       shell: createShellState(),
-      preferences: { theme: options.preferences?.theme ?? "auto" },
+      preferences: {
+        theme: options.preferences?.theme ?? "auto",
+        statusline: options.preferences?.statusline ?? {
+          llmDisclosureAcknowledged: false,
+          layout: null,
+        },
+      },
       clarificationCapabilities,
       overlays: {
         approval: null,
@@ -348,6 +398,7 @@ class AppStoreImpl implements AppStore {
         handoffTarget: null,
         modelSelect: null,
         settings: null,
+        statusline: null,
         tabDialog: null,
         sessions: false,
         sessionPicker: false,
@@ -674,6 +725,22 @@ class AppStoreImpl implements AppStore {
     this.setOverlays({ settings: null })
   }
 
+  openStatusline(overlay: StatuslineOverlay): void {
+    if (this.state.overlays.statusline === overlay) return
+    this.setOverlays({ statusline: overlay })
+  }
+
+  updateStatusline(state: StatuslineModalPhase): void {
+    const current = this.state.overlays.statusline
+    if (current === null) return
+    this.setOverlays({ statusline: { sessionId: current.sessionId, ...state } })
+  }
+
+  closeStatusline(): void {
+    if (this.state.overlays.statusline === null) return
+    this.setOverlays({ statusline: null })
+  }
+
   openTabDialog(overlay: TabDialogOverlay): void {
     if (this.state.overlays.approval !== null) return
     const conversation = this.state.workspace.conversations[overlay.sessionId]
@@ -743,6 +810,14 @@ class AppStoreImpl implements AppStore {
     this.commit({ ...this.state, preferences: { ...this.state.preferences, theme } })
   }
 
+  setStatuslinePreference(preference: StatuslinePreference): void {
+    if (sameStatuslinePreference(this.state.preferences.statusline, preference)) return
+    this.commit({
+      ...this.state,
+      preferences: { ...this.state.preferences, statusline: preference },
+    })
+  }
+
   /** Replace one or both overlay slots, leaving the rest of the state identical. */
   private setOverlays(patch: Partial<OverlayState>): void {
     this.commit({ ...this.state, overlays: { ...this.state.overlays, ...patch } })
@@ -788,10 +863,27 @@ function hasOpenOverlay(overlays: OverlayState): boolean {
     overlays.handoffTarget !== null ||
     overlays.modelSelect !== null ||
     overlays.settings !== null ||
+    overlays.statusline !== null ||
     overlays.tabDialog !== null ||
     overlays.sessions ||
     overlays.sessionPicker
   )
+}
+
+function sameStatuslinePreference(left: StatuslinePreference, right: StatuslinePreference): boolean {
+  if (left.llmDisclosureAcknowledged !== right.llmDisclosureAcknowledged) return false
+  if (left.layout === right.layout) return true
+  if (left.layout === null || right.layout === null) return false
+  const rightLayout = right.layout
+  if (left.layout.separator !== rightLayout.separator || left.layout.line.length !== rightLayout.line.length) {
+    return false
+  }
+  return left.layout.line.every((item, index) => {
+    const other = rightLayout.line[index]!
+    return typeof item === "string"
+      ? item === other
+      : typeof other !== "string" && item.kind === other.kind && item.maxChars === other.maxChars
+  })
 }
 
 function unknownClarificationCapability(): ClarificationCapability {

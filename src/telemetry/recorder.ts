@@ -91,9 +91,11 @@ export type TelemetryEventType =
   | "effort_switched"
   | "switch_confirmed"
   | "switch_unverified"
+  | "provider_default_outcome"
   | "effort_change_kept"
   | "agent_ready"
   | "agent_unready"
+  | "provider_readiness"
   | "first_response_ms"
   // The multi-session attention metrics (task_09). Each measures whether the fleet
   // stays productive; all are content-free (durations, counts, and session ids only).
@@ -155,6 +157,15 @@ export type ClarificationSessionLossReason =
 export type ClarificationFieldCountBucket = "zero" | "one" | "two_to_three" | "four_or_more"
 export type ClarificationDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
 
+/** The complete readiness taxonomy permitted in local telemetry. */
+export type ProviderReadinessOutcome =
+  | "ready"
+  | "binary_missing"
+  | "version_mismatch"
+  | "uncertified_recipe"
+  | "authentication_required"
+  | "handshake_failed"
+
 /** Content-free presentation metadata; request/session identities are never serialized. */
 export interface ClarificationPresentedInput {
   requestId: string
@@ -193,6 +204,7 @@ export type TabRestoreCountBucket = "zero" | "one" | "two_to_four" | "five_or_mo
 export type TabSwitchLatencyBucket = "under_200ms" | "200_to_499ms" | "500_to_999ms" | "1s_or_more"
 export type TabAttentionStatus = "awaiting_approval" | "error" | "finished"
 export type TabLifecycle = "visible" | "background"
+export type ProviderDefaultOutcome = "none" | "applied" | "partial" | "unavailable"
 
 /** Exact restore facts accepted by the recorder before it reduces them to buckets. */
 export interface TabRestoreInput {
@@ -257,6 +269,8 @@ export interface TelemetryRecord {
   lossReason?: ClarificationSessionLossReason
   /** Provider classification is safe only as Kitten's closed provider enum. */
   provider?: ProviderKind
+  /** Fixed readiness result; never a command, version, profile, path, or error string. */
+  readinessOutcome?: ProviderReadinessOutcome
   /** Closed Session Tabs dimensions; none can contain user or adapter content. */
   creationSource?: TabCreationSource
   selectionSource?: TabSelectionSource
@@ -266,6 +280,8 @@ export interface TelemetryRecord {
   unavailableCountBucket?: TabRestoreCountBucket
   switchLatencyBucket?: TabSwitchLatencyBucket
   attentionStatus?: TabAttentionStatus
+  /** The bounded terminal provider-default category; no requested values are recorded. */
+  defaultOutcome?: ProviderDefaultOutcome
   lifecycle?: TabLifecycle
 }
 
@@ -311,6 +327,8 @@ export interface TelemetryRecorder {
    * arms the content-free kept-change watch only for a confirmed value change.
    */
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+  /** Record only the terminal category of one explicit provider-default attempt. */
+  recordProviderDefaultOutcome(outcome: ProviderDefaultOutcome): void
   /** Count an accepted composer submission and emit eligibility exactly at the second. */
   promptHistorySubmitted(sessionId: SessionId): void
   /** Record a successful history selection. */
@@ -360,6 +378,8 @@ export interface TelemetryRecorder {
   agentReady(sessionId: SessionId): void
   /** A session failed to come up. */
   agentUnready(sessionId: SessionId): void
+  /** One provider lifecycle attempt settled with a fixed, content-free outcome. */
+  providerReadiness(provider: ProviderKind, outcome: ProviderReadinessOutcome): void
   /**
    * A developer moved keyboard focus to `sessionId`. `viaOverview` marks a switch made
    * through `/sessions` (jump-into or jump-to-next) rather than a direct `/switch`
@@ -433,6 +453,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   configWrite() {},
   configWriteError() {},
   recordSwitch() {},
+  recordProviderDefaultOutcome() {},
   promptHistorySubmitted() {},
   promptHistoryRecalled() {},
   promptHistoryCleared() {},
@@ -450,6 +471,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   clarificationCancelledOnSessionLoss() {},
   agentReady() {},
   agentUnready() {},
+  providerReadiness() {},
   focusSwitch() {},
   maxConcurrentSessions() {},
   resumeLoadStarted() {},
@@ -606,6 +628,10 @@ class ActiveRecorder implements TelemetryRecorder {
     }
   }
 
+  recordProviderDefaultOutcome(outcome: ProviderDefaultOutcome): void {
+    this.record({ type: "provider_default_outcome", defaultOutcome: outcome })
+  }
+
   promptHistorySubmitted(sessionId: SessionId): void {
     const count = (this.promptSubmissionCounts.get(sessionId) ?? 0) + 1
     this.promptSubmissionCounts.set(sessionId, count)
@@ -722,6 +748,10 @@ class ActiveRecorder implements TelemetryRecorder {
 
   agentUnready(sessionId: SessionId): void {
     this.record({ type: "agent_unready", agent: sessionId })
+  }
+
+  providerReadiness(provider: ProviderKind, readinessOutcome: ProviderReadinessOutcome): void {
+    this.record({ type: "provider_readiness", provider, readinessOutcome })
   }
 
   focusSwitch(sessionId: SessionId, viaOverview: boolean): void {

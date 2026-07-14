@@ -13,17 +13,20 @@
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
 import {
   nextSessionId,
+  previousSessionId,
   type CloseChoice,
   type CloseConversationResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type PromptInput,
+  type StatuslineWriteResult,
   type SwitchFocusOptions,
 } from "../src/app/actions.ts"
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
-import type { ClarificationOutcome, SessionId } from "../src/core/types.ts"
+import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
+import type { StatuslineLayout } from "../src/core/statusline.ts"
 import {
   persistedSelectedConversationId,
   type PersistedRunRecord,
@@ -52,6 +55,14 @@ export interface RecordedCalls {
   navigatePromptHistory: { direction: PromptHistoryDirection; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
   setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
+  applyProviderDefaults: SessionId[]
+  acknowledgeStatuslineDisclosure: number
+  confirmStatusline: StatuslineLayout[]
+  providerDefaultContexts: Array<{
+    sessionId: SessionId
+    selectedSessionId: SessionId | null
+    overlaySessionId: SessionId | null
+  }>
   switchFocus: (SessionId | undefined)[]
   jumpToNextNeedy: number
   jumpToNextAttention: number
@@ -85,6 +96,17 @@ export interface FakeControllerOptions {
   listRepositoryFiles?: (
     sessionId: SessionId,
   ) => RepositoryFileList | Promise<RepositoryFileList>
+  /** Deterministic terminal results emitted when a view requests provider defaults. */
+  providerDefaultResults?: Partial<Record<SessionId, DefaultApplyResult>>
+  /** Deterministic persistence outcomes for statusline UI tests. */
+  acknowledgeStatuslineResult?: StatuslineWriteResult
+  confirmStatuslineResult?: StatuslineWriteResult
+  /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
+  sendPrompt?: (
+    input: PromptInput,
+    sessionId: SessionId | undefined,
+    store: AppStore,
+  ) => PromptResult | null | Promise<PromptResult | null>
 }
 
 /**
@@ -146,6 +168,10 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     navigatePromptHistory: [],
     cancel: [],
     setSessionConfigOption: [],
+    applyProviderDefaults: [],
+    acknowledgeStatuslineDisclosure: 0,
+    confirmStatusline: [],
+    providerDefaultContexts: [],
     switchFocus: [],
     jumpToNextNeedy: 0,
     jumpToNextAttention: 0,
@@ -251,7 +277,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.sendPrompt.push({ input, sessionId })
-        return null
+        return await (options.sendPrompt?.(input, sessionId, store) ?? null)
       },
       recordPromptHistory(text: string, sessionId?: SessionId): void {
         calls.recordPromptHistory.push({ text, sessionId })
@@ -282,14 +308,48 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         calls.setSessionConfigOption.push({ configId, value, sessionId })
         return true
       },
-      switchFocus(sessionId?: SessionId): void {
+      async applyProviderDefaults(sessionId: SessionId) {
+        calls.applyProviderDefaults.push(sessionId)
+        const state = store.getState()
+        calls.providerDefaultContexts.push({
+          sessionId,
+          selectedSessionId: state.workspace.selectedVisibleId,
+          overlaySessionId: state.overlays.modelSelect?.sessionId ?? null,
+        })
+        const result = options.providerDefaultResults?.[sessionId] ?? { kind: "none" }
+        store.applyEvent(sessionId, { kind: "default_apply_result", result })
+        return result
+      },
+      async acknowledgeStatuslineDisclosure(): Promise<StatuslineWriteResult> {
+        calls.acknowledgeStatuslineDisclosure++
+        const result = options.acknowledgeStatuslineResult ?? { outcome: "saved" }
+        if (result.outcome === "saved") {
+          const current = store.getState().preferences.statusline
+          store.setStatuslinePreference({ ...current, llmDisclosureAcknowledged: true })
+        }
+        return result
+      },
+      async confirmStatusline(layout): Promise<StatuslineWriteResult> {
+        calls.confirmStatusline.push(layout)
+        const result = options.confirmStatuslineResult ?? { outcome: "saved" }
+        if (result.outcome === "saved") {
+          const acknowledged = store.getState().preferences.statusline.llmDisclosureAcknowledged
+          store.setStatuslinePreference({ llmDisclosureAcknowledged: acknowledged, layout })
+        }
+        return result
+      },
+      switchFocus(sessionId?: SessionId, options?: SwitchFocusOptions): void {
         calls.switchFocus.push(sessionId)
         const state = store.getState()
         const target =
           sessionId ??
           (state.workspace.selectedVisibleId
-            ? nextSessionId(state.workspace.order, state.workspace.selectedVisibleId)
-            : state.workspace.order[0])
+            ? options?.direction === "previous"
+              ? previousSessionId(state.workspace.order, state.workspace.selectedVisibleId)
+              : nextSessionId(state.workspace.order, state.workspace.selectedVisibleId)
+            : options?.direction === "previous"
+              ? state.workspace.order.at(-1)
+              : state.workspace.order[0])
         if (target) store.setFocus(target)
       },
       jumpToNextNeedy(): void {
@@ -337,6 +397,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
+    updateProviderDefaults: () => {},
     closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {
       calls.restore.push(record)

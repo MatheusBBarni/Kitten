@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Expose the narrow per-session default-result selector"
 type: backend
 complexity: low

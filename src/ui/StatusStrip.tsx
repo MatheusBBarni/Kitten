@@ -6,10 +6,23 @@
  * state so the strip stays compact without a second status-only row.
  */
 
+import { useTerminalDimensions } from "@opentui/react"
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
+import {
+  renderStatusline,
+  statuslineText,
+  type StatuslineContext,
+  type StatuslineLayout,
+} from "../core/statusline.ts"
+import {
+  EFFORT_CATEGORY,
+  MODEL_CATEGORY,
+  PROVIDER_METADATA,
+  type ConfigOption,
+  type DefaultApplyResult,
+} from "../core/types.ts"
 import type { Selector } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
@@ -18,8 +31,11 @@ import {
   selectBackgroundWork,
   selectFocusedSessionId,
   selectIsShellFocused,
+  selectSessionDefaultApplyResult,
   selectSessionHeadroom,
+  selectSessionBranch,
   selectSessionModel,
+  selectStatuslinePreference,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { formatHeadroom } from "./headroom.ts"
@@ -43,6 +59,14 @@ export const FOCUS_MARKER = "▸"
 /** Three cells keep both agent gauges inside the exact 80-column strip budget. */
 const STATUS_STRIP_HEADROOM_CELLS = 3
 
+/** Outer padding plus one readable cell between custom content and the fixed affordance. */
+const CUSTOM_STATUSLINE_RESERVED_CELLS = 3
+
+/** Match the fixed footer's custom-content space for statusline previews and rendering. */
+export function statuslineFooterBudget(width: number, affordance: string): number {
+  return Math.max(0, width - CUSTOM_STATUSLINE_RESERVED_CELLS - [...affordance].length)
+}
+
 /** Workspace-level status shown when no Visible conversation is selected. */
 export const EMPTY_WORKSPACE_STATUS_LABEL = "workspace: no visible conversations"
 
@@ -54,6 +78,12 @@ export const BACKGROUND_ATTENTION_LABEL = "needs attention"
 
 /** Compact label for the focused session's MCP provisioning result. */
 export const MCP_STATUS_LABEL = "mcp"
+
+/** Compact status-strip copy for reducer-confirmed provider-default outcomes. */
+export const DEFAULT_APPLIED_STATUS_LABEL = "default applied"
+export const DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL = "effort unavailable"
+export const DEFAULT_MODEL_UNAVAILABLE_STATUS_LABEL = "model unavailable"
+export const DEFAULT_SESSION_UNAVAILABLE_STATUS_LABEL = "session unavailable"
 
 /** Selector factories consumed by the bar; injectable so delegated model slots can be exercised in isolation. */
 export interface StatusSlotSelectors {
@@ -82,8 +112,12 @@ export interface StatusStripProps {
 /** Focused provider, model, effort, and run state. */
 export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripProps): ReactNode {
   const palette = usePalette()
+  const { width } = useTerminalDimensions()
   const shellFocused = useAppSelector(selectIsShellFocused)
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
+  const statusline = useAppSelector(selectStatuslinePreference)
+  const hint = shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT
+  const customBudget = statuslineFooterBudget(width, hint)
 
   return (
     <box
@@ -98,17 +132,76 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
     >
       <box style={{ flexDirection: "row", justifyContent: "space-between", overflow: "hidden" }}>
         <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, gap: 1, overflow: "hidden" }}>
-          {focusedSessionId === null ? (
+          {statusline.layout !== null ? (
+            <CustomStatusline
+              layout={statusline.layout}
+              sessionId={focusedSessionId}
+              selectors={selectors}
+              helpText={hint}
+              columnBudget={customBudget}
+            />
+          ) : focusedSessionId === null ? (
             <WorkspaceStatusSummary />
           ) : (
             <SelectedAgentStatus sessionId={focusedSessionId} selectors={selectors} />
           )}
         </box>
         <box style={{ flexDirection: "row", flexShrink: 0, gap: 2, overflow: "hidden" }}>
-          <text fg={palette.accent}>{shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT}</text>
+          <text fg={palette.accent}>{hint}</text>
         </box>
       </box>
     </box>
+  )
+}
+
+/** Render one saved layout from existing selected-session read models only. */
+function CustomStatusline({
+  layout,
+  sessionId,
+  selectors,
+  helpText,
+  columnBudget,
+}: {
+  layout: StatuslineLayout
+  sessionId: string | null
+  selectors: StatusSlotSelectors
+  helpText: string
+  columnBudget: number
+}): ReactNode {
+  const controller = useController()
+  const palette = usePalette()
+  const runtime = sessionId === null ? undefined : controller.runtime(sessionId)
+  const branchSelector = useMemo(
+    () => sessionId === null ? (() => null) : selectSessionBranch(sessionId),
+    [sessionId],
+  )
+  const modelSelector = useMemo(
+    () => sessionId === null ? (() => null) : selectors.model(sessionId),
+    [selectors.model, sessionId],
+  )
+  const effortSelector = useMemo(
+    () => sessionId === null ? (() => undefined) : selectors.effort(sessionId),
+    [selectors.effort, sessionId],
+  )
+  const configOptionsSelector = useMemo(() => selectAgentConfigOptions(sessionId), [sessionId])
+  const branch = useAppSelector(branchSelector)
+  const model = useAppSelector(modelSelector)
+  const effort = useAppSelector(effortSelector)
+  const configOptions = useAppSelector(configOptionsSelector)
+  const context = useMemo<StatuslineContext>(() => ({
+    cwd: runtime?.cwd,
+    branch,
+    provider: runtime ? PROVIDER_METADATA[runtime.providerKind].compactLabel : null,
+    model: displayModelName(configOptions, model),
+    effort: displayEffortName(configOptions, effort),
+    helpText,
+  }), [branch, configOptions, effort, helpText, model, runtime])
+  const text = statuslineText(renderStatusline(layout, context, columnBudget))
+
+  return (
+    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none" fg={palette.text}>
+      {text}
+    </text>
   )
 }
 
@@ -146,14 +239,19 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
   const modelSelector = useMemo(() => selectors.model(runtime.sessionId), [selectors.model, runtime.sessionId])
   const effortSelector = useMemo(() => selectors.effort(runtime.sessionId), [selectors.effort, runtime.sessionId])
   const configOptionsSelector = useMemo(() => selectAgentConfigOptions(runtime.sessionId), [runtime.sessionId])
+  const defaultApplyResultSelector = useMemo(
+    () => selectSessionDefaultApplyResult(runtime.sessionId),
+    [runtime.sessionId],
+  )
   const headroomSelector = useMemo(() => selectSessionHeadroom(runtime.sessionId), [runtime.sessionId])
   const model = useAppSelector(modelSelector)
   const effort = useAppSelector(effortSelector)
   const configOptions = useAppSelector(configOptionsSelector)
+  const defaultApplyResult = useAppSelector(defaultApplyResultSelector)
   const selectedHeadroom = useAppSelector(headroomSelector)
   const displayModel = displayModelName(configOptions, model)
   const displayEffort = displayEffortName(configOptions, effort)
-  const provider = runtime.providerKind === "claude-code" ? "claude" : "codex"
+  const provider = PROVIDER_METADATA[runtime.providerKind].compactLabel
   const headroom = formatHeadroom(selectedHeadroom, STATUS_STRIP_HEADROOM_CELLS)
 
   return (
@@ -170,8 +268,37 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
           <span fg={palette.muted}>{"░".repeat(headroom.cells - headroom.filled)}</span>
         </>
       )}
+      <DefaultApplyStatus result={defaultApplyResult} />
       <McpStatus runtime={runtime} />
     </text>
+  )
+}
+
+/** Render only the terminal result; confirmed option values remain the spans above. */
+function DefaultApplyStatus({ result }: { result: DefaultApplyResult | null }): ReactNode {
+  const palette = usePalette()
+  if (result === null || result.kind === "none") return null
+
+  const label = result.kind === "applied"
+    ? DEFAULT_APPLIED_STATUS_LABEL
+    : result.kind === "partial"
+      ? DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL
+      : result.unavailable === "model"
+        ? DEFAULT_MODEL_UNAVAILABLE_STATUS_LABEL
+        : result.unavailable === "effort"
+          ? DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL
+          : DEFAULT_SESSION_UNAVAILABLE_STATUS_LABEL
+  const color = result.kind === "applied"
+    ? palette.tool.completed
+    : result.kind === "partial"
+      ? palette.status.awaiting_approval
+      : palette.status.error
+
+  return (
+    <>
+      <span fg={palette.muted}> · </span>
+      <span fg={color}>{label}</span>
+    </>
   )
 }
 

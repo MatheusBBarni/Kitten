@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Reactive Statusline Preference and Modal State"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Add the app-store state needed to show a saved statusline preference and drive t
 
 ## Subtasks
 
-- [ ] 3.1 Add legacy-compatible statusline preference state during app-store initialization.
-- [ ] 3.2 Define the transient modal payload and its valid disclosure, request, waiting, preview, failure, and preset states.
-- [ ] 3.3 Add immutable store methods for setting a resolved preference and opening, updating, or closing the modal.
-- [ ] 3.4 Export narrow preference and overlay selectors for footer and modal consumers.
-- [ ] 3.5 Add store and selector coverage for identity, cancellation, and unrelated-update behavior.
+- [x] 3.1 Add legacy-compatible statusline preference state during app-store initialization.
+- [x] 3.2 Define the transient modal payload and its valid disclosure, request, waiting, preview, failure, and preset states.
+- [x] 3.3 Add immutable store methods for setting a resolved preference and opening, updating, or closing the modal.
+- [x] 3.4 Export narrow preference and overlay selectors for footer and modal consumers.
+- [x] 3.5 Add store and selector coverage for identity, cancellation, and unrelated-update behavior.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Follow TechSpec "Component Overview" and "Data Models" plus the repository layer
 ## Tests
 
 - Unit tests:
-  - [ ] A fresh store exposes a null layout and false acknowledgement without changing existing theme or overlay defaults.
-  - [ ] Setting a new preference changes only the preference slice, while setting the same value preserves subscriber identity.
-  - [ ] Opening each valid modal phase retains its selected session and transient payload without mutating the persisted preference.
-  - [ ] Closing or cancelling a preview clears transient state and leaves the saved layout unchanged.
-  - [ ] Updating a session, shell state, or unrelated overlay does not notify a statusline-preference selector subscriber.
+  - [x] A fresh store exposes a null layout and false acknowledgement without changing existing theme or overlay defaults.
+  - [x] Setting a new preference changes only the preference slice, while setting the same value preserves subscriber identity.
+  - [x] Opening each valid modal phase retains its selected session and transient payload without mutating the persisted preference.
+  - [x] Closing or cancelling a preview clears transient state and leaves the saved layout unchanged.
+  - [x] Updating a session, shell state, or unrelated overlay does not notify a statusline-preference selector subscriber.
 - Integration tests:
-  - [ ] A mounted narrow selector consumer observes acknowledgement, preview, and close transitions while a streamed update in another session leaves its render count unchanged.
+  - [x] A mounted narrow selector consumer observes acknowledgement, preview, and close transitions while a streamed update in another session leaves its render count unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

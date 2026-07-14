@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add the opt-in Cursor contract and certify the production profile"
 type: infra
 complexity: high

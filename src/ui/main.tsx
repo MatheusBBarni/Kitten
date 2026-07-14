@@ -37,13 +37,13 @@ export function cockpitElement(
 /** Syntax-bearing main-region fixture used only by the compiled artifact self-check. */
 export function selfCheckElement(
   controller: SessionController,
-  fixture: { markdown: string; diff: ToolCallDiff },
+  fixture: { markdown: string; diffs: readonly ToolCallDiff[] },
 ): ReactNode {
   return (
     <CockpitApp controller={controller} welcomeBannerVariant="none">
       <box style={{ flexDirection: "column", flexGrow: 1 }}>
         <Markdown content={fixture.markdown} />
-        <ToolCallDiffView diff={fixture.diff} />
+        {fixture.diffs.map((diff) => <ToolCallDiffView key={diff.path} diff={diff} />)}
       </box>
     </CockpitApp>
   )

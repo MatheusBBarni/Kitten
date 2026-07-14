@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Preserve fail-closed clarification and persistence behavior"
 type: backend
 complexity: medium
@@ -28,10 +28,10 @@ Extend closed provider maps for Cursor without treating native `agent acp` suppo
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Keep Cursor absent from verified structured-clarification evidence.
-- [ ] 5.2 Make capability classification exhaustive and fail closed for Cursor recipes.
-- [ ] 5.3 Extend the V2 provider schema for persisted Cursor session identity.
-- [ ] 5.4 Prove a Cursor run record round-trips through normal workspace membership checks.
+- [x] 5.1 Keep Cursor absent from verified structured-clarification evidence.
+- [x] 5.2 Make capability classification exhaustive and fail closed for Cursor recipes.
+- [x] 5.3 Extend the V2 provider schema for persisted Cursor session identity.
+- [x] 5.4 Prove a Cursor run record round-trips through normal workspace membership checks.
 
 ## Implementation Details
 
@@ -61,12 +61,12 @@ Follow the TechSpec "Data Models" and "Monitoring and Observability" sections. T
 
 ## Tests
 - Unit tests:
-  - [ ] Exact `cursor` `agent acp` identity has no package-backed verified clarification recipe.
-  - [ ] Default Cursor and command, argument, or environment overrides remain unsupported.
-  - [ ] No Cursor path acquires a structured clarification capability from display or profile metadata.
+  - [x] Exact `cursor` `agent acp` identity has no package-backed verified clarification recipe.
+  - [x] Default Cursor and command, argument, or environment overrides remain unsupported.
+  - [x] No Cursor path acquires a structured clarification capability from display or profile metadata.
 - Integration tests:
-  - [ ] A V2 record containing a Cursor conversation saves and reloads with `providerKind: "cursor"` and normal workspace membership.
-  - [ ] Reloaded Cursor records contain no runtime-profile, authentication, version, transcript, or raw-error fields.
+  - [x] A V2 record containing a Cursor conversation saves and reloads with `providerKind: "cursor"` and normal workspace membership.
+  - [x] Reloaded Cursor records contain no runtime-profile, authentication, version, transcript, or raw-error fields.
 - Test coverage target: >=80%
 - All tests must pass
 

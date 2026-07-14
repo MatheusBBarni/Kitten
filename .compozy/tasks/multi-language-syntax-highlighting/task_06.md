@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Register syntax capabilities at boot and render entry points"
 type: frontend
 complexity: high
@@ -29,10 +29,10 @@ Wire the completed static manifest into normal startup and both code-render entr
 
 ## Subtasks
 
-- [ ] 6.1 Register completed capabilities in normal boot order.
-- [ ] 6.2 Guard shared Markdown direct mounts.
-- [ ] 6.3 Guard the shared diff body used by transcript and overlays.
-- [ ] 6.4 Add boot-order and direct-render regression evidence.
+- [x] 6.1 Register completed capabilities in normal boot order.
+- [x] 6.2 Guard shared Markdown direct mounts.
+- [x] 6.3 Guard the shared diff body used by transcript and overlays.
+- [x] 6.4 Add boot-order and direct-render regression evidence.
 
 ## Implementation Details
 
@@ -70,13 +70,13 @@ Follow the TechSpec **System Architecture**, **Integration Points**, and **Devel
 ## Tests
 
 - Unit tests:
-  - [ ] Repeated entry-point guards do not register duplicate parser overrides.
-  - [ ] Registration is not invoked by importing the entry module alone.
-  - [ ] `filetypeFor()` retains its existing extensionless, trailing-dot, and dotfile results.
+  - [x] Repeated entry-point guards do not register duplicate parser overrides.
+  - [x] Registration is not invoked by importing the entry module alone.
+  - [x] `filetypeFor()` retains its existing extensionless, trailing-dot, and dotfile results.
 - Integration tests:
-  - [ ] Worker configuration completes before parser registration and cockpit render in the injected boot path.
-  - [ ] A direct Markdown test mount registers capabilities before code rendering and preserves multi-block streaming output.
-  - [ ] Transcript and overlay diff paths reach the shared guard without changing displayed or copied diff source.
+  - [x] Worker configuration completes before parser registration and cockpit render in the injected boot path.
+  - [x] A direct Markdown test mount registers capabilities before code rendering and preserves multi-block streaming output.
+  - [x] Transcript and overlay diff paths reach the shared guard without changing displayed or copied diff source.
 - Test coverage target: >=80%
 - All tests must pass
 

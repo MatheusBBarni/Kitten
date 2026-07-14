@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Rust and Go grammar capabilities"
 type: frontend
 complexity: high
@@ -29,10 +29,10 @@ Add the Rust and Go capabilities to the shared manifest using reviewed local gra
 
 ## Subtasks
 
-- [ ] 2.1 Add reviewed Rust assets and manifest capability metadata.
-- [ ] 2.2 Add reviewed Go assets and manifest capability metadata.
-- [ ] 2.3 Extend Markdown and diff fixtures for canonical labels and aliases.
-- [ ] 2.4 Verify manifest, renderer, and copy behavior.
+- [x] 2.1 Add reviewed Rust assets and manifest capability metadata.
+- [x] 2.2 Add reviewed Go assets and manifest capability metadata.
+- [x] 2.3 Extend Markdown and diff fixtures for canonical labels and aliases.
+- [x] 2.4 Verify manifest, renderer, and copy behavior.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Follow the TechSpec **Data Models**, **Integration Points**, and **Testing Appro
 ## Tests
 
 - Unit tests:
-  - [ ] `rust` and `rs` resolve to one Rust capability with local assets and fixtures.
-  - [ ] `go` and `golang` resolve to one Go capability with local assets and fixtures.
-  - [ ] Neither capability duplicates an existing manifest filetype or alias.
+  - [x] `rust` and `rs` resolve to one Rust capability with local assets and fixtures.
+  - [x] `go` and `golang` resolve to one Go capability with local assets and fixtures.
+  - [x] Neither capability duplicates an existing manifest filetype or alias.
 - Integration tests:
-  - [ ] Rust canonical and `rs` fences render a sentinel with a non-prose foreground after highlighting settles.
-  - [ ] Go canonical and `golang` fences render a sentinel with a non-prose foreground after highlighting settles.
-  - [ ] `.rs` and `.go` diff tokens render highlighted while extensionless and dotfile paths remain unguessed.
+  - [x] Rust canonical and `rs` fences render a sentinel with a non-prose foreground after highlighting settles.
+  - [x] Go canonical and `golang` fences render a sentinel with a non-prose foreground after highlighting settles.
+  - [x] `.rs` and `.go` diff tokens render highlighted while extensionless and dotfile paths remain unguessed.
 - Test coverage target: >=80%
 - All tests must pass
 

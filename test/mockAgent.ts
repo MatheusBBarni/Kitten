@@ -13,6 +13,9 @@ import {
   AgentSideConnection,
   PROTOCOL_VERSION,
   type Agent,
+  type AuthenticateRequest,
+  type AuthenticateResponse,
+  type AuthMethod,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type InitializeRequest,
@@ -54,6 +57,11 @@ export type MockPromptScript = (
 /** A scripted `initialize` handshake. Throw to make the agent reject the handshake. */
 export type MockInitializeScript = (request: InitializeRequest) => Promise<InitializeResponse> | InitializeResponse
 
+/** A scripted authentication request. Throw to reject or report unavailable login. */
+export type MockAuthenticateScript = (
+  request: AuthenticateRequest,
+) => Promise<AuthenticateResponse | void> | AuthenticateResponse | void
+
 /** A scripted `session/load` request, optionally replaying history through updates. */
 export type MockLoadSessionScript = (
   request: LoadSessionRequest,
@@ -66,6 +74,10 @@ export interface MockAgentOptions {
   protocolVersion?: number
   /** Override the whole handshake - to reject it, or to answer with odd capabilities. */
   onInitialize?: MockInitializeScript
+  /** Authentication methods advertised by the default initialize response. */
+  authMethods?: AuthMethod[]
+  /** Handle authentication deterministically; throw to script a rejection. */
+  onAuthenticate?: MockAuthenticateScript
   /** Whether the default handshake advertises `session/load` support. */
   canLoadSession?: boolean
   /** Handle `session/load`, usually by replaying history through `ctx.update`. */
@@ -85,6 +97,10 @@ export interface MockAgentOptions {
 /** A running mock agent plus the interactions it observed, for test assertions. */
 export interface MockAgentHandle {
   readonly connection: AgentSideConnection
+  /** Initialize/authenticate/session-new ordering observed by the mock. */
+  readonly lifecycle: Array<"initialize" | "authenticate" | "newSession">
+  /** Every authentication request the agent received, in order. */
+  readonly authenticationRequests: AuthenticateRequest[]
   /** Every prompt request the agent received, in order. */
   readonly prompts: PromptRequest[]
   /** Every permission outcome the client returned to the agent, in order. */
@@ -116,6 +132,8 @@ export interface MockAgentHandle {
 export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): MockAgentHandle {
   const sessionId = options.sessionId ?? "mock-session-1"
   const protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION
+  const lifecycle: Array<"initialize" | "authenticate" | "newSession"> = []
+  const authenticationRequests: AuthenticateRequest[] = []
   const prompts: PromptRequest[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
   const elicitationOutcomes: CreateElicitationResponse[] = []
@@ -138,13 +156,17 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   }
 
   const agent: Agent = {
-    initialize: (request: InitializeRequest) =>
-      options.onInitialize?.(request) ?? {
+    initialize: (request: InitializeRequest) => {
+      lifecycle.push("initialize")
+      return options.onInitialize?.(request) ?? {
         protocolVersion,
         agentCapabilities: options.canLoadSession === undefined ? {} : { loadSession: options.canLoadSession },
+        ...(options.authMethods === undefined ? {} : { authMethods: options.authMethods }),
         agentInfo: { name: "mock-agent", version: "0.0.0" },
-      },
+      }
+    },
     newSession: (request) => {
+      lifecycle.push("newSession")
       newSessionCwds.push(request.cwd)
       newSessionRequests.push(request)
       return advertisesConfig ? { sessionId, configOptions } : { sessionId }
@@ -167,7 +189,11 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
       }
       return { configOptions }
     },
-    authenticate: () => ({}),
+    authenticate: async (request) => {
+      lifecycle.push("authenticate")
+      authenticationRequests.push(request)
+      return options.onAuthenticate?.(request) ?? {}
+    },
     cancel: () => {},
     async prompt(request: PromptRequest) {
       prompts.push(request)
@@ -207,6 +233,8 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   connection = new AgentSideConnection(() => agent, stream)
   return {
     connection,
+    lifecycle,
+    authenticationRequests,
     prompts,
     permissionOutcomes,
     elicitationOutcomes,

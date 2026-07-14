@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Authenticate certified Cursor profiles at the ACP boundary"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Authenticate only exact certified Cursor profiles through the existing ACP adapt
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Carry the resolved runtime profile into the adapter lifecycle.
-- [ ] 3.2 Authenticate an advertised certified Cursor profile between initialization and session creation.
-- [ ] 3.3 Normalize login failure without leaking ACP details across the boundary.
-- [ ] 3.4 Extend the mock transport with deterministic authentication scripting and capture.
-- [ ] 3.5 Cover ordering, failure, and no-auth standard-profile behavior.
+- [x] 3.1 Carry the resolved runtime profile into the adapter lifecycle.
+- [x] 3.2 Authenticate an advertised certified Cursor profile between initialization and session creation.
+- [x] 3.3 Normalize login failure without leaking ACP details across the boundary.
+- [x] 3.4 Extend the mock transport with deterministic authentication scripting and capture.
+- [x] 3.5 Cover ordering, failure, and no-auth standard-profile behavior.
 
 ## Implementation Details
 
@@ -63,13 +63,13 @@ Follow the TechSpec "Core Interfaces" and "Integration Points" sections. Preserv
 
 ## Tests
 - Unit tests:
-  - [ ] Certified Cursor initializes before one captured `{ methodId: "cursor_login" }` authentication request.
-  - [ ] Missing `cursor_login` leaves the adapter not-ready without authenticate or `session/new` requests.
-  - [ ] Rejected or not-logged-in authentication returns a safe normalized result and creates no session.
-  - [ ] Standard Claude Code, Codex, and overridden Cursor profiles never authenticate.
-  - [ ] Certified-profile initialization failure remains a generic handshake failure rather than authentication-required.
+  - [x] Certified Cursor initializes before one captured `{ methodId: "cursor_login" }` authentication request.
+  - [x] Missing `cursor_login` leaves the adapter not-ready without authenticate or `session/new` requests.
+  - [x] Rejected or not-logged-in authentication returns a safe normalized result and creates no session.
+  - [x] Standard Claude Code, Codex, and overridden Cursor profiles never authenticate.
+  - [x] Certified-profile initialization failure remains a generic handshake failure rather than authentication-required.
 - Integration tests:
-  - [ ] A successful certified mock lifecycle authenticates before an ordinary `newSession` succeeds.
+  - [x] A successful certified mock lifecycle authenticates before an ordinary `newSession` succeeds.
 - Test coverage target: >=80%
 - All tests must pass
 

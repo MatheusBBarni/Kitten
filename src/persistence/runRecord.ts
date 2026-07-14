@@ -10,7 +10,7 @@ const SESSION_STATUS_SCHEMA = z.enum([
   "finished",
   "error",
 ])
-const PROVIDER_KIND_SCHEMA = z.enum(["claude-code", "codex"])
+const PROVIDER_KIND_SCHEMA = z.enum(["claude-code", "codex", "cursor"])
 
 const HANDOFF_FILE_SCHEMA = z.strictObject({
   path: z.string(),

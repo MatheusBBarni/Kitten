@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Apply defaults after explicit /model selection and render picker feedback"
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Extend the existing /model tab flow so an explicit switch to a different provide
 
 ## Subtasks
 
-- [ ] 7.1 Invoke the action only from a different explicit tab.
-- [ ] 7.2 Preserve modal ownership and manual selection behavior.
-- [ ] 7.3 Subscribe narrowly to selected session result.
-- [ ] 7.4 Render applied, partial, and unavailable feedback.
-- [ ] 7.5 Extend deterministic fake action and rendered tests.
+- [x] 7.1 Invoke the action only from a different explicit tab.
+- [x] 7.2 Preserve modal ownership and manual selection behavior.
+- [x] 7.3 Subscribe narrowly to selected session result.
+- [x] 7.4 Render applied, partial, and unavailable feedback.
+- [x] 7.5 Extend deterministic fake action and rendered tests.
 
 ## Implementation Details
 
@@ -67,13 +67,13 @@ Implement TechSpec System Architecture and Impact Analysis at the UI boundary. T
 ## Tests
 
 - Unit tests:
-  - [ ] Claude-to-Codex tab selects with model_select source, reopens picker, and calls action once for Codex.
-  - [ ] Opening picker, Escape, cancellation, and manual row changes never call the action.
-  - [ ] Established-session defaults do not show MODEL_SELECT_CONFIRM_HINT; manual confirmation is unchanged.
+  - [x] Claude-to-Codex tab selects with model_select source, reopens picker, and calls action once for Codex.
+  - [x] Opening picker, Escape, cancellation, and manual row changes never call the action.
+  - [x] Established-session defaults do not show MODEL_SELECT_CONFIRM_HINT; manual confirmation is unchanged.
 - Integration tests:
-  - [ ] Applied result renders Default applied with confirmed model/effort rows.
-  - [ ] Partial result renders effort-unavailable copy and post-model confirmed effort.
-  - [ ] Unavailable model/session labels preserve verified marks and do not bleed between tabs.
+  - [x] Applied result renders Default applied with confirmed model/effort rows.
+  - [x] Partial result renders effort-unavailable copy and post-model confirmed effort.
+  - [x] Unavailable model/session labels preserve verified marks and do not bleed between tabs.
 - Test coverage target: >=80%
 - All tests must pass
 

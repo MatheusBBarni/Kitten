@@ -38,6 +38,7 @@ describe("createSessionState", () => {
       plan: [],
       usage: undefined,
       configOptions: [],
+      defaultApplyResult: null,
       commands: [],
       promptHistory: { entries: [], cursor: null },
     })
@@ -469,6 +470,39 @@ describe("config_options events", () => {
     const before = initial()
     sessionReducer(before, { kind: "config_options", options: [modelOption] })
     expect(before.configOptions).toEqual([])
+  })
+})
+
+describe("default_apply_result events", () => {
+  it("replaces only the terminal result while retaining confirmed options and unrelated references", () => {
+    const options: ConfigOption[] = [
+      {
+        id: "cfg-model",
+        category: "model",
+        label: "Model",
+        currentValue: "gpt-5.4",
+        options: [{ value: "gpt-5.4", name: "GPT-5.4" }],
+      },
+    ]
+    const before = fold([
+      { kind: "user_message", messageId: "u1", text: "keep this turn" },
+      { kind: "plan", entries: [{ content: "Keep this plan", status: "in_progress" }] },
+      { kind: "config_options", options },
+      { kind: "default_apply_result", result: { kind: "none" } },
+    ])
+    const result = { kind: "partial", model: "gpt-5.4", unavailable: "effort" } as const
+
+    const after = sessionReducer(before, { kind: "default_apply_result", result })
+
+    expect(after).toEqual({ ...before, defaultApplyResult: result })
+    expect(after.defaultApplyResult).toBe(result)
+    expect(after.configOptions).toBe(before.configOptions)
+    expect(after.turns).toBe(before.turns)
+    expect(after.plan).toBe(before.plan)
+    expect(after.commands).toBe(before.commands)
+    expect(after.promptHistory).toBe(before.promptHistory)
+    expect(after.referencedFiles).toBe(before.referencedFiles)
+    expect(after.pendingDiffs).toBe(before.pendingDiffs)
   })
 })
 

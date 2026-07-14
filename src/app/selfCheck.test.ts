@@ -14,8 +14,9 @@ import {
   formatReloadProbeLine,
   runReloadConfirmationProbe,
   SELF_CHECK_DEFAULT_TOKEN,
-  SELF_CHECK_DIFF_TOKEN,
-  SELF_CHECK_MARKDOWN_TOKEN,
+  SELF_CHECK_EXPECTED_FIXTURES,
+  SELF_CHECK_UNKNOWN_TOKEN,
+  selfCheckEvidenceKey,
 } from "./selfCheck.ts"
 
 function singleSessionConfig(): AppConfig {
@@ -87,7 +88,8 @@ function connectionSequence(...connections: AgentConnection[]): (config: AgentCo
   }
 }
 
-function capturedFrame(colors: { default: string; markdown: string; diff: string }): CapturedFrame {
+function capturedFrame(options: { default?: string; override?: { key: string; color: string }; omit?: string; unknown?: string } = {}): CapturedFrame {
+  const defaultColor = options.default ?? "#E6E6E6"
   const span = (text: string, color: string) => ({
     text,
     fg: RGBA.fromHex(color),
@@ -97,43 +99,70 @@ function capturedFrame(colors: { default: string; markdown: string; diff: string
   })
   return {
     cols: 80,
-    rows: 3,
+    rows: SELF_CHECK_EXPECTED_FIXTURES.length + 2,
     cursor: [0, 0],
     lines: [
-      { spans: [span(SELF_CHECK_DEFAULT_TOKEN, colors.default)] },
-      { spans: [span(SELF_CHECK_MARKDOWN_TOKEN, colors.markdown)] },
-      { spans: [span(SELF_CHECK_DIFF_TOKEN, colors.diff)] },
+      { spans: [span(SELF_CHECK_DEFAULT_TOKEN, defaultColor)] },
+      ...SELF_CHECK_EXPECTED_FIXTURES
+        .filter((fixture) => selfCheckEvidenceKey(fixture) !== options.omit)
+        .map((fixture) => ({
+          spans: [
+            span(
+              fixture.token,
+              options.override?.key === selfCheckEvidenceKey(fixture)
+                ? options.override.color
+                : fixture.source === "markdown"
+                  ? "#9CDCFE"
+                  : "#4EC9B0",
+            ),
+          ],
+        })),
+      { spans: [span(SELF_CHECK_UNKNOWN_TOKEN, options.unknown ?? defaultColor)] },
     ],
   }
 }
 
 describe("assertSelfCheckHighlights", () => {
-  it("reports distinct Markdown and diff foregrounds", () => {
-    expect(
-      assertSelfCheckHighlights(
-        capturedFrame({ default: "#E6E6E6", markdown: "#9CDCFE", diff: "#4EC9B0" }),
-      ),
-    ).toEqual({
-      defaultForeground: RGBA.fromHex("#E6E6E6").toString(),
-      markdownForeground: RGBA.fromHex("#9CDCFE").toString(),
-      diffForeground: RGBA.fromHex("#4EC9B0").toString(),
-    })
+  it("reports non-prose foreground evidence for the complete manifest matrix", () => {
+    const result = assertSelfCheckHighlights(capturedFrame())
+
+    expect(result.defaultForeground).toBe(RGBA.fromHex("#E6E6E6").toString())
+    expect(result.fixtures).toHaveLength(SELF_CHECK_EXPECTED_FIXTURES.length)
+    expect(result.fixtures.map(({ capability, label, surface }) => `${surface}:${capability}:${label}`)).toEqual(
+      SELF_CHECK_EXPECTED_FIXTURES.map(selfCheckEvidenceKey),
+    )
+    expect(result.fixtures.every(({ foreground }) => foreground !== result.defaultForeground)).toBeTrue()
+    expect(result.unknownForeground).toBe(result.defaultForeground)
   })
 
-  it("fails when the fenced-code token keeps the default foreground", () => {
-    expect(() =>
-      assertSelfCheckHighlights(
-        capturedFrame({ default: "#E6E6E6", markdown: "#E6E6E6", diff: "#4EC9B0" }),
-      ),
-    ).toThrow("Markdown fence token rendered with the default foreground")
+  it("names the capability and surface without source content when evidence is default-colored", () => {
+    const fixture = SELF_CHECK_EXPECTED_FIXTURES.find(
+      ({ capability, label, source }) => capability === "rust" && label === "rust" && source === "markdown",
+    )!
+    const error = () => assertSelfCheckHighlights(capturedFrame({
+      override: { key: selfCheckEvidenceKey(fixture), color: "#E6E6E6" },
+    }))
+
+    expect(error).toThrow('capability "rust" on markdown surface')
+    expect(error).not.toThrow(fixture.token)
+    expect(error).not.toThrow(fixture.content)
   })
 
-  it("fails when the diff token keeps the default foreground", () => {
-    expect(() =>
-      assertSelfCheckHighlights(
-        capturedFrame({ default: "#E6E6E6", markdown: "#9CDCFE", diff: "#E6E6E6" }),
-      ),
-    ).toThrow("diff token rendered with the default foreground")
+  it("names the capability and surface without source content when evidence is missing", () => {
+    const fixture = SELF_CHECK_EXPECTED_FIXTURES.find(({ capability, source }) => capability === "go" && source === "diff")!
+    const error = () => assertSelfCheckHighlights(capturedFrame({ omit: selfCheckEvidenceKey(fixture) }))
+
+    expect(error).toThrow('capability "go" on diff surface')
+    expect(error).not.toThrow(fixture.token)
+    expect(error).not.toThrow(fixture.content)
+  })
+
+  it("keeps the explicit unknown-label control out of highlighted evidence", () => {
+    const result = assertSelfCheckHighlights(capturedFrame())
+    expect(result.fixtures.some(({ label }) => label === SELF_CHECK_UNKNOWN_TOKEN)).toBeFalse()
+    expect(() => assertSelfCheckHighlights(capturedFrame({ unknown: "#9CDCFE" }))).toThrow(
+      "unknown-label plaintext control was counted as highlighted on markdown surface",
+    )
   })
 })
 
@@ -204,10 +233,11 @@ describe("reload confirmation probe", () => {
       createConnection: (agent) => fakeConnection({ canLoadSession: false, sessionId: `${agent.id}-probe` }),
     })
 
-    expect(reports.map((report) => report.configuredSessionId)).toEqual(["codex", "claude-code"])
+    expect(reports.map((report) => report.configuredSessionId)).toEqual(["codex", "claude-code", "cursor"])
     expect(reports.map(formatReloadProbeLine)).toEqual([
       "[FAIL] Codex (codex): loadSession=false — capability absent",
       "[FAIL] Claude Code (claude-code): loadSession=false — capability absent",
+      "[FAIL] Cursor (cursor): loadSession=false — capability absent",
     ])
   })
 })

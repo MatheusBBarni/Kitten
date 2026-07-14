@@ -1,10 +1,19 @@
 import { describe, expect, it } from "bun:test"
 
-import type { AvailableCommand, ClarificationPayload, ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
+import type {
+  AvailableCommand,
+  ClarificationPayload,
+  ConfigOption,
+  DefaultApplyResult,
+  DomainSessionEvent,
+  HandoffBundle,
+} from "../core/types.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
   selectAgentConfigOptions,
+  selectSessionDefaultApplyResult,
   selectAgentEffort,
   selectAgentModel,
   selectNextNeedy,
@@ -39,6 +48,8 @@ import {
   selectModelSelectOverlay,
   selectSettingsOverlay,
   selectShell,
+  selectStatuslineOverlay,
+  selectStatuslinePreference,
   selectThemePreference,
   selectActiveModal,
   selectAttentionQueue,
@@ -112,6 +123,11 @@ const EDIT_CALL: DomainSessionEvent = {
   },
 }
 
+const STATUSLINE_LAYOUT: StatuslineLayout = {
+  separator: " · ",
+  line: ["FOLDER", "MODEL"],
+}
+
 describe("focus selectors", () => {
   it("project the focused agent and per-agent focus flags", () => {
     const store = createAppStore()
@@ -164,12 +180,38 @@ describe("shell selector", () => {
 })
 
 describe("preference selectors", () => {
-  it("projects the default and configured theme preference", () => {
+  it("projects default and configured theme and statusline preferences", () => {
     const defaultStore = createAppStore()
-    const configuredStore = createAppStore({ preferences: { theme: "dark" } })
+    const configuredStore = createAppStore({
+      preferences: {
+        theme: "dark",
+        statusline: { llmDisclosureAcknowledged: true, layout: STATUSLINE_LAYOUT },
+      },
+    })
 
     expect(selectThemePreference(defaultStore.getState())).toBe("auto")
     expect(selectThemePreference(configuredStore.getState())).toBe("dark")
+    expect(selectStatuslinePreference(defaultStore.getState())).toEqual({
+      llmDisclosureAcknowledged: false,
+      layout: null,
+    })
+    expect(selectStatuslinePreference(configuredStore.getState())).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout: STATUSLINE_LAYOUT,
+    })
+  })
+
+  it("keeps the saved statusline preference reference across unrelated updates", () => {
+    const store = createAppStore({
+      preferences: { statusline: { llmDisclosureAcknowledged: true, layout: STATUSLINE_LAYOUT } },
+    })
+    const preference = selectStatuslinePreference(store.getState())
+
+    store.applyEvent("codex", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/other" })
+    store.openSettings()
+
+    expect(selectStatuslinePreference(store.getState())).toBe(preference)
   })
 })
 
@@ -535,11 +577,31 @@ describe("overlay selectors", () => {
     expect(selectClarificationOverlay(state)).toBeNull()
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectSettingsOverlay(state)).toBeNull()
+    expect(selectStatuslineOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
     expect(selectIsClarificationOpen(state)).toBe(false)
     expect(selectIsSessionsOpen(state)).toBe(false)
     expect(selectSessionPicker(state)).toBe(false)
+  })
+
+  it("projects the statusline modal slot by reference and includes it in modal gating", () => {
+    const store = createAppStore()
+    const overlay = {
+      sessionId: "codex" as const,
+      phase: "request" as const,
+      requestText: "show workspace and model",
+    }
+
+    store.openStatusline(overlay)
+    const opened = store.getState()
+
+    expect(selectStatuslineOverlay(opened)).toBe(overlay)
+    expect(selectHasOpenOverlay(opened)).toBe(true)
+    expect(selectActiveModal(opened)).toEqual({ kind: "statusline", sessionId: "codex" })
+
+    store.applyEvent("claude-code", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    expect(selectStatuslineOverlay(store.getState())).toBe(overlay)
   })
 
   it("gives clarification modal priority and reports it as the only open-overlay gate", () => {
@@ -739,6 +801,75 @@ describe("config-option selectors", () => {
     })
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("default-application result selector", () => {
+  it("returns null for unknown and untouched sessions", () => {
+    const store = createAppStore()
+    const state = store.getState()
+
+    expect(selectSessionDefaultApplyResult(null)(state)).toBeNull()
+    expect(selectSessionDefaultApplyResult("unknown")(state)).toBeNull()
+    expect(selectSessionDefaultApplyResult("claude-code")(state)).toBeNull()
+  })
+
+  it("projects every stored terminal result unchanged", () => {
+    const results: DefaultApplyResult[] = [
+      { kind: "none" },
+      { kind: "applied", model: "opus", effort: "high" },
+      { kind: "partial", model: "sonnet", unavailable: "effort" },
+      { kind: "unavailable", unavailable: "model" },
+      { kind: "unavailable", unavailable: "session" },
+    ]
+
+    for (const result of results) {
+      const store = createAppStore()
+      store.applyEvent("claude-code", { kind: "default_apply_result", result })
+
+      expect(selectSessionDefaultApplyResult("claude-code")(store.getState())).toBe(result)
+    }
+  })
+
+  it("retains the stored result reference across an unrelated-session event", () => {
+    const store = createAppStore()
+    const selectResult = selectSessionDefaultApplyResult("claude-code")
+    const result: DefaultApplyResult = { kind: "applied", model: "opus", effort: "medium" }
+    store.applyEvent("claude-code", { kind: "default_apply_result", result })
+    const before = selectResult(store.getState())
+
+    store.applyEvent("codex", { kind: "status", status: "working" })
+
+    expect(selectResult(store.getState())).toBe(before)
+    expect(before).toBe(result)
+  })
+
+  it("notifies in order for two terminal result replacements", () => {
+    const store = createAppStore()
+    const observed: DefaultApplyResult[] = []
+    store.subscribeSelector(selectSessionDefaultApplyResult("claude-code"), (value) => {
+      if (value) observed.push(value)
+    })
+    const partial: DefaultApplyResult = { kind: "partial", model: "opus", unavailable: "effort" }
+    const applied: DefaultApplyResult = { kind: "applied", model: "opus", effort: "high" }
+
+    store.applyEvent("claude-code", { kind: "default_apply_result", result: partial })
+    store.applyEvent("claude-code", { kind: "default_apply_result", result: applied })
+
+    expect(observed).toEqual([partial, applied])
+  })
+
+  it("does not notify when config options refresh without replacing the result", () => {
+    const store = createAppStore()
+    const result: DefaultApplyResult = { kind: "applied", model: "opus", effort: "medium" }
+    store.applyEvent("claude-code", { kind: "default_apply_result", result })
+    let notifications = 0
+    store.subscribeSelector(selectSessionDefaultApplyResult("claude-code"), () => notifications++)
+
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+
+    expect(notifications).toBe(0)
+    expect(selectSessionDefaultApplyResult("claude-code")(store.getState())).toBe(result)
   })
 })
 

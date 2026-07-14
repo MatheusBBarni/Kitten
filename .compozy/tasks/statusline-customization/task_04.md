@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Wire Statusline Confirmation and External Reload Lifecycle"
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Expose controller-owned acknowledgement and confirmation operations that persist
 
 ## Subtasks
 
-- [ ] 4.1 Extend the controller-facing action contract with acknowledgement and complete-layout confirmation outcomes.
-- [ ] 4.2 Connect config-writer calls to persist-before-apply behavior and legible non-throwing write failures.
-- [ ] 4.3 Seed the resolved preference at cockpit creation and apply watcher-originated external changes without re-persisting them.
-- [ ] 4.4 Update controller doubles and injectable boot seams for deterministic statusline action tests.
-- [ ] 4.5 Add focused lifecycle, write-failure, watcher, and no-loop regression coverage.
+- [x] 4.1 Extend the controller-facing action contract with acknowledgement and complete-layout confirmation outcomes.
+- [x] 4.2 Connect config-writer calls to persist-before-apply behavior and legible non-throwing write failures.
+- [x] 4.3 Seed the resolved preference at cockpit creation and apply watcher-originated external changes without re-persisting them.
+- [x] 4.4 Update controller doubles and injectable boot seams for deterministic statusline action tests.
+- [x] 4.5 Add focused lifecycle, write-failure, watcher, and no-loop regression coverage.
 
 ## Implementation Details
 
@@ -71,14 +71,14 @@ Implement the orchestration boundary described in TechSpec "API Endpoints" and "
 ## Tests
 
 - Unit tests:
-  - [ ] Acknowledgement writes only the acknowledgement patch, then updates the preference after the write resolves.
-  - [ ] Confirming a layout writes the complete statusline block once and makes it visible immediately after success.
-  - [ ] A rejected writer returns a legible failure outcome and leaves acknowledgement and layout state unchanged.
-  - [ ] A preview-store transition produces no persistence call.
-  - [ ] Fake-controller calls record acknowledgement and confirmation without an ACP connection.
+  - [x] Acknowledgement writes only the acknowledgement patch, then updates the preference after the write resolves.
+  - [x] Confirming a layout writes the complete statusline block once and makes it visible immediately after success.
+  - [x] A rejected writer returns a legible failure outcome and leaves acknowledgement and layout state unchanged.
+  - [x] A preview-store transition produces no persistence call.
+  - [x] Fake-controller calls record acknowledgement and confirmation without an ACP connection.
 - Integration tests:
-  - [ ] A booted cockpit receives a saved layout, an external config reload changes it once, and the reload produces no second persistence write.
-  - [ ] A config persistence round-trip preserves unrelated settings and makes a confirmed layout available to a newly created cockpit session.
+  - [x] A booted cockpit receives a saved layout, an external config reload changes it once, and the reload produces no second persistence write.
+  - [x] A config persistence round-trip preserves unrelated settings and makes a confirmed layout available to a newly created cockpit session.
 - Test coverage target: >=80%
 - All tests must pass
 

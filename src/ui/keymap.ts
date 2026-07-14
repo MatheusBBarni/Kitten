@@ -47,6 +47,7 @@ export type CockpitCommand =
   | "start-new-run"
   | "clear-run"
   | "model-select"
+  | "statusline"
   | "open-settings"
   | "toggle-help"
   | "close-help"
@@ -77,6 +78,9 @@ export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "canc
 
 /** Every intent the settings overlay handles while it is on screen. */
 export type SettingsCommand = "prev-option" | "next-option" | "switch-tab" | "reset-to-default" | "close"
+
+/** Every intent shared by the `/statusline` disclosure, lists, and review screens. */
+export type StatuslineCommand = "prev-option" | "next-option" | "confirm" | "cancel"
 
 /** Every intent the hand-off preview handles while it is on screen. */
 export type HandoffCommand =
@@ -179,6 +183,7 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "start-new-run", name: "new", description: "Create a new conversation with the selected provider" },
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
   { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
+  { command: "statusline", name: "statusline", description: "Describe and review your personal statusline" },
   { command: "open-settings", name: "settings", description: "Open Kitten settings" },
   { command: "toggle-help", name: "help", description: "Show every Kitten command" },
 ]
@@ -649,6 +654,34 @@ export const SETTINGS_KEYMAP: readonly KeyBinding<SettingsCommand>[] = [
   },
 ]
 
+/** Navigation and decisions shared by every non-text `/statusline` modal phase. */
+export const STATUSLINE_KEYMAP: readonly KeyBinding<StatuslineCommand>[] = [
+  {
+    command: "prev-option",
+    keys: "↑",
+    description: "Highlight the previous statusline choice",
+    matches: plain("up"),
+  },
+  {
+    command: "next-option",
+    keys: "↓",
+    description: "Highlight the next statusline choice",
+    matches: plain("down"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Choose the highlighted statusline action",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Cancel the statusline workflow",
+    matches: plain("escape"),
+  },
+]
+
 /**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
@@ -746,6 +779,9 @@ export const SETTINGS_HINT = `${bindingKeys(SETTINGS_KEYMAP, "prev-option")}${bi
   "reset-to-default",
 )} reset  ${bindingKeys(SETTINGS_KEYMAP, "close")} close`
 
+/** The keyboard teaching surface shared by statusline choices and review. */
+export const STATUSLINE_HINT = "↑↓ move  Enter choose  Esc cancel"
+
 /** The hint printed inside the selector's inline mid-conversation confirm step. */
 export const MODEL_SELECT_CONFIRM_HINT = "Enter switch anyway  Esc keep current"
 
@@ -798,6 +834,9 @@ export const matchModelSelectCommand = makeMatcher(MODEL_SELECT_KEYMAP)
 
 /** The settings command a keypress maps to, or `null` when the modal does not claim it. */
 export const matchSettingsCommand = makeMatcher(SETTINGS_KEYMAP)
+
+/** The `/statusline` modal command a keypress names. */
+export const matchStatuslineCommand = makeMatcher(STATUSLINE_KEYMAP)
 
 /**
  * The zero-based option a digit key names, or `null` for any other key.

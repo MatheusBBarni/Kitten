@@ -31,6 +31,7 @@ import type {
   McpServerConfig,
   ProviderKind,
   ProviderRecipe,
+  ProviderRuntimeProfile,
   ResolvedAgentConfig,
   ResolvedSession,
   SessionDescriptor,
@@ -38,6 +39,11 @@ import type {
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import {
+  normalizeStatuslineLayout,
+  type StatuslineItem,
+  type StatuslinePreference,
+} from "../core/statusline.ts"
 import { classifyClarificationCapability } from "./clarificationCapability.ts"
 
 /**
@@ -71,7 +77,21 @@ const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
     args: ["-y", CODEX_ACP_PACKAGE],
     env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
   },
+  cursor: {
+    displayName: "Cursor",
+    command: "agent",
+    args: ["acp"],
+    env: {},
+  },
 }
+
+export type CertifiedCursorRuntimeProfile = Extract<ProviderRuntimeProfile, { kind: "cursor-certified" }>
+
+/**
+ * Reviewed credentialed evidence is added by the opt-in certification task. An
+ * empty list is intentional: no Cursor version is guessed by configuration work.
+ */
+const CERTIFIED_CURSOR_RUNTIME_PROFILES: readonly CertifiedCursorRuntimeProfile[] = []
 
 /** Telemetry is opt-in and off until the user says otherwise (PRD privacy stance). */
 const DEFAULT_TELEMETRY_ENABLED = false
@@ -120,6 +140,24 @@ const PROVIDERS_SCHEMA = z
   .object({
     "claude-code": PROVIDER_OVERRIDE_SCHEMA.optional(),
     codex: PROVIDER_OVERRIDE_SCHEMA.optional(),
+    cursor: PROVIDER_OVERRIDE_SCHEMA.optional(),
+  })
+  .strict()
+
+/** One strict user-authored model/effort preference. */
+const PROVIDER_MODEL_DEFAULT_SCHEMA = z
+  .object({
+    model: z.string().min(1).optional(),
+    effort: z.string().min(1).optional(),
+  })
+  .strict()
+
+/** Provider defaults are closed over the same known provider identities as recipes. */
+const PROVIDER_DEFAULTS_SCHEMA = z
+  .object({
+    "claude-code": PROVIDER_MODEL_DEFAULT_SCHEMA.optional(),
+    codex: PROVIDER_MODEL_DEFAULT_SCHEMA.optional(),
+    cursor: PROVIDER_MODEL_DEFAULT_SCHEMA.optional(),
   })
   .strict()
 
@@ -159,6 +197,51 @@ const MCP_SERVER_SCHEMA = z
 /** MCP declarations are keyed by their stable, user-facing server name. */
 const MCP_SERVERS_SCHEMA = z.record(z.string().min(1), MCP_SERVER_SCHEMA)
 
+/** The optional on-disk statusline delta; layout fields are always paired. */
+export interface UserStatuslineDelta {
+  llmDisclosureAcknowledged: boolean
+  separator?: string
+  line?: readonly StatuslineItem[]
+}
+
+const STATUSLINE_CONFIG_SCHEMA = z
+  .object({
+    llmDisclosureAcknowledged: z.boolean(),
+    separator: z.unknown().optional(),
+    line: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const hasSeparator = Object.hasOwn(value, "separator")
+    const hasLine = Object.hasOwn(value, "line")
+    if (hasSeparator !== hasLine) {
+      context.addIssue({
+        code: "custom",
+        path: [hasSeparator ? "line" : "separator"],
+        message: "separator and line must be provided together",
+      })
+      return
+    }
+    if (!hasSeparator) return
+
+    const normalized = normalizeStatuslineLayout({ separator: value.separator, line: value.line })
+    if (normalized.kind === "invalid") {
+      context.addIssue({ code: "custom", path: ["line"], message: normalized.reason })
+    }
+  })
+  .transform((value): UserStatuslineDelta => {
+    if (!Object.hasOwn(value, "separator")) {
+      return { llmDisclosureAcknowledged: value.llmDisclosureAcknowledged }
+    }
+    const normalized = normalizeStatuslineLayout({ separator: value.separator, line: value.line })
+    if (normalized.kind === "invalid") throw new Error(normalized.reason)
+    return {
+      llmDisclosureAcknowledged: value.llmDisclosureAcknowledged,
+      separator: normalized.layout.separator,
+      line: normalized.layout.line,
+    }
+  })
+
 /**
  * The shape of the on-disk config file. Every field is optional: the file only ever
  * expresses deltas from {@link defaultAppConfig}. `strict()` rejects unknown keys so
@@ -173,11 +256,13 @@ export const USER_CONFIG_SCHEMA = z
     theme: z.enum(THEME_PREFERENCES).optional(),
     welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
+    providerDefaults: PROVIDER_DEFAULTS_SCHEMA.optional(),
     /** @deprecated Use `providers`. Kept as an alias for one migration window. */
     agents: PROVIDERS_SCHEMA.optional(),
     sessions: z.array(SESSION_DESCRIPTOR_SCHEMA).optional(),
     mcpServers: MCP_SERVERS_SCHEMA.optional(),
     shell: SHELL_OVERRIDE_SCHEMA.optional(),
+    statusline: STATUSLINE_CONFIG_SCHEMA.optional(),
   })
   .strict()
 
@@ -199,6 +284,7 @@ export type ProvidersOverride = z.infer<typeof PROVIDERS_SCHEMA>
 export function defaultAppConfig(): AppConfig {
   return {
     providers: cloneProviders(DEFAULT_PROVIDERS),
+    providerDefaults: {},
     sessions: [],
     mcpServers: [],
     shell: {
@@ -210,6 +296,7 @@ export function defaultAppConfig(): AppConfig {
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
     theme: DEFAULT_THEME,
     welcomeBanner: DEFAULT_WELCOME_BANNER,
+    statusline: defaultStatuslinePreference(),
   }
 }
 
@@ -240,6 +327,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
   }
   return {
     providers: config.providers,
+    providerDefaults: cloneProviderDefaults(user.providerDefaults),
     sessions: user.sessions?.map((session) => ({ ...session })) ?? [],
     mcpServers: normalizeMcpServers(user.mcpServers),
     shell: {
@@ -251,7 +339,40 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     theme: user.theme ?? config.theme,
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
+    statusline: mergeStatuslinePreference(user.statusline),
   }
+}
+
+function defaultStatuslinePreference(): StatuslinePreference {
+  return { llmDisclosureAcknowledged: false, layout: null }
+}
+
+function mergeStatuslinePreference(statusline: UserConfig["statusline"]): StatuslinePreference {
+  if (!statusline) return defaultStatuslinePreference()
+  if (statusline.separator === undefined || statusline.line === undefined) {
+    return { llmDisclosureAcknowledged: statusline.llmDisclosureAcknowledged, layout: null }
+  }
+
+  const normalized = normalizeStatuslineLayout({ separator: statusline.separator, line: statusline.line })
+  if (normalized.kind === "invalid") {
+    throw new ConfigError(`statusline is not valid: ${normalized.reason}`)
+  }
+  return {
+    llmDisclosureAcknowledged: statusline.llmDisclosureAcknowledged,
+    layout: normalized.layout,
+  }
+}
+
+function cloneProviderDefaults(
+  defaults: UserConfig["providerDefaults"],
+): NonNullable<AppConfig["providerDefaults"]> {
+  if (!defaults) return {}
+  return Object.fromEntries(
+    PROVIDER_KINDS.flatMap((kind) => {
+      const preference = defaults[kind]
+      return preference ? [[kind, { ...preference }]] : []
+    }),
+  )
 }
 
 function normalizeMcpServers(servers: UserConfig["mcpServers"]): McpServerConfig[] {
@@ -340,7 +461,48 @@ export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAg
   return {
     ...resolved,
     clarificationCapability: classifyClarificationCapability(resolved),
+    runtimeProfile: resolveProviderRuntimeProfile(resolved),
   }
+}
+
+/**
+ * Derive runtime behavior only from the final identity-bearing recipe. Display
+ * metadata is intentionally absent, and ordered args plus the complete env must
+ * match reviewed evidence exactly.
+ */
+export function resolveProviderRuntimeProfile(
+  recipe: Pick<AgentConfig, "id" | "command" | "args" | "env">,
+  certifiedProfiles: readonly CertifiedCursorRuntimeProfile[] = CERTIFIED_CURSOR_RUNTIME_PROFILES,
+): ProviderRuntimeProfile {
+  if (recipe.id !== "cursor") return { kind: "standard" }
+  const certified = certifiedProfiles.find(
+    (profile) =>
+      recipe.command === profile.command &&
+      sameOrderedValues(recipe.args, profile.args) &&
+      sameEnvironment(recipe.env, profile.env),
+  )
+  if (!certified) return { kind: "standard" }
+  return {
+    ...certified,
+    args: [...certified.args] as ["acp"],
+    env: { ...certified.env },
+  }
+}
+
+/**
+ * Match one observed Cursor CLI version to the complete reviewed native profile.
+ * The credentialed contract uses this stricter form before it may emit evidence;
+ * normal configuration resolution still has no authority to invent an observed
+ * version or certify an empty profile list.
+ */
+export function matchCertifiedCursorRuntimeProfile(
+  recipe: Pick<AgentConfig, "id" | "command" | "args" | "env">,
+  exactVersion: string,
+  certifiedProfiles: readonly CertifiedCursorRuntimeProfile[] = CERTIFIED_CURSOR_RUNTIME_PROFILES,
+): CertifiedCursorRuntimeProfile | undefined {
+  const profile = resolveProviderRuntimeProfile(recipe, certifiedProfiles)
+  if (profile.kind !== "cursor-certified" || profile.certifiedVersion !== exactVersion) return undefined
+  return profile
 }
 
 /** Seams so {@link resolveSessions} can validate `cwd` without touching the real disk. */
@@ -409,6 +571,16 @@ function assignSessionId(provider: ProviderKind, used: Map<ProviderKind, number>
   const count = (used.get(provider) ?? 0) + 1
   used.set(provider, count)
   return count === 1 ? provider : `${provider}-${count}`
+}
+
+function sameOrderedValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameEnvironment(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return sameOrderedValues(leftKeys, rightKeys) && leftKeys.every((key) => left[key] === right[key])
 }
 
 function formatIssues(error: z.ZodError): string {

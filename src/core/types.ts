@@ -11,13 +11,14 @@
  */
 
 import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
+import type { StatuslinePreference } from "./statusline.ts"
 
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
  * own identity (ADR-004). Two sessions can share a `ProviderKind`; each still gets
  * its own {@link SessionId}. Renamed from the former `AgentId`.
  */
-export type ProviderKind = "claude-code" | "codex"
+export type ProviderKind = "claude-code" | "codex" | "cursor"
 
 /**
  * A Kitten-assigned session instance identity, opaque and stable from config load,
@@ -27,20 +28,32 @@ export type ProviderKind = "claude-code" | "codex"
 export type SessionId = string
 
 /** Every provider kind Kitten understands, kept stable for config validation. */
-export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex"]
+export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex", "cursor"]
 
 /**
- * The launch order for Kitten's built-in two-provider cockpit. Codex is the
+ * The launch order for Kitten's built-in three-provider cockpit. Codex is the
  * default focused agent, while explicitly configured session arrays retain the
  * order the user declared.
  */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude-code"]
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude-code", "cursor"]
+
+/** Shared full and compact labels for every closed provider identity. */
+export interface ProviderDisplayMetadata {
+  displayName: string
+  compactLabel: string
+}
+
+/** Total UI-facing metadata; views never need provider-specific label branches. */
+export const PROVIDER_METADATA = {
+  "claude-code": { displayName: "Claude Code", compactLabel: "Claude" },
+  codex: { displayName: "Codex", compactLabel: "Codex" },
+  cursor: { displayName: "Cursor", compactLabel: "Cursor" },
+} as const satisfies Readonly<Record<ProviderKind, ProviderDisplayMetadata>>
 
 /** The human-facing name for each provider kind; the default session title. */
-export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-}
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = Object.fromEntries(
+  PROVIDER_KINDS.map((kind) => [kind, PROVIDER_METADATA[kind].displayName]),
+) as Record<ProviderKind, string>
 
 /**
  * Coarse per-session lifecycle state surfaced to the UI status strip and the
@@ -283,6 +296,23 @@ export interface ConfigOption {
   options: ConfigSelectOption[]
 }
 
+/** User-authored model and reasoning-effort preferences for one provider. */
+export interface ProviderModelDefault {
+  model?: string
+  effort?: string
+}
+
+/**
+ * Protocol-free terminal outcome of the latest explicit provider-default attempt.
+ * Values appear only after the live provider has confirmed them.
+ */
+export type DefaultApplyResult =
+  | { kind: "none" }
+  | { kind: "applied"; model: string; effort?: string }
+  | { kind: "applied"; effort: string; model?: undefined }
+  | { kind: "partial"; model: string; unavailable: "effort" }
+  | { kind: "unavailable"; unavailable: "model" | "effort" | "session" }
+
 /**
  * A protocol-free slash command advertised by an agent for one live session.
  *
@@ -341,6 +371,8 @@ export interface UserTurn {
   kind: "user"
   messageId: string
   text: string
+  /** Internal requests remain visible in the live transcript but are not retained for resume. */
+  persist?: boolean
 }
 
 /** An agent's message turn; streamed deltas concatenate onto `text` by `messageId`. */
@@ -425,6 +457,8 @@ export interface SessionState {
    * agent always returns the complete set. Empty when nothing is advertised.
    */
   configOptions: ConfigOption[]
+  /** Terminal result of the latest explicit provider-default attempt, if any. */
+  defaultApplyResult: DefaultApplyResult | null
   /** The latest complete slash-command list advertised for this session. */
   commands: AvailableCommand[]
   /** Current-run composer submissions and recall position, private to this session. */
@@ -470,13 +504,14 @@ export type ShellEvent =
  */
 export type DomainSessionEvent =
   | { kind: "agent_message"; messageId: string; textDelta: string }
-  | { kind: "user_message"; messageId: string; text: string }
+  | { kind: "user_message"; messageId: string; text: string; persist?: boolean }
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "status"; status: SessionStatus }
   | { kind: "usage"; used: number; size: number }
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
+  | { kind: "default_apply_result"; result: DefaultApplyResult }
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
   | PromptHistoryEvent
 
@@ -537,9 +572,25 @@ export interface AgentConfig extends ProviderRecipe {
   id: ProviderKind
 }
 
-/** A provider config after exact clarification capability classification. */
+/**
+ * Runtime-only provider behavior derived from a fully merged recipe. The certified
+ * branch is sealed to Cursor's native ACP command and carries no protocol types.
+ */
+export type ProviderRuntimeProfile =
+  | { readonly kind: "standard" }
+  | {
+      readonly kind: "cursor-certified"
+      readonly command: "agent"
+      readonly args: readonly ["acp"]
+      readonly env: Readonly<Record<string, string>>
+      readonly certifiedVersion: string
+      readonly authenticationMethod: "cursor_login"
+    }
+
+/** A provider config after all runtime-only capability classification. */
 export interface ResolvedAgentConfig extends AgentConfig {
   clarificationCapability: ClarificationCapability
+  runtimeProfile: ProviderRuntimeProfile
 }
 
 /**
@@ -578,6 +629,7 @@ export interface ShellConfig {
  */
 export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
+  providerDefaults: Partial<Record<ProviderKind, ProviderModelDefault>>
   sessions: SessionDescriptor[]
   mcpServers: McpServerConfig[]
   shell: ShellConfig
@@ -585,6 +637,7 @@ export interface AppConfig {
   telemetryEnabled: boolean
   theme: ThemePreference
   welcomeBanner: WelcomeBannerPreference
+  statusline: StatuslinePreference
 }
 
 /**

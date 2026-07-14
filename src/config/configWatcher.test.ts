@@ -72,15 +72,21 @@ describe("watchUserConfig", () => {
   it("Should ignore invalid JSON and recover on the next valid write", async () => {
     const path = await makeConfigPath()
     const configs: AppConfig[] = []
-    const watcher = watchUserConfig((config) => configs.push(config), { path, debounceMs: DEBOUNCE_MS })
+    let retainedDefaults: AppConfig["providerDefaults"] = { codex: { model: "opus" } }
+    const watcher = watchUserConfig((config) => {
+      configs.push(config)
+      retainedDefaults = config.providerDefaults
+    }, { path, debounceMs: DEBOUNCE_MS })
 
     try {
       await writeFile(path, "{ partial")
       await expectConditionToRemain(() => configs.length === 0)
+      expect(retainedDefaults).toEqual({ codex: { model: "opus" } })
 
-      await writeFile(path, '{"theme":"catppuccin-mocha"}')
+      await writeFile(path, '{"theme":"catppuccin-mocha","providerDefaults":{"codex":{"model":"sonnet"}}}')
       await waitUntil(() => configs.length === 1)
       expect(configs[0]?.theme).toBe("catppuccin-mocha")
+      expect(retainedDefaults).toEqual({ codex: { model: "sonnet" } })
     } finally {
       watcher.close()
     }
@@ -92,11 +98,12 @@ describe("watchUserConfig", () => {
     const watcher = watchUserConfig((config) => configs.push(config), { path, debounceMs: DEBOUNCE_MS })
 
     try {
-      await writeFile(path, '{"theme":"dark"}')
+      await writeFile(path, '{"theme":"dark","providerDefaults":{"codex":{"model":"sonnet"}}}')
       await waitUntil(() => configs.length === 1)
 
-      await writeFile(path, '{"theme":"dark"}')
+      await writeFile(path, '{"providerDefaults":{"codex":{"model":"sonnet"}},"theme":"dark"}')
       await expectConditionToRemain(() => configs.length === 1)
+      expect(configs[0]?.providerDefaults).toEqual({ codex: { model: "sonnet" } })
     } finally {
       watcher.close()
     }

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test"
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -117,6 +117,21 @@ describe("persistUserConfig", () => {
 
     expect(await readdir(dir)).toEqual(["config.json"])
   })
+
+  it("rejects a symlink target before reading it and leaves the referent unchanged", async () => {
+    const dir = await makeTempDir()
+    const referent = join(dir, "real-config.json")
+    const path = join(dir, "config.json")
+    const original = Buffer.from('{"theme":"light"}\n')
+    await writeFile(referent, original)
+    await symlink(referent, path)
+
+    await expect(persistUserConfig({ theme: "dark" }, { path })).rejects.toThrow(/symbolic link/)
+
+    expect(await readFile(referent)).toEqual(original)
+    expect((await lstat(path)).isSymbolicLink()).toBe(true)
+    expect((await readdir(dir)).sort()).toEqual(["config.json", "real-config.json"])
+  })
 })
 
 describe("writer-loader integration", () => {
@@ -128,5 +143,79 @@ describe("writer-loader integration", () => {
     const loaded = await loadAppConfig({ path })
 
     expect(loaded.theme).toBe("catppuccin-latte")
+  })
+
+  it("preserves unrelated settings across acknowledgement-only and complete statusline writes", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    const existing = {
+      persistenceEnabled: false,
+      telemetryEnabled: true,
+      theme: "light",
+      welcomeBanner: "off",
+      providers: { codex: { command: "/opt/bin/codex-acp", args: ["--stdio"], env: { TOKEN: "private" } } },
+      providerDefaults: { codex: { model: "gpt-5.4", effort: "high" } },
+      sessions: [{ provider: "codex", cwd: dir, title: "Primary" }],
+      mcpServers: { github: { type: "stdio", command: "github-mcp", args: ["serve"], env: { A: "1" } } },
+      shell: { enabled: false, command: "/bin/fish", scrollback: 2_500 },
+    }
+    await writeFile(path, JSON.stringify(existing))
+
+    await persistUserConfig({ statusline: { llmDisclosureAcknowledged: true } }, { path })
+    await expect(loadAppConfig({ path })).resolves.toMatchObject({
+      statusline: { llmDisclosureAcknowledged: true, layout: null },
+    })
+
+    await persistUserConfig({
+      statusline: {
+        llmDisclosureAcknowledged: true,
+        separator: " · ",
+        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+      },
+    }, { path })
+
+    const written = JSON.parse(await readFile(path, "utf8"))
+    expect(written).toEqual({
+      ...existing,
+      statusline: {
+        llmDisclosureAcknowledged: true,
+        separator: " · ",
+        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+      },
+    })
+    const loaded = await loadAppConfig({ path })
+    expect(loaded.statusline).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+      },
+    })
+    expect(loaded).toMatchObject({
+      persistenceEnabled: false,
+      telemetryEnabled: true,
+      theme: "light",
+      welcomeBanner: "off",
+      providerDefaults: { codex: { model: "gpt-5.4", effort: "high" } },
+      sessions: existing.sessions,
+      shell: existing.shell,
+    })
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+  })
+
+  it("preserves a saved layout when a later patch changes acknowledgement only", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      statusline: { llmDisclosureAcknowledged: true, separator: " | ", line: ["BRANCH", "MODEL"] },
+    }))
+
+    await persistUserConfig({ statusline: { llmDisclosureAcknowledged: false } }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8")).statusline).toEqual({
+      llmDisclosureAcknowledged: false,
+      separator: " | ",
+      line: ["BRANCH", "MODEL"],
+    })
   })
 })

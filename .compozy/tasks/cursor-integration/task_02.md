@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Cursor readiness preflight and recovery messages"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Add a lightweight, injectable Cursor preflight that validates certification and 
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Define the injectable certification/version preflight result and probe seam.
-- [ ] 2.2 Add Cursor-only preflight outcomes and concise recovery formatting.
-- [ ] 2.3 Compose the preflight with the existing handshake verdict without double-spawning a connection.
-- [ ] 2.4 Preserve generic protocol, timeout, disposal, and sibling-independence semantics.
-- [ ] 2.5 Cover failure taxonomy and three-provider aggregate readiness.
+- [x] 2.1 Define the injectable certification/version preflight result and probe seam.
+- [x] 2.2 Add Cursor-only preflight outcomes and concise recovery formatting.
+- [x] 2.3 Compose the preflight with the existing handshake verdict without double-spawning a connection.
+- [x] 2.4 Preserve generic protocol, timeout, disposal, and sibling-independence semantics.
+- [x] 2.5 Cover failure taxonomy and three-provider aggregate readiness.
 
 ## Implementation Details
 
@@ -62,14 +62,14 @@ Follow the TechSpec "Provider Resolution and Readiness Algorithm" and "Integrati
 
 ## Tests
 - Unit tests:
-  - [ ] Missing Cursor binary skips both version probe and connection creation.
-  - [ ] Uncertified override skips both probe and connection creation with `uncertified_recipe`.
-  - [ ] Empty, malformed, nonzero, thrown, and mismatched version results return `version_mismatch` before spawn.
-  - [ ] An exact version continues to the existing ready handshake and disposes the probe connection.
-  - [ ] Adapter authentication-required output maps to the safe Cursor-specific readiness reason while a generic handshake failure remains unchanged.
+  - [x] Missing Cursor binary skips both version probe and connection creation.
+  - [x] Uncertified override skips both probe and connection creation with `uncertified_recipe`.
+  - [x] Empty, malformed, nonzero, thrown, and mismatched version results return `version_mismatch` before spawn.
+  - [x] An exact version continues to the existing ready handshake and disposes the probe connection.
+  - [x] Adapter authentication-required output maps to the safe Cursor-specific readiness reason while a generic handshake failure remains unchanged.
 - Integration tests:
-  - [ ] Claude Code and Codex bypass Cursor version probing and retain their current readiness behavior.
-  - [ ] Aggregate three-provider readiness keeps ready siblings usable for every Cursor preflight failure.
+  - [x] Claude Code and Codex bypass Cursor version probing and retain their current readiness behavior.
+  - [x] Aggregate three-provider readiness keeps ready siblings usable for every Cursor preflight failure.
 - Test coverage target: >=80%
 - All tests must pass
 

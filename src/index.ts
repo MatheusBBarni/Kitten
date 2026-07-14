@@ -17,10 +17,16 @@ import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/cor
 import { join } from "node:path"
 
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
-import { formatMcpSelfCheckLine, formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
+import {
+  formatMcpSelfCheckLine,
+  formatReloadProbeLine,
+  reloadProbePassed,
+  runSelfCheck,
+  SELF_CHECK_MISSING_EVIDENCE_ENV,
+} from "./app/selfCheck.ts"
 import { configureTreeSitterWorker } from "./app/treeSitterWorker.ts"
 import { bannerVariant, markFirstRunSeen, readFirstRunSeen, type BannerVariant } from "./config/appState.ts"
-import { loadAppConfig, resolveSessions } from "./config/configLoader.ts"
+import { loadAppConfig, resolveSessions, type UserConfig } from "./config/configLoader.ts"
 import { watchUserConfig, type ConfigWatcher } from "./config/configWatcher.ts"
 import { persistUserConfig } from "./config/configWriter.ts"
 import {
@@ -33,6 +39,7 @@ import {
   type FirstRunReport,
 } from "./config/firstRun.ts"
 import type { AppConfig, ThemePreference } from "./core/types.ts"
+import type { StatuslineLayout } from "./core/statusline.ts"
 import { createOsNotificationChannel } from "./notify/channel.ts"
 import { createRendererFocusSource } from "./notify/focus.ts"
 import { createNotifier } from "./notify/notifier.ts"
@@ -47,6 +54,7 @@ import { selectThemePreference } from "./store/selectors.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderBootBanner, type BootBannerDisposer, type BootBannerOptions } from "./ui/bootBanner.tsx"
 import { renderCockpit } from "./ui/main.tsx"
+import { registerSyntaxParsers } from "./ui/syntaxParsers.ts"
 import { KITTEN_VERSION } from "./version.ts"
 
 export { renderCockpit }
@@ -138,6 +146,8 @@ export interface CockpitSessionDeps {
   createRunStore?: (enabled: boolean) => RunStore
   /** How to persist a settled preference change; defaults to the atomic config writer. */
   persistConfig?: (patch: { theme: ThemePreference }) => Promise<void>
+  /** How to persist explicit statusline acknowledgement and confirmation writes. */
+  persistStatuslineConfig?: (patch: NonNullable<UserConfig["statusline"]>) => Promise<void>
   /** How to observe reloaded user config; defaults to the filesystem config watcher. */
   watchConfig?: (onConfig: (config: AppConfig) => void) => ConfigWatcher
   /** Quiet period before the latest preference is persisted. */
@@ -168,7 +178,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   const runStore = (deps.createRunStore ?? ((enabled) => createRunStore({ enabled })))(config.persistenceEnabled)
   const store = createAppStore({
     seeds: resolveSessions(config, { launchCwd: cwd }).map((entry) => entry.seed),
-    preferences: { theme: config.theme },
+    preferences: { theme: config.theme, statusline: config.statusline },
   })
   const baseController = await (deps.buildController ?? createSessionController)({
     config,
@@ -186,6 +196,8 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   const stopRunWriter = runWriter.watch(baseController.store)
 
   const persistConfig = deps.persistConfig ?? ((patch) => persistUserConfig(patch))
+  const persistStatuslineConfig = deps.persistStatuslineConfig ??
+    ((statusline) => persistUserConfig({ statusline }))
   const setTimer = deps.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs))
   const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer))
   const persistDebounceMs = deps.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS
@@ -193,6 +205,48 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let pendingTheme: ThemePreference | undefined
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let writeChain = Promise.resolve()
+
+  function queueStatuslineWrite(
+    patch: () => NonNullable<UserConfig["statusline"]>,
+    apply: () => void,
+  ): Promise<{ outcome: "saved" } | { outcome: "error"; message: string }> {
+    const write = writeChain.then(async () => {
+      if (disposed) return { outcome: "error" as const, message: "Statusline preferences are unavailable." }
+      try {
+        await persistStatuslineConfig(patch())
+        if (disposed) return { outcome: "error" as const, message: "Statusline preferences are unavailable." }
+        apply()
+        return { outcome: "saved" as const }
+      } catch (error) {
+        return { outcome: "error" as const, message: errorMessage(error) }
+      }
+    })
+    writeChain = write.then(() => undefined)
+    return write
+  }
+
+  const acknowledgeStatuslineDisclosure = () => queueStatuslineWrite(
+    () => ({ llmDisclosureAcknowledged: true }),
+    () => {
+      const current = baseController.store.getState().preferences.statusline
+      baseController.store.setStatuslinePreference({ ...current, llmDisclosureAcknowledged: true })
+    },
+  )
+
+  const confirmStatusline = (layout: StatuslineLayout) => queueStatuslineWrite(
+    () => {
+      const acknowledged = baseController.store.getState().preferences.statusline.llmDisclosureAcknowledged
+      return {
+        llmDisclosureAcknowledged: acknowledged,
+        separator: layout.separator,
+        line: layout.line,
+      }
+    },
+    () => {
+      const acknowledged = baseController.store.getState().preferences.statusline.llmDisclosureAcknowledged
+      baseController.store.setStatuslinePreference({ llmDisclosureAcknowledged: acknowledged, layout })
+    },
+  )
 
   const stopPreference = baseController.store.subscribeSelector(selectThemePreference, (theme) => {
     recorder.themeSet(theme)
@@ -220,7 +274,10 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let watcher: ConfigWatcher
   try {
     watcher = (deps.watchConfig ?? ((onConfig) => watchUserConfig(onConfig)))((nextConfig) => {
-      if (!disposed) baseController.store.setThemePreference(nextConfig.theme)
+      if (disposed) return
+      baseController.store.setThemePreference(nextConfig.theme)
+      baseController.store.setStatuslinePreference(nextConfig.statusline)
+      baseController.updateProviderDefaults(nextConfig.providerDefaults)
     })
   } catch (error) {
     stopPreference()
@@ -235,11 +292,16 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let disposal: Promise<void> | undefined
   const controller: SessionController = {
     store: baseController.store,
-    actions: baseController.actions,
+    actions: {
+      ...baseController.actions,
+      acknowledgeStatuslineDisclosure,
+      confirmStatusline,
+    },
     shell: baseController.shell,
     runtimes: () => baseController.runtimes(),
     runtime: (sessionId) => baseController.runtime(sessionId),
     isReady: (sessionId) => baseController.isReady(sessionId),
+    updateProviderDefaults: (defaults) => baseController.updateProviderDefaults(defaults),
     closeConversation: (sessionId, choice) => baseController.closeConversation(sessionId, choice),
     restore: (record, mode) => baseController.restore(record, mode),
     dispose(): Promise<void> {
@@ -274,6 +336,10 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
 /** Default exit handler: exit the process cleanly once teardown has finished. */
 export function exitProcess(): void {
   process.exit(0)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -351,6 +417,8 @@ export interface MainDeps {
    * that first visible feedback has been mounted.
    */
   configureTreeSitterWorker?: typeof configureTreeSitterWorker
+  /** Register static parser capabilities after worker setup and before cockpit rendering. */
+  registerSyntaxParsers?: typeof registerSyntaxParsers
   /**
    * How to obtain just the controller. When given, telemetry is not wired (the tests
    * use this to drive a fake controller). Takes precedence over `createSession`.
@@ -380,6 +448,8 @@ export interface MainDeps {
   wireNotifier?: (renderer: CliRenderer, store: AppStore) => void
   /** How renderer key events promote ephemeral Kitty capability; injectable for lifecycle tests. */
   wireKeyboardCapability?: (renderer: CliRenderer, onKittyConfirmed: () => void) => void
+  /** Cockpit render seam used to prove parser registration order without native allocation. */
+  renderCockpit?: typeof renderCockpit
 }
 
 /** What {@link main} hands back so a caller (or a test) can inspect the booted app. */
@@ -482,6 +552,8 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
     }
     if (sessionResult.status === "rejected") throw sessionResult.reason
 
+    ;(deps.registerSyntaxParsers ?? registerSyntaxParsers)()
+
     controller = sessionResult.value.controller
     recorder = sessionResult.value.recorder
     sessionPicker = sessionResult.value.sessionPicker
@@ -535,7 +607,7 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
     const markSeen = deps.markFirstRunSeen ?? markFirstRunSeen
     markSeen()
   }
-  renderCockpit(renderer, controller, recorder, idleBannerVariant, sessionPicker)
+  ;(deps.renderCockpit ?? renderCockpit)(renderer, controller, recorder, idleBannerVariant, sessionPicker)
   return { renderer, controller, closed }
 }
 
@@ -612,6 +684,7 @@ if (import.meta.main) {
     try {
       const { frame, reloadProbe, mcp } = await runSelfCheck({
         reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
+        missingEvidenceKey: process.env[SELF_CHECK_MISSING_EVIDENCE_ENV],
       })
       const probeLines = reloadProbe.map(formatReloadProbeLine)
       const mcpLines = mcp.map(formatMcpSelfCheckLine)

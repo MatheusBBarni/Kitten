@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Migrate the first typed-fixture group to the new config shape"
 type: refactor
 complexity: medium
@@ -28,10 +28,10 @@ Update the first bounded group of explicit AppConfig fixtures with the resolved 
 
 ## Subtasks
 
-- [ ] 2.1 Locate the first explicit AppConfig fixture group.
-- [ ] 2.2 Add the empty defaults map to every fixture.
-- [ ] 2.3 Preserve controller and overlay scenario behavior.
-- [ ] 2.4 Verify targeted suites and compilation.
+- [x] 2.1 Locate the first explicit AppConfig fixture group.
+- [x] 2.2 Add the empty defaults map to every fixture.
+- [x] 2.3 Preserve controller and overlay scenario behavior.
+- [x] 2.4 Verify targeted suites and compilation.
 
 ## Implementation Details
 
@@ -63,11 +63,11 @@ Perform the fixture-only compatibility migration from TechSpec Impact Analysis. 
 ## Tests
 
 - Unit tests:
-  - [ ] Run controller fixture scenarios without changing multi-session expectations.
-  - [ ] Run approval overlay scenarios without changing permission behavior.
-  - [ ] Run model-picker rendered scenarios without changing selector behavior.
+  - [x] Run controller fixture scenarios without changing multi-session expectations.
+  - [x] Run approval overlay scenarios without changing permission behavior.
+  - [x] Run model-picker rendered scenarios without changing selector behavior.
 - Integration tests:
-  - [ ] Run bun run typecheck and confirm this fixture group is compatible.
+  - [x] Run bun run typecheck and confirm this fixture group is compatible.
 - Test coverage target: >=80%
 - All tests must pass
 

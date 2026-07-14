@@ -2,11 +2,14 @@
 // Invariant: the footer is concise context, while live work belongs beside the transcript.
 
 import { describe, expect, it } from "bun:test"
+import { basename } from "node:path"
 
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes } from "../../test/fakeController.ts"
+import type { AgentRuntimeState } from "../app/controller.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import type { ConfigOption, SessionId } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -21,6 +24,7 @@ import {
 } from "./StatusStrip.tsx"
 
 const HEIGHT = 1
+const PROJECT_FOLDER = basename(process.cwd())
 
 function expectNoOverflow(frame: string, width: number): void {
   const rows = frame.replace(/\n$/, "").split("\n")
@@ -45,6 +49,39 @@ function slotSelectors(values: {
   }
 }
 
+function confirmModelAndEffort(
+  controller: ReturnType<typeof createFakeController>,
+  model: { value: string; name: string },
+  effort: { value: string; name: string; alternatives?: Array<{ value: string; name: string }> },
+): void {
+  controller.store.applyEvent("claude-code", {
+    kind: "config_options",
+    options: [
+      {
+        id: "model",
+        category: "model",
+        label: "Model",
+        currentValue: model.value,
+        options: [model],
+      },
+      {
+        id: "effort",
+        category: "thought_level",
+        label: "Reasoning effort",
+        currentValue: effort.value,
+        options: [{ value: effort.value, name: effort.name }, ...(effort.alternatives ?? [])],
+      },
+    ],
+  })
+}
+
+function saveCustomLayout(
+  controller: ReturnType<typeof createFakeController>,
+  layout: StatuslineLayout,
+): void {
+  controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout })
+}
+
 async function renderStrip(
   controller = createFakeController(),
   width = 80,
@@ -65,12 +102,12 @@ describe("StatusStrip", () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller)
 
-    expect(setup.captureCharFrame()).toContain("claude:—")
-    expect(setup.captureCharFrame()).not.toContain("codex:")
+    expect(setup.captureCharFrame()).toContain("Claude:—")
+    expect(setup.captureCharFrame()).not.toContain("Codex:")
 
     await actAsync(() => controller.actions.selectConversation("codex"))
-    const codex = await setup.waitForFrame((frame) => frame.includes("codex:—"))
-    expect(codex).not.toContain("claude:")
+    const codex = await setup.waitForFrame((frame) => frame.includes("Codex:—"))
+    expect(codex).not.toContain("Claude:")
 
     await destroyMounted(setup.renderer)
   })
@@ -85,11 +122,101 @@ describe("StatusStrip", () => {
     }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("claude:opus:high 38% █░░")
+    expect(frame).toContain("Claude:opus:high 38% █░░")
     expect(frame).not.toContain("working")
-    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain("Codex:")
     expect(frame).toContain(KEYMAP_HINT)
     expectNoOverflow(frame, 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows confirmed provider, model, and effort with an applied-default label", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(controller, { value: "opus", name: "Opus" }, { value: "medium", name: "Medium" })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "applied", model: "opus", effort: "medium" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "opus" },
+      effort: { "claude-code": "medium" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Opus:Medium")
+    expect(frame).toContain("default applied")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows post-model confirmed effort with explicit partial feedback at 64 columns", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(
+      controller,
+      { value: "opus", name: "Opus" },
+      { value: "medium", name: "Medium", alternatives: [{ value: "ultra", name: "Ultra" }] },
+    )
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "partial", model: "opus", unavailable: "effort" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "opus" },
+      effort: { "claude-code": "medium" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Opus:Medium")
+    expect(frame).not.toContain(":Ultra")
+    expect(frame).toContain("effort unavailable")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("retains prior confirmed values with explicit unavailable-model feedback", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(controller, { value: "sonnet", name: "Sonnet" }, { value: "low", name: "Low" })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "unavailable", unavailable: "model" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "sonnet" },
+      effort: { "claude-code": "low" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Sonnet:Low")
+    expect(frame).toContain("model unavailable")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("preserves legacy confirmed output without a label for a none result", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(controller, { value: "opus", name: "Opus" }, { value: "high", name: "High" })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "none" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "opus" },
+      effort: { "claude-code": "high" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Opus:High")
+    expect(frame).not.toContain("default applied")
+    expect(frame).not.toContain("unavailable")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
 
     await destroyMounted(setup.renderer)
   })
@@ -107,7 +234,7 @@ describe("StatusStrip", () => {
     const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus[1m]" } }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("claude:Opus")
+    expect(frame).toContain("Claude:Opus")
     expect(frame).not.toContain("opus[1m]")
 
     await destroyMounted(setup.renderer)
@@ -124,7 +251,7 @@ describe("StatusStrip", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(EMPTY_WORKSPACE_STATUS_LABEL)
     expect(frame).toContain(`${BACKGROUND_STATUS_LABEL}: 1`)
-    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain("Codex:")
 
     await destroyMounted(setup.renderer)
   })
@@ -136,7 +263,137 @@ describe("StatusStrip", () => {
 
     const frame = setup.captureCharFrame()
     expect(frame).toContain(`${MCP_STATUS_LABEL} +github`)
-    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain("Codex:")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders a saved layout in declared order and omits unavailable values without duplicate separators", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: ["MODEL", "BRANCH", "PROVIDER", "EFFORT"],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: [{
+        id: "model",
+        category: "model",
+        label: "Model",
+        currentValue: "opus",
+        options: [{ value: "opus", name: "Opus" }],
+      }],
+    })
+    const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus" } }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Opus · Claude")
+    expect(frame).not.toContain("Opus ·  · Claude")
+    expect(frame).not.toContain("Claude:Opus")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses the core renderer's grapheme-safe branch ellipsis", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 12 }],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "branch",
+      branch: "feature/👨‍👩‍👧‍👦-statusline",
+    })
+    const setup = await renderStrip(controller, 80)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("feature/👨‍👩‍👧‍👦-s…")
+    expect(frame).not.toContain("feature/👨‍👩‍👧‍👦-statusline")
+    expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(HEIGHT)
+    expect(frame).not.toContain("਀")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("reacts to 80-to-64-column resizing by omitting trailing custom fields before containment", async () => {
+    const statuslineCwd = "/workspace/kitten-statusline-preview"
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd })),
+    })
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: ["FULL_PATH", "BRANCH", "PROVIDER", "MODEL"],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "branch",
+      branch: "feat/statusline-ui",
+    })
+    const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus" } }))
+
+    const wide = setup.captureCharFrame()
+    expect(wide).toContain(statuslineCwd)
+    expect(wide).toContain("feat/statusline-ui")
+    expect(wide).toContain("Claude")
+    expect(wide).not.toContain("opus")
+    expectNoOverflow(wide, 80)
+
+    await actAsync(() => setup.resize(64, HEIGHT))
+    const narrow = await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
+    expect(narrow).not.toContain("feat/statusline-ui")
+    expect(narrow).not.toContain("Claude")
+    expect(narrow).not.toContain("opus")
+    expect(narrow).toContain(KEYMAP_HINT)
+    expectNoOverflow(narrow, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders a ready Cursor runtime through shared metadata within 80 columns", async () => {
+    const cursor = {
+      sessionId: "cursor",
+      providerKind: "cursor",
+      displayName: "Cursor",
+      title: "Cursor",
+      cwd: process.cwd(),
+      ready: true,
+      acpSessionId: "session-cursor",
+      mcp: { loaded: ["github"], skipped: [] },
+    } satisfies AgentRuntimeState
+    const store = createAppStore({ selectedVisibleId: "cursor" })
+    store.applyEvent("cursor", {
+      kind: "config_options",
+      options: [
+        {
+          id: "cursor/model-profile",
+          category: "model",
+          label: "Model",
+          currentValue: "cursor:composer",
+          options: [{ value: "cursor:composer", name: "Composer" }],
+        },
+        {
+          id: "cursor/effort-profile",
+          category: "thought_level",
+          label: "Reasoning effort",
+          currentValue: "cursor:high",
+          options: [{ value: "cursor:high", name: "High" }],
+        },
+      ],
+    })
+    store.applyEvent("cursor", { kind: "usage", used: 50_000, size: 200_000 })
+    const controller = createFakeController({ store, runtimes: [...readyRuntimes(), cursor] })
+    const setup = await renderStrip(controller, 80, slotSelectors({
+      model: { cursor: "cursor:composer" },
+      effort: { cursor: "cursor:high" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Cursor:Composer:High 75% ██░")
+    expect(frame).toContain(`${MCP_STATUS_LABEL} +github`)
+    expect(frame).not.toContain("Claude:")
+    expect(frame).not.toContain("Codex:")
+    expectNoOverflow(frame, 80)
 
     await destroyMounted(setup.renderer)
   })
@@ -152,6 +409,23 @@ describe("StatusStrip", () => {
     await actAsync(() => controller.store.setFocusedPane({ kind: "shell" }))
     const shell = await setup.waitForFrame((frame) => frame.includes(SHELL_EXIT_HINT))
     expect(shell).not.toContain(KEYMAP_HINT)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("retains the shell-exit affordance while saved custom left-side content is active", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, { separator: " · ", line: ["FOLDER"] })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain(PROJECT_FOLDER)
+    expect(setup.captureCharFrame()).toContain(KEYMAP_HINT)
+
+    await actAsync(() => controller.store.setFocusedPane({ kind: "shell" }))
+    const shell = await setup.waitForFrame((frame) => frame.includes(SHELL_EXIT_HINT))
+    expect(shell).toContain(PROJECT_FOLDER)
+    expect(shell).not.toContain(KEYMAP_HINT)
+    expectNoOverflow(shell, 80)
 
     await destroyMounted(setup.renderer)
   })

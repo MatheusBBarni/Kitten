@@ -35,6 +35,7 @@ import type {
   DomainSessionEvent,
   McpServerConfig,
   ProviderKind,
+  ProviderRuntimeProfile,
   ResolvedAgentConfig,
   SessionStatus,
   ToolCallUpdate,
@@ -67,7 +68,7 @@ export interface PromptResult {
 /** Outcome of `connect`: a completed handshake, or a legible not-ready reason. */
 export type ReadyState =
   | { ready: true; protocolVersion: number; canLoadSession: boolean }
-  | { ready: false; error: string }
+  | { ready: false; reason?: "authentication_required"; error: string }
 
 /**
  * The ACP protocol version Kitten negotiates during `initialize`.
@@ -195,12 +196,14 @@ class AgentConnectionImpl implements AgentConnection {
   readonly id: ProviderKind
 
   private readonly config: AgentConfig
+  private readonly runtimeProfile: ProviderRuntimeProfile
   private readonly clarificationSupported: boolean
   private readonly transportFactory: TransportFactory
   private readonly scheduler: FrameScheduler
 
   private transport: AgentTransport | null = null
   private connection: ClientSideConnection | null = null
+  private ready = false
 
   /** Set the instant `dispose` begins, so an intentional teardown's transport close
    * does not masquerade as a crash. */
@@ -225,6 +228,7 @@ class AgentConnectionImpl implements AgentConnection {
   constructor(options: AgentConnectionOptions) {
     this.id = options.config.id
     this.config = options.config
+    this.runtimeProfile = "runtimeProfile" in options.config ? options.config.runtimeProfile : { kind: "standard" }
     this.clarificationSupported =
       "clarificationCapability" in options.config && options.config.clarificationCapability.status === "supported"
     this.transportFactory = options.transport ?? spawnAgentTransport
@@ -233,6 +237,7 @@ class AgentConnectionImpl implements AgentConnection {
 
   async connect(): Promise<ReadyState> {
     try {
+      this.ready = false
       this.transportFailed = false
       this.transport = this.transportFactory(this.config)
       // A transport close we did not ask for is a lost subprocess: surface `error`
@@ -258,6 +263,28 @@ class AgentConnectionImpl implements AgentConnection {
         },
         clientInfo: { name: "kitten", version: KITTEN_VERSION },
       })
+
+      if (this.runtimeProfile.kind === "cursor-certified") {
+        const methodId = this.runtimeProfile.authenticationMethod
+        if (!result.authMethods?.some((method) => method.id === methodId)) {
+          return {
+            ready: false,
+            reason: "authentication_required",
+            error: `authentication method "${methodId}" is unavailable`,
+          }
+        }
+        try {
+          await this.connection.authenticate({ methodId })
+        } catch (error) {
+          return {
+            ready: false,
+            reason: "authentication_required",
+            error: handshakeErrorMessage(error),
+          }
+        }
+      }
+
+      this.ready = true
       return {
         ready: true,
         protocolVersion: result.protocolVersion,
@@ -360,6 +387,7 @@ class AgentConnectionImpl implements AgentConnection {
 
   async dispose(): Promise<void> {
     this.closing = true
+    this.ready = false
     this.scheduler.dispose()
     this.subscribers.clear()
     this.permissionHandler = null
@@ -538,7 +566,7 @@ class AgentConnectionImpl implements AgentConnection {
   }
 
   private requireConnection(): ClientSideConnection {
-    if (!this.connection) throw new Error(`Agent "${this.id}" is not connected; call connect() first`)
+    if (!this.connection || !this.ready) throw new Error(`Agent "${this.id}" is not connected; call connect() first`)
     return this.connection
   }
 }

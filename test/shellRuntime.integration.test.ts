@@ -27,7 +27,8 @@ const CONTROLLER_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: "Claude Code", command: "claude-acp", args: [], env: {} },
     codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
-  },
+  } as unknown as AppConfig["providers"],
+  providerDefaults: {},
   sessions: [{ provider: "claude-code", cwd: process.cwd() }],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
@@ -35,6 +36,7 @@ const CONTROLLER_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 function createReadyConnection(): AgentConnection {

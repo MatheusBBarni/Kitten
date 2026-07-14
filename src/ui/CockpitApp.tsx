@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import type { SessionController } from "../app/controller.ts"
 import { composeHandoffBlocks, createHandoffEdits, createHandoffFlow } from "../app/handoff.ts"
+import { createStatuslineFlow } from "../app/statuslineFlow.ts"
 import type { BannerVariant } from "../config/appState.ts"
 import { encodeKey } from "../shell/keyEncoder.ts"
 import type { KeyboardCapability, Selector } from "../store/appStore.ts"
@@ -57,6 +58,7 @@ import { ShellPane } from "./ShellPane.tsx"
 import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
+import { StatuslineOverlay } from "./StatuslineOverlay.tsx"
 import { TabDialog } from "./TabDialog.tsx"
 import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
@@ -136,6 +138,7 @@ function CockpitFrame({
   // One flow for the life of the controller: a hand-off and a later hand-back are the
   // same mechanism pointed the other way, and it derives its direction from focus.
   const handoff = useMemo(() => createHandoffFlow({ controller, recorder }), [controller, recorder])
+  const statusline = useMemo(() => createStatuslineFlow({ actions: controller.actions, store: controller.store }), [controller])
 
   /** One cockpit dispatch path shared by `/commands` and the remaining global chord. */
   const runCockpitCommand = useCallback(
@@ -219,6 +222,17 @@ function CockpitFrame({
             controller.store.openModelSelect({ sessionId: state.workspace.selectedVisibleId })
           }
           return
+        case "statusline": {
+          setHelpOpen(false)
+          const sessionId = state.workspace.selectedVisibleId
+          if (!sessionId) return
+          controller.store.openStatusline(
+            state.preferences.statusline.llmDisclosureAcknowledged
+              ? { sessionId, phase: "request", requestText: "" }
+              : { sessionId, phase: "disclosure" },
+          )
+          return
+        }
         case "open-settings":
           setHelpOpen(false)
           controller.store.openSettings()
@@ -356,6 +370,8 @@ function CockpitFrame({
       <ModelSelect />
 
       <SettingsView />
+
+      <StatuslineOverlay flow={statusline} />
 
       <TabDialog />
 

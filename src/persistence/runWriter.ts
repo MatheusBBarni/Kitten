@@ -156,7 +156,7 @@ class ActiveRunWriter implements RunWriter {
         initialTitle: session.title,
         acpSessionId: session.acpSessionId,
         status: session.status,
-        messageCount: session.turns.length,
+        messageCount: persistedMessageCount(session.turns),
         lastPrompt: lastUserPrompt(session.turns),
       }
       workspaceConversations[sessionId] = {
@@ -206,7 +206,22 @@ class ActiveRunWriter implements RunWriter {
 function lastUserPrompt(turns: readonly Turn[]): string {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const turn = turns[index]
-    if (turn?.kind === "user") return turn.text
+    if (turn?.kind === "user" && turn.persist !== false) return turn.text
   }
   return ""
+}
+
+/**
+ * Count only turns that belong to a resumable request. An internal request stays
+ * visible in the live transcript, but its reply (and any tool turns it produces)
+ * must not make an otherwise zero-turn ACP session eligible for restoration.
+ */
+function persistedMessageCount(turns: readonly Turn[]): number {
+  let persistCurrentRequest = true
+  let count = 0
+  for (const turn of turns) {
+    if (turn.kind === "user") persistCurrentRequest = turn.persist !== false
+    if (persistCurrentRequest) count += 1
+  }
+  return count
 }

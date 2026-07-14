@@ -19,7 +19,17 @@ import {
   type PromptHistoryDirection,
   type PromptHistorySelection,
 } from "../core/promptHistory.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ClarificationOutcome, type ConfigOption, type SessionId } from "../core/types.ts"
+import {
+  EFFORT_CATEGORY,
+  MODEL_CATEGORY,
+  type ClarificationOutcome,
+  type ConfigOption,
+  type DefaultApplyResult,
+  type ProviderKind,
+  type ProviderModelDefault,
+  type SessionId,
+} from "../core/types.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
@@ -27,6 +37,11 @@ import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.t
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
+
+/** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
+export interface PromptSendOptions {
+  readonly persist?: boolean
+}
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
@@ -48,6 +63,11 @@ export interface FocusTelemetry {
 /** The switch-outcome slice of telemetry the action surface can report. */
 export interface SwitchTelemetry {
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+}
+
+/** The only provider-default fact permitted to cross the telemetry boundary. */
+export interface DefaultApplyTelemetry {
+  recordProviderDefaultOutcome(outcome: DefaultApplyResult["kind"]): void
 }
 
 /** Content-free prompt-history outcomes emitted by composer-only actions. */
@@ -90,7 +110,7 @@ export type TabCreationSource = "inherited" | "default"
 export type TabSelectionSource = "mouse" | "kitty_chord" | "sessions_fallback" | "attention_jump" | "model_select"
 
 export interface TabTelemetry {
-  tabCreated(provider: "claude-code" | "codex", source: TabCreationSource): void
+  tabCreated(provider: ProviderKind, source: TabCreationSource): void
   tabSelectionStarted(source: TabSelectionSource): void
   tabBackgrounded(): void
   tabCloseConfirmed(outcome: "cancel" | "idle_close"): void
@@ -103,7 +123,7 @@ export interface TabTelemetry {
  * both slices.
  */
 export type ActionTelemetry = FocusTelemetry & Partial<
-  SwitchTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & TabTelemetry
+  SwitchTelemetry & DefaultApplyTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & TabTelemetry
 >
 
 /** The default when no recorder is injected: record nothing. */
@@ -130,11 +150,18 @@ export type CloseConversationResult =
   | { outcome: "teardown-failed" }
   | { outcome: "ignored" }
 
+/** Explicit statusline writes resolve legibly and never reject into the UI. */
+export type StatuslineWriteResult =
+  | { outcome: "saved" }
+  | { outcome: "error"; message: string }
+
 /** The seams the actions need. The controller supplies all of them. */
 export interface ActionDeps {
   store: AppStore
   /** Resolve a session's live connection, or `undefined` when it has none (not ready). */
   getSession(sessionId: SessionId): AgentSession | undefined
+  /** Read the latest controller-owned default for one configured session. */
+  getProviderDefault?: (sessionId: SessionId) => ProviderModelDefault | undefined
   /** Settle the permission request currently shown in the approval overlay. */
   resolvePermission(outcome: PermissionOutcome): void
   /** Settle only the active clarification whose stable identity still matches. */
@@ -161,6 +188,10 @@ export interface ActionDeps {
   createConversation?: () => Promise<SessionId | null>
   /** Apply an explicit close outcome through the controller-owned teardown path. */
   closeConversation?: (sessionId: SessionId, choice: CloseChoice) => Promise<CloseConversationResult>
+  /** Persist disclosure acknowledgement before applying it to the reactive store. */
+  acknowledgeStatuslineDisclosure?: () => Promise<StatuslineWriteResult>
+  /** Persist one complete layout before applying it to the reactive store. */
+  confirmStatusline?: (layout: StatuslineLayout) => Promise<StatuslineWriteResult>
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
@@ -202,7 +233,7 @@ export interface ControllerActions {
    * turn in the transcript first. Resolves with the agent's stop reason, or `null`
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
-  sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
+  sendPrompt(input: PromptInput, sessionId?: SessionId, options?: PromptSendOptions): Promise<PromptResult | null>
   /** Record one accepted plain-composer submission in the addressed session. */
   recordPromptHistory(text: string, sessionId?: SessionId): void
   /** Navigate the addressed session's history and return the post-reducer selection. */
@@ -219,6 +250,12 @@ export interface ControllerActions {
    * the agent reports the requested value back.
    */
   setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<boolean>
+  /** Apply one session's latest provider default without throwing into the UI. */
+  applyProviderDefaults(sessionId: SessionId): Promise<DefaultApplyResult>
+  /** Persist and apply the first-request disclosure acknowledgement. */
+  acknowledgeStatuslineDisclosure(): Promise<StatuslineWriteResult>
+  /** Persist and immediately apply one reviewed complete layout. */
+  confirmStatusline(layout: StatuslineLayout): Promise<StatuslineWriteResult>
   /**
    * Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live.
    * `options.viaOverview` records the switch as one made through the `/sessions` overview
@@ -269,6 +306,11 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
+  const acknowledgeStatuslineDisclosure = deps.acknowledgeStatuslineDisclosure ??
+    (async () => ({ outcome: "error" as const, message: "Statusline preferences are unavailable." }))
+  const confirmStatusline = deps.confirmStatusline ??
+    (async () => ({ outcome: "error" as const, message: "Statusline preferences are unavailable." }))
+  const defaultApplyQueues = new Map<SessionId, Promise<DefaultApplyResult>>()
 
   const focused = (): SessionId | undefined =>
     store.getState().workspace.selectedVisibleId ?? undefined
@@ -276,6 +318,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   async function sendPrompt(
     input: PromptInput,
     requestedSessionId?: SessionId,
+    options?: PromptSendOptions,
   ): Promise<PromptResult | null> {
     const sessionId = requestedSessionId ?? focused()
     if (!sessionId) return null
@@ -290,6 +333,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       kind: "user_message",
       messageId: newMessageId(),
       text: joinBlocks(blocks),
+      persist: options?.persist,
     })
     try {
       return await session.connection.prompt(session.acpSessionId, blocks)
@@ -301,6 +345,115 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       // own async work, so the prompt result never waits on git.
       refreshBranch(sessionId)
     }
+  }
+
+  async function setConfigOption(configId: string, value: string, sessionId: SessionId): Promise<boolean> {
+    const session = getSession(sessionId)
+    if (!session) return false
+    // Keep the pre-call option only long enough to identify the allowlisted category
+    // and whether an effort value actually changed. Neither value reaches telemetry.
+    const previous = store.getState().sessions[sessionId]?.configOptions.find((option) => option.id === configId)
+    try {
+      // The agent echoes the full refreshed option set; apply that confirmed state
+      // (never the requested value) so the store reflects only what the agent reports.
+      const options = await session.connection.setSessionConfigOption(session.acpSessionId, configId, value)
+      const reported = options.find((option) => option.id === configId)
+      const kind = switchKind(reported ?? previous)
+      // Store first so the recorder's watcher establishes the adapter-confirmed value
+      // as its baseline before an effort-retention window is armed below.
+      store.applyEvent(sessionId, { kind: "config_options", options })
+      if (kind) {
+        const confirmed = reported?.currentValue === value
+        recorder.recordSwitch?.(
+          sessionId,
+          kind,
+          confirmed,
+          kind === "effort" && confirmed && reported?.currentValue !== previous?.currentValue,
+        )
+        return confirmed
+      }
+      return reported?.currentValue === value
+    } catch (error) {
+      // A failed request has no adapter-confirmed value. It is therefore unverified,
+      // never counted as confirmed from the developer's requested value alone.
+      const kind = switchKind(previous)
+      if (kind) recorder.recordSwitch?.(sessionId, kind, false, false)
+      onError(sessionId, error)
+      return false
+    }
+  }
+
+  function finishDefaultApply(sessionId: SessionId, result: DefaultApplyResult): DefaultApplyResult {
+    store.applyEvent(sessionId, { kind: "default_apply_result", result })
+    try {
+      recorder.recordProviderDefaultOutcome?.(result.kind)
+    } catch (error) {
+      // Local opt-in observation must never turn a truthful terminal UI result into
+      // an action rejection (for example when the JSONL path becomes unwritable).
+      onError(sessionId, error)
+    }
+    return result
+  }
+
+  async function applyProviderDefault(sessionId: SessionId): Promise<DefaultApplyResult> {
+    if (!store.getState().sessions[sessionId]) {
+      return { kind: "unavailable", unavailable: "session" }
+    }
+
+    const configured = deps.getProviderDefault?.(sessionId)
+    if (!configured || (!configured.model && !configured.effort)) {
+      return finishDefaultApply(sessionId, { kind: "none" })
+    }
+    if (!getSession(sessionId)) {
+      return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "session" })
+    }
+
+    let options = store.getState().sessions[sessionId]!.configOptions
+    let confirmedModel: string | undefined
+    if (configured.model) {
+      const model = options.find((option) => option.category === MODEL_CATEGORY)
+      if (!model || !hasOption(model, configured.model)) {
+        return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      }
+      if (!(await setConfigOption(model.id, configured.model, sessionId))) {
+        return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      }
+
+      // Model confirmation may replace every advertised option. Only this refreshed
+      // state is authoritative for the configured effort and the terminal result.
+      options = store.getState().sessions[sessionId]!.configOptions
+      confirmedModel = options.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+      if (!confirmedModel) {
+        return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      }
+    }
+
+    if (configured.effort) {
+      const effort = options.find((option) => option.category === EFFORT_CATEGORY)
+      if (!effort || !hasOption(effort, configured.effort)) {
+        return finishDefaultApply(sessionId, effortUnavailable(confirmedModel))
+      }
+      if (!(await setConfigOption(effort.id, configured.effort, sessionId))) {
+        const latestModel = store.getState().sessions[sessionId]!.configOptions
+          .find((option) => option.category === MODEL_CATEGORY)?.currentValue ?? confirmedModel
+        return finishDefaultApply(sessionId, effortUnavailable(latestModel))
+      }
+      const finalOptions = store.getState().sessions[sessionId]!.configOptions
+      const finalModel = finalOptions.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+      const confirmedEffort = finalOptions.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
+      if (confirmedEffort !== configured.effort) {
+        return finishDefaultApply(sessionId, effortUnavailable(finalModel ?? confirmedModel))
+      }
+      const latestModel = finalModel ?? confirmedModel
+      return finishDefaultApply(
+        sessionId,
+        latestModel
+          ? { kind: "applied", model: latestModel, effort: confirmedEffort }
+          : { kind: "applied", effort: confirmedEffort },
+      )
+    }
+
+    return finishDefaultApply(sessionId, { kind: "applied", model: confirmedModel! })
   }
 
   function selectConversation(sessionId: SessionId, options?: SwitchFocusOptions): void {
@@ -480,38 +633,33 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     async setSessionConfigOption(configId, value, requestedSessionId?: SessionId): Promise<boolean> {
       const sessionId = requestedSessionId ?? focused()
       if (!sessionId) return false
-      const session = getSession(sessionId)
-      if (!session) return false
-      // Keep the pre-call option only long enough to identify the allowlisted category
-      // and whether an effort value actually changed. Neither value reaches telemetry.
-      const previous = store.getState().sessions[sessionId]?.configOptions.find((option) => option.id === configId)
+      return setConfigOption(configId, value, sessionId)
+    },
+
+    async applyProviderDefaults(sessionId): Promise<DefaultApplyResult> {
+      const previous = defaultApplyQueues.get(sessionId) ?? Promise.resolve({ kind: "none" as const })
+      const attempt = previous.then(() => applyProviderDefault(sessionId))
+      defaultApplyQueues.set(sessionId, attempt)
       try {
-        // The agent echoes the full refreshed option set; apply that confirmed state
-        // (never the requested value) so the store reflects only what the agent reports.
-        const options = await session.connection.setSessionConfigOption(session.acpSessionId, configId, value)
-        const reported = options.find((option) => option.id === configId)
-        const kind = switchKind(reported ?? previous)
-        // Store first so the recorder's watcher establishes the adapter-confirmed value
-        // as its baseline before an effort-retention window is armed below.
-        store.applyEvent(sessionId, { kind: "config_options", options })
-        if (kind) {
-          const confirmed = reported?.currentValue === value
-          recorder.recordSwitch?.(
-            sessionId,
-            kind,
-            confirmed,
-            kind === "effort" && confirmed && reported?.currentValue !== previous?.currentValue,
-          )
-          return confirmed
-        }
-        return reported?.currentValue === value
+        return await attempt
+      } finally {
+        if (defaultApplyQueues.get(sessionId) === attempt) defaultApplyQueues.delete(sessionId)
+      }
+    },
+
+    async acknowledgeStatuslineDisclosure(): Promise<StatuslineWriteResult> {
+      try {
+        return await acknowledgeStatuslineDisclosure()
       } catch (error) {
-        // A failed request has no adapter-confirmed value. It is therefore unverified,
-        // never counted as confirmed from the developer's requested value alone.
-        const kind = switchKind(previous)
-        if (kind) recorder.recordSwitch?.(sessionId, kind, false, false)
-        onError(sessionId, error)
-        return false
+        return { outcome: "error", message: errorMessage(error) }
+      }
+    },
+
+    async confirmStatusline(layout): Promise<StatuslineWriteResult> {
+      try {
+        return await confirmStatusline(layout)
+      } catch (error) {
+        return { outcome: "error", message: errorMessage(error) }
       }
     },
 
@@ -599,4 +747,20 @@ function switchKind(option: ConfigOption | undefined): "model" | "effort" | unde
   if (option?.category === MODEL_CATEGORY) return "model"
   if (option?.category === EFFORT_CATEGORY) return "effort"
   return undefined
+}
+
+/** Match opaque values only within one already allowlisted model/effort option. */
+function hasOption(option: ConfigOption, value: string): boolean {
+  return option.options.some((candidate) => candidate.value === value)
+}
+
+/** An effort failure is partial only when the provider has already confirmed a model. */
+function effortUnavailable(model: string | undefined): DefaultApplyResult {
+  return model
+    ? { kind: "partial", model, unavailable: "effort" }
+    : { kind: "unavailable", unavailable: "effort" }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

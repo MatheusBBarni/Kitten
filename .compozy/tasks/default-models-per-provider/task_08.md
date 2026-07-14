@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render confirmed default outcomes in the status strip"
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Render the selected session's reducer-owned default outcome beside existing conf
 
 ## Subtasks
 
-- [ ] 8.1 Add a memoized session-scoped result subscription.
-- [ ] 8.2 Render truthful full, partial, and unavailable labels.
-- [ ] 8.3 Preserve confirmed provider/model/effort text.
-- [ ] 8.4 Preserve one-row narrow-width behavior.
-- [ ] 8.5 Cover direct strip and mounted cockpit output.
+- [x] 8.1 Add a memoized session-scoped result subscription.
+- [x] 8.2 Render truthful full, partial, and unavailable labels.
+- [x] 8.3 Preserve confirmed provider/model/effort text.
+- [x] 8.4 Preserve one-row narrow-width behavior.
+- [x] 8.5 Cover direct strip and mounted cockpit output.
 
 ## Implementation Details
 
@@ -67,13 +67,13 @@ Implement TechSpec Impact Analysis and Known Risks using existing per-session me
 ## Tests
 
 - Unit tests:
-  - [ ] Applied result shows confirmed provider/model/effort plus full-default label.
-  - [ ] Partial effort shows post-model confirmed model/effort plus effort-unavailable copy.
-  - [ ] Unavailable model retains prior confirmed values plus unavailable-model feedback.
-  - [ ] None preserves legacy confirmed output with no misleading label.
+  - [x] Applied result shows confirmed provider/model/effort plus full-default label.
+  - [x] Partial effort shows post-model confirmed model/effort plus effort-unavailable copy.
+  - [x] Unavailable model retains prior confirmed values plus unavailable-model feedback.
+  - [x] None preserves legacy confirmed output with no misleading label.
 - Integration tests:
-  - [ ] At 64 columns, direct strip and mounted cockpit retain one truthful footer row.
-  - [ ] Narrow output keeps help reachable with no overflow sentinel or clipped row.
+  - [x] At 64 columns, direct strip and mounted cockpit retain one truthful footer row.
+  - [x] Narrow output keeps help reachable with no overflow sentinel or clipped row.
 - Test coverage target: >=80%
 - All tests must pass
 

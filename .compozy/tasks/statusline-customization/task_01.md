@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Pure Statusline Layout Contract and Renderer"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Create the protocol-free statusline domain module that owns the allowlisted layo
 
 ## Subtasks
 
-- [ ] 1.1 Define the bounded declarative layout, preference, context, segment, proposal-result, and recovery-preset contracts.
-- [ ] 1.2 Normalize and validate layouts from persisted configuration and model proposals with one shared acceptance boundary.
-- [ ] 1.3 Parse only a complete, single fenced JSON reply and return a legible invalid or unavailable result for every rejected response.
-- [ ] 1.4 Derive allowed field values and render a one-line segment sequence with deterministic omission and branch ellipsis.
-- [ ] 1.5 Add direct coverage for valid layouts, invalid inputs, Unicode graphemes, omission, and recovery presets.
+- [x] 1.1 Define the bounded declarative layout, preference, context, segment, proposal-result, and recovery-preset contracts.
+- [x] 1.2 Normalize and validate layouts from persisted configuration and model proposals with one shared acceptance boundary.
+- [x] 1.3 Parse only a complete, single fenced JSON reply and return a legible invalid or unavailable result for every rejected response.
+- [x] 1.4 Derive allowed field values and render a one-line segment sequence with deterministic omission and branch ellipsis.
+- [x] 1.5 Add direct coverage for valid layouts, invalid inputs, Unicode graphemes, omission, and recovery presets.
 
 ## Implementation Details
 
@@ -69,14 +69,14 @@ Create the pure core seam described in TechSpec "Component Overview", "Core Inte
 ## Tests
 
 - Unit tests:
-  - [ ] A layout containing every supported simple field and one bounded `ELLIPSIS_BRANCH` normalizes successfully.
-  - [ ] Unknown fields, duplicate field kinds, empty lines, control-character separators, invalid paired layout fields, and branch limits outside 4–80 are rejected with a reason.
-  - [ ] A response consisting of exactly one fenced `json` block is accepted, while prose, multiple blocks, bare JSON, malformed JSON, and unsupported output are rejected.
-  - [ ] A multigrapheme branch shortens at the configured grapheme limit without splitting a grapheme cluster.
-  - [ ] Missing branch, model, effort, or path values remove their segment and do not leave doubled separators.
-  - [ ] A narrow budget preserves declared order and removes trailing segments without shortening non-ellipsis values.
+  - [x] A layout containing every supported simple field and one bounded `ELLIPSIS_BRANCH` normalizes successfully.
+  - [x] Unknown fields, duplicate field kinds, empty lines, control-character separators, invalid paired layout fields, and branch limits outside 4–80 are rejected with a reason.
+  - [x] A response consisting of exactly one fenced `json` block is accepted, while prose, multiple blocks, bare JSON, malformed JSON, and unsupported output are rejected.
+  - [x] A multigrapheme branch shortens at the configured grapheme limit without splitting a grapheme cluster.
+  - [x] Missing branch, model, effort, or path values remove their segment and do not leave doubled separators.
+  - [x] A narrow budget preserves declared order and removes trailing segments without shortening non-ellipsis values.
 - Integration tests:
-  - [ ] A saved Compact preset composed with a representative focused-session context produces the same ordered segments expected by a consumer at 80 and 64 grapheme budgets.
+  - [x] A saved Compact preset composed with a representative focused-session context produces the same ordered segments expected by a consumer at 80 and 64 grapheme budgets.
 - Test coverage target: >=80%
 - All tests must pass
 

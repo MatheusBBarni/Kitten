@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Extend runtime orchestration and content-free telemetry for Cursor"
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Integrate Cursor's resolved profile and lightweight preflight into every long-li
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Retain resolved profile metadata through all controller connection paths.
-- [ ] 4.2 Apply lightweight Cursor preflight before long-lived connection construction.
-- [ ] 4.3 Preserve independent runtime failure and sibling continuity.
-- [ ] 4.4 Generalize tab telemetry and record bounded Cursor readiness outcomes.
-- [ ] 4.5 Cover initial, dynamic, fresh-run, restore, and disabled-telemetry behavior.
+- [x] 4.1 Retain resolved profile metadata through all controller connection paths.
+- [x] 4.2 Apply lightweight Cursor preflight before long-lived connection construction.
+- [x] 4.3 Preserve independent runtime failure and sibling continuity.
+- [x] 4.4 Generalize tab telemetry and record bounded Cursor readiness outcomes.
+- [x] 4.5 Cover initial, dynamic, fresh-run, restore, and disabled-telemetry behavior.
 
 ## Implementation Details
 
@@ -67,14 +67,14 @@ Follow the TechSpec sections "Integration Points" and "Monitoring and Observabil
 
 ## Tests
 - Unit tests:
-  - [ ] Certified Cursor preflight completes before exactly one Cursor connection is constructed.
-  - [ ] `binary_missing`, `version_mismatch`, and `uncertified_recipe` skip connection construction and leave a ready sibling promptable.
-  - [ ] Adapter authentication-required output makes only Cursor unavailable and records its fixed outcome.
-  - [ ] Enabled telemetry serializes only allowlisted fixed fields; disabled telemetry emits no records.
+  - [x] Certified Cursor preflight completes before exactly one Cursor connection is constructed.
+  - [x] `binary_missing`, `version_mismatch`, and `uncertified_recipe` skip connection construction and leave a ready sibling promptable.
+  - [x] Adapter authentication-required output makes only Cursor unavailable and records its fixed outcome.
+  - [x] Enabled telemetry serializes only allowlisted fixed fields; disabled telemetry emits no records.
 - Integration tests:
-  - [ ] Initial three-provider startup reaches a live Cursor session while ready Claude Code and Codex remain live.
-  - [ ] Dynamic Cursor creation, fresh-run, and persisted restore preflight before their replacement long-lived connection.
-  - [ ] Selecting Cursor and creating a conversation emits `tab_created` with `provider: "cursor"` and the inherited source.
+  - [x] Initial three-provider startup reaches a live Cursor session while ready Claude Code and Codex remain live.
+  - [x] Dynamic Cursor creation, fresh-run, and persisted restore preflight before their replacement long-lived connection.
+  - [x] Selecting Cursor and creating a conversation emits `tab_created` with `provider: "cursor"` and the inherited source.
 - Test coverage target: >=80%
 - All tests must pass
 

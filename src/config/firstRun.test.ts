@@ -52,6 +52,35 @@ describe("readinessSetup", () => {
 })
 
 describe("buildFirstRunReport", () => {
+  it("forwards Cursor's content-free recovery gap unchanged while ready siblings keep boot unblocked", () => {
+    const cursorGap =
+      "Cursor: authentication is required: sign in to Cursor. Sign in to Cursor, then restart Kitten."
+    const readiness: AgentReadiness[] = [
+      ready("claude-code", "Claude Code"),
+      ready("codex", "Codex"),
+      {
+        agentId: "cursor",
+        displayName: "Cursor",
+        clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+        ready: false,
+        reason: "authentication_required",
+        message: cursorGap,
+      },
+    ]
+
+    const report = buildFirstRunReport({ insideRepo: true, agents: readiness.map(readinessSetup) })
+
+    expect(report.blocked).toBe(false)
+    expect(report.anyReady).toBe(true)
+    expect(report.allReady).toBe(false)
+    expect(report.agents.filter((agent) => agent.ready).map((agent) => agent.agentId)).toEqual([
+      "claude-code",
+      "codex",
+    ])
+    expect(report.gaps).toEqual([cursorGap])
+    expect(report.agents.find((agent) => agent.agentId === "cursor")?.gap).toBe(cursorGap)
+  })
+
   it("reports the not-ready agent's specific reason and marks the other ready", () => {
     const readiness: AgentReadiness[] = [
       notReady("claude-code", "Claude Code", "Claude Code: command \"claude-code-acp\" was not found on your PATH."),

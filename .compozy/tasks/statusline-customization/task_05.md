@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Strict Focused-Agent Proposal Orchestration"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Add an app-layer flow that sends the product-owned statusline instruction and th
 
 ## Subtasks
 
-- [ ] 5.1 Define the product-owned request instruction and a small flow result surface for proposal, invalid-response, and unavailable outcomes.
-- [ ] 5.2 Capture the pre-request transcript boundary and address the selected focused session through the existing action facade.
-- [ ] 5.3 Collect completed post-request agent turns only after `sendPrompt` settles, then enforce the shared parser contract.
-- [ ] 5.4 Convert availability, cancellation, malformed reply, and empty-response cases into recovery-ready outcomes.
-- [ ] 5.5 Add deterministic transcript-fixture tests with injected controller actions and no real agent process.
+- [x] 5.1 Define the product-owned request instruction and a small flow result surface for proposal, invalid-response, and unavailable outcomes.
+- [x] 5.2 Capture the pre-request transcript boundary and address the selected focused session through the existing action facade.
+- [x] 5.3 Collect completed post-request agent turns only after `sendPrompt` settles, then enforce the shared parser contract.
+- [x] 5.4 Convert availability, cancellation, malformed reply, and empty-response cases into recovery-ready outcomes.
+- [x] 5.5 Add deterministic transcript-fixture tests with injected controller actions and no real agent process.
 
 ## Implementation Details
 
@@ -70,13 +70,13 @@ Implement the orchestration seam in TechSpec "Component Overview" and "Focused A
 ## Tests
 
 - Unit tests:
-  - [ ] A selected ready session receives the product-owned instruction plus request through `sendPrompt` exactly once.
-  - [ ] The instruction excludes resolved cwd, branch, provider, model, effort, and raw transcript values while requiring the allowlisted fenced-JSON shape.
-  - [ ] Only an agent turn added after the captured transcript boundary and terminal prompt completion is parsed.
-  - [ ] A sole valid fenced block returns a normalized proposal, while prose, multiple blocks, multiple new agent replies, malformed JSON, and invalid layouts return invalid-response.
-  - [ ] No ready session, a null prompt result, cancellation, an action failure, or zero new agent text returns unavailable without rejecting.
+  - [x] A selected ready session receives the product-owned instruction plus request through `sendPrompt` exactly once.
+  - [x] The instruction excludes resolved cwd, branch, provider, model, effort, and raw transcript values while requiring the allowlisted fenced-JSON shape.
+  - [x] Only an agent turn added after the captured transcript boundary and terminal prompt completion is parsed.
+  - [x] A sole valid fenced block returns a normalized proposal, while prose, multiple blocks, multiple new agent replies, malformed JSON, and invalid layouts return invalid-response.
+  - [x] No ready session, a null prompt result, cancellation, an action failure, or zero new agent text returns unavailable without rejecting.
 - Integration tests:
-  - [ ] A fake normal transcript receives a request, flushes a valid response before terminal completion, and yields a preview-ready proposal without modifying config or telemetry state.
+  - [x] A fake normal transcript receives a request, flushes a valid response before terminal completion, and yields a preview-ready proposal without modifying config or telemetry state.
 - Test coverage target: >=80%
 - All tests must pass
 

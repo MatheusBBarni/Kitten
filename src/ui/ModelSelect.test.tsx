@@ -3,15 +3,16 @@ import { describe, expect, it } from "bun:test"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
-import { createFakeController, type FakeController } from "../../test/fakeController.ts"
+import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { startMockAgent } from "../../test/mockAgent.ts"
 import { createAgentConnection, type AgentConnection } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import { createSessionController } from "../app/controller.ts"
+import { createSessionController, type AgentRuntimeState } from "../app/controller.ts"
 import {
   EFFORT_CATEGORY,
   MODEL_CATEGORY,
+  PROVIDER_METADATA,
   type AgentConfig,
   type AppConfig,
   type ConfigOption,
@@ -22,6 +23,10 @@ import { createAppStore } from "../store/appStore.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import {
   CURRENT_MARK,
+  DEFAULT_APPLIED_LABEL,
+  DEFAULT_EFFORT_UNAVAILABLE_LABEL,
+  DEFAULT_MODEL_UNAVAILABLE_LABEL,
+  DEFAULT_SESSION_UNAVAILABLE_LABEL,
   EFFORT_HEADING,
   MODEL_HEADING,
   modelSelectTitleFor,
@@ -104,6 +109,45 @@ function codexConfigOptions(currentModel = "gpt-5.6-terra", currentEffort = "ult
       ],
     },
   ]
+}
+
+/** Cursor advertises opaque option identifiers and values like every other provider. */
+function cursorConfigOptions(currentModel = "cursor:composer", currentEffort = "cursor:high"): ConfigOption[] {
+  return [
+    {
+      id: "cursor/model-profile",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: currentModel,
+      options: [
+        { value: "cursor:composer", name: "Composer" },
+        { value: "cursor:agent-fast", name: "Agent Fast" },
+      ],
+    },
+    {
+      id: "cursor/effort-profile",
+      category: EFFORT_CATEGORY,
+      label: "Reasoning effort",
+      currentValue: currentEffort,
+      options: [
+        { value: "cursor:high", name: "High" },
+        { value: "cursor:low", name: "Low" },
+      ],
+    },
+  ]
+}
+
+function cursorRuntime(sessionId = "cursor", title = "Cursor"): AgentRuntimeState {
+  return {
+    sessionId,
+    providerKind: "cursor",
+    displayName: title,
+    title,
+    cwd: process.cwd(),
+    ready: true,
+    acpSessionId: `${sessionId}-acp`,
+    mcp: { loaded: [], skipped: [] },
+  }
 }
 
 /** Seed a session's advertised config options through the reducer. */
@@ -203,6 +247,7 @@ describe("ModelSelect visibility and content", () => {
     await actAsync(() => {
       controller.store.backgroundConversation("claude-code")
       controller.store.backgroundConversation("codex")
+      controller.store.backgroundConversation("cursor")
     })
     await setup.waitFor(() => controller.store.getState().overlays.modelSelect === null)
     const closed = await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
@@ -332,6 +377,188 @@ describe("ModelSelect visibility and content", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("requests defaults once only after a different explicit tab is selected and reopened", async () => {
+    const controller = createFakeController({
+      providerDefaultResults: {
+        codex: { kind: "applied", model: "gpt-5.6-luna", effort: "max" },
+      },
+    })
+    seedOptions(controller, "claude-code", configOptions())
+    seedOptions(controller, "codex", codexConfigOptions("gpt-5.6-luna", "max"))
+    seedTurn(controller, "codex")
+    const setup = await renderWithSelector(controller)
+
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+    await actAsync(() => setup.mockInput.pressTab())
+    const frame = await setup.waitForFrame((value) => value.includes(DEFAULT_APPLIED_LABEL))
+
+    expect(controller.calls.selectConversationOptions).toEqual([{ source: "model_select" }])
+    expect(controller.calls.applyProviderDefaults).toEqual(["codex"])
+    expect(controller.calls.providerDefaultContexts).toEqual([{
+      sessionId: "codex",
+      selectedSessionId: "codex",
+      overlaySessionId: "codex",
+    }])
+    expect(frame).not.toContain(MODEL_SELECT_CONFIRM_HINT)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not request defaults for open, passive focus, reload, Escape, or manual row changes", async () => {
+    const controller = createFakeController()
+    seedOptions(controller, "claude-code", configOptions())
+    seedOptions(controller, "codex", codexConfigOptions())
+    const setup = await renderCockpit(controller)
+
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+    controller.updateProviderDefaults({})
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+    await openSelector(setup, controller)
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(`(${UNVERIFIED_LABEL})`))
+    expect(controller.calls.setSessionConfigOption).toHaveLength(1)
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+
+    await actAsync(() => setup.mockInput.pressEscape())
+    await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders applied and partial results from each session's confirmed rows", async () => {
+    const controller = createFakeController({
+      providerDefaultResults: {
+        codex: { kind: "partial", model: "gpt-5.6-luna", unavailable: "effort" },
+        "claude-code": { kind: "applied", model: "sonnet", effort: "low" },
+      },
+    })
+    seedOptions(controller, "claude-code", configOptions("sonnet", "low"))
+    seedOptions(controller, "codex", codexConfigOptions("gpt-5.6-luna", "ultra"))
+    const setup = await renderWithSelector(controller)
+
+    await actAsync(() => setup.mockInput.pressTab())
+    const partial = await setup.waitForFrame((frame) => frame.includes(DEFAULT_EFFORT_UNAVAILABLE_LABEL))
+    expect(partial).toContain(`${CURRENT_MARK} Luna`)
+    expect(partial).toContain(`${CURRENT_MARK} Ultra`)
+    expect(partial).not.toContain(DEFAULT_APPLIED_LABEL)
+
+    await actAsync(() => setup.mockInput.pressTab({ shift: true }))
+    const applied = await setup.waitForFrame((frame) => frame.includes(DEFAULT_APPLIED_LABEL))
+    expect(applied).toContain(`${CURRENT_MARK} Sonnet`)
+    expect(applied).toContain(`${CURRENT_MARK} Low`)
+    expect(applied).not.toContain(DEFAULT_EFFORT_UNAVAILABLE_LABEL)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps unavailable model and session feedback scoped to its verified tab", async () => {
+    const controller = createFakeController({
+      providerDefaultResults: {
+        codex: { kind: "unavailable", unavailable: "model" },
+        "claude-code": { kind: "unavailable", unavailable: "session" },
+      },
+    })
+    seedOptions(controller, "claude-code", configOptions("opus", "high"))
+    seedOptions(controller, "codex", codexConfigOptions("gpt-5.6-terra", "ultra"))
+    const setup = await renderWithSelector(controller)
+
+    await actAsync(() => setup.mockInput.pressTab())
+    const modelUnavailable = await setup.waitForFrame((frame) => frame.includes(DEFAULT_MODEL_UNAVAILABLE_LABEL))
+    expect(modelUnavailable).toContain(`${CURRENT_MARK} Terra`)
+    expect(modelUnavailable).toContain(`${CURRENT_MARK} Ultra`)
+    expect(modelUnavailable).not.toContain(DEFAULT_SESSION_UNAVAILABLE_LABEL)
+
+    await actAsync(() => setup.mockInput.pressTab({ shift: true }))
+    const sessionUnavailable = await setup.waitForFrame((frame) => frame.includes(DEFAULT_SESSION_UNAVAILABLE_LABEL))
+    expect(sessionUnavailable).toContain(`${CURRENT_MARK} Opus`)
+    expect(sessionUnavailable).toContain(`${CURRENT_MARK} High`)
+    expect(sessionUnavailable).not.toContain(DEFAULT_MODEL_UNAVAILABLE_LABEL)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("filters, closes, reopens, wraps, and applies only Cursor's opaque option in a three-session selector", async () => {
+    const controller = createFakeController({ runtimes: [...readyRuntimes(), cursorRuntime()] })
+    seedOptions(controller, "claude-code", configOptions())
+    seedOptions(controller, "codex", codexConfigOptions())
+    seedOptions(controller, "cursor", cursorConfigOptions())
+    seedTurn(controller, "cursor")
+    controller.actions.backgroundConversation("cursor")
+    const setup = await renderWithSelector(controller)
+
+    const filtered = setup.captureCharFrame()
+    expect(filtered).toContain(PROVIDER_METADATA["claude-code"].compactLabel)
+    expect(filtered).toContain(PROVIDER_METADATA.codex.compactLabel)
+    expect(filtered).not.toContain(PROVIDER_METADATA.cursor.compactLabel)
+
+    await actAsync(() => setup.mockInput.pressEscape())
+    await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
+    await actAsync(() => controller.actions.reopenConversation("cursor"))
+    const reopened = await openSelector(setup, controller)
+    const tabsRow = reopened.split("\n").find((row) =>
+      row.includes(`${TAB_MARKER} ${PROVIDER_METADATA.cursor.compactLabel}`),
+    )!
+    const claudeIndex = tabsRow.indexOf(PROVIDER_METADATA["claude-code"].compactLabel)
+    const codexIndex = tabsRow.indexOf(PROVIDER_METADATA.codex.compactLabel)
+    const cursorIndex = tabsRow.indexOf(PROVIDER_METADATA.cursor.compactLabel)
+    expect(claudeIndex).toBeGreaterThanOrEqual(0)
+    expect(codexIndex).toBeGreaterThan(claudeIndex)
+    expect(cursorIndex).toBeGreaterThan(codexIndex)
+    expect(reopened).toContain(modelSelectTitleFor(PROVIDER_METADATA.cursor.compactLabel))
+
+    // Cursor is last: Tab wraps to Claude, and Shift+Tab wraps back to Cursor.
+    await actAsync(() => setup.mockInput.pressTab())
+    await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor(PROVIDER_METADATA["claude-code"].compactLabel)))
+    await actAsync(() => setup.mockInput.pressTab({ shift: true }))
+    await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor(PROVIDER_METADATA.cursor.compactLabel)))
+
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await setup.waitForFrame((frame) => frame.includes(`${ROW_MARKER} ${OTHER_MARK} Agent Fast`))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_CONFIRM_HINT))
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_HINT) && !frame.includes(MODEL_SELECT_CONFIRM_HINT))
+
+    expect(controller.calls.backgroundConversation).toEqual(["cursor"])
+    expect(controller.calls.reopenConversation).toEqual(["cursor"])
+    expect(controller.calls.selectConversation.slice(-2)).toEqual(["claude-code", "cursor"])
+    expect(controller.calls.setSessionConfigOption).toEqual([
+      { configId: "cursor/model-profile", value: "cursor:agent-fast", sessionId: "cursor" },
+    ])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("disambiguates duplicate Cursor tabs with each conversation title", async () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.addSession({
+      id: "cursor-review",
+      providerKind: "cursor",
+      title: "Review lane",
+      cwd: process.cwd(),
+    }, { availability: { kind: "ready" } })
+    store.selectConversation("claude-code")
+    const controller = createFakeController({
+      store,
+      runtimes: [...readyRuntimes(), cursorRuntime(), cursorRuntime("cursor-review", "Review lane")],
+    })
+    seedOptions(controller, "claude-code", configOptions())
+    const setup = await renderWithSelector(controller)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Cursor: Cursor")
+    expect(frame).toContain("Cursor: Review lane")
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("refreshes the effort section from the option set the agent returns after a model change", async () => {
     const controller = createFakeController()
     seedOptions(controller, "claude-code", configOptions("opus", "high"))
@@ -455,6 +682,7 @@ describe("ModelSelect mid-conversation confirm", () => {
     const back = await setup.waitForFrame((f) => f.includes(MODEL_SELECT_HINT) && !f.includes(MODEL_SELECT_CONFIRM_HINT))
     expect(back).toContain(MODEL_HEADING)
     expect(controller.calls.setSessionConfigOption).toHaveLength(0)
+    expect(controller.calls.applyProviderDefaults).toHaveLength(0)
     // Escaping the warning must not also close the selector.
     expect(controller.store.getState().overlays.modelSelect).not.toBeNull()
 
@@ -624,7 +852,8 @@ const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-  },
+  } as AppConfig["providers"],
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -632,6 +861,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /** A single ACP select config option in the SDK wire shape the mock serves. */
@@ -672,10 +902,10 @@ describe("integration - a confirmed switch across a mock agent", () => {
   it("renders the agent-confirmed model after the switch, with no unverified tag", async () => {
     const claude = connectionToMockAgent(CLAUDE)
     const codex = connectionToMockAgent(CODEX)
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,

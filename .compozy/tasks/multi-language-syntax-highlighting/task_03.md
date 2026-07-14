@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add OCaml and ReScript grammar capabilities"
 type: frontend
 complexity: high
@@ -29,10 +29,10 @@ Add OCaml and ReScript capability records, aliases, assets, and fixtures to the 
 
 ## Subtasks
 
-- [ ] 3.1 Add the OCaml capability, asset provenance, and labels.
-- [ ] 3.2 Evaluate and add the ReScript capability only when its release gate is satisfied.
-- [ ] 3.3 Extend Markdown and diff fixtures for every supported label.
-- [ ] 3.4 Record and verify the unsupported ReScript path if the gate remains unmet.
+- [x] 3.1 Add the OCaml capability, asset provenance, and labels.
+- [x] 3.2 Evaluate and add the ReScript capability only when its release gate is satisfied.
+- [x] 3.3 Extend Markdown and diff fixtures for every supported label.
+- [x] 3.4 Record and verify the unsupported ReScript path if the gate remains unmet.
 
 ## Implementation Details
 
@@ -68,13 +68,13 @@ Use the TechSpec **Technical Dependencies**, **Known Risks**, and **Testing Appr
 ## Tests
 
 - Unit tests:
-  - [ ] OCaml canonical and `ml`/`mli` aliases resolve to one asset-backed capability.
-  - [ ] ReScript canonical and `res`/`resi` aliases are present only with reviewed local assets and fixtures.
-  - [ ] A blocked ReScript capability has no highlighted manifest entry and retains a documented fallback state.
+  - [x] OCaml canonical and `ml`/`mli` aliases resolve to one asset-backed capability.
+  - [x] ReScript canonical and `res`/`resi` aliases are present only with reviewed local assets and fixtures.
+  - [x] A blocked ReScript capability has no highlighted manifest entry and retains a documented fallback state.
 - Integration tests:
-  - [ ] OCaml canonical, `ml`, and `mli` fences render non-prose sentinel foregrounds.
-  - [ ] Supported ReScript canonical, `res`, and `resi` fences render non-prose sentinel foregrounds.
-  - [ ] `.ml`, `.mli`, `.res`, and `.resi` diffs follow the support gate and unhighlighted fallback remains copy-safe.
+  - [x] OCaml canonical, `ml`, and `mli` fences render non-prose sentinel foregrounds.
+  - [x] Supported ReScript canonical, `res`, and `resi` fences render non-prose sentinel foregrounds.
+  - [x] `.ml`, `.mli`, `.res`, and `.resi` diffs follow the support gate and unhighlighted fallback remains copy-safe.
 - Test coverage target: >=80%
 - All tests must pass
 

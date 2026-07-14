@@ -7,8 +7,8 @@
  * committed with a same-directory rename so the target is never partially written.
  */
 
-import { mkdirSync } from "node:fs"
-import { readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { constants, mkdirSync } from "node:fs"
+import { lstat, open, rename, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 
 import {
@@ -40,7 +40,7 @@ export async function persistUserConfig(
 ): Promise<void> {
   const path = options.path ?? resolveConfigPath(options.env)
   const current = await readUserConfig(path)
-  const serialized = `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`
+  const serialized = `${JSON.stringify(mergeUserConfig(current, patch), null, 2)}\n`
 
   // Validate the serialized representation itself: these are the exact bytes that
   // will become the next boot's input, not merely the pre-serialization object.
@@ -55,6 +55,7 @@ export async function persistUserConfig(
     // be private regardless of the process umask or the prior target's mode.
     mkdirSync(directory, { recursive: true, mode: 0o700 })
     await writeFile(tempPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 })
+    await rejectSymlinkTarget(path, "replacing")
     await rename(tempPath, path)
   } catch (error) {
     await removeTempFile(tempPath)
@@ -62,15 +63,45 @@ export async function persistUserConfig(
   }
 }
 
+function mergeUserConfig(current: UserConfig, patch: Partial<UserConfig>): UserConfig {
+  const merged = { ...current, ...patch }
+  if (patch.statusline === undefined) {
+    merged.statusline = current.statusline
+  } else {
+    merged.statusline = { ...current.statusline, ...patch.statusline }
+  }
+  return merged
+}
+
 async function readUserConfig(path: string): Promise<UserConfig> {
+  await rejectSymlinkTarget(path, "reading")
   let source: string
+  let file: Awaited<ReturnType<typeof open>> | undefined
   try {
-    source = await readFile(path, "utf8")
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    source = await file.readFile("utf8")
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return {}
     throw new ConfigError(`${path} could not be read before writing: ${errorMessage(error)}`, { cause: error })
+  } finally {
+    await file?.close()
   }
   return validateUserConfig(source, path)
+}
+
+async function rejectSymlinkTarget(path: string, operation: "reading" | "replacing"): Promise<void> {
+  try {
+    const target = await lstat(path)
+    if (target.isSymbolicLink()) {
+      throw new ConfigError(`${path} is a symbolic link and cannot be used while ${operation} user config`)
+    }
+  } catch (error) {
+    if (error instanceof ConfigError) throw error
+    if (isErrnoCode(error, "ENOENT")) return
+    throw new ConfigError(`${path} could not be inspected before ${operation} user config: ${errorMessage(error)}`, {
+      cause: error,
+    })
+  }
 }
 
 function validateUserConfig(source: string, path: string): UserConfig {

@@ -2,11 +2,10 @@ import { describe, expect, it } from "bun:test"
 
 import { RGBA } from "@opentui/core"
 import { setRendererCapabilities, type TestRendererSetup } from "@opentui/core/testing"
-import { testRender } from "@opentui/react/test-utils"
 import type { SessionConfigOption } from "@agentclientprotocol/sdk"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, testRender } from "../../test/reactTui.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createAgentConnection, type AgentConnection, type PromptBlock } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
@@ -998,7 +997,8 @@ const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-  },
+  } as AppConfig["providers"],
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -1006,6 +1006,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
@@ -1047,7 +1048,7 @@ describe("integration - hand-off across two mock agents", () => {
       })
     })
     const codex = connectionToMockAgent(CODEX, undefined, targetAgentConfigOptions())
-    const connections: Record<ProviderKind, AgentConnection> = { "claude-code": claude.connection, codex: codex.connection }
+    const connections = { "claude-code": claude.connection, codex: codex.connection } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,

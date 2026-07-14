@@ -69,12 +69,14 @@ import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.t
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
-const PROVIDERS: AppConfig["providers"] = {
+const CURSOR: AgentConfig = { id: "cursor", displayName: "Cursor", command: "agent", args: ["acp"], env: {} }
+const PROVIDERS = {
   "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
   codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-}
+} as AppConfig["providers"]
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
@@ -82,6 +84,20 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
+}
+const CURSOR_APP_CONFIG: AppConfig = {
+  ...APP_CONFIG,
+  providerDefaults: {},
+  providers: {
+    ...PROVIDERS,
+    cursor: {
+      displayName: CURSOR.displayName,
+      command: CURSOR.command,
+      args: CURSOR.args,
+      env: CURSOR.env,
+    },
+  },
 }
 const CWD = "/workspace/kitten"
 
@@ -254,6 +270,16 @@ function modelOption(currentValue: string): ConfigOption {
   }
 }
 
+function effortOption(currentValue: string, values = ["low", "high"]): ConfigOption {
+  return {
+    id: "effort",
+    category: "thought_level",
+    label: "Effort",
+    currentValue,
+    options: values.map((value) => ({ value, name: value })),
+  }
+}
+
 /** A stub `AgentConnection` recording what the controller asked of it. */
 interface StubConnection extends AgentConnection {
   /** Push a domain event as if the agent had streamed it. */
@@ -292,6 +318,8 @@ interface StubOptions {
   configResponse?: ConfigOption[]
   /** Make `setSessionConfigOption` reject, to exercise the action's error path. */
   setConfigThrows?: unknown
+  /** Per-call confirmed responses or failures for ordered default application. */
+  setConfig?: (sessionId: string, configId: string, value: string, callIndex: number) => Promise<ConfigOption[]> | ConfigOption[]
   /** Options the agent advertises during `newSession`, emitted so the controller can seed them. */
   newSessionConfig?: ConfigOption[]
 }
@@ -405,6 +433,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     },
     async setSessionConfigOption(sessionId, configId, value) {
       configCalls.push({ sessionId, configId, value })
+      if (options.setConfig) return options.setConfig(sessionId, configId, value, configCalls.length - 1)
       if (options.setConfigThrows !== undefined) throw options.setConfigThrows
       return options.configResponse ?? []
     },
@@ -460,7 +489,7 @@ async function controllerWithStubs(
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
     codex: createStubConnection("codex", stubs.codex),
-  } satisfies Record<ProviderKind, StubConnection>
+  } as Record<ProviderKind, StubConnection>
 
   const controller = await createSessionController({
     config: overrides.config ?? APP_CONFIG,
@@ -491,6 +520,7 @@ const FLEET_DIRS = {
 } as const
 const THREE_SESSION_CONFIG: AppConfig = {
   providers: PROVIDERS,
+  providerDefaults: {},
   sessions: [
     { provider: "claude-code", cwd: FLEET_DIRS.alpha, title: "Alpha" },
     { provider: "claude-code", cwd: FLEET_DIRS.beta, title: "Beta" },
@@ -502,6 +532,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /**
@@ -630,15 +661,15 @@ async function controllerForRestore(
   const startup = {
     "claude-code": createStubConnection("claude-code"),
     codex: createStubConnection("codex"),
-  } satisfies Record<ProviderKind, StubConnection>
+  } as Record<ProviderKind, StubConnection>
   const restored = {
     "claude-code": createStubConnection("claude-code", restoreOptions["claude-code"]),
     codex: createStubConnection("codex", restoreOptions.codex),
-  } satisfies Record<ProviderKind, StubConnection>
+  } as Record<ProviderKind, StubConnection>
   const queues = {
     "claude-code": [startup["claude-code"], restored["claude-code"]],
     codex: [startup.codex, restored.codex],
-  }
+  } as Record<ProviderKind, StubConnection[]>
 
   const controller = await createSessionController({
     config: APP_CONFIG,
@@ -1035,6 +1066,7 @@ describe("createSessionController - persisted restore", () => {
   it("Should retain a record-only conversation when its provider recipe is unavailable", async () => {
     const config: AppConfig = {
       ...APP_CONFIG,
+      providerDefaults: {},
       providers: { codex: PROVIDERS.codex } as AppConfig["providers"],
     }
     const record = dynamicPersistedRun()
@@ -1408,6 +1440,208 @@ describe("createSessionController - persisted restore", () => {
   })
 })
 
+describe("createSessionController - Cursor preflight and readiness telemetry", () => {
+  it("preflights before constructing exactly one long-lived Cursor connection and keeps all three providers live", async () => {
+    const events: Array<{ kind: "preflight" | "create"; config: unknown }> = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        events.push({ kind: "preflight", config })
+        return { ready: true }
+      },
+      createConnection: (config) => {
+        events.push({ kind: "create", config })
+        const connection = createStubConnection(config.id)
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    const cursorEvents = events.filter(({ config }) => (config as { id: ProviderKind }).id === "cursor")
+    expect(cursorEvents.map(({ kind }) => kind)).toEqual(["preflight", "create"])
+    expect(cursorEvents[0]!.config).toBe(cursorEvents[1]!.config)
+    expect(cursorEvents[0]!.config).toHaveProperty("runtimeProfile")
+    expect(controller.runtimes().map(({ providerKind, ready }) => ({ providerKind, ready }))).toEqual([
+      { providerKind: "codex", ready: true },
+      { providerKind: "claude-code", ready: true },
+      { providerKind: "cursor", ready: true },
+    ])
+    expect(await controller.actions.sendPrompt("sibling prompt", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it.each([
+    ["binary_not_found", "binary_missing"],
+    ["version_mismatch", "version_mismatch"],
+    ["uncertified_recipe", "uncertified_recipe"],
+  ] as const)("isolates Cursor %s before construction and emits only %s", async (reason, outcome) => {
+    const sinkRecords: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => sinkRecords.push(record) },
+      sessionRef: "cursor-preflight",
+    })
+    const created: ProviderKind[] = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      recorder,
+      preflightAgentReadiness: async () => ({
+        ready: false,
+        reason,
+        message: `Cursor recovery for ${reason}`,
+      }),
+      createConnection: (config) => {
+        created.push(config.id)
+        const connection = createStubConnection(config.id)
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    expect(created).not.toContain("cursor")
+    expect(controller.runtime("cursor")).toMatchObject({ ready: false, error: `Cursor recovery for ${reason}` })
+    expect(controller.isReady("codex")).toBe(true)
+    expect(await controller.actions.sendPrompt("still usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
+    expect(sinkRecords).toContainEqual(expect.objectContaining({
+      type: "provider_readiness",
+      provider: "cursor",
+      readinessOutcome: outcome,
+    }))
+    await controller.dispose()
+  })
+
+  it("normalizes Cursor authentication failure without disturbing a ready sibling", async () => {
+    const records: TelemetryRecord[] = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+      }),
+      preflightAgentReadiness: async () => ({ ready: true }),
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, config.id === "cursor"
+          ? { ready: { ready: false, reason: "authentication_required", error: "login rejected" } }
+          : {})
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    expect(controller.runtime("cursor")).toMatchObject({
+      ready: false,
+      error: "Cursor: authentication is required: login rejected. Sign in to Cursor, then restart Kitten.",
+    })
+    expect(records).toContainEqual(expect.objectContaining({
+      type: "provider_readiness",
+      provider: "cursor",
+      readinessOutcome: "authentication_required",
+    }))
+    expect(await controller.actions.sendPrompt("continue", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("claude-code")?.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it("preflights dynamic, fresh-run, fresh-context, and restored Cursor replacements and emits Cursor tab creation", async () => {
+    const cursorOnly: AppConfig = {
+      ...CURSOR_APP_CONFIG,
+      providerDefaults: {},
+      sessions: [{ provider: "cursor", cwd: process.cwd(), title: "Cursor" }],
+    }
+    const lifecycle: Array<{ kind: "preflight" | "create"; config: unknown }> = []
+    const records: TelemetryRecord[] = []
+    const ids = ["cursor-dynamic"]
+    const controller = await createSessionController({
+      config: cursorOnly,
+      cwd: CWD,
+      recorder: createTelemetryRecorder({ enabled: true, sink: { write: (record) => records.push(record) } }),
+      preflightAgentReadiness: async (config) => {
+        lifecycle.push({ kind: "preflight", config })
+        return { ready: true }
+      },
+      createConnection: (config) => {
+        lifecycle.push({ kind: "create", config })
+        return createStubConnection(config.id, { sessionId: `cursor-acp-${lifecycle.length}` })
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+    })
+
+    expect(await controller.actions.createConversation()).toBe("cursor-dynamic")
+    expect(await controller.actions.startFreshFromContext("saved", "cursor-dynamic")).toEqual({ stopReason: "end_turn" })
+    await controller.actions.startNewRun()
+    await controller.restore({
+      version: 2,
+      runId: "cursor-run",
+      cwd: CWD,
+      gitBranch: "feat/cursor",
+      createdAt: 1,
+      updatedAt: 2,
+      conversations: {
+        cursor: {
+          sessionId: "cursor",
+          providerKind: "cursor",
+          cwd: process.cwd(),
+          initialTitle: "Cursor",
+          acpSessionId: "cursor-stored",
+          lastPrompt: "continue",
+          messageCount: 1,
+          status: "idle",
+        },
+      },
+      workspace: {
+        conversations: {
+          cursor: {
+            sessionId: "cursor",
+            displayName: "Cursor",
+            lifecycle: "visible",
+            createdOrdinal: 1,
+            attention: { seen: true, sequence: 0 },
+          },
+        },
+        order: ["cursor"],
+        selectedVisibleId: "cursor",
+      },
+      handoffBundle: null,
+    })
+
+    const preflights = lifecycle.filter(({ kind }) => kind === "preflight")
+    const constructions = lifecycle.filter(({ kind }) => kind === "create")
+    expect(preflights).toHaveLength(constructions.length)
+    for (const construction of constructions) {
+      const index = lifecycle.indexOf(construction)
+      expect(lifecycle.slice(0, index).filter(({ kind }) => kind === "preflight").length)
+        .toBeGreaterThan(lifecycle.slice(0, index).filter(({ kind }) => kind === "create").length)
+      expect(construction.config).toHaveProperty("runtimeProfile")
+    }
+    expect(records).toContainEqual(expect.objectContaining({
+      type: "tab_created",
+      provider: "cursor",
+      creationSource: "inherited",
+    }))
+    await controller.dispose()
+  })
+})
+
 describe("createSessionController - degraded startup", () => {
   it("Should not create a runtime when the shell is disabled in config", async () => {
     let factoryCalls = 0
@@ -1585,6 +1819,7 @@ describe("createSessionController - multi-session fleet", () => {
   it("Should send a session's optional first task as its opening prompt", async () => {
     const config: AppConfig = {
       providers: PROVIDERS,
+      providerDefaults: {},
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       mcpServers: [],
       shell: APP_CONFIG.shell,
@@ -1592,6 +1827,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
     const { controller, created } = await controllerOverFleet(config)
 
@@ -1609,6 +1845,7 @@ describe("createSessionController - multi-session fleet", () => {
   it("does not send an initial task when boot has a persisted run to restore", async () => {
     const config: AppConfig = {
       providers: PROVIDERS,
+      providerDefaults: {},
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       mcpServers: [],
       shell: APP_CONFIG.shell,
@@ -1616,6 +1853,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
     const { controller, created } = await controllerOverFleet(config, undefined, { sendInitialTasks: false })
 
@@ -1687,6 +1925,7 @@ describe("actions - sendPrompt", () => {
     const controller = await createSessionController({
       config: {
         providers: PROVIDERS,
+        providerDefaults: {},
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         mcpServers: [],
         shell: APP_CONFIG.shell,
@@ -1694,6 +1933,7 @@ describe("actions - sendPrompt", () => {
         telemetryEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
+        statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
       cwd: CWD,
       createConnection: () => connection,
@@ -1872,6 +2112,229 @@ describe("actions - setSessionConfigOption", () => {
 
     expect(selectAgentModel("claude-code")(controller.store.getState())).toBe("sonnet")
 
+    await controller.dispose()
+  })
+})
+
+describe("actions - applyProviderDefaults", () => {
+  it("records none exactly once without touching confirmed options or the adapter", async () => {
+    const outcomes: string[] = []
+    const { controller, connections } = await controllerWithStubs(
+      { codex: { newSessionConfig: [modelOption("sonnet"), effortOption("low")] } },
+      {
+        recorder: {
+          focusSwitch() {},
+          recordProviderDefaultOutcome: (outcome) => outcomes.push(outcome),
+        },
+      },
+    )
+    const before = controller.store.getState().sessions.codex!.configOptions
+    let terminalChanges = 0
+    const unsubscribe = controller.store.subscribe((state, previous) => {
+      if (state.sessions.codex?.defaultApplyResult !== previous.sessions.codex?.defaultApplyResult) terminalChanges += 1
+    })
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({ kind: "none" })
+
+    expect(connections.codex.configCalls).toEqual([])
+    expect(controller.store.getState().sessions.codex!.configOptions).toBe(before)
+    expect(controller.store.getState().sessions.codex!.defaultApplyResult).toEqual({ kind: "none" })
+    expect(terminalChanges).toBe(1)
+    expect(outcomes).toEqual(["none"])
+    unsubscribe()
+    await controller.dispose()
+  })
+
+  it("reports a stale model unavailable without making an adapter call", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "missing" } } }
+    const { controller, connections } = await controllerWithStubs(
+      { codex: { newSessionConfig: [modelOption("sonnet"), effortOption("low")] } },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "unavailable",
+      unavailable: "model",
+    })
+    expect(connections.codex.configCalls).toEqual([])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("sonnet"),
+      effortOption("low"),
+    ])
+    await controller.dispose()
+  })
+
+  it("applies model before effort and resolves effort from the refreshed confirmed options", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+          setConfig: (_sessionId, configId) => configId === "model"
+            ? [modelOption("opus"), effortOption("low", ["low", "high"])]
+            : [modelOption("opus"), effortOption("high", ["low", "high"])],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "applied",
+      model: "opus",
+      effort: "high",
+    })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "model", value: "opus" },
+      { sessionId: "codex-session", configId: "effort", value: "high" },
+    ])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("high", ["low", "high"]),
+    ])
+    await controller.dispose()
+  })
+
+  it("applies a valid effort-only default when the provider advertises no model option", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [effortOption("low")],
+          setConfig: (_sessionId, _configId, value) => [effortOption(value)],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({ kind: "applied", effort: "high" })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "effort", value: "high" },
+    ])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([effortOption("high")])
+    await controller.dispose()
+  })
+
+  it("keeps the confirmed model and reports partial when refreshed effort is unavailable", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+          setConfig: () => [modelOption("opus"), effortOption("low", ["low"])],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "partial",
+      model: "opus",
+      unavailable: "effort",
+    })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "model", value: "opus" },
+    ])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("low", ["low"]),
+    ])
+    await controller.dispose()
+  })
+
+  it("does not roll back or substitute when the effort request is rejected", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+          setConfig: (_sessionId, configId) => configId === "model"
+            ? [modelOption("opus"), effortOption("low")]
+            : [modelOption("opus"), effortOption("low")],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "partial",
+      model: "opus",
+      unavailable: "effort",
+    })
+    expect(connections.codex.configCalls).toHaveLength(2)
+    expect(connections.codex.configCalls.filter((call) => call.configId === "model")).toHaveLength(1)
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("low"),
+    ])
+    await controller.dispose()
+  })
+
+  it("fails softly for a not-ready session and a model transport failure", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { "claude-code": { model: "opus" }, codex: { model: "opus" } } }
+    const errors: Array<[SessionId, unknown]> = []
+    const { controller } = await controllerWithStubs(
+      {
+        "claude-code": { ready: { ready: false, error: "down" } },
+        codex: { newSessionConfig: [modelOption("sonnet")], setConfigThrows: new Error("transport secret") },
+      },
+      { config, onError: (sessionId, error) => errors.push([sessionId, error]) },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("claude-code")).toEqual({
+      kind: "unavailable",
+      unavailable: "session",
+    })
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "unavailable",
+      unavailable: "model",
+    })
+    expect(errors).toEqual([["codex", new Error("transport secret")]])
+    await controller.dispose()
+  })
+
+  it("replaces the snapshot without mutating a session and uses it on the next explicit attempt", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("opus")],
+          setConfig: (_sessionId, _configId, value) => [modelOption(value)],
+        },
+      },
+      { config },
+    )
+    const before = controller.store.getState().sessions.codex
+
+    controller.updateProviderDefaults({ codex: { model: "sonnet" } })
+
+    expect(controller.store.getState().sessions.codex).toBe(before)
+    expect(connections.codex.configCalls).toEqual([])
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({ kind: "applied", model: "sonnet" })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "model", value: "sonnet" },
+    ])
+    await controller.dispose()
+  })
+
+  it("shares a provider default but targets only the addressed duplicate-provider runtime", async () => {
+    const config: AppConfig = {
+      ...THREE_SESSION_CONFIG,
+      providerDefaults: { "claude-code": { model: "opus" } },
+    }
+    const { controller, created } = await controllerOverFleet(config, () => ({
+      newSessionConfig: [modelOption("sonnet")],
+      setConfig: (_sessionId, _configId, value) => [modelOption(value)],
+    }))
+
+    expect(await controller.actions.applyProviderDefaults("claude-code-2")).toEqual({
+      kind: "applied",
+      model: "opus",
+    })
+    expect(created[0]!.configCalls).toEqual([])
+    expect(created[1]!.configCalls).toEqual([
+      { sessionId: "acp-1", configId: "model", value: "opus" },
+    ])
+    expect(created[2]!.configCalls).toEqual([])
     await controller.dispose()
   })
 })
@@ -2649,6 +3112,7 @@ describe("createSessionController - dispose", () => {
     const controller = await createSessionController({
       config: {
         providers: PROVIDERS,
+        providerDefaults: {},
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         mcpServers: [],
         shell: APP_CONFIG.shell,
@@ -2656,6 +3120,7 @@ describe("createSessionController - dispose", () => {
         telemetryEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
+        statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
       cwd: CWD,
       createConnection: () => connection,
@@ -2898,6 +3363,7 @@ describe("createControllerActions", () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     store.backgroundConversation("claude-code")
     store.backgroundConversation("codex")
+    store.backgroundConversation("cursor")
     let lookups = 0
     const actions = createControllerActions({
       store,
@@ -3142,6 +3608,7 @@ describe("integration - two mock ACP agents", () => {
     })
     const config: AppConfig = {
       ...APP_CONFIG,
+      providerDefaults: {},
       providers: PROVIDERS,
       sessions: [{ provider: "claude-code", cwd: process.cwd(), title: "Planner" }],
     }
@@ -3190,10 +3657,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -3235,10 +3702,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -3278,10 +3745,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: CWD,
@@ -3342,10 +3809,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,

@@ -21,12 +21,13 @@ import { actAsync, destroyMounted } from "./reactTui.ts"
  * `finished`, and the visible workspace must paint that state for the session.
  */
 
-const PROVIDERS: AppConfig["providers"] = {
+const PROVIDERS = {
   "claude-code": { displayName: "Claude Code", command: "claude-acp", args: [], env: {} },
   codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
-}
+} as unknown as AppConfig["providers"]
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -34,6 +35,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /** A real adapter over a mock agent whose prompt turns always stop with `end_turn`. */
@@ -64,10 +66,10 @@ function connectionToMockAgent(
 
 describe("session status integration (end_turn -> finished)", () => {
   it("drives a mock session to end_turn and renders the finished state in its visible tab", async () => {
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": endTurnConnection({ id: "claude-code", ...PROVIDERS["claude-code"] }),
       codex: endTurnConnection({ id: "codex", ...PROVIDERS.codex }),
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",
@@ -79,7 +81,7 @@ describe("session status integration (end_turn -> finished)", () => {
       height: 20,
       kittyKeyboard: true,
     })
-    await waitForFrame((frame) => frame.includes("codex:—"))
+    await waitForFrame((frame) => frame.includes("Codex:—"))
 
     await actAsync(async () => {
       await controller.actions.sendPrompt("do the thing")
@@ -90,10 +92,10 @@ describe("session status integration (end_turn -> finished)", () => {
 
     // The selected tab owns execution state; the footer remains provider-only.
     const frame = await waitForFrame((f) => f.includes("Codex · finished"))
-    expect(frame).toContain("codex:—")
-    expect(frame).not.toContain("claude:—")
+    expect(frame).toContain("Codex:—")
+    expect(frame).not.toContain("Claude:—")
     expect(frame).not.toContain("Claude Code:")
-    expect(frame).not.toContain("Codex:")
+    expect(frame).not.toContain("Codex: finished")
 
     await destroyMounted(renderer)
     await controller.dispose()
@@ -159,10 +161,10 @@ describe("session status integration (end_turn -> finished)", () => {
         },
       },
     )
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",

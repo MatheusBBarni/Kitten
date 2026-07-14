@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Create parser manifest foundation and Markdown override assets"
 type: frontend
 complexity: high
@@ -29,10 +29,10 @@ Create the single Kitten-owned source of truth for syntax capabilities and the l
 
 ## Subtasks
 
-- [ ] 1.1 Establish the typed capability and fixture contract.
-- [ ] 1.2 Add reviewed local Markdown override assets with provenance.
-- [ ] 1.3 Preserve the existing Markdown injection map in the manifest.
-- [ ] 1.4 Add manifest contract tests and focused verification.
+- [x] 1.1 Establish the typed capability and fixture contract.
+- [x] 1.2 Add reviewed local Markdown override assets with provenance.
+- [x] 1.3 Preserve the existing Markdown injection map in the manifest.
+- [x] 1.4 Add manifest contract tests and focused verification.
 
 ## Implementation Details
 
@@ -67,12 +67,12 @@ Implement the foundation described in the TechSpec **System Architecture** and *
 ## Tests
 
 - Unit tests:
-  - [ ] Baseline JavaScript, TypeScript, and Markdown labels resolve to their existing canonical filetypes.
-  - [ ] `inline` and `pipe_table_cell` still resolve to `markdown_inline`.
-  - [ ] Manifest fixtures and aliases are unique and every parser option has local WASM and highlight-query paths.
-  - [ ] Injected registrar receives the Markdown override exactly once across repeated calls.
+  - [x] Baseline JavaScript, TypeScript, and Markdown labels resolve to their existing canonical filetypes.
+  - [x] `inline` and `pipe_table_cell` still resolve to `markdown_inline`.
+  - [x] Manifest fixtures and aliases are unique and every parser option has local WASM and highlight-query paths.
+  - [x] Injected registrar receives the Markdown override exactly once across repeated calls.
 - Integration tests:
-  - [ ] Existing Markdown heading, streaming, selection, and malformed-fence tests remain green without renderer wiring changes.
+  - [x] Existing Markdown heading, streaming, selection, and malformed-fence tests remain green without renderer wiring changes.
 - Test coverage target: >=80%
 - All tests must pass
 

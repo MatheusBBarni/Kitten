@@ -136,7 +136,7 @@ const DEGRADED_BUNDLE: HandoffBundle = {
 
 describe("unavailable-pane fresh-start integration", () => {
   it("creates and seeds only the unavailable agent from the persisted bundle", async () => {
-    const created = { "claude-code": 0, codex: 0 }
+    const created: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     const newSessions: Array<{ id: ProviderKind; sessionId: string }> = []
     const prompts: Array<{ id: ProviderKind; sessionId: string; blocks: PromptBlock[] }> = []
 
