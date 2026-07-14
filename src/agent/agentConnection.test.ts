@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import type { CreateElicitationRequest, PermissionOption, SessionUpdate } from "@agentclientprotocol/sdk"
+import { RequestError, type CreateElicitationRequest, type PermissionOption, type SessionUpdate } from "@agentclientprotocol/sdk"
 
 import type { AgentConfig, ClarificationPayload, DomainSessionEvent, McpServerConfig, ResolvedAgentConfig } from "../core/types.ts"
 import { startMockAgent, type MockAgentOptions } from "../../test/mockAgent.ts"
@@ -41,6 +41,34 @@ const UNSUPPORTED_CONFIG: ResolvedAgentConfig = {
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
   runtimeProfile: { kind: "standard" },
 }
+const CERTIFIED_CURSOR_CONFIG: ResolvedAgentConfig = {
+  id: "cursor",
+  displayName: "Cursor",
+  command: "agent",
+  args: ["acp"],
+  env: {},
+  clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  runtimeProfile: {
+    kind: "cursor-certified",
+    command: "agent",
+    args: ["acp"],
+    env: {},
+    certifiedVersion: "1.2.3",
+    authenticationMethod: "cursor_login",
+  },
+}
+const STANDARD_CODEX_CONFIG: ResolvedAgentConfig = {
+  ...CODEX_CONFIG,
+  clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  runtimeProfile: { kind: "standard" },
+}
+const OVERRIDDEN_CURSOR_CONFIG: ResolvedAgentConfig = {
+  ...CERTIFIED_CURSOR_CONFIG,
+  command: "/opt/cursor/agent",
+  runtimeProfile: { kind: "standard" },
+}
+
+const CURSOR_LOGIN_METHOD = { id: "cursor_login", name: "Cursor Login" }
 
 /** A hand-driven frame scheduler: `tick()` runs the single coalesced flush. */
 function manualScheduler() {
@@ -116,6 +144,83 @@ async function connected(
 }
 
 describe("connect / session lifecycle", () => {
+  it("authenticates a certified Cursor profile after initialize and before session creation", async () => {
+    const { conn, mock } = setup({ authMethods: [CURSOR_LOGIN_METHOD] }, undefined, CERTIFIED_CURSOR_CONFIG)
+
+    expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
+    expect(mock.authenticationRequests).toEqual([{ methodId: "cursor_login" }])
+    expect(mock.lifecycle).toEqual(["initialize", "authenticate"])
+
+    expect(await conn.newSession("/repo")).toBe("mock-session-1")
+    expect(mock.lifecycle).toEqual(["initialize", "authenticate", "newSession"])
+    await conn.dispose()
+  })
+
+  it("keeps certified Cursor not-ready when cursor_login is not advertised", async () => {
+    const { conn, mock } = setup({ authMethods: [] }, undefined, CERTIFIED_CURSOR_CONFIG)
+
+    expect(await conn.connect()).toEqual({
+      ready: false,
+      reason: "authentication_required",
+      error: 'authentication method "cursor_login" is unavailable',
+    })
+    await expect(conn.newSession("/repo")).rejects.toThrow("not connected")
+    expect(mock.authenticationRequests).toEqual([])
+    expect(mock.newSessionRequests).toEqual([])
+    expect(mock.lifecycle).toEqual(["initialize"])
+    await conn.dispose()
+  })
+
+  it.each([
+    ["auth_required", () => { throw RequestError.authRequired({ details: "not logged in" }) }],
+    ["unavailable method", () => { throw RequestError.methodNotFound("authenticate") }],
+    ["rejected", () => { throw new Error("Cursor login rejected") }],
+  ])("normalizes certified Cursor %s authentication failure without creating a session", async (_case, reject) => {
+    const { conn, mock } = setup(
+      { authMethods: [CURSOR_LOGIN_METHOD], onAuthenticate: reject },
+      undefined,
+      CERTIFIED_CURSOR_CONFIG,
+    )
+
+    const result = await conn.connect()
+    expect(result).toMatchObject({ ready: false, reason: "authentication_required" })
+    expect(result.ready === false && result.error.length).toBeGreaterThan(0)
+    await expect(conn.newSession("/repo")).rejects.toThrow("not connected")
+    expect(mock.authenticationRequests).toEqual([{ methodId: "cursor_login" }])
+    expect(mock.newSessionRequests).toEqual([])
+    expect(mock.lifecycle).toEqual(["initialize", "authenticate"])
+    await conn.dispose()
+  })
+
+  it.each([
+    ["Claude Code", UNSUPPORTED_CONFIG],
+    ["Codex", STANDARD_CODEX_CONFIG],
+    ["overridden Cursor", OVERRIDDEN_CURSOR_CONFIG],
+  ])("never authenticates a standard %s profile", async (_case, config) => {
+    const { conn, mock } = setup({ authMethods: [CURSOR_LOGIN_METHOD] }, undefined, config)
+
+    expect((await conn.connect()).ready).toBe(true)
+    await conn.newSession("/repo")
+    expect(mock.authenticationRequests).toEqual([])
+    expect(mock.lifecycle).toEqual(["initialize", "newSession"])
+    await conn.dispose()
+  })
+
+  it("keeps certified Cursor initialization failure generic", async () => {
+    const { conn, mock } = setup(
+      { onInitialize: () => { throw new Error("initialize rejected") } },
+      undefined,
+      CERTIFIED_CURSOR_CONFIG,
+    )
+
+    const result = await conn.connect()
+    expect(result).toEqual({ ready: false, error: expect.stringContaining("initialize rejected") })
+    expect(result).not.toHaveProperty("reason")
+    expect(mock.authenticationRequests).toEqual([])
+    expect(mock.newSessionRequests).toEqual([])
+    await conn.dispose()
+  })
+
   it("reports canLoadSession false when the initialize capability is absent", async () => {
     const { conn } = setup()
     expect(await conn.connect()).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
