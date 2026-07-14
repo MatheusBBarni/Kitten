@@ -122,6 +122,10 @@ describe("platformPackageManifest", () => {
     expect(manifest).toEqual({
       name: "@matheusbbarni/kitten-darwin-arm64",
       version: "1.2.3",
+      repository: {
+        type: "git",
+        url: "https://github.com/MatheusBBarni/Kitten",
+      },
       os: ["darwin"],
       cpu: ["arm64"],
       files: ["kitten-darwin-arm64"],

@@ -234,6 +234,10 @@ export function platformPackageManifest(target: BuildTarget, version: string): s
     {
       name: platformPackageName(target.platform),
       version,
+      repository: {
+        type: "git",
+        url: "https://github.com/MatheusBBarni/Kitten",
+      },
       os: [metadata.os],
       cpu: [metadata.cpu],
       files: [artifactName(target)],

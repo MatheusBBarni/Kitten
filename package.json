@@ -2,6 +2,10 @@
   "name": "@matheusbbarni/kitten",
   "version": "0.3.0",
   "description": "Kitten - Cross-Agent Hand-off Cockpit: a terminal cockpit that hands a live coding task between AI agents over ACP.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MatheusBBarni/Kitten"
+  },
   "type": "module",
   "bin": {
     "kitten": "bin/kitten.mjs"
