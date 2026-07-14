@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Extract runCockpitCommand dispatcher and thread onRunCommand"
 type: refactor
 complexity: medium

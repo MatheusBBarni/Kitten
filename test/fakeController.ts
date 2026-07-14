@@ -18,6 +18,7 @@ import {
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type PromptInput,
+  type SwitchFocusOptions,
 } from "../src/app/actions.ts"
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
@@ -36,6 +37,7 @@ export interface RecordedCalls {
   createConversation: number
   renameConversation: { sessionId: SessionId; displayName: string }[]
   selectConversation: SessionId[]
+  selectConversationOptions: (SwitchFocusOptions | undefined)[]
   backgroundConversation: SessionId[]
   reopenConversation: SessionId[]
   closeConversation: { sessionId: SessionId; choice: CloseChoice }[]
@@ -129,6 +131,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     createConversation: 0,
     renameConversation: [],
     selectConversation: [],
+    selectConversationOptions: [],
     backgroundConversation: [],
     reopenConversation: [],
     closeConversation: [],
@@ -212,8 +215,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         calls.renameConversation.push({ sessionId, displayName })
         store.renameConversation(sessionId, displayName)
       },
-      selectConversation(sessionId): void {
+      selectConversation(sessionId, selectionOptions): void {
         calls.selectConversation.push(sessionId)
+        calls.selectConversationOptions.push(selectionOptions)
         store.selectConversation(sessionId)
       },
       backgroundConversation(sessionId): void {

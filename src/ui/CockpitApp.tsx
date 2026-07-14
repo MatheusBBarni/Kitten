@@ -46,6 +46,7 @@ import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController, useShellBufferType } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
+import { ConversationActivity } from "./ConversationActivity.tsx"
 import { EmptyWorkspace } from "./EmptyWorkspace.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
 import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
@@ -57,7 +58,6 @@ import { SessionsOverlay } from "./SessionsOverlay.tsx"
 import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { TabDialog } from "./TabDialog.tsx"
-import { TabWorkspace } from "./TabWorkspace.tsx"
 import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
@@ -170,9 +170,6 @@ function CockpitFrame({
           recorder?.externalRun()
           return
         }
-        case "switch-focus":
-          controller.actions.switchFocus()
-          return
         case "hand-off":
           if (handoff.begin().ok) setHelpOpen(false)
           return
@@ -181,10 +178,16 @@ function CockpitFrame({
           controller.store.openSessions()
           return
         case "previous-tab":
-          controller.store.selectAdjacentConversation("previous")
+          controller.actions.switchFocus(undefined, {
+            direction: "previous",
+            source: "kitty_chord",
+          })
           return
         case "next-tab":
-          controller.store.selectAdjacentConversation("next")
+          controller.actions.switchFocus(undefined, {
+            direction: "next",
+            source: "kitty_chord",
+          })
           return
         case "resume-session":
           setHelpOpen(false)
@@ -193,20 +196,17 @@ function CockpitFrame({
           return
         case "start-new-run": {
           setHelpOpen(false)
+          const sessionId = state.workspace.selectedVisibleId
+          const restoration = sessionId ? state.restoration[sessionId] : null
           const bundle = state.restorationBundle
-          const selectedVisibleId = state.workspace.selectedVisibleId
-          if (
-            selectedVisibleId &&
-            state.restoration[selectedVisibleId] === "unavailable" &&
-            bundle
-          ) {
+          if (sessionId && restoration === "unavailable" && bundle) {
             void controller.actions.startFreshFromContext(
               composeHandoffBlocks(bundle, createHandoffEdits(bundle)),
-              selectedVisibleId,
+              sessionId,
             )
-          } else {
-            void controller.actions.startNewRun()
+            return
           }
+          void controller.actions.createConversation()
           return
         }
         case "clear-run":
@@ -264,7 +264,7 @@ function CockpitFrame({
         return
       }
 
-      if (command === "previous-tab" || command === "next-tab") {
+      if (command !== null && command !== "close-help") {
         key.preventDefault()
         runCockpitCommand(command)
       }
@@ -274,6 +274,9 @@ function CockpitFrame({
   useKeyboard(onKey)
 
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
+  useEffect(() => {
+    recorder?.tabSelectionSettled()
+  }, [focusedSessionId, recorder])
   const focusedRestorationSelector = useMemo(
     () => selectRestoration(focusedSessionId),
     [focusedSessionId],
@@ -285,7 +288,9 @@ function CockpitFrame({
   )
   const focusedAvailability = useAppSelector(focusedAvailabilitySelector)
   const focused = focusedSessionId ? controller.runtime(focusedSessionId) : undefined
-  const paneTitle = isShellFocused ? "Shell · focused" : "Kitten"
+  // ConversationView keeps workspace navigation fixed above the transcript;
+  // only the transient shell mode needs a fixed pane title here.
+  const paneTitle = isShellFocused ? "Shell · focused" : undefined
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
 
   return (
@@ -319,14 +324,16 @@ function CockpitFrame({
           <ShellPane />
         ) : (
           <>
-            <TabWorkspace />
-            {focusedSessionId === null ? (
-              <EmptyWorkspace />
-            ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
-              <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
-            ) : (
-              (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} />)
-            )}
+            <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
+              {focusedSessionId === null ? (
+                <EmptyWorkspace />
+              ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
+                <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
+              ) : (
+                (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} workspaceChrome />)
+              )}
+            </box>
+            <ConversationActivity />
           </>
         )}
         {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
@@ -392,7 +399,7 @@ function NotReadyNotice({ error }: { error: string }): ReactNode {
     <box style={{ flexDirection: "column", gap: 1 }}>
       <text fg={palette.status.not_ready}>This agent is not ready.</text>
       <text fg={palette.text}>{error}</text>
-      <text fg={palette.muted}>Use /switch to focus another ready agent.</text>
+      <text fg={palette.muted}>Use /model to choose another provider.</text>
     </box>
   )
 }

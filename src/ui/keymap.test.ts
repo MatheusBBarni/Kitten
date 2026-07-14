@@ -153,7 +153,6 @@ describe("COCKPIT_COMMANDS", () => {
     expect(COCKPIT_COMMANDS.map(({ command, name }) => [command, name])).toEqual([
       ["toggle-shell", "shell"],
       ["run-externally", "copy"],
-      ["switch-focus", "switch"],
       ["hand-off", "handoff"],
       ["sessions", "sessions"],
       ["previous-tab", "previous-tab"],
@@ -228,10 +227,10 @@ describe("MENU_KEYMAP", () => {
 })
 
 describe("KEYMAP_HINT", () => {
-  it("advertises the hand-off chord and slash menu on one line", () => {
-    expect(KEYMAP_HINT).toContain("^T hand-off")
-    expect(KEYMAP_HINT).toContain("/ menu")
-    expect(KEYMAP_HINT).not.toContain("\n")
+  it("keeps the fixed footer to the help entry point", () => {
+    expect(KEYMAP_HINT).toBe("/help")
+    expect(KEYMAP_HINT).not.toContain("hand-off")
+    expect(KEYMAP_HINT).not.toContain("menu")
   })
 })
 
@@ -480,6 +479,10 @@ describe("matchSessionsCommand", () => {
     expect(matchSessionsCommand(key("n"))).toBe("jump-next-needy")
   })
 
+  it("maps d to the highlighted session's safe close flow", () => {
+    expect(matchSessionsCommand(key("d"))).toBe("close-session")
+  })
+
   it("maps Escape to cancel, dismissing the overview without switching", () => {
     expect(matchSessionsCommand(key("escape"))).toBe("cancel")
   })
@@ -500,7 +503,7 @@ describe("matchSessionsCommand", () => {
 describe("SESSIONS_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = SESSIONS_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-session", "next-session", "jump-into", "jump-next-needy", "cancel"])
+    expect(commands).toEqual(["prev-session", "next-session", "jump-into", "jump-next-needy", "close-session", "cancel"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 

@@ -151,6 +151,16 @@ export function createFrameScheduler(frameMs = 16): FrameScheduler {
   }
 }
 
+/**
+ * Codex ACP forwards `thread/status/changed` as session metadata, but an
+ * app-server `turn/aborted` can leave the matching ACP prompt unresolved. Give a
+ * normal terminal response a brief chance to arrive before treating a quiet,
+ * post-compaction idle notification as that missing terminal outcome.
+ */
+export const CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS = 1_000
+
+const CODEX_COMPACTION_MARKER = "*Context compacted to fit the model's context window.*"
+
 /** Construction options for an {@link AgentConnection}. Seams are injectable for tests. */
 export interface AgentConnectionOptions {
   /** A resolved config carries the verified capability; a bare config fails closed. */
@@ -170,6 +180,15 @@ export function createAgentConnection(options: AgentConnectionOptions): AgentCon
 interface BufferedMessage {
   messageId: string
   text: string
+}
+
+/** One active prompt plus the narrow recovery signal Codex ACP exposes after an abort. */
+interface InFlightPrompt {
+  sessionId: string
+  sawCodexCompaction: boolean
+  idleRecoveryTimer: ReturnType<typeof setTimeout> | null
+  recovery: Promise<PromptResult>
+  resolveRecovery: (result: PromptResult) => void
 }
 
 class AgentConnectionImpl implements AgentConnection {
@@ -193,6 +212,12 @@ class AgentConnectionImpl implements AgentConnection {
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   private clarificationHandler: ClarificationHandler | null = null
   private activeSessionId: string | null = null
+  /**
+   * The public ACP prompt request has no abort terminal signal for Codex's
+   * app-server `turn/aborted` notification. Keep a local recovery race only for
+   * that confirmed post-compaction lifecycle shape.
+   */
+  private inFlightPrompt: InFlightPrompt | null = null
 
   /** Contiguous, not-yet-flushed agent-message deltas for the current frame. */
   private readonly messageBuffer: BufferedMessage[] = []
@@ -271,12 +296,16 @@ class AgentConnectionImpl implements AgentConnection {
 
   async prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult> {
     const connection = this.requireConnection()
+    const inFlight = this.beginPrompt(sessionId)
     this.emit({ kind: "status", status: "working" })
     try {
-      const result = await connection.prompt({
-        sessionId,
-        prompt: blocks.map((block) => ({ type: "text", text: block.text })),
-      })
+      const result = await Promise.race([
+        connection.prompt({
+          sessionId,
+          prompt: blocks.map((block) => ({ type: "text", text: block.text })),
+        }),
+        inFlight.recovery,
+      ])
       const stopReason = result.stopReason satisfies StopReason
       // Map the terminal stop reason to a status instead of always emitting `idle`
       // (ADR-006): a turn that ran to its end is `finished` (your move), a turn the
@@ -290,6 +319,8 @@ class AgentConnectionImpl implements AgentConnection {
       // the failure propagate to the controller's `onError`.
       this.emit({ kind: "status", status: "error" })
       throw error
+    } finally {
+      this.completePrompt(inFlight)
     }
   }
 
@@ -334,6 +365,7 @@ class AgentConnectionImpl implements AgentConnection {
     this.permissionHandler = null
     this.clarificationHandler = null
     this.activeSessionId = null
+    this.completePrompt(this.inFlightPrompt)
     this.connection = null
     const transport = this.transport
     this.transport = null
@@ -356,6 +388,7 @@ class AgentConnectionImpl implements AgentConnection {
 
   /** Translate an incoming `session/update` and route it through coalescing. */
   private onSessionUpdate(params: SessionNotification): void {
+    this.observeCodexCompactionRecovery(params)
     const event = translateSessionUpdate(params.update)
     if (event === null) return
     if (event.kind === "agent_message") {
@@ -448,10 +481,87 @@ class AgentConnectionImpl implements AgentConnection {
     for (const subscriber of this.subscribers) subscriber(event)
   }
 
+  /** Start tracking a prompt before dispatching it, so synchronous ACP updates are observed. */
+  private beginPrompt(sessionId: string): InFlightPrompt {
+    this.completePrompt(this.inFlightPrompt)
+    let resolveRecovery: (result: PromptResult) => void = () => {}
+    const recovery = new Promise<PromptResult>((resolve) => {
+      resolveRecovery = resolve
+    })
+    const inFlight: InFlightPrompt = {
+      sessionId,
+      sawCodexCompaction: false,
+      idleRecoveryTimer: null,
+      recovery,
+      resolveRecovery,
+    }
+    this.inFlightPrompt = inFlight
+    return inFlight
+  }
+
+  /** Release the recovery timer only when it still belongs to this prompt. */
+  private completePrompt(inFlight: InFlightPrompt | null): void {
+    if (inFlight === null) return
+    if (inFlight.idleRecoveryTimer !== null) {
+      clearTimeout(inFlight.idleRecoveryTimer)
+      inFlight.idleRecoveryTimer = null
+    }
+    if (this.inFlightPrompt === inFlight) this.inFlightPrompt = null
+  }
+
+  /**
+   * Codex ACP 1.1.2 sends both its context-compaction marker and the underlying
+   * thread's status through `session/update`. In the bad path, Codex then reports
+   * the thread idle after `turn/aborted`, while the adapter continues waiting only
+   * for `turn/completed`. Reconcile that *quiet* terminal state locally instead of
+   * applying a duration-based watchdog to legitimate long-running tool calls.
+   */
+  private observeCodexCompactionRecovery(params: SessionNotification): void {
+    const inFlight = this.inFlightPrompt
+    if (this.id !== "codex" || inFlight === null || params.sessionId !== inFlight.sessionId) return
+
+    if (isCodexCompactionUpdate(params.update)) inFlight.sawCodexCompaction = true
+
+    // Any activity after the idle status proves this was not a terminal abort.
+    if (inFlight.idleRecoveryTimer !== null) {
+      clearTimeout(inFlight.idleRecoveryTimer)
+      inFlight.idleRecoveryTimer = null
+    }
+
+    if (!inFlight.sawCodexCompaction || !isCodexIdleUpdate(params.update)) return
+
+    inFlight.idleRecoveryTimer = setTimeout(() => {
+      if (this.inFlightPrompt !== inFlight) return
+      inFlight.idleRecoveryTimer = null
+      inFlight.resolveRecovery({ stopReason: "cancelled" })
+    }, CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS)
+  }
+
   private requireConnection(): ClientSideConnection {
     if (!this.connection) throw new Error(`Agent "${this.id}" is not connected; call connect() first`)
     return this.connection
   }
+}
+
+/** The Codex ACP adapter presents compaction as a visible, adapter-owned text update. */
+function isCodexCompactionUpdate(update: SessionNotification["update"]): boolean {
+  return (
+    update.sessionUpdate === "agent_message_chunk" &&
+    update.content.type === "text" &&
+    update.content.text.includes(CODEX_COMPACTION_MARKER)
+  )
+}
+
+/** Read only the adapter's private thread-lifecycle metadata at the ACP boundary. */
+function isCodexIdleUpdate(update: SessionNotification["update"]): boolean {
+  if (update.sessionUpdate !== "session_info_update" || !isRecord(update._meta)) return false
+  const codex = update._meta.codex
+  if (!isRecord(codex) || !isRecord(codex.threadStatus)) return false
+  return codex.threadStatus.type === "idle"
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }
 
 /** Read a file for the agent, honoring an optional 1-based line window. */

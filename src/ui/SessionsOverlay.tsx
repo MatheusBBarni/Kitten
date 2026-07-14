@@ -114,9 +114,15 @@ function SessionsDialog(): ReactNode {
     if (!target) return
     // The universal fallback can reopen background work as well as select a visible tab.
     if (target.lifecycle === "background") {
-      controller.actions.reopenConversation(target.id, { viaOverview: true })
+      controller.actions.reopenConversation(target.id, {
+        viaOverview: true,
+        source: "sessions_fallback",
+      })
     } else {
-      controller.actions.selectConversation(target.id, { viaOverview: true })
+      controller.actions.selectConversation(target.id, {
+        viaOverview: true,
+        source: "sessions_fallback",
+      })
     }
   }, [clamped, controller, sessions])
 
@@ -124,6 +130,15 @@ function SessionsDialog(): ReactNode {
     controller.store.closeSessions()
     controller.actions.jumpToNextAttention()
   }, [controller])
+
+  const closeHighlighted = useCallback((): void => {
+    const target = sessions[clamped]
+    if (!target) return
+    controller.store.closeSessions()
+    // Reuse the captured-target close policy so working conversations still offer
+    // background, deliberate cancellation, or keeping the work open.
+    controller.store.openTabDialog({ kind: "close", sessionId: target.id })
+  }, [clamped, controller, sessions])
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
@@ -150,6 +165,9 @@ function SessionsDialog(): ReactNode {
         case "jump-next-needy":
           jumpNextNeedy()
           return
+        case "close-session":
+          closeHighlighted()
+          return
         case "cancel":
           controller.store.closeSessions()
           return
@@ -157,7 +175,7 @@ function SessionsDialog(): ReactNode {
           return
       }
     },
-    [clarificationOpen, controller, jumpInto, jumpNextNeedy, sessions.length],
+    [clarificationOpen, closeHighlighted, controller, jumpInto, jumpNextNeedy, sessions.length],
   )
   useKeyboard(onKey)
 

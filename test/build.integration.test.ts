@@ -10,7 +10,7 @@ import {
   writePlatformPackage,
   type BuildTarget,
 } from "../scripts/build.ts"
-import { SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
+import { SELF_CHECK_DEFAULT_TOKEN, SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
 import pkg from "../package.json" with { type: "json" }
 
 /**
@@ -41,7 +41,7 @@ describe("compiled artifact self-check (ADR-006)", () => {
       if (run.exitCode !== 0) throw new Error(`compiled self-check failed:\n${stderr}`)
       expect(run.exitCode).toBe(0)
       expect(stdout).toContain("SELF-CHECK OK")
-      expect(stdout).toContain("Kitten")
+      expect(stdout).toContain(SELF_CHECK_DEFAULT_TOKEN)
       expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
       expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
 
@@ -53,7 +53,7 @@ describe("compiled artifact self-check (ADR-006)", () => {
       const helpRun = Bun.spawnSync([outfile, "--help"], { stdout: "pipe", stderr: "pipe" })
       expect(helpRun.exitCode).toBe(0)
       expect(helpRun.stdout.toString()).toStartWith("Examples:\n")
-      expect(helpRun.stdout.toString()).toContain("npx kitten")
+      expect(helpRun.stdout.toString()).toContain("npx @matheusbbarni/kitten")
       expect(helpRun.stdout.toString()).toContain("--self-check")
       expect(helpRun.stderr.toString()).toBe("")
     } finally {
@@ -81,7 +81,7 @@ describe("compiled artifact self-check (ADR-006)", () => {
       }
       const binary = join(generated.dir, manifest.files[0]!)
 
-      expect(manifest.name).toBe(`@kitten/${target.platform}`)
+      expect(manifest.name).toBe(`@matheusbbarni/kitten-${target.platform}`)
       expect(manifest.version).toBe(pkg.version)
       expect(await Bun.file(binary).exists()).toBe(true)
       expect(await Bun.file(binary).text()).toBe("host-binary")

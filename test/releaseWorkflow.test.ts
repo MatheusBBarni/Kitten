@@ -34,6 +34,8 @@ const attach = workflow.jobs.attach!
 const publish = workflow.jobs.publish!
 const smoke = workflow.jobs.smoke!
 const releaseGate = "needs.release_please.outputs.release_created == 'true'"
+const recoveryPublishGate =
+  "always() && needs.release_please.outputs.release_created == 'true' && needs.build.result == 'success' && (needs.attach.result == 'success' || needs.attach.result == 'skipped')"
 
 describe("consolidated release workflow", () => {
   it("parses as YAML and runs release-please on pushes to main", () => {
@@ -44,6 +46,7 @@ describe("consolidated release workflow", () => {
     expect(releasePlease.outputs).toEqual({
       release_created: "${{ steps.release.outputs.release_created || steps.fallback.outputs.release_created }}",
       tag_name: "${{ steps.release.outputs.tag_name || steps.fallback.outputs.tag_name }}",
+      publish_only: "${{ steps.fallback.outputs.publish_only || 'false' }}",
     })
 
     const releaseStep = releasePlease.steps?.find((step) => step.id === "release")
@@ -57,15 +60,15 @@ describe("consolidated release workflow", () => {
     })
   })
 
-  it("gates native build and attachment jobs on a newly exposed release", () => {
+  it("gates native builds on a newly exposed release and skips asset replacement during publish recovery", () => {
     expect(build.if).toBe(releaseGate)
-    expect(attach.if).toBe(releaseGate)
+    expect(attach.if).toBe(`${releaseGate} && needs.release_please.outputs.publish_only != 'true'`)
     expect(build.needs).toBe("release_please")
     expect(attach.needs).toEqual(["release_please", "build"])
   })
 
-  it("gates publishing on every build and release attachment", () => {
-    expect(publish.if).toBe(releaseGate)
+  it("gates publishing on every build and allows an intentionally skipped asset attachment during recovery", () => {
+    expect(publish.if).toBe(recoveryPublishGate)
     expect(publish.needs).toEqual(["release_please", "build", "attach"])
     expect(smoke.if).toBe(releaseGate)
     expect(smoke.needs).toEqual(["release_please", "publish"])
@@ -101,7 +104,7 @@ describe("consolidated release workflow", () => {
 
   it("transfers each generated platform package from the same native build", () => {
     const upload = build.steps?.find((step) => step.uses === "actions/upload-artifact@v4")
-    expect(upload?.with?.path).toContain("dist/npm/@kitten/${{ matrix.platform }}")
+    expect(upload?.with?.path).toContain("dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}")
   })
 
   it("publishes all platform packages before the exact-pinned main shim", () => {
@@ -113,10 +116,23 @@ describe("consolidated release workflow", () => {
     expect(platformIndex).toBeGreaterThan(-1)
     expect(mainIndex).toBeGreaterThan(platformIndex)
     expect(platformStep?.run).toContain("darwin-arm64 darwin-x64 linux-x64 linux-arm64")
+    expect(platformStep?.run).toContain("@matheusbbarni/kitten-$platform")
     expect(platformStep?.run).toContain('chmod +x "$package_dir/kitten-$platform"')
     expect(platformStep?.run).toContain('npm publish "$package_dir" --provenance --access public')
     expect(mainStep?.run).toContain("pkg.optionalDependencies[name] = version")
     expect(mainStep?.run).toContain("npm publish . --provenance --access public")
+  })
+
+  it("normalizes component release tags before validating, polling, and smoking the published version", () => {
+    const validateVersion = publish.steps?.find((step) => step.id === "version")
+    const waitForPublish = smoke.steps?.find((step) => step.name === "Wait for the published shim")
+    const runLauncher = smoke.steps?.find((step) => step.name === "Run the published launcher and verify provenance")
+
+    expect(validateVersion?.run).toContain('^kitten-v[0-9]+\\.[0-9]+\\.[0-9]+$')
+    expect(validateVersion?.run).toContain('tag_version="${TAG_NAME#kitten-v}"')
+    expect(waitForPublish?.run).toContain('version="${TAG_NAME#kitten-v}"')
+    expect(runLauncher?.run).toContain('VERSION="${TAG_NAME#kitten-v}"')
+    expect(source).not.toContain("${TAG_NAME#v}")
   })
 
   it("uses job-scoped OIDC on a supported Node and npm toolchain without a registry secret", () => {
@@ -150,30 +166,47 @@ describe("consolidated release workflow", () => {
     const uses = smoke.steps?.map((step) => step.uses ?? "").join("\n") ?? ""
     expect(commands).toContain("command -v bun")
     expect(commands).toContain("npm audit signatures")
-    expect(commands).toContain('npx --yes "kitten@$VERSION" --version')
-    expect(commands).toContain('npx --yes "kitten@$VERSION" --self-check')
+    expect(commands).toContain('npx --yes "@matheusbbarni/kitten@$VERSION" --version')
+    expect(commands).toContain('npx --yes "@matheusbbarni/kitten@$VERSION" --self-check')
     expect(uses).toContain("actions/setup-node@v4")
     expect(uses).not.toContain("setup-bun")
   })
 
-  it("guards workflow_dispatch from attaching an expected asset twice", () => {
+  it("guards workflow_dispatch with the component tag and supports publish-only recovery without asset replacement", () => {
     expect(workflow.on.workflow_dispatch).toEqual({
       inputs: {
         tag_name: {
-          description: "Existing GitHub Release tag to rebuild and publish",
+          description: "Existing Kitten release tag to rebuild and publish",
           required: true,
           type: "string",
+        },
+        publish_only: {
+          description: "Publish npm packages without replacing already-attached release assets",
+          required: false,
+          default: false,
+          type: "boolean",
         },
       },
     })
 
     const fallback = releasePlease.steps?.find((step) => step.id === "fallback")
     expect(fallback?.if).toBe("github.event_name == 'workflow_dispatch'")
+    expect(fallback?.run).toContain('^kitten-v[0-9]+\\.[0-9]+\\.[0-9]+$')
+    expect(fallback?.run).toContain('version="${TAG_NAME#kitten-v}"')
     expect(fallback?.run).toContain('gh release view "$TAG_NAME"')
-    expect(fallback?.run).toContain('npm view "kitten@$version" version')
+    expect(fallback?.run).toContain('npm view "@matheusbbarni/kitten@$version" version')
     expect(fallback?.run).toContain("expected_assets=(")
     expect(fallback?.run).toContain('grep -Fqx "$asset"')
+    expect(fallback?.run).toContain('if [[ "$PUBLISH_ONLY" == "true" && "$asset_exists" != "true" ]]')
+    expect(fallback?.run).toContain('if [[ "$PUBLISH_ONLY" != "true" && "$asset_exists" == "true" ]]')
     expect(fallback?.run).toContain('echo "release_created=true" >> "$GITHUB_OUTPUT"')
+    expect(fallback?.run).toContain('echo "publish_only=$PUBLISH_ONLY" >> "$GITHUB_OUTPUT"')
+  })
+
+  it("derives the semver from the validated release-please kitten-v tag before publishing", () => {
+    const versionStep = publish.steps?.find((step) => step.name === "Validate the release version")
+    expect(versionStep?.run).toContain('^kitten-v[0-9]+\\.[0-9]+\\.[0-9]+$')
+    expect(versionStep?.run).toContain('tag_version="${TAG_NAME#kitten-v}"')
   })
 
   it("keeps ordinary pushes release-only and references no elevated or npm token", () => {

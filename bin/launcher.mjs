@@ -1,4 +1,5 @@
 export const RELEASE_URL = "https://github.com/MatheusBBarni/Kitten/releases"
+export const NPM_PACKAGE_NAME = "@matheusbbarni/kitten"
 
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"])
 const SUPPORTED_ARCHES = new Set(["arm64", "x64"])
@@ -11,7 +12,7 @@ export function platformSlug(platform, arch) {
 
 /** Return the resolvable binary subpath inside a platform package. */
 export function platformBinarySpecifier(slug) {
-  return `@kitten/${slug}/kitten-${slug}`
+  return `${NPM_PACKAGE_NAME}-${slug}/kitten-${slug}`
 }
 
 /**

@@ -120,7 +120,7 @@ describe("platformPackageManifest", () => {
     ) as Record<string, unknown>
 
     expect(manifest).toEqual({
-      name: "@kitten/darwin-arm64",
+      name: "@matheusbbarni/kitten-darwin-arm64",
       version: "1.2.3",
       os: ["darwin"],
       cpu: ["arm64"],
@@ -141,10 +141,10 @@ describe("platformPackageManifest", () => {
     })
 
     expect(metadata).toEqual([
-      ["darwin-arm64", "@kitten/darwin-arm64", "darwin", "arm64"],
-      ["darwin-x64", "@kitten/darwin-x64", "darwin", "x64"],
-      ["linux-x64", "@kitten/linux-x64", "linux", "x64"],
-      ["linux-arm64", "@kitten/linux-arm64", "linux", "arm64"],
+      ["darwin-arm64", "@matheusbbarni/kitten-darwin-arm64", "darwin", "arm64"],
+      ["darwin-x64", "@matheusbbarni/kitten-darwin-x64", "darwin", "x64"],
+      ["linux-x64", "@matheusbbarni/kitten-linux-x64", "linux", "x64"],
+      ["linux-arm64", "@matheusbbarni/kitten-linux-arm64", "linux", "arm64"],
     ])
   })
 })
@@ -169,8 +169,8 @@ describe("writePlatformPackage", () => {
 
       expect(platformPackage).toEqual({
         target,
-        dir: join(dir, "npm", "@kitten", "linux-x64"),
-        name: "@kitten/linux-x64",
+        dir: join(dir, "npm", "@matheusbbarni", "kitten-linux-x64"),
+        name: "@matheusbbarni/kitten-linux-x64",
       })
       expect(writes.map((write) => write.path)).toEqual([
         join(platformPackage.dir, "package.json"),
@@ -272,7 +272,7 @@ describe("buildAll", () => {
       expect(packageWrites.filter((write) => !write.path.endsWith("package.json"))).toHaveLength(4)
       for (const target of BUILD_TARGETS) {
         expect(packageWrites.map((write) => write.path)).toContain(
-          join(dir, "npm", "@kitten", target.platform, artifactName(target)),
+          join(dir, "npm", "@matheusbbarni", `kitten-${target.platform}`, artifactName(target)),
         )
       }
     } finally {

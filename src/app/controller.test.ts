@@ -1131,6 +1131,11 @@ describe("createSessionController - persisted restore", () => {
       liveCount: 2,
     })
     expect(records.filter((record) => record.type === "resume_pane_unavailable")).toHaveLength(0)
+    expect(records.find((record) => record.type === "tab_restore")).toMatchObject({
+      visibleCountBucket: "two_to_four",
+      backgroundCountBucket: "zero",
+      unavailableCountBucket: "zero",
+    })
     await controller.dispose()
   })
 
@@ -1158,6 +1163,11 @@ describe("createSessionController - persisted restore", () => {
     expect(records.find((record) => record.type === "session_resumed")).toMatchObject({
       mode: "last-run",
       liveCount: 1,
+    })
+    expect(records.find((record) => record.type === "tab_restore")).toMatchObject({
+      visibleCountBucket: "two_to_four",
+      backgroundCountBucket: "zero",
+      unavailableCountBucket: "one",
     })
     expect(JSON.stringify(records)).not.toContain("continue codex")
     await controller.dispose()

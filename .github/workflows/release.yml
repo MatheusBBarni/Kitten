@@ -8,9 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing GitHub Release tag to rebuild and publish
+        description: Existing Kitten release tag to rebuild and publish
         required: true
         type: string
+      publish_only:
+        description: Publish npm packages without replacing already-attached release assets
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -24,6 +29,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created || steps.fallback.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name || steps.fallback.outputs.tag_name }}
+      publish_only: ${{ steps.fallback.outputs.publish_only || 'false' }}
     steps:
       - name: Run release-please
         id: release
@@ -39,18 +45,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.tag_name }}
+          PUBLISH_ONLY: ${{ inputs.publish_only }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::tag_name must be a stable release tag such as v1.2.3"
+          if [[ ! "$TAG_NAME" =~ ^kitten-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag_name must be a stable Kitten release tag such as kitten-v1.2.3"
             exit 1
           fi
 
-          version="${TAG_NAME#v}"
-          if npm view "kitten@$version" version >/dev/null 2>&1; then
-            echo "::error::kitten@$version is already published; refusing an immutable npm republish"
+          version="${TAG_NAME#kitten-v}"
+          if npm view "@matheusbbarni/kitten@$version" version >/dev/null 2>&1; then
+            echo "::error::@matheusbbarni/kitten@$version is already published; refusing an immutable npm republish"
             exit 1
           fi
 
@@ -70,14 +77,24 @@ jobs:
           )
 
           for asset in "${expected_assets[@]}"; do
+            asset_exists=false
             if printf '%s\n' "${existing_assets[@]}" | grep -Fqx "$asset"; then
-              echo "::error::$TAG_NAME already contains $asset; refusing to attach release assets twice"
+              asset_exists=true
+            fi
+
+            if [[ "$PUBLISH_ONLY" == "true" && "$asset_exists" != "true" ]]; then
+              echo "::error::$TAG_NAME is missing $asset; publish-only recovery requires every release asset"
+              exit 1
+            fi
+            if [[ "$PUBLISH_ONLY" != "true" && "$asset_exists" == "true" ]]; then
+              echo "::error::$TAG_NAME already contains $asset; use publish_only to recover npm publishing"
               exit 1
             fi
           done
 
           echo "release_created=true" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "publish_only=$PUBLISH_ONLY" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.platform }}
@@ -128,12 +145,12 @@ jobs:
           path: |
             dist/kitten-${{ matrix.platform }}
             dist/kitten-${{ matrix.platform }}.sha256
-            dist/npm/@kitten/${{ matrix.platform }}
+            dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}
 
   attach:
     name: Attach binaries and SHA256SUMS
     needs: [release_please, build]
-    if: needs.release_please.outputs.release_created == 'true'
+    if: needs.release_please.outputs.release_created == 'true' && needs.release_please.outputs.publish_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -174,7 +191,7 @@ jobs:
   publish:
     name: Publish npm packages with provenance
     needs: [release_please, build, attach]
-    if: needs.release_please.outputs.release_created == 'true'
+    if: always() && needs.release_please.outputs.release_created == 'true' && needs.build.result == 'success' && (needs.attach.result == 'success' || needs.attach.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -217,7 +234,11 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          tag_version="${TAG_NAME#v}"
+          if [[ ! "$TAG_NAME" =~ ^kitten-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release tag must be a stable Kitten release tag such as kitten-v1.2.3"
+            exit 1
+          fi
+          tag_version="${TAG_NAME#kitten-v}"
           if [[ "$version" != "$tag_version" ]]; then
             echo "::error::package version $version does not match release tag $TAG_NAME"
             exit 1
@@ -231,10 +252,10 @@ jobs:
         run: |
           set -euo pipefail
           for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
-            package_dir="staging/kitten-$platform/npm/@kitten/$platform"
+            package_dir="staging/kitten-$platform/npm/@matheusbbarni/kitten-$platform"
             binary="$package_dir/kitten-$platform"
             if [[ ! -f "$package_dir/package.json" || ! -f "$binary" ]]; then
-              echo "::error::missing staged npm package for @kitten/$platform"
+              echo "::error::missing staged npm package for @matheusbbarni/kitten-$platform"
               exit 1
             fi
 
@@ -247,7 +268,7 @@ jobs:
                   "; expected " + expectedName + "@" + expectedVersion,
                 )
               }
-            ' "$package_dir/package.json" "@kitten/$platform" "$VERSION"
+            ' "$package_dir/package.json" "@matheusbbarni/kitten-$platform" "$VERSION"
 
             # Artifact transfer normalizes modes; npm must receive an executable.
             chmod +x "$package_dir/kitten-$platform"
@@ -269,7 +290,7 @@ jobs:
             throw new Error(`package version ${pkg.version} does not match ${version}`)
           }
           for (const platform of platforms) {
-            const name = `@kitten/${platform}`
+            const name = `@matheusbbarni/kitten-${platform}`
             pkg.optionalDependencies[name] = version
           }
           fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
@@ -319,13 +340,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${TAG_NAME#v}"
+          version="${TAG_NAME#kitten-v}"
           for attempt in {1..12}; do
-            if [[ "$(npm view "kitten@$version" version 2>/dev/null || true)" == "$version" ]]; then
+            if [[ "$(npm view "@matheusbbarni/kitten@$version" version 2>/dev/null || true)" == "$version" ]]; then
               exit 0
             fi
             if [[ "$attempt" == 12 ]]; then
-              echo "::error::kitten@$version did not become visible on npm"
+              echo "::error::@matheusbbarni/kitten@$version did not become visible on npm"
               exit 1
             fi
             sleep 10
@@ -337,17 +358,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${TAG_NAME#v}"
-          actual_version="$(npx --yes "kitten@$VERSION" --version)"
+          VERSION="${TAG_NAME#kitten-v}"
+          actual_version="$(npx --yes "@matheusbbarni/kitten@$VERSION" --version)"
           if [[ "$actual_version" != "$VERSION" ]]; then
-            echo "::error::kitten reported $actual_version; expected $VERSION"
+            echo "::error::@matheusbbarni/kitten reported $actual_version; expected $VERSION"
             exit 1
           fi
-          npx --yes "kitten@$VERSION" --self-check
+          npx --yes "@matheusbbarni/kitten@$VERSION" --self-check
 
           audit_dir="$RUNNER_TEMP/kitten-signature-audit"
           mkdir -p "$audit_dir"
           cd "$audit_dir"
           npm init --yes >/dev/null
-          npm install --ignore-scripts "kitten@$VERSION"
+          npm install --ignore-scripts "@matheusbbarni/kitten@$VERSION"
           npm audit signatures

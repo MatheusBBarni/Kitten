@@ -16,7 +16,7 @@ describe("Node launcher", () => {
   })
 
   it("builds the platform package binary subpath", () => {
-    expect(platformBinarySpecifier("linux-x64")).toBe("@kitten/linux-x64/kitten-linux-x64")
+    expect(platformBinarySpecifier("linux-x64")).toBe("@matheusbbarni/kitten-linux-x64/kitten-linux-x64")
   })
 
   it("resolves the host package and forwards argv, stdio, and exit status", () => {
@@ -40,7 +40,7 @@ describe("Node launcher", () => {
 
     expect(exitCode).toBe(7)
     expect(calls).toEqual([
-      ["resolve", "@kitten/linux-x64/kitten-linux-x64"],
+      ["resolve", "@matheusbbarni/kitten-linux-x64/kitten-linux-x64"],
       ["spawn", "/packages/kitten-linux-x64", ["--version"], { stdio: "inherit" }],
     ])
   })

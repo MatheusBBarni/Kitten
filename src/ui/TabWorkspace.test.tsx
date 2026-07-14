@@ -10,10 +10,10 @@ import { createAppStore } from "../store/appStore.ts"
 import { selectVisibleTabs, type WorkspaceConversationView } from "../store/selectors.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { SESSION_MARKER, SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import {
   layoutTabStrip,
   SHARED_WORKSPACE_LABEL,
+  NEW_TAB_LABEL,
   TAB_MARKER,
   TAB_OVERFLOW_LABEL,
   TAB_SELECTED_MARKER,
@@ -89,6 +89,7 @@ describe("TabWorkspace presentation", () => {
     expect(frame.indexOf("Session 1")).toBeLessThan(frame.indexOf("Session 5"))
     expect(frame).toContain(TAB_SELECTED_MARKER)
     expect(frame).toContain(TAB_MARKER)
+    expect(frame).toContain(NEW_TAB_LABEL)
     for (const cue of ["idle", "working", "approval", "error", "finished"]) expect(frame).toContain(cue)
 
     await destroyMounted(setup.renderer)
@@ -130,6 +131,7 @@ describe("TabWorkspace presentation", () => {
     expect(layout.hiddenCount).toBe(tabs.length - layout.visible.length)
     expect(layout.overflowLabel).toContain(TAB_OVERFLOW_LABEL)
     expect(layout.overflowLabel).toContain("bg 1")
+    expect(layout.newTabVisible).toBeFalse()
   })
 
   it("does not publish a tab-list change when only transcript content streams", () => {
@@ -142,58 +144,38 @@ describe("TabWorkspace presentation", () => {
     expect(notifications).toBe(0)
     stop()
   })
-})
 
-describe("mounted cockpit tab integration", () => {
-  it("mouse-selects a different transcript while background work remains live", async () => {
-    const { seeds, runtimes } = fleet(3)
-    const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
-    controller.store.applyEvent("s1", { kind: "user_message", messageId: "one", text: "first transcript" })
-    controller.store.applyEvent("s2", { kind: "user_message", messageId: "two", text: "second transcript" })
-    controller.store.backgroundConversation("s3")
-    const setup = await testRender(<CockpitApp controller={controller} welcomeBannerVariant="none" />, {
-      width: 100,
-      height: 20,
-      kittyKeyboard: true,
-    })
-    const first = await setup.waitForFrame((frame) => frame.includes("first transcript"))
-    const point = pointOf(first, `${TAB_MARKER} Session 2`)
+  it("creates a new tab from the visible tab-strip affordance", async () => {
+    const controller = createFakeController()
+    const setup = await renderStrip(controller)
+    const point = pointOf(setup.captureCharFrame(), NEW_TAB_LABEL)
 
     await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
-    const selected = await setup.waitForFrame((frame) => frame.includes("second transcript"))
-    controller.store.applyEvent("s3", { kind: "agent_message", messageId: "bg", textDelta: "still live" })
+    await setup.waitFor(() => controller.calls.createConversation === 1)
 
-    expect(selected).not.toContain("first transcript")
-    expect(controller.store.getState().sessions.s3?.turns[0]).toMatchObject({ text: "still live" })
-    expect(controller.store.getState().workspace.conversations.s3?.lifecycle).toBe("background")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("fake-created-1")
     await destroyMounted(setup.renderer)
   })
+})
 
-  it("keeps a single-row strip after resize and reaches every hidden conversation via Sessions", async () => {
+describe("mounted cockpit tab navigation", () => {
+  it("keeps visible tabs in the cockpit frame with direct mouse navigation", async () => {
     const { seeds, runtimes } = fleet(4)
     const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
     const setup = await testRender(<CockpitApp controller={controller} />, {
-      width: 100,
+      width: 240,
       height: 20,
       kittyKeyboard: true,
     })
-    await setup.waitForFrame((frame) => frame.includes("Session 1"))
 
-    await actAsync(() => setup.resize(38, 20))
-    const narrow = await setup.waitForFrame((frame) => frame.includes(TAB_OVERFLOW_LABEL))
-    const tabRows = narrow.split("\n").filter((line) => line.includes(TAB_SELECTED_MARKER) || line.includes(TAB_MARKER))
-    expect(tabRows.length).toBeLessThanOrEqual(1)
+    const cockpit = await setup.waitForFrame((frame) => frame.includes("Kitten"))
+    expect(cockpit).toContain(`${TAB_SELECTED_MARKER} Session 1`)
+    expect(cockpit).toContain(`${TAB_MARKER} Session 2`)
 
-    const point = pointOf(narrow, TAB_OVERFLOW_LABEL)
+    const point = pointOf(cockpit, `${TAB_MARKER} Session 2`)
     await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
-    await setup.waitForFrame((frame) => frame.includes(SESSIONS_TITLE) && frame.includes("Session 1"))
-    await actAsync(() => {
-      for (let index = 1; index < seeds.length; index += 1) setup.mockInput.pressArrow("down")
-    })
-    const overlay = await setup.waitForFrame((frame) =>
-      frame.split("\n").some((line) => line.includes("Session 4") && line.includes(SESSION_MARKER)),
-    )
-    expect(overlay).toContain("Esc close")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("s2")
+    expect(controller.calls.selectConversationOptions).toEqual([{ source: "mouse" }])
 
     await destroyMounted(setup.renderer)
   })

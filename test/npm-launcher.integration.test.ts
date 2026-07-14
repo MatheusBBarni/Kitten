@@ -45,7 +45,7 @@ describe("local npm launcher install", () => {
       )
       if (install.exitCode !== 0) throw commandError("local npm install", install)
 
-      const launcher = join(installDir, "node_modules", "kitten", "bin", "kitten.mjs")
+      const launcher = join(installDir, "node_modules", "@matheusbbarni", "kitten", "bin", "kitten.mjs")
       const installedBins = await readdir(join(installDir, "node_modules", ".bin"))
       expect(installedBins).toContain("kitten")
 
