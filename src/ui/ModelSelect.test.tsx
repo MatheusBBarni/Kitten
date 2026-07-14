@@ -289,6 +289,8 @@ describe("ModelSelect visibility and content", () => {
       setup.mockInput.pressTab()
     })
     const codex = await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor("Codex")))
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(controller.calls.selectConversationOptions).toEqual([{ source: "model_select" }])
     expect(codex).toContain(`${TAB_MARKER} Codex`)
     expect(codex).toContain("Terra")
     expect(codex).toContain("Luna")
@@ -302,6 +304,11 @@ describe("ModelSelect visibility and content", () => {
       setup.mockInput.pressTab({ shift: true })
     })
     const backOnClaude = await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor("Claude")))
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(controller.calls.selectConversationOptions).toEqual([
+      { source: "model_select" },
+      { source: "model_select" },
+    ])
     expect(backOnClaude).toContain(`${TAB_MARKER} Claude`)
     expect(backOnClaude).toContain("Sonnet")
     await actAsync(() => {

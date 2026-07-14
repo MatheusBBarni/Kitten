@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { RGBA } from "@opentui/core"
+import { RGBA, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 import { Profiler } from "react"
@@ -26,16 +26,18 @@ import {
 } from "./FileSelector.tsx"
 import {
   PROMPT_DISABLED_PLACEHOLDER,
-  PROMPT_DISABLED_TITLE,
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
-  PROMPT_TITLE,
   PROMPT_WORKSPACE_TITLE,
+  MAX_EDITOR_ROWS,
+  MAX_SLASH_MENU_ROWS,
   PromptEditor,
+  cockpitCommandForDraft,
   slashMenuRows,
   slashTokenAt,
 } from "./PromptEditor.tsx"
-import type { CockpitCommand } from "./keymap.ts"
+import { COCKPIT_COMMANDS, type CockpitCommand } from "./keymap.ts"
+import { SLASH_MENU_ID, SLASH_MENU_SCROLLBOX_ID } from "./SlashMenu.tsx"
 import { DARK_PALETTE } from "./theme.ts"
 
 /**
@@ -67,8 +69,8 @@ async function renderEditor(
     { width: 64, height, kittyKeyboard: true },
   )
   await setup.waitForFrame((frame) =>
-    frame.includes(PROMPT_TITLE) ||
-    frame.includes(PROMPT_DISABLED_TITLE) ||
+    frame.includes(PROMPT_PLACEHOLDER) ||
+    frame.includes(PROMPT_DISABLED_PLACEHOLDER) ||
     frame.includes(PROMPT_WORKSPACE_TITLE),
   )
   return setup
@@ -174,6 +176,7 @@ describe("PromptEditor presentation", () => {
     const contentLine = frame.split("\n").find((line) => line.includes(PROMPT_PLACEHOLDER))
 
     expect(frame).toContain("╭")
+    expect(frame).not.toContain("Prompt")
     expect(contentLine).toBeDefined()
     expect(contentLine).toContain(PROMPT_CHEVRON)
     expect(contentLine!.indexOf(PROMPT_CHEVRON)).toBeGreaterThan(contentLine!.indexOf("│") + 1)
@@ -281,6 +284,21 @@ describe("PromptEditor submit", () => {
 
     await destroyMounted(setup.renderer)
   })
+
+  it("caps a long multiline draft and keeps the remaining text in the editor", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller, 20)
+    const draft = Array.from({ length: MAX_EDITOR_ROWS + 3 }, (_, index) => `line ${index}`).join("\n")
+
+    await actAsync(() => {
+      setup.renderer.currentFocusedEditor!.setText(draft)
+    })
+    await setup.waitFor(() => setup.renderer.currentFocusedEditor?.height === MAX_EDITOR_ROWS)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe(draft)
+    expect(setup.renderer.currentFocusedEditor?.height).toBe(MAX_EDITOR_ROWS)
+    await destroyMounted(setup.renderer)
+  })
 })
 
 describe("PromptEditor interrupt", () => {
@@ -345,22 +363,67 @@ describe("PromptEditor slash commands", () => {
     expect(slashTokenAt("/review ", 8)).toBeNull()
   })
 
+  it("recognizes only complete cockpit-command drafts for immediate submission", () => {
+    expect(cockpitCommandForDraft("/sessions", 9)).toBe("sessions")
+    expect(cockpitCommandForDraft("/new", 4)).toBe("start-new-run")
+    expect(cockpitCommandForDraft("/clear", 6)).toBe("clear-run")
+    expect(cockpitCommandForDraft("/model ", 7)).toBe("model-select")
+    expect(cockpitCommandForDraft("/review", 7)).toBeNull()
+    expect(cockpitCommandForDraft("/sessions now", 13)).toBeNull()
+  })
+
   it("produces no candidates for an unmatched token", () => {
     expect(slashMenuRows("xyz", agentCommands)).toEqual([])
   })
 
-  it("opens with the Cockpit group first, hand-off on top, and agent commands below", async () => {
+  it("opens with the Cockpit group first and hand-off on top", async () => {
     const controller = createFakeController()
     seedAgentCommands(controller)
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff", "Agent commands", "/review")
+    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff")
 
-    expect(menu.indexOf("Cockpit")).toBeLessThan(menu.indexOf("Agent commands"))
     expect(menu.indexOf("/handoff")).toBeLessThan(menu.indexOf("/shell"))
     expect(menu).toContain("▸ /handoff")
     expect(selectHasOpenOverlay(controller.store.getState())).toBeFalse()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("caps a long command palette at a compact scrolling height", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "Cockpit")
+    const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
+    const scrollbox = setup.renderer.root.findDescendantById(SLASH_MENU_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(menu?.height).toBe(MAX_SLASH_MENU_ROWS)
+    expect(scrollbox?.height).toBe(menu!.height - 2)
+    expect(scrollbox?.verticalScrollBar.height).toBe(scrollbox?.height)
+    expect(scrollbox?.verticalScrollBar.y).toBe(scrollbox?.y)
+    expect(scrollbox?.scrollTop).toBe(0)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("scrolls a compact command palette to off-screen agent commands", async () => {
+    const controller = createFakeController()
+    seedAgentCommands(controller)
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands", "Cockpit", "▸ /handoff")
+    await actAsync(() => {
+      for (let index = 0; index < COCKPIT_COMMANDS.length; index++) {
+        setup.mockInput.pressArrow("down")
+      }
+    })
+
+    const scrolled = await frameWith(setup, "Agent commands", "▸ /review")
+    expect(scrolled).not.toContain("▸ /handoff")
 
     await destroyMounted(setup.renderer)
   })
@@ -405,6 +468,36 @@ describe("PromptEditor slash commands", () => {
     expect(controller.calls.sendPrompt).toEqual([])
     expect(await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).not.toContain("/handoff")
 
+    await destroyMounted(setup.renderer)
+  })
+
+  it("runs a complete cockpit draft through the same submission path as an armed menu", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
+
+    await type(setup, "/sessions")
+    await pressEnter(setup)
+
+    await setup.waitFor(() => dispatched.length === 1)
+    expect(dispatched).toEqual(["sessions"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("runs a cockpit draft with trailing whitespace instead of sending it to the agent", async () => {
+    const controller = createFakeController()
+    const dispatched: CockpitCommand[] = []
+    const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
+
+    await type(setup, "/model ")
+    await pressEnter(setup)
+
+    await setup.waitFor(() => dispatched.length === 1)
+    expect(dispatched).toEqual(["model-select"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
     await destroyMounted(setup.renderer)
   })
 
@@ -455,11 +548,11 @@ describe("PromptEditor slash commands", () => {
       </CockpitProvider>,
       { width: 64, height: 32, kittyKeyboard: true },
     )
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
     const baselineCommits = transcriptCommits
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "/handoff", "/review")
+    await frameWith(setup, "Commands", "Cockpit", "/handoff")
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
       setup.mockInput.pressArrow("down")
@@ -738,7 +831,7 @@ describe("PromptEditor @ file completion", () => {
     runtimes[0]!.ready = true
     await actAsync(() => controller.actions.switchFocus("codex"))
     await actAsync(() => controller.actions.switchFocus("claude-code"))
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE) && !frame.includes(PROMPT_DISABLED_TITLE))
+    await setup.waitForFrame((frame) => frame.includes("@src/a.ts") && !frame.includes(PROMPT_DISABLED_PLACEHOLDER))
     await pressEnter(setup)
     expect(sentText(controller)).toBe("@src/a.ts ")
 
@@ -953,7 +1046,7 @@ describe("PromptEditor readiness gate", () => {
     const setup = await renderEditor(controller)
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain(PROMPT_DISABLED_TITLE)
+    expect(frame).not.toContain("Prompt")
     expect(frame).toContain(PROMPT_DISABLED_PLACEHOLDER)
     expect(foregroundOf(setup, "╭")).toBe(paletteColor(DARK_PALETTE.status.not_ready))
 
@@ -975,7 +1068,7 @@ describe("PromptEditor readiness gate", () => {
     await actAsync(() => {
       controller.actions.switchFocus("codex")
     })
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    await setup.waitForFrame((frame) => frame.includes("ping") && !frame.includes(PROMPT_DISABLED_PLACEHOLDER))
 
     await pressEnter(setup)
     expect(sentText(controller)).toBe("ping")

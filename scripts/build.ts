@@ -58,6 +58,14 @@ export const TREE_SITTER_WORKER_ENTRYPOINT = "./node_modules/@opentui/core/parse
 /** Where the artifacts and the checksum manifest are written. */
 export const OUTPUT_DIR = "dist"
 
+/** npm namespace controlled by the Kitten maintainer. */
+export const NPM_SCOPE = "@matheusbbarni"
+
+/** Return the public npm package name that contains one native binary. */
+export function platformPackageName(platform: string): string {
+  return `${NPM_SCOPE}/kitten-${platform}`
+}
+
 /** The checksum manifest file name (BSD/coreutils `sha256sum -c` compatible). */
 export const CHECKSUM_MANIFEST = "SHA256SUMS"
 
@@ -224,7 +232,7 @@ export function platformPackageManifest(target: BuildTarget, version: string): s
 
   return `${JSON.stringify(
     {
-      name: `@kitten/${target.platform}`,
+      name: platformPackageName(target.platform),
       version,
       os: [metadata.os],
       cpu: [metadata.cpu],
@@ -242,8 +250,8 @@ export async function writePlatformPackage(
   outDir: string,
   write: FileWriter = defaultWrite,
 ): Promise<PlatformPackage> {
-  const name = `@kitten/${artifact.target.platform}`
-  const dir = join(outDir, "@kitten", artifact.target.platform)
+  const name = platformPackageName(artifact.target.platform)
+  const dir = join(outDir, NPM_SCOPE, `kitten-${artifact.target.platform}`)
   const binaryPath = join(dir, artifactName(artifact.target))
 
   await write(join(dir, "package.json"), platformPackageManifest(artifact.target, version))

@@ -26,6 +26,7 @@
  */
 
 import type { EditBufferRenderable, KeyEvent, TextareaRenderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { AvailableCommand, SessionId } from "../core/types.ts"
@@ -65,11 +66,8 @@ import {
 import { SlashMenu, type MenuRow, type SlashMenuGroup } from "./SlashMenu.tsx"
 import { usePalette } from "./theme.ts"
 
-/** The composer's frame title while the focused agent can accept a prompt. */
-export const PROMPT_TITLE = "Prompt"
-
-/** The composer's frame title while the focused agent cannot accept anything. */
-export const PROMPT_DISABLED_TITLE = "Prompt (agent unavailable)"
+/** The composer's only visible title is a temporary prompt-history position. */
+export const PROMPT_HISTORY_TITLE = "History"
 
 /** The empty-editor hint while the focused agent is ready. */
 export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc interrupts"
@@ -77,8 +75,8 @@ export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc int
 /** The empty-editor hint while the focused agent is not ready. */
 export const PROMPT_DISABLED_PLACEHOLDER = "Switch to a ready agent to send a prompt"
 
-/** The composer's frame title when the workspace has no selected Visible conversation. */
-export const PROMPT_WORKSPACE_TITLE = "Prompt (select a conversation)"
+/** The empty-workspace title is explicit without occupying the composer label. */
+export const PROMPT_WORKSPACE_TITLE = "Select a conversation"
 
 /** Empty-workspace feedback shown in place of an editable input. */
 export const PROMPT_WORKSPACE_PLACEHOLDER = "Select a visible conversation to send a prompt"
@@ -101,7 +99,10 @@ const NOOP_RUN_COMMAND = (_command: CockpitCommand): void => {}
 export const MIN_EDITOR_ROWS = 2
 
 /** How tall the editor may grow before it scrolls its own content. */
-export const MAX_EDITOR_ROWS = 8
+export const MAX_EDITOR_ROWS = 5
+
+/** Keep command discovery compact; longer result sets scroll inside this viewport. */
+export const MAX_SLASH_MENU_ROWS = 16
 
 /** Clamp the editor's height to the lines its draft holds, within the budget. */
 function editorRows(lines: number): number {
@@ -168,6 +169,23 @@ export function slashTokenAt(text: string, cursorOffset: number): SlashToken | n
   const token = text.slice(start, end)
   if (cursor === start || !token.startsWith("/") || token.indexOf("/", 1) !== -1) return null
   return { start, end, filter: token.slice(1) }
+}
+
+/**
+ * Resolve a complete cockpit command directly from the editor buffer.
+ *
+ * The menu normally owns Enter. This exact-draft fallback covers the tiny interval
+ * where native textarea submission arrives before React has committed the menu state,
+ * without claiming agent commands or slash text with arguments. Trailing whitespace
+ * is accepted because it dismisses the menu while the developer still intends to run
+ * the cockpit command.
+ */
+export function cockpitCommandForDraft(text: string, cursorOffset: number): CockpitCommand | null {
+  if (cursorOffset !== text.length) return null
+  const commandEnd = text.trimEnd().length
+  const token = slashTokenAt(text.slice(0, commandEnd), commandEnd)
+  if (!token || token.start !== 0 || token.end !== commandEnd) return null
+  return COCKPIT_COMMANDS.find((command) => command.name === token.filter)?.command ?? null
 }
 
 /** Build the deterministic cockpit-first command rows, filtering a slash token. */
@@ -291,6 +309,7 @@ function SelectedPromptEditor({
 }): ReactNode {
   const controller = useController()
   const palette = usePalette()
+  const { height: terminalHeight } = useTerminalDimensions()
 
   // Curried selectors build a new function per call; memoize so the subscription
   // follows focus rather than tearing down and rebuilding on every render.
@@ -611,9 +630,25 @@ function SelectedPromptEditor({
 
   const submit = useCallback((): void => {
     const editor = textarea.current
-    if (!editor || !ready || restorationContextOpen) return
+    if (!editor) return
 
     const text = editor.plainText
+    const cockpitCommand = cockpitCommandForDraft(text, editor.cursorOffset)
+    if (cockpitCommand !== null) {
+      acceptingFileReference.current = true
+      editor.clear()
+      previousDraft.current = ""
+      acceptingFileReference.current = false
+      activeFileInteraction.current = null
+      fileSuppression.current = null
+      pendingQueryRenderMetric.current = null
+      commitCompletion(null)
+      setRows(MIN_EDITOR_ROWS)
+      onRunCommand(cockpitCommand)
+      return
+    }
+    if (!ready || restorationContextOpen) return
+
     // A stray Enter on an empty or whitespace-only buffer must not start a turn.
     if (text.trim().length === 0) return
 
@@ -634,7 +669,7 @@ function SelectedPromptEditor({
     acceptingFileReference.current = false
     setRows(MIN_EDITOR_ROWS)
     void controller.actions.sendPrompt(text)
-  }, [commitCompletion, controller, focusedSessionId, ready, restorationContextOpen])
+  }, [commitCompletion, controller, focusedSessionId, onRunCommand, ready, restorationContextOpen])
 
   const selectSlashMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current
@@ -887,14 +922,19 @@ function SelectedPromptEditor({
       }}
       title={
         ready && promptHistory.cursor !== null
-          ? `${PROMPT_TITLE} · History ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
-          : ready ? PROMPT_TITLE : PROMPT_DISABLED_TITLE
+          ? `${PROMPT_HISTORY_TITLE} ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
+          : undefined
       }
-      titleColor={ready ? palette.accent : palette.status.not_ready}
+      titleColor={palette.accent}
     >
       {armedSlashMenu ? (
         <box style={{ position: "absolute", left: 0, right: 0, bottom: rows + 2, zIndex: 1 }}>
-          <SlashMenu groups={menuGroups(matchingRows)} highlightedIndex={slashHighlight} onSelect={selectSlashMenuRow} />
+          <SlashMenu
+            groups={menuGroups(matchingRows)}
+            highlightedIndex={slashHighlight}
+            maxHeight={Math.max(1, Math.min(MAX_SLASH_MENU_ROWS, terminalHeight - rows - 5))}
+            onSelect={selectSlashMenuRow}
+          />
         </box>
       ) : fileCompletion ? (
         <box

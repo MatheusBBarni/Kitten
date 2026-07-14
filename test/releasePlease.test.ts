@@ -5,10 +5,10 @@ import pkg from "../package.json" with { type: "json" }
 import config from "../release-please-config.json" with { type: "json" }
 
 const PLATFORM_PACKAGES = [
-  "@kitten/darwin-arm64",
-  "@kitten/darwin-x64",
-  "@kitten/linux-arm64",
-  "@kitten/linux-x64",
+  "@matheusbbarni/kitten-darwin-arm64",
+  "@matheusbbarni/kitten-darwin-x64",
+  "@matheusbbarni/kitten-linux-arm64",
+  "@matheusbbarni/kitten-linux-x64",
 ] as const
 
 describe("release-please configuration", () => {

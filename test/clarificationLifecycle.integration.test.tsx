@@ -477,7 +477,11 @@ describe("clarification lifecycle integration", () => {
       expect(state.workspace.conversations.codex?.lifecycle).toBe("background")
       expect(state.sessions.codex?.status).toBe("awaiting_clarification")
       expect(selectNextNeedy("claude-code")(state)).toBe("codex")
-      expect(frame).toContain(STATUS_LABELS.awaiting_clarification)
+      expect(selectSessionList(state).find((item) => item.id === "codex")).toMatchObject({
+        lifecycle: "background",
+        status: "awaiting_clarification",
+        needsAttention: true,
+      })
       expect(bells).toBe(1)
       expect(notifications).toEqual([{
         title: "Background",

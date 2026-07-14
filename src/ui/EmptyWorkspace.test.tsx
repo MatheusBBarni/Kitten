@@ -17,7 +17,7 @@ import {
   NO_PROVIDER_NOTICE,
 } from "./EmptyWorkspace.tsx"
 import { MODEL_SELECT_HINT } from "./keymap.ts"
-import { PROMPT_TITLE, PROMPT_WORKSPACE_TITLE } from "./PromptEditor.tsx"
+import { PROMPT_PLACEHOLDER, PROMPT_WORKSPACE_TITLE } from "./PromptEditor.tsx"
 import { BACKGROUND_STATUS_LABEL, EMPTY_WORKSPACE_STATUS_LABEL } from "./StatusStrip.tsx"
 
 function pointOf(frame: string, text: string): { x: number; y: number } {
@@ -121,7 +121,7 @@ describe("EmptyWorkspace", () => {
     expect(controller.calls.cancel).toEqual([])
 
     await actAsync(() => controller.actions.reopenConversation("bg"))
-    await setup.waitForFrame((frame) => frame.includes(PROMPT_TITLE))
+    await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
     await actAsync(async () => {
       await setup.mockInput.typeText("continue background work")
       setup.mockInput.pressEnter()

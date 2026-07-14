@@ -44,6 +44,7 @@ import {
   type ResumeLiveCount,
   type ResumeMode,
   type SessionResumedInput,
+  type TabRestoreInput,
   type ClarificationCapabilityDiagnostic,
   type ClarificationSessionLossReason,
   type UsageSeenSink,
@@ -68,6 +69,7 @@ export interface ControllerTelemetry extends ActionTelemetry {
   resumeLoadStarted?(): void
   sessionResumed?(input: SessionResumedInput): void
   resumePaneUnavailable?(sessionId: SessionId): void
+  tabRestore?(input: TabRestoreInput): void
   clarificationCapabilityClassified?(
     provider: ProviderKind,
     capability: "supported" | "unsupported",
@@ -1237,6 +1239,18 @@ export async function createSessionController(options: SessionControllerOptions)
       }
       const liveCount: ResumeLiveCount = live <= 0 ? 0 : live === 1 ? 1 : 2
       options.recorder?.sessionResumed?.({ mode, liveCount })
+      const workspace = store.getState().workspace
+      let visibleCount = 0
+      let backgroundCount = 0
+      let unavailableCount = 0
+      for (const sessionId of workspace.order) {
+        const conversation = workspace.conversations[sessionId]
+        if (!conversation) continue
+        if (conversation.lifecycle === "visible") visibleCount += 1
+        else backgroundCount += 1
+        if (conversation.availability.kind === "unavailable") unavailableCount += 1
+      }
+      options.recorder?.tabRestore?.({ visibleCount, backgroundCount, unavailableCount })
     },
     async dispose(): Promise<void> {
       disposed = true

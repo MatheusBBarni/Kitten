@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { MouseEvent, RGBA, type Renderable } from "@opentui/core"
+import { MouseEvent, RGBA, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -15,6 +15,8 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import {
   HIGHLIGHTED_COMMAND_ROW_ID,
   NO_COMMANDS_MATCH,
+  SLASH_MENU_ID,
+  SLASH_MENU_SCROLLBOX_ID,
   SlashMenu,
   type MenuRow,
 } from "./SlashMenu.tsx"
@@ -39,7 +41,7 @@ async function renderMenu(
 ): Promise<TestRendererSetup> {
   const setup = await testRender(
     <CockpitProvider controller={createFakeController()}>
-      <SlashMenu groups={groups} highlightedIndex={highlightedIndex} onSelect={onSelect} />
+      <SlashMenu groups={groups} highlightedIndex={highlightedIndex} maxHeight={12} onSelect={onSelect} />
     </CockpitProvider>,
     { width: 64, height: 12, useMouse: true },
   )
@@ -55,6 +57,15 @@ function foregroundOf(setup: TestRendererSetup, needle: string): string | undefi
     ?.fg.toString()
 }
 
+/** The painted background of the first span containing `needle`. */
+function backgroundOf(setup: TestRendererSetup, needle: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text.includes(needle))
+    ?.bg.toString()
+}
+
 function paletteColor(hex: string): string {
   return RGBA.fromHex(hex).toString()
 }
@@ -63,21 +74,27 @@ describe("SlashMenu", () => {
   it("renders ordered source headers with cockpit shortcuts and agent hints", async () => {
     const setup = await renderMenu(0)
     const frame = setup.captureCharFrame()
+    const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
 
     expect(frame.indexOf("Cockpit")).toBeLessThan(frame.indexOf("Codex"))
     expect(frame).toContain(handoffRow.label)
     expect(frame).toContain(handoffRow.shortcut)
     expect(frame).toContain(reviewRow.label)
     expect(frame).toContain(reviewRow.hint!)
+    // Two headings, two rows, and the top/bottom border: the menu must hug
+    // its content rather than filling the available terminal height.
+    expect(menu?.height).toBe(6)
 
     await destroyMounted(setup.renderer)
   })
 
-  it("applies the highlight style only to the flattened highlighted row", async () => {
+  it("applies a foreground and full-row background highlight only to the flattened selected row", async () => {
     const setup = await renderMenu(0)
 
     expect(foregroundOf(setup, handoffRow.label)).toBe(paletteColor(DARK_PALETTE.text))
     expect(foregroundOf(setup, reviewRow.label)).toBe(paletteColor(DARK_PALETTE.muted))
+    expect(backgroundOf(setup, handoffRow.label)).toBe(paletteColor(DARK_PALETTE.selectionSurface))
+    expect(backgroundOf(setup, reviewRow.label)).not.toBe(paletteColor(DARK_PALETTE.selectionSurface))
 
     await destroyMounted(setup.renderer)
   })
@@ -85,7 +102,7 @@ describe("SlashMenu", () => {
   it("shows an explicit empty state", async () => {
     const setup = await testRender(
       <CockpitProvider controller={createFakeController()}>
-        <SlashMenu groups={[]} highlightedIndex={0} onSelect={() => {}} />
+        <SlashMenu groups={[]} highlightedIndex={0} maxHeight={8} onSelect={() => {}} />
       </CockpitProvider>,
       { width: 64, height: 8 },
     )
@@ -109,6 +126,40 @@ describe("SlashMenu", () => {
 
     expect(selected).toEqual([reviewRow])
     expect(selected[0]).toBe(reviewRow)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("constrains a long command list to its viewport and scrolls the highlighted row into view", async () => {
+    const longRows: MenuRow[] = Array.from({ length: 24 }, (_, index) => ({
+      source: "agent" as const,
+      name: `command-${index + 1}`,
+      label: `/command-${index + 1}`,
+    }))
+    const setup = await testRender(
+      <CockpitProvider controller={createFakeController()}>
+        <SlashMenu
+          groups={[{ source: "Agent commands", rows: longRows }]}
+          highlightedIndex={23}
+          maxHeight={6}
+          onSelect={() => {}}
+        />
+      </CockpitProvider>,
+      { width: 48, height: 10 },
+    )
+
+    const frame = await setup.waitForFrame((value) => value.includes("/command-24"))
+    const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
+    const scrollbox = setup.renderer.root.findDescendantById(SLASH_MENU_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+    expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(10)
+    expect(frame).not.toContain("਀")
+    expect(menu?.height).toBe(6)
+    // The content and vertical scrollbar share the same row, so the viewport
+    // retains the full interior height instead of stacking the bar below it.
+    expect(scrollbox?.height).toBe(menu!.height - 2)
+    expect(scrollbox?.viewport.height).toBe(scrollbox!.height)
+    expect(scrollbox?.verticalScrollBar.height).toBe(scrollbox?.height)
+    expect(scrollbox?.verticalScrollBar.y).toBe(scrollbox?.y)
 
     await destroyMounted(setup.renderer)
   })

@@ -113,7 +113,7 @@ function persistedRun(runId: string, updatedAt: number, cwd = process.cwd()): Pe
 }
 
 describe("createCockpitSession", () => {
-  it("restores the persisted run with the greatest updatedAt before watching the new run", async () => {
+  it("starts a fresh run even when the project has persisted runs", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-newest-"))
     try {
       const runStore = createRunStore({ enabled: true, path: base })
@@ -121,18 +121,23 @@ describe("createCockpitSession", () => {
       runStore.save(persistedRun("newest", 9_000))
       runStore.save(persistedRun("middle", 5_000))
       const restored: PersistedRunRecord[] = []
+      let sendInitialTasks: boolean | undefined
 
       const session = await createCockpitSession({
         loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: true }),
         createRunStore: () => runStore,
-        buildController: async (options) => controllerOver(options.store!, (record) => {
-          restored.push(record)
-        }),
+        buildController: async (options) => {
+          sendInitialTasks = options.sendInitialTasks
+          return controllerOver(options.store!, (record) => {
+            restored.push(record)
+          })
+        },
         persistConfig: async () => {},
         watchConfig: () => NOOP_WATCHER,
       })
 
-      expect(restored[0]?.runId).toBe("newest")
+      expect(restored).toEqual([])
+      expect(sendInitialTasks).toBe(true)
       await session.controller.dispose()
     } finally {
       rmSync(base, { recursive: true, force: true })
@@ -272,7 +277,7 @@ describe("createCockpitSession", () => {
         watchConfig: () => NOOP_WATCHER,
       })
 
-      expect(restored).toHaveLength(1)
+      expect(restored).toEqual([])
       await second.controller.dispose()
     } finally {
       rmSync(stateBase, { recursive: true, force: true })

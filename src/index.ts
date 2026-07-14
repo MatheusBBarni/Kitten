@@ -39,8 +39,6 @@ import { createNotifier } from "./notify/notifier.ts"
 import {
   createRunStore,
   resolveSessionsBasePath,
-  type PersistedRunRecord,
-  type PersistedRunSummary,
   type RunStore,
 } from "./persistence/runStore.ts"
 import { createRunWriter } from "./persistence/runWriter.ts"
@@ -172,18 +170,15 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     seeds: resolveSessions(config, { launchCwd: cwd }).map((entry) => entry.seed),
     preferences: { theme: config.theme },
   })
-  const resumeRecord = loadLatestRun(runStore, cwd)
   const baseController = await (deps.buildController ?? createSessionController)({
     config,
     recorder,
     store,
     cwd,
-    // Initial tasks belong only to a genuinely new run. Suppress them before ACP
-    // startup when a valid persisted run will immediately replace those sessions.
-    sendInitialTasks: resumeRecord === null,
+    // Startup always creates fresh ACP sessions. Saved runs are restored only from
+    // the explicit `/resume` picker, never by selecting one during boot.
+    sendInitialTasks: true,
   })
-
-  if (resumeRecord !== null) await baseController.restore(resumeRecord, "last-run")
 
   recordReadiness(recorder, baseController.runtimes())
   const stopRecorder = recorder.watch(baseController.store)
@@ -276,24 +271,6 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   return { controller, recorder, runStore, cwd }
 }
 
-/**
- * Persistence is an optional enhancement. An unreadable or otherwise unavailable
- * state directory must behave like no saved run, not prevent a fresh cockpit boot.
- */
-function loadLatestRun(runStore: RunStore, cwd: string): PersistedRunRecord | null {
-  try {
-    // The file store sorts newest-first, but choose by value here as well so every
-    // injected RunStore honors the boot contract independently of implementation order.
-    const newest = runStore.list(cwd).reduce<PersistedRunSummary | null>(
-      (candidate, summary) => candidate === null || summary.updatedAt > candidate.updatedAt ? summary : candidate,
-      null,
-    )
-    return newest === null ? null : runStore.load(cwd, newest.runId)
-  } catch {
-    return null
-  }
-}
-
 /** Default exit handler: exit the process cleanly once teardown has finished. */
 export function exitProcess(): void {
   process.exit(0)
@@ -317,6 +294,25 @@ export function runtimeSetup(state: AgentRuntimeState, insideRepo?: (cwd: string
     },
     { insideRepo },
   )
+}
+
+/**
+ * Reconcile the legacy "one ready runtime" gate with Session Tabs restoration.
+ *
+ * Fresh startup failures remain blocking. An empty workspace, or one whose remaining
+ * descriptors are unavailable only because restore/provider resolution failed, is a
+ * valid product surface with recovery affordances and must be allowed to mount.
+ */
+export function applyWorkspaceBootPolicy(report: FirstRunReport, store: AppStore): FirstRunReport {
+  if (!report.insideRepo || report.anyReady) return report
+  const workspace = store.getState().workspace
+  const restoreUnavailable = workspace.order.every((sessionId) => {
+    const availability = workspace.conversations[sessionId]?.availability
+    return availability?.kind === "unavailable" &&
+      (availability.reasonCode === "restore-unavailable" || availability.reasonCode === "provider-unavailable")
+  })
+  if (!restoreUnavailable) return report
+  return { ...report, gaps: [], blocked: false }
 }
 
 /** Print first-run guidance to stderr. */
@@ -407,7 +403,8 @@ interface PreparedCockpitSession {
  * Two first-run gates run before the cockpit mounts. The repo requirement is checked
  * first and costs nothing: outside a repository Kitten refuses to launch, so no
  * renderer is created and no agent is spawned. After the agents come up, boot stops
- * again if none is ready, since a cockpit with two dead agents can do no useful work;
+ * again if a fresh workspace has no ready runtime. Empty and restore-unavailable
+ * Session Tabs workspaces remain mountable so users can recover or create work;
  * either way the user gets the exact reason instead of an inert screen. When a gate
  * blocks, `main` returns `null` rather than a booted cockpit.
  *
@@ -498,10 +495,13 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
 
   // Readiness gate: with no agent ready, restore the terminal and explain the gaps
   // rather than mounting a cockpit that cannot respond.
-  const report = buildFirstRunReport({
-    insideRepo: true,
-    agents: controller.runtimes().map((state) => runtimeSetup(state, checkRepo)),
-  })
+  const report = applyWorkspaceBootPolicy(
+    buildFirstRunReport({
+      insideRepo: true,
+      agents: controller.runtimes().map((state) => runtimeSetup(state, checkRepo)),
+    }),
+    controller.store,
+  )
   if (report.blocked) {
     disposeBootBanner?.()
     renderer.destroy()
@@ -563,7 +563,7 @@ export interface CliFlagDispatchOptions {
 
 function formatCliHelp(): string {
   return `Examples:
-  npx kitten                      Try Kitten without installing
+  npx @matheusbbarni/kitten       Try Kitten without installing
   kitten                          Launch in the current Git repository
   kitten --self-check             Run the headless boot check
 
@@ -578,7 +578,7 @@ Options:
   --self-check                    Verify Kitten can boot headlessly
 
 Install or upgrade:
-  npm / npx channel:              npm i -g kitten@latest
+  npm / npx channel:              npm i -g @matheusbbarni/kitten@latest
   standalone binary channel:     curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | sh
 `
 }

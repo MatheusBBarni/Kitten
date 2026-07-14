@@ -53,13 +53,11 @@ async function renderConversation(
 ) {
   const setup = await testRender(
     <CockpitApp controller={controller}>
-      <ConversationView welcomeBannerVariant={welcomeBannerVariant} />
+      <ConversationView welcomeBannerVariant={welcomeBannerVariant} workspaceChrome />
     </CockpitApp>,
     { width, height },
   )
-  // The frame title is present for both the normal banner and degraded restoration
-  // states; the latter intentionally omit the greeting.
-  await setup.waitForFrame((f) => f.includes("Kitten"))
+  await setup.waitForFrame((f) => f.includes(KEYMAP_HINT))
   return setup
 }
 
@@ -177,6 +175,27 @@ describe("ConversationView turns", () => {
     expect(frame).not.toContain(WELCOME_GREETING)
     expect(frame).not.toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps workspace tabs visible above a sticky-scrolled transcript", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderConversation(controller)
+
+    await actAsync(() => {
+      for (let index = 0; index < 40; index += 1) {
+        userMessage(controller, "claude-code", `m${index}`, `LONG_TRANSCRIPT_TURN_${index}`)
+      }
+    })
+    const frame = await waitForFrame((candidate) => candidate.includes("LONG_TRANSCRIPT_TURN_39"))
+    const rows = frame.split("\n")
+    const tabsRow = rows.findIndex((row) => row.includes("[selected] Claude Code"))
+    const finalTurnRow = rows.findIndex((row) => row.includes("LONG_TRANSCRIPT_TURN_39"))
+
+    expect(tabsRow).toBeGreaterThanOrEqual(0)
+    expect(tabsRow).toBeLessThan(3)
+    expect(tabsRow).toBeLessThan(finalTurnRow)
 
     await destroyMounted(renderer)
   })
@@ -428,7 +447,7 @@ describe("ConversationView streaming", () => {
     const userFrame = captureCharFrame()
     expect(userFrame).toContain("ping")
     expect(userFrame).not.toContain("Hello")
-    expect(userFrame).toContain("Kitten")
+    expect(userFrame).toContain("[selected] Claude Code")
     expect(userFrame).toContain("[selected] Claude Code")
 
     await actAsync(() => agentDelta(controller, "claude-code", "m2", "Hello"))
