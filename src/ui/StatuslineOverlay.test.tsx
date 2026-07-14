@@ -115,7 +115,10 @@ describe("StatuslineOverlay disclosure and request", () => {
 
 describe("StatuslineOverlay review and recovery", () => {
   it("shows the rendered line and exact config change, then confirms once", async () => {
+    const controller = createFakeController()
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
     const setup = await renderStatusline({
+      controller,
       overlay: {
         sessionId: "claude-code",
         phase: "preview",
@@ -127,7 +130,7 @@ describe("StatuslineOverlay review and recovery", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(STATUSLINE_PREVIEW_LABEL)
     expect(frame).toContain(STATUSLINE_CONFIG_LABEL)
-    expect(statuslineConfigChange(PROPOSAL)).toBe(
+    expect(statuslineConfigChange(PROPOSAL, true)).toBe(
       '{"statusline":{"llmDisclosureAcknowledged":true,"separator":" | ","line":["FOLDER","BRANCH","MODEL"]}}',
     )
     expect(frame).toContain('"llmDisclosureAcknowledged":true')
@@ -138,6 +141,23 @@ describe("StatuslineOverlay review and recovery", () => {
     await setup.waitForFrame((candidate) => !candidate.includes(STATUSLINE_TITLE))
     expect(setup.controller.calls.confirmStatusline).toEqual([PROPOSAL])
     expect(setup.controller.store.getState().preferences.statusline.layout).toEqual(PROPOSAL)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("previews an unacknowledged preset as the value that confirmation will save", async () => {
+    const setup = await renderStatusline()
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes("declined the agent request"))
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    const preview = await setup.waitForFrame((frame) => frame.includes("Workspace recovery layout"))
+    expect(preview).toContain('"llmDisclosureAcknowledged":false')
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => !frame.includes(STATUSLINE_TITLE))
+    expect(setup.controller.calls.confirmStatusline).toEqual([STATUSLINE_RECOVERY_PRESETS[0]!.layout])
+    expect(setup.controller.store.getState().preferences.statusline.llmDisclosureAcknowledged).toBe(false)
     await destroyMounted(setup.renderer)
   })
 

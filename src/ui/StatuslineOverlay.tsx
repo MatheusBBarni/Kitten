@@ -27,6 +27,7 @@ import {
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectSessionBranch,
+  selectStatuslinePreference,
   selectStatuslineOverlay,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
@@ -75,6 +76,7 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
   const model = useAppSelector(useMemo(() => selectAgentModel(sessionId), [sessionId]))
   const effort = useAppSelector(useMemo(() => selectAgentEffort(sessionId), [sessionId]))
   const configOptions = useAppSelector(useMemo(() => selectAgentConfigOptions(sessionId), [sessionId]))
+  const statuslinePreference = useAppSelector(selectStatuslinePreference)
 
   const context = useMemo<StatuslineContext>(() => ({
     cwd: runtime?.cwd,
@@ -269,6 +271,7 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
         busy={busy}
         context={context}
         previewBudget={previewBudget}
+        llmDisclosureAcknowledged={statuslinePreference.llmDisclosureAcknowledged}
       />
       <text style={{ marginTop: 1, flexShrink: 0 }} fg={palette.muted}>{STATUSLINE_HINT}</text>
     </box>
@@ -281,12 +284,14 @@ function StatuslinePhaseView({
   busy,
   context,
   previewBudget,
+  llmDisclosureAcknowledged,
 }: {
   overlay: StatuslineOverlayState
   selected: number
   busy: boolean
   context: StatuslineContext
   previewBudget: number
+  llmDisclosureAcknowledged: boolean
 }): ReactNode {
   const palette = usePalette()
   switch (overlay.phase) {
@@ -313,7 +318,15 @@ function StatuslinePhaseView({
     case "waiting":
       return <text fg={palette.muted}>{STATUSLINE_WAITING_LABEL}</text>
     case "preview":
-      return <Preview layout={overlay.layout} preset={overlay.preset} context={context} previewBudget={previewBudget} selected={selected} busy={busy} />
+      return <Preview
+        layout={overlay.layout}
+        preset={overlay.preset}
+        context={context}
+        previewBudget={previewBudget}
+        llmDisclosureAcknowledged={llmDisclosureAcknowledged}
+        selected={selected}
+        busy={busy}
+      />
     case "failure":
       return (
         <>
@@ -339,6 +352,7 @@ function Preview({
   preset,
   context,
   previewBudget,
+  llmDisclosureAcknowledged,
   selected,
   busy,
 }: {
@@ -346,6 +360,7 @@ function Preview({
   preset: StatuslinePresetName | null
   context: StatuslineContext
   previewBudget: number
+  llmDisclosureAcknowledged: boolean
   selected: number
   busy: boolean
 }): ReactNode {
@@ -357,7 +372,7 @@ function Preview({
       <text fg={palette.muted}>{STATUSLINE_PREVIEW_LABEL}</text>
       <text style={{ flexShrink: 0, overflow: "hidden" }} wrapMode="none" fg={palette.text}>{preview || "(no fields fit)"}</text>
       <text style={{ marginTop: 1 }} fg={palette.muted}>{STATUSLINE_CONFIG_LABEL}</text>
-      <text fg={palette.text}>{statuslineConfigChange(layout)}</text>
+      <text fg={palette.text}>{statuslineConfigChange(layout, llmDisclosureAcknowledged)}</text>
       <Choice label={busy ? "Saving…" : STATUSLINE_SAVED_LABEL} selected={selected === 0} />
       <Choice label={STATUSLINE_CANCEL_LABEL} selected={selected === 1} />
     </>
@@ -375,10 +390,10 @@ function Choice({ label, selected }: { label: string; selected: boolean }): Reac
 }
 
 /** Exact nested value written by confirmation; unrelated root config remains untouched. */
-export function statuslineConfigChange(layout: StatuslineLayout): string {
+export function statuslineConfigChange(layout: StatuslineLayout, llmDisclosureAcknowledged: boolean): string {
   return JSON.stringify({
     statusline: {
-      llmDisclosureAcknowledged: true,
+      llmDisclosureAcknowledged,
       separator: layout.separator,
       line: layout.line,
     },

@@ -205,22 +205,45 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
-  it("keeps a nonpersistent internal request out of the saved prompt summary", () => {
+  it("keeps an internal request and its paired proposal out of resume eligibility", () => {
     const { store, runStore, timer, writer } = writerHarness()
     const request = "normal developer request"
     const internal = "raw statusline proposal request must not persist"
+    const proposal = "raw statusline proposal reply must not persist"
     store.applyEvent("claude", { kind: "user_message", messageId: "u1", text: request })
+    store.applyEvent("claude", { kind: "agent_message", messageId: "a1", textDelta: "normal response" })
     store.applyEvent("claude", { kind: "user_message", messageId: "u2", text: internal, persist: false })
+    store.applyEvent("claude", { kind: "agent_message", messageId: "a2", textDelta: proposal })
 
     timer.flush()
 
     const record = runStore.records.at(-1)!
     expect(store.getState().sessions.claude!.turns).toMatchObject([
       { kind: "user", text: request },
+      { kind: "agent", text: "normal response" },
       { kind: "user", text: internal, persist: false },
+      { kind: "agent", text: proposal },
     ])
     expect(record.conversations.claude?.lastPrompt).toBe(request)
+    expect(record.conversations.claude?.messageCount).toBe(2)
     expect(JSON.stringify(record)).not.toContain(internal)
+    expect(JSON.stringify(record)).not.toContain(proposal)
+    writer.dispose()
+  })
+
+  it("writes a statusline-only exchange as a zero-turn resume record", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    const request = "raw statusline proposal request must not persist"
+    const proposal = "raw statusline proposal reply must not persist"
+    store.applyEvent("claude", { kind: "user_message", messageId: "u1", text: request, persist: false })
+    store.applyEvent("claude", { kind: "agent_message", messageId: "a1", textDelta: proposal })
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    expect(record.conversations.claude).toMatchObject({ messageCount: 0, lastPrompt: "" })
+    expect(JSON.stringify(record)).not.toContain(request)
+    expect(JSON.stringify(record)).not.toContain(proposal)
     writer.dispose()
   })
 
