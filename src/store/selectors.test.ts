@@ -1,10 +1,18 @@
 import { describe, expect, it } from "bun:test"
 
-import type { AvailableCommand, ClarificationPayload, ConfigOption, DomainSessionEvent, HandoffBundle } from "../core/types.ts"
+import type {
+  AvailableCommand,
+  ClarificationPayload,
+  ConfigOption,
+  DefaultApplyResult,
+  DomainSessionEvent,
+  HandoffBundle,
+} from "../core/types.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
   selectAgentConfigOptions,
+  selectSessionDefaultApplyResult,
   selectAgentEffort,
   selectAgentModel,
   selectNextNeedy,
@@ -739,6 +747,75 @@ describe("config-option selectors", () => {
     })
 
     expect(notifications).toBe(0)
+  })
+})
+
+describe("default-application result selector", () => {
+  it("returns null for unknown and untouched sessions", () => {
+    const store = createAppStore()
+    const state = store.getState()
+
+    expect(selectSessionDefaultApplyResult(null)(state)).toBeNull()
+    expect(selectSessionDefaultApplyResult("unknown")(state)).toBeNull()
+    expect(selectSessionDefaultApplyResult("claude-code")(state)).toBeNull()
+  })
+
+  it("projects every stored terminal result unchanged", () => {
+    const results: DefaultApplyResult[] = [
+      { kind: "none" },
+      { kind: "applied", model: "opus", effort: "high" },
+      { kind: "partial", model: "sonnet", unavailable: "effort" },
+      { kind: "unavailable", unavailable: "model" },
+      { kind: "unavailable", unavailable: "session" },
+    ]
+
+    for (const result of results) {
+      const store = createAppStore()
+      store.applyEvent("claude-code", { kind: "default_apply_result", result })
+
+      expect(selectSessionDefaultApplyResult("claude-code")(store.getState())).toBe(result)
+    }
+  })
+
+  it("retains the stored result reference across an unrelated-session event", () => {
+    const store = createAppStore()
+    const selectResult = selectSessionDefaultApplyResult("claude-code")
+    const result: DefaultApplyResult = { kind: "applied", model: "opus", effort: "medium" }
+    store.applyEvent("claude-code", { kind: "default_apply_result", result })
+    const before = selectResult(store.getState())
+
+    store.applyEvent("codex", { kind: "status", status: "working" })
+
+    expect(selectResult(store.getState())).toBe(before)
+    expect(before).toBe(result)
+  })
+
+  it("notifies in order for two terminal result replacements", () => {
+    const store = createAppStore()
+    const observed: DefaultApplyResult[] = []
+    store.subscribeSelector(selectSessionDefaultApplyResult("claude-code"), (value) => {
+      if (value) observed.push(value)
+    })
+    const partial: DefaultApplyResult = { kind: "partial", model: "opus", unavailable: "effort" }
+    const applied: DefaultApplyResult = { kind: "applied", model: "opus", effort: "high" }
+
+    store.applyEvent("claude-code", { kind: "default_apply_result", result: partial })
+    store.applyEvent("claude-code", { kind: "default_apply_result", result: applied })
+
+    expect(observed).toEqual([partial, applied])
+  })
+
+  it("does not notify when config options refresh without replacing the result", () => {
+    const store = createAppStore()
+    const result: DefaultApplyResult = { kind: "applied", model: "opus", effort: "medium" }
+    store.applyEvent("claude-code", { kind: "default_apply_result", result })
+    let notifications = 0
+    store.subscribeSelector(selectSessionDefaultApplyResult("claude-code"), () => notifications++)
+
+    store.applyEvent("claude-code", { kind: "config_options", options: [MODEL_OPTION, EFFORT_OPTION] })
+
+    expect(notifications).toBe(0)
+    expect(selectSessionDefaultApplyResult("claude-code")(store.getState())).toBe(result)
   })
 })
 

@@ -22,6 +22,7 @@ import type {
   ConfigOption,
   ClarificationCapability,
   ContextUsage,
+  DefaultApplyResult,
   PendingDiff,
   PlanEntry,
   ProviderKind,
@@ -221,6 +222,12 @@ export const selectAgentConfigOptions =
   (sessionId: SessionId | null): Selector<ConfigOption[]> =>
   (state) =>
     (sessionId ? state.sessions[sessionId]?.configOptions : undefined) ?? EMPTY_CONFIG_OPTIONS
+
+/** One session's stored terminal provider-default result, without deriving display state. */
+export const selectSessionDefaultApplyResult =
+  (sessionId: SessionId | null): Selector<DefaultApplyResult | null> =>
+  (state) =>
+    (sessionId ? state.sessions[sessionId]?.defaultApplyResult : null) ?? null
 
 /**
  * One session's confirmed model, or `undefined` when the agent advertises no `model`

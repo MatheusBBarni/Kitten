@@ -24,7 +24,7 @@ import {
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
-import type { ClarificationOutcome, SessionId } from "../src/core/types.ts"
+import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
 import {
   persistedSelectedConversationId,
   type PersistedRunRecord,
@@ -53,6 +53,12 @@ export interface RecordedCalls {
   navigatePromptHistory: { direction: PromptHistoryDirection; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
   setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
+  applyProviderDefaults: SessionId[]
+  providerDefaultContexts: Array<{
+    sessionId: SessionId
+    selectedSessionId: SessionId | null
+    overlaySessionId: SessionId | null
+  }>
   switchFocus: (SessionId | undefined)[]
   jumpToNextNeedy: number
   jumpToNextAttention: number
@@ -86,6 +92,8 @@ export interface FakeControllerOptions {
   listRepositoryFiles?: (
     sessionId: SessionId,
   ) => RepositoryFileList | Promise<RepositoryFileList>
+  /** Deterministic terminal results emitted when a view requests provider defaults. */
+  providerDefaultResults?: Partial<Record<SessionId, DefaultApplyResult>>
 }
 
 /**
@@ -147,6 +155,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     navigatePromptHistory: [],
     cancel: [],
     setSessionConfigOption: [],
+    applyProviderDefaults: [],
+    providerDefaultContexts: [],
     switchFocus: [],
     jumpToNextNeedy: 0,
     jumpToNextAttention: 0,
@@ -284,7 +294,14 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         return true
       },
       async applyProviderDefaults(sessionId: SessionId) {
-        const result = { kind: "none" } as const
+        calls.applyProviderDefaults.push(sessionId)
+        const state = store.getState()
+        calls.providerDefaultContexts.push({
+          sessionId,
+          selectedSessionId: state.workspace.selectedVisibleId,
+          overlaySessionId: state.overlays.modelSelect?.sessionId ?? null,
+        })
+        const result = options.providerDefaultResults?.[sessionId] ?? { kind: "none" }
         store.applyEvent(sessionId, { kind: "default_apply_result", result })
         return result
       },

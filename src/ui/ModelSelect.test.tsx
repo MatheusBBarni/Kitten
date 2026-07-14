@@ -23,6 +23,10 @@ import { createAppStore } from "../store/appStore.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import {
   CURRENT_MARK,
+  DEFAULT_APPLIED_LABEL,
+  DEFAULT_EFFORT_UNAVAILABLE_LABEL,
+  DEFAULT_MODEL_UNAVAILABLE_LABEL,
+  DEFAULT_SESSION_UNAVAILABLE_LABEL,
   EFFORT_HEADING,
   MODEL_HEADING,
   modelSelectTitleFor,
@@ -373,6 +377,112 @@ describe("ModelSelect visibility and content", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("requests defaults once only after a different explicit tab is selected and reopened", async () => {
+    const controller = createFakeController({
+      providerDefaultResults: {
+        codex: { kind: "applied", model: "gpt-5.6-luna", effort: "max" },
+      },
+    })
+    seedOptions(controller, "claude-code", configOptions())
+    seedOptions(controller, "codex", codexConfigOptions("gpt-5.6-luna", "max"))
+    seedTurn(controller, "codex")
+    const setup = await renderWithSelector(controller)
+
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+    await actAsync(() => setup.mockInput.pressTab())
+    const frame = await setup.waitForFrame((value) => value.includes(DEFAULT_APPLIED_LABEL))
+
+    expect(controller.calls.selectConversationOptions).toEqual([{ source: "model_select" }])
+    expect(controller.calls.applyProviderDefaults).toEqual(["codex"])
+    expect(controller.calls.providerDefaultContexts).toEqual([{
+      sessionId: "codex",
+      selectedSessionId: "codex",
+      overlaySessionId: "codex",
+    }])
+    expect(frame).not.toContain(MODEL_SELECT_CONFIRM_HINT)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("does not request defaults for open, passive focus, reload, Escape, or manual row changes", async () => {
+    const controller = createFakeController()
+    seedOptions(controller, "claude-code", configOptions())
+    seedOptions(controller, "codex", codexConfigOptions())
+    const setup = await renderCockpit(controller)
+
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+    controller.updateProviderDefaults({})
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+    await openSelector(setup, controller)
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(`(${UNVERIFIED_LABEL})`))
+    expect(controller.calls.setSessionConfigOption).toHaveLength(1)
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+
+    await actAsync(() => setup.mockInput.pressEscape())
+    await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
+    expect(controller.calls.applyProviderDefaults).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders applied and partial results from each session's confirmed rows", async () => {
+    const controller = createFakeController({
+      providerDefaultResults: {
+        codex: { kind: "partial", model: "gpt-5.6-luna", unavailable: "effort" },
+        "claude-code": { kind: "applied", model: "sonnet", effort: "low" },
+      },
+    })
+    seedOptions(controller, "claude-code", configOptions("sonnet", "low"))
+    seedOptions(controller, "codex", codexConfigOptions("gpt-5.6-luna", "ultra"))
+    const setup = await renderWithSelector(controller)
+
+    await actAsync(() => setup.mockInput.pressTab())
+    const partial = await setup.waitForFrame((frame) => frame.includes(DEFAULT_EFFORT_UNAVAILABLE_LABEL))
+    expect(partial).toContain(`${CURRENT_MARK} Luna`)
+    expect(partial).toContain(`${CURRENT_MARK} Ultra`)
+    expect(partial).not.toContain(DEFAULT_APPLIED_LABEL)
+
+    await actAsync(() => setup.mockInput.pressTab({ shift: true }))
+    const applied = await setup.waitForFrame((frame) => frame.includes(DEFAULT_APPLIED_LABEL))
+    expect(applied).toContain(`${CURRENT_MARK} Sonnet`)
+    expect(applied).toContain(`${CURRENT_MARK} Low`)
+    expect(applied).not.toContain(DEFAULT_EFFORT_UNAVAILABLE_LABEL)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps unavailable model and session feedback scoped to its verified tab", async () => {
+    const controller = createFakeController({
+      providerDefaultResults: {
+        codex: { kind: "unavailable", unavailable: "model" },
+        "claude-code": { kind: "unavailable", unavailable: "session" },
+      },
+    })
+    seedOptions(controller, "claude-code", configOptions("opus", "high"))
+    seedOptions(controller, "codex", codexConfigOptions("gpt-5.6-terra", "ultra"))
+    const setup = await renderWithSelector(controller)
+
+    await actAsync(() => setup.mockInput.pressTab())
+    const modelUnavailable = await setup.waitForFrame((frame) => frame.includes(DEFAULT_MODEL_UNAVAILABLE_LABEL))
+    expect(modelUnavailable).toContain(`${CURRENT_MARK} Terra`)
+    expect(modelUnavailable).toContain(`${CURRENT_MARK} Ultra`)
+    expect(modelUnavailable).not.toContain(DEFAULT_SESSION_UNAVAILABLE_LABEL)
+
+    await actAsync(() => setup.mockInput.pressTab({ shift: true }))
+    const sessionUnavailable = await setup.waitForFrame((frame) => frame.includes(DEFAULT_SESSION_UNAVAILABLE_LABEL))
+    expect(sessionUnavailable).toContain(`${CURRENT_MARK} Opus`)
+    expect(sessionUnavailable).toContain(`${CURRENT_MARK} High`)
+    expect(sessionUnavailable).not.toContain(DEFAULT_MODEL_UNAVAILABLE_LABEL)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("filters, closes, reopens, wraps, and applies only Cursor's opaque option in a three-session selector", async () => {
     const controller = createFakeController({ runtimes: [...readyRuntimes(), cursorRuntime()] })
     seedOptions(controller, "claude-code", configOptions())
@@ -572,6 +682,7 @@ describe("ModelSelect mid-conversation confirm", () => {
     const back = await setup.waitForFrame((f) => f.includes(MODEL_SELECT_HINT) && !f.includes(MODEL_SELECT_CONFIRM_HINT))
     expect(back).toContain(MODEL_HEADING)
     expect(controller.calls.setSessionConfigOption).toHaveLength(0)
+    expect(controller.calls.applyProviderDefaults).toHaveLength(0)
     // Escaping the warning must not also close the selector.
     expect(controller.store.getState().overlays.modelSelect).not.toBeNull()
 

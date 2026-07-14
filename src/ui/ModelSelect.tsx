@@ -42,6 +42,7 @@ import {
   PROVIDER_METADATA,
   visibleConfigOptions,
   type ConfigOption,
+  type DefaultApplyResult,
   type SessionId,
 } from "../core/types.ts"
 import type { ModelSelectOverlay } from "../store/appStore.ts"
@@ -52,6 +53,7 @@ import {
   selectIsClarificationOpen,
   selectModelSelectOverlay,
   selectSessionList,
+  selectSessionDefaultApplyResult,
   selectSessionTurns,
   type SessionListItem,
 } from "../store/selectors.ts"
@@ -83,6 +85,12 @@ export const UNVERIFIED_LABEL = "unverified"
 
 /** Shown when the focused agent advertises no model or effort options at all. Never blank. */
 export const NO_OPTIONS_NOTICE = "This agent advertises no model or reasoning-effort options."
+
+/** Compact terminal feedback for the latest explicit provider-default attempt. */
+export const DEFAULT_APPLIED_LABEL = "Default applied"
+export const DEFAULT_EFFORT_UNAVAILABLE_LABEL = "Default partially applied — effort unavailable"
+export const DEFAULT_MODEL_UNAVAILABLE_LABEL = "Default unavailable — model unavailable"
+export const DEFAULT_SESSION_UNAVAILABLE_LABEL = "Default unavailable — session unavailable"
 
 /** The warning shown before a mid-conversation switch is applied. */
 export const MID_SWITCH_WARNING =
@@ -157,6 +165,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   // allowlist here and memoize so a fresh array does not thrash the render.
   const rawOptions = useAppSelector(useMemo(() => selectAgentConfigOptions(sessionId), [sessionId]))
   const options = useMemo(() => visibleConfigOptions(rawOptions), [rawOptions])
+  const defaultApplyResult = useAppSelector(useMemo(() => selectSessionDefaultApplyResult(sessionId), [sessionId]))
 
   // The confirmed conversation length. A session with any turn is "established", so a
   // mid-conversation switch is gated behind the warning; a fresh one applies straight.
@@ -214,13 +223,14 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
         0,
       )
       const next = tabs[(currentIndex + direction + tabs.length) % tabs.length]
-      if (!next) return
+      if (!next || next.sessionId === sessionId) return
       // `selectConversation` rightly refuses focus changes beneath an overlay. Close
       // this selector for the synchronous hand-off, then immediately reopen it for
       // the newly selected provider so the modal never leaks input to the composer.
       controller.store.closeModelSelect()
       controller.actions.selectConversation(next.sessionId, { source: "model_select" })
       controller.store.openModelSelect({ sessionId: next.sessionId })
+      void controller.actions.applyProviderDefaults(next.sessionId)
     },
     [controller, sessionId, tabs],
   )
@@ -310,12 +320,32 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
       ) : (
         <ModelEffortControl options={options} highlighted={clamped} requested={requested} />
       )}
+      {!confirming ? <DefaultApplyFeedback result={defaultApplyResult} /> : null}
 
       <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.muted}>
         {confirming ? MODEL_SELECT_CONFIRM_HINT : MODEL_SELECT_HINT}
       </text>
     </box>
   )
+}
+
+/**
+ * Describe only the terminal outcome. Confirmed model and effort remain the rows above;
+ * result payload values are intentionally never promoted into display state.
+ */
+function DefaultApplyFeedback({ result }: { result: DefaultApplyResult | null }): ReactNode {
+  const palette = usePalette()
+  if (result === null || result.kind === "none") return null
+  if (result.kind === "applied") {
+    return <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.tool.completed}>{DEFAULT_APPLIED_LABEL}</text>
+  }
+  if (result.kind === "partial") {
+    return <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.status.awaiting_approval}>{DEFAULT_EFFORT_UNAVAILABLE_LABEL}</text>
+  }
+  const label = result.unavailable === "model"
+    ? DEFAULT_MODEL_UNAVAILABLE_LABEL
+    : DEFAULT_SESSION_UNAVAILABLE_LABEL
+  return <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.status.error}>{label}</text>
 }
 
 /** One tab maps exactly one live session to the model/effort values it advertises. */
