@@ -8,6 +8,7 @@
 
 import { type ReactNode } from "react"
 
+import { registerSyntaxParsers } from "./syntaxParsers.ts"
 import { usePalette, useSyntaxStyle } from "./theme.ts"
 
 /**
@@ -104,6 +105,7 @@ export interface MarkdownProps {
 export function Markdown({ content, fg }: MarkdownProps): ReactNode {
   const palette = usePalette()
   const syntaxStyle = useSyntaxStyle()
+  registerSyntaxParsers()
   return (
     <markdown
       content={normalizeMarkdownForDisplay(content)}

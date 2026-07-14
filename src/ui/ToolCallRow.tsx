@@ -17,6 +17,7 @@ import { TextAttributes } from "@opentui/core"
 import { type ReactNode } from "react"
 
 import type { ToolCallDiff, ToolCallKind, ToolCallRecord } from "../core/types.ts"
+import { registerSyntaxParsers } from "./syntaxParsers.ts"
 import { usePalette, useSyntaxStyle } from "./theme.ts"
 
 /**
@@ -181,5 +182,6 @@ export function ToolCallDiffView({ diff }: { diff: ToolCallDiff }): ReactNode {
  */
 function ToolCallDiffBody({ diff }: { diff: ToolCallDiff }): ReactNode {
   const syntaxStyle = useSyntaxStyle()
+  registerSyntaxParsers()
   return <diff diff={diff.unified} view="unified" filetype={filetypeFor(diff.path)} syntaxStyle={syntaxStyle} />
 }

@@ -12,7 +12,7 @@ import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type { StatuslineLayout } from "../src/core/statusline.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
-import { createCockpitRenderer, createCockpitSession, main, wireKeyboardCapability } from "../src/index.ts"
+import { createCockpitRenderer, createCockpitSession, main, renderCockpit, wireKeyboardCapability } from "../src/index.ts"
 import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore, type RunStore } from "../src/persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
@@ -199,6 +199,28 @@ describe("statusline config lifecycle", () => {
  * tears down cleanly - renderer destroyed, agents disposed, exit handler run.
  */
 describe("cockpit entry integration (non-TTY test renderer)", () => {
+  it("does not register syntax parsers when the entry module is imported", async () => {
+    const child = Bun.spawn({
+      cmd: [
+        process.execPath,
+        "-e",
+        'import { mock } from "bun:test"; let calls = 0; mock.module("./src/ui/syntaxParsers.ts", () => ({ registerSyntaxParsers: () => { calls += 1 } })); await import("./src/index.ts"); console.log(`calls=${calls}`)',
+      ],
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(stderr).toBe("")
+    expect(stdout.trim()).toBe("calls=0")
+  })
+
   it("starts configured opening tasks instead of restoring a saved run", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-opening-task-"))
     const cwd = process.cwd()
@@ -494,7 +516,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     }
   })
 
-  it("mounts boot feedback before preparing the tree-sitter worker", async () => {
+  it("configures the worker before parser registration and cockpit rendering", async () => {
     const setup = await createTestRenderer({ width: 80, height: 24 })
     const controller = createFakeController()
     const order: string[] = []
@@ -518,10 +540,16 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         loadConfig: async () => defaultAppConfig(),
         readFirstRunSeen: () => true,
         configureTreeSitterWorker: async () => {
-          order.push("worker")
+          order.push("worker-start")
           signalWorkerStarted()
           await workerReleased
+          order.push("worker-complete")
           return null
+        },
+        registerSyntaxParsers: () => order.push("register"),
+        renderCockpit: (...args) => {
+          order.push("render")
+          return renderCockpit(...args)
         },
         onExit: () => {},
         wireNotifier: () => {},
@@ -532,13 +560,15 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     await setup.renderOnce()
     expect(setup.captureCharFrame()).toContain(WELCOME_GREETING)
     // The boot root is already visible while independent startup work overlaps.
-    expect(order).toEqual(["worker", "controller"])
+    expect(order).toEqual(["worker-start", "controller"])
 
     let booted: Awaited<ReturnType<typeof main>> | undefined
     await actAsync(async () => {
       releaseWorker()
       booted = await bootPromise
     })
+
+    expect(order).toEqual(["worker-start", "controller", "worker-complete", "register", "render"])
 
     await destroyMounted(setup.renderer)
     await booted?.closed

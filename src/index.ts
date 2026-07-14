@@ -48,6 +48,7 @@ import { selectThemePreference } from "./store/selectors.ts"
 import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from "./telemetry/recorder.ts"
 import { renderBootBanner, type BootBannerDisposer, type BootBannerOptions } from "./ui/bootBanner.tsx"
 import { renderCockpit } from "./ui/main.tsx"
+import { registerSyntaxParsers } from "./ui/syntaxParsers.ts"
 import { KITTEN_VERSION } from "./version.ts"
 
 export { renderCockpit }
@@ -410,6 +411,8 @@ export interface MainDeps {
    * that first visible feedback has been mounted.
    */
   configureTreeSitterWorker?: typeof configureTreeSitterWorker
+  /** Register static parser capabilities after worker setup and before cockpit rendering. */
+  registerSyntaxParsers?: typeof registerSyntaxParsers
   /**
    * How to obtain just the controller. When given, telemetry is not wired (the tests
    * use this to drive a fake controller). Takes precedence over `createSession`.
@@ -439,6 +442,8 @@ export interface MainDeps {
   wireNotifier?: (renderer: CliRenderer, store: AppStore) => void
   /** How renderer key events promote ephemeral Kitty capability; injectable for lifecycle tests. */
   wireKeyboardCapability?: (renderer: CliRenderer, onKittyConfirmed: () => void) => void
+  /** Cockpit render seam used to prove parser registration order without native allocation. */
+  renderCockpit?: typeof renderCockpit
 }
 
 /** What {@link main} hands back so a caller (or a test) can inspect the booted app. */
@@ -541,6 +546,8 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
     }
     if (sessionResult.status === "rejected") throw sessionResult.reason
 
+    ;(deps.registerSyntaxParsers ?? registerSyntaxParsers)()
+
     controller = sessionResult.value.controller
     recorder = sessionResult.value.recorder
     sessionPicker = sessionResult.value.sessionPicker
@@ -594,7 +601,7 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
     const markSeen = deps.markFirstRunSeen ?? markFirstRunSeen
     markSeen()
   }
-  renderCockpit(renderer, controller, recorder, idleBannerVariant, sessionPicker)
+  ;(deps.renderCockpit ?? renderCockpit)(renderer, controller, recorder, idleBannerVariant, sessionPicker)
   return { renderer, controller, closed }
 }
 

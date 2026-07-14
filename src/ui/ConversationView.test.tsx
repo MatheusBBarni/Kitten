@@ -21,12 +21,9 @@ import {
 } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
 import { KEYMAP_HINT } from "./keymap.ts"
-import { registerSyntaxParsers } from "./syntaxParsers.ts"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
-
-registerSyntaxParsers()
 
 /** The `rgba(...)` string OpenTUI stores for a palette hex, for comparing to a captured cell. */
 function paletteColor(hex: string): string {
@@ -722,9 +719,6 @@ describe("ConversationView tool calls", () => {
     },
   ]) {
     it(`highlights ${path.slice(path.lastIndexOf("."))} diff tokens from the file extension`, async () => {
-      const client = getTreeSitterClient()
-      await client.initialize()
-      expect(await client.preloadParser(filetypeFor(path)!)).toBeTrue()
       const controller = createFakeController()
       const { renderer, waitForFrame, waitFor, captureSpans } = await renderConversation(controller)
 
@@ -739,6 +733,7 @@ describe("ConversationView tool calls", () => {
       )
       await waitForFrame((frame) => frame.includes(sentinel))
       await settleMountedHighlights(renderer)
+      expect(await getTreeSitterClient().preloadParser(filetypeFor(path)!)).toBeTrue()
       renderer.requestRender()
       await renderer.idle()
 

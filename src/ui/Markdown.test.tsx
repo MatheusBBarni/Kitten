@@ -8,6 +8,7 @@ import { describe, expect, it } from "bun:test"
 import { CodeRenderable, destroyTreeSitterClient, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
 import { createMockMouse, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
+import { useState } from "react"
 
 import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -15,8 +16,6 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import { Markdown } from "./Markdown.tsx"
 import { registerSyntaxParsers } from "./syntaxParsers.ts"
 import { DARK_PALETTE, LIGHT_PALETTE } from "./theme.ts"
-
-registerSyntaxParsers()
 
 const WIDTH = 52
 const HEIGHT = 20
@@ -87,6 +86,46 @@ async function destroyMarkdown(setup: TestRendererSetup): Promise<void> {
 }
 
 describe("Markdown", () => {
+  it("registers capabilities on a direct multi-block mount before code rendering", async () => {
+    const controller = createFakeController()
+    let updateContent: (content: string) => void = () => {}
+    function DirectMountHarness() {
+      const [content, setContent] = useState("DIRECT_WARMUP")
+      updateContent = setContent
+      return <Markdown content={content} />
+    }
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <DirectMountHarness />
+      </CockpitProvider>,
+      { width: WIDTH, height: HEIGHT },
+    )
+    await setup.waitForFrame((candidate) => candidate.includes("DIRECT_WARMUP"))
+
+    const content = [
+      "# DIRECT_HEADING",
+      "",
+      "DIRECT_PROSE",
+      "",
+      "```rust",
+      "fn direct_rust() {}",
+      "```",
+    ].join("\n")
+    await actAsync(() => updateContent(content))
+    await settleMarkdownHighlights(setup)
+    const frame = await setup.waitForFrame(
+      (candidate) =>
+        candidate.includes("DIRECT_HEADING") &&
+        candidate.includes("DIRECT_PROSE") &&
+        candidate.includes("fn direct_rust() {}"),
+    )
+
+    expect(frame).toContain("DIRECT_PROSE")
+    expect(collectCodeRenderables(setup.renderer.root).some((code) => code.content.includes("direct_rust"))).toBeTrue()
+
+    await destroyMarkdown(setup)
+  })
+
   it("styles a heading with the theme accent instead of the reading foreground", async () => {
     await destroyTreeSitterClient()
     const setup = await renderMarkdown("# HEADING_SENTINEL")
@@ -120,6 +159,7 @@ describe("Markdown", () => {
     { label: "py", source: "class PySentinel: pass", sentinel: "PySentinel" },
   ]) {
     it(`highlights a ${label} fence with a non-prose foreground`, async () => {
+      registerSyntaxParsers()
       const client = getTreeSitterClient()
       await client.initialize()
       expect(await client.preloadParser(label)).toBeTrue()
@@ -342,6 +382,7 @@ describe("Markdown", () => {
     { label: "py", source: "class PyCopySentinel: pass" },
   ]) {
     it(`copies ${label} fenced source without renderer chrome`, async () => {
+      registerSyntaxParsers()
       const client = getTreeSitterClient()
       await client.initialize()
       expect(await client.preloadParser(label)).toBeTrue()
