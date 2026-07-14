@@ -58,7 +58,15 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
     case "user_message":
       return withDerived({
         ...state,
-        turns: [...state.turns, { kind: "user", messageId: event.messageId, text: event.text }],
+        turns: [
+          ...state.turns,
+          {
+            kind: "user",
+            messageId: event.messageId,
+            text: event.text,
+            ...(event.persist === false ? { persist: false } : {}),
+          },
+        ],
       })
 
     case "agent_message":

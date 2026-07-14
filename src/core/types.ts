@@ -309,8 +309,9 @@ export interface ProviderModelDefault {
 export type DefaultApplyResult =
   | { kind: "none" }
   | { kind: "applied"; model: string; effort?: string }
+  | { kind: "applied"; effort: string; model?: undefined }
   | { kind: "partial"; model: string; unavailable: "effort" }
-  | { kind: "unavailable"; unavailable: "model" | "session" }
+  | { kind: "unavailable"; unavailable: "model" | "effort" | "session" }
 
 /**
  * A protocol-free slash command advertised by an agent for one live session.
@@ -370,6 +371,8 @@ export interface UserTurn {
   kind: "user"
   messageId: string
   text: string
+  /** Internal requests remain visible in the live transcript but are not retained for resume. */
+  persist?: boolean
 }
 
 /** An agent's message turn; streamed deltas concatenate onto `text` by `messageId`. */
@@ -501,7 +504,7 @@ export type ShellEvent =
  */
 export type DomainSessionEvent =
   | { kind: "agent_message"; messageId: string; textDelta: string }
-  | { kind: "user_message"; messageId: string; text: string }
+  | { kind: "user_message"; messageId: string; text: string; persist?: boolean }
   | { kind: "tool_call"; call: ToolCallUpdate } // upsert by toolCallId
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "status"; status: SessionStatus }

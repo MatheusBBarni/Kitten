@@ -206,7 +206,7 @@ class ActiveRunWriter implements RunWriter {
 function lastUserPrompt(turns: readonly Turn[]): string {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const turn = turns[index]
-    if (turn?.kind === "user") return turn.text
+    if (turn?.kind === "user" && turn.persist !== false) return turn.text
   }
   return ""
 }

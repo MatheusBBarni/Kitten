@@ -2194,6 +2194,26 @@ describe("actions - applyProviderDefaults", () => {
     await controller.dispose()
   })
 
+  it("applies a valid effort-only default when the provider advertises no model option", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [effortOption("low")],
+          setConfig: (_sessionId, _configId, value) => [effortOption(value)],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({ kind: "applied", effort: "high" })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "effort", value: "high" },
+    ])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([effortOption("high")])
+    await controller.dispose()
+  })
+
   it("keeps the confirmed model and reports partial when refreshed effort is unavailable", async () => {
     const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
     const { controller, connections } = await controllerWithStubs(

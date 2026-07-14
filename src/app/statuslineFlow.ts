@@ -53,7 +53,7 @@ export function createStatuslineFlow({ actions, store }: StatuslineFlowOptions):
       const transcriptBoundary = session.turns.length
       let terminalResult: Awaited<ReturnType<ControllerActions["sendPrompt"]>>
       try {
-        terminalResult = await actions.sendPrompt(buildStatuslineProposalPrompt(text), sessionId)
+        terminalResult = await actions.sendPrompt(buildStatuslineProposalPrompt(text), sessionId, { persist: false })
       } catch {
         return unavailable("The statusline request could not be sent. Choose a recovery layout or try again.")
       }

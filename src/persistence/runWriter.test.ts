@@ -205,6 +205,25 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
+  it("keeps a nonpersistent internal request out of the saved prompt summary", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    const request = "normal developer request"
+    const internal = "raw statusline proposal request must not persist"
+    store.applyEvent("claude", { kind: "user_message", messageId: "u1", text: request })
+    store.applyEvent("claude", { kind: "user_message", messageId: "u2", text: internal, persist: false })
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    expect(store.getState().sessions.claude!.turns).toMatchObject([
+      { kind: "user", text: request },
+      { kind: "user", text: internal, persist: false },
+    ])
+    expect(record.conversations.claude?.lastPrompt).toBe(request)
+    expect(JSON.stringify(record)).not.toContain(internal)
+    writer.dispose()
+  })
+
   it("preserves dynamic workspace names, order, lifecycle, attention, and ACP pointers exactly once", () => {
     const { store, runStore, timer, writer } = writerHarness()
     store.addSession(

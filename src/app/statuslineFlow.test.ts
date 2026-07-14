@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import type { ControllerActions, PromptInput } from "./actions.ts"
+import type { ControllerActions, PromptInput, PromptSendOptions } from "./actions.ts"
 import {
   buildStatuslineProposalPrompt,
   createStatuslineFlow,
@@ -20,7 +20,7 @@ const validReply = (line: unknown = ["FOLDER", "MODEL"]): string =>
 
 interface Fixture {
   readonly store: AppStore
-  readonly calls: Array<{ input: PromptInput; sessionId?: SessionId }>
+  readonly calls: Array<{ input: PromptInput; sessionId?: SessionId; options?: PromptSendOptions }>
   readonly flow: ReturnType<typeof createStatuslineFlow>
 }
 
@@ -35,10 +35,10 @@ function fixture(options: {
     selectedVisibleId: SESSION_ID,
   })
   if (options.ready !== false) store.setConversationAvailability(SESSION_ID, { kind: "ready" })
-  const calls: Array<{ input: PromptInput; sessionId?: SessionId }> = []
+  const calls: Array<{ input: PromptInput; sessionId?: SessionId; options?: PromptSendOptions }> = []
   const actions: Pick<ControllerActions, "sendPrompt"> = {
-    async sendPrompt(input, sessionId) {
-      calls.push({ input, sessionId })
+    async sendPrompt(input, sessionId, sendOptions) {
+      calls.push({ input, sessionId, options: sendOptions })
       if (options.reject !== undefined) throw options.reject
       await options.onSend?.(store)
       return options.result === undefined ? { stopReason: "end_turn" } : options.result
@@ -69,6 +69,7 @@ describe("statusline proposal prompt", () => {
     expect(f.calls[0]).toEqual({
       input: buildStatuslineProposalPrompt("Put the folder before the model."),
       sessionId: SESSION_ID,
+      options: { persist: false },
     })
   })
 

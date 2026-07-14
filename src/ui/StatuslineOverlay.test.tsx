@@ -20,6 +20,8 @@ import { createAppStore, type StatuslineOverlay as StatuslineOverlayState } from
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
+import { KEYMAP_HINT } from "./keymap.ts"
+import { statuslineFooterBudget } from "./StatusStrip.tsx"
 import {
   STATUSLINE_CONFIG_LABEL,
   STATUSLINE_DISCLOSURE,
@@ -29,6 +31,7 @@ import {
   STATUSLINE_TITLE,
   StatuslineOverlay,
   statuslineConfigChange,
+  statuslinePreviewBudget,
 } from "./StatuslineOverlay.tsx"
 
 const WIDTH = 80
@@ -234,6 +237,11 @@ describe("StatuslineOverlay review and recovery", () => {
 })
 
 describe("StatuslineOverlay keyboard and width behavior", () => {
+  it("uses the active footer's width budget for the review preview", () => {
+    expect(statuslinePreviewBudget(WIDTH)).toBe(statuslineFooterBudget(WIDTH, KEYMAP_HINT))
+    expect(statuslinePreviewBudget(WIDTH)).toBe(72)
+  })
+
   it("consumes text, arrows, Enter, and Escape instead of editing the focused composer", async () => {
     const editor: { current: TextareaRenderable | null } = { current: null }
     const setup = await renderStatusline({

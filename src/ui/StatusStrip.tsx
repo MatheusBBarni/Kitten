@@ -62,6 +62,11 @@ const STATUS_STRIP_HEADROOM_CELLS = 3
 /** Outer padding plus one readable cell between custom content and the fixed affordance. */
 const CUSTOM_STATUSLINE_RESERVED_CELLS = 3
 
+/** Match the fixed footer's custom-content space for statusline previews and rendering. */
+export function statuslineFooterBudget(width: number, affordance: string): number {
+  return Math.max(0, width - CUSTOM_STATUSLINE_RESERVED_CELLS - [...affordance].length)
+}
+
 /** Workspace-level status shown when no Visible conversation is selected. */
 export const EMPTY_WORKSPACE_STATUS_LABEL = "workspace: no visible conversations"
 
@@ -112,7 +117,7 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
   const statusline = useAppSelector(selectStatuslinePreference)
   const hint = shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT
-  const customBudget = Math.max(0, width - CUSTOM_STATUSLINE_RESERVED_CELLS - [...hint].length)
+  const customBudget = statuslineFooterBudget(width, hint)
 
   return (
     <box
@@ -280,7 +285,9 @@ function DefaultApplyStatus({ result }: { result: DefaultApplyResult | null }): 
       ? DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL
       : result.unavailable === "model"
         ? DEFAULT_MODEL_UNAVAILABLE_STATUS_LABEL
-        : DEFAULT_SESSION_UNAVAILABLE_STATUS_LABEL
+        : result.unavailable === "effort"
+          ? DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL
+          : DEFAULT_SESSION_UNAVAILABLE_STATUS_LABEL
   const color = result.kind === "applied"
     ? palette.tool.completed
     : result.kind === "partial"

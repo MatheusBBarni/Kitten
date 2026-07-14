@@ -31,6 +31,7 @@ import {
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, matchStatuslineCommand, STATUSLINE_HINT } from "./keymap.ts"
+import { statuslineFooterBudget } from "./StatusStrip.tsx"
 import { usePalette } from "./theme.ts"
 
 export const STATUSLINE_TITLE = "Personal statusline"
@@ -42,6 +43,11 @@ export const STATUSLINE_CONFIG_LABEL = "Exact personal config change"
 export const STATUSLINE_WAITING_LABEL = "Waiting for the focused agent's proposal…"
 export const STATUSLINE_SAVED_LABEL = "Save and apply"
 export const STATUSLINE_CANCEL_LABEL = "Cancel"
+
+/** Keep proposal review aligned with the active footer, including its fixed help affordance. */
+export function statuslinePreviewBudget(width: number): number {
+  return statuslineFooterBudget(width, KEYMAP_HINT)
+}
 
 interface StatuslineOverlayProps {
   readonly flow: StatuslineFlow
@@ -236,8 +242,7 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
   }, [acknowledge, busy, confirmLayout, controller.store, overlay, requestProposal, selected, sessionId])
   useKeyboard(onKey)
 
-  const modalWidth = Math.max(24, width - 12)
-  const previewBudget = Math.max(0, modalWidth - 4)
+  const previewBudget = statuslinePreviewBudget(width)
 
   return (
     <box

@@ -344,7 +344,9 @@ function DefaultApplyFeedback({ result }: { result: DefaultApplyResult | null })
   }
   const label = result.unavailable === "model"
     ? DEFAULT_MODEL_UNAVAILABLE_LABEL
-    : DEFAULT_SESSION_UNAVAILABLE_LABEL
+    : result.unavailable === "effort"
+      ? DEFAULT_EFFORT_UNAVAILABLE_LABEL
+      : DEFAULT_SESSION_UNAVAILABLE_LABEL
   return <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.status.error}>{label}</text>
 }
 

@@ -1209,7 +1209,8 @@ describe("/statusline cockpit integration", () => {
       layout: { separator: " · ", line: ["FULL_PATH"] },
       preset: null,
     }))
-    await setup.waitForFrame((frame) => frame.includes("(no fields fit)"))
+    const resizedPreview = await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    expectNoOverflow(resizedPreview, 48, 24)
     await actAsync(() => setup.resize(80, 24))
     await setup.waitForFrame((frame) => frame.includes(process.cwd()))
     await destroyMounted(setup.renderer)

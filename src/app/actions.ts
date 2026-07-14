@@ -38,6 +38,11 @@ import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.t
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
 
+/** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
+export interface PromptSendOptions {
+  readonly persist?: boolean
+}
+
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
   readonly sessionId: SessionId
@@ -228,7 +233,7 @@ export interface ControllerActions {
    * turn in the transcript first. Resolves with the agent's stop reason, or `null`
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
-  sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
+  sendPrompt(input: PromptInput, sessionId?: SessionId, options?: PromptSendOptions): Promise<PromptResult | null>
   /** Record one accepted plain-composer submission in the addressed session. */
   recordPromptHistory(text: string, sessionId?: SessionId): void
   /** Navigate the addressed session's history and return the post-reducer selection. */
@@ -313,6 +318,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   async function sendPrompt(
     input: PromptInput,
     requestedSessionId?: SessionId,
+    options?: PromptSendOptions,
   ): Promise<PromptResult | null> {
     const sessionId = requestedSessionId ?? focused()
     if (!sessionId) return null
@@ -327,6 +333,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       kind: "user_message",
       messageId: newMessageId(),
       text: joinBlocks(blocks),
+      persist: options?.persist,
     })
     try {
       return await session.connection.prompt(session.acpSessionId, blocks)
@@ -402,52 +409,51 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     }
 
     let options = store.getState().sessions[sessionId]!.configOptions
-    let model = options.find((option) => option.category === MODEL_CATEGORY)
-    if (!model || (configured.model && !hasOption(model, configured.model))) {
-      return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
-    }
+    let confirmedModel: string | undefined
+    if (configured.model) {
+      const model = options.find((option) => option.category === MODEL_CATEGORY)
+      if (!model || !hasOption(model, configured.model)) {
+        return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      }
+      if (!(await setConfigOption(model.id, configured.model, sessionId))) {
+        return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      }
 
-    if (configured.model && !(await setConfigOption(model.id, configured.model, sessionId))) {
-      return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
-    }
-
-    // Model confirmation may replace every advertised option. Only this refreshed
-    // state is authoritative for the configured effort and the terminal result.
-    options = store.getState().sessions[sessionId]!.configOptions
-    model = options.find((option) => option.category === MODEL_CATEGORY)
-    const confirmedModel = model?.currentValue
-    if (!confirmedModel) {
-      return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      // Model confirmation may replace every advertised option. Only this refreshed
+      // state is authoritative for the configured effort and the terminal result.
+      options = store.getState().sessions[sessionId]!.configOptions
+      confirmedModel = options.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+      if (!confirmedModel) {
+        return finishDefaultApply(sessionId, { kind: "unavailable", unavailable: "model" })
+      }
     }
 
     if (configured.effort) {
       const effort = options.find((option) => option.category === EFFORT_CATEGORY)
       if (!effort || !hasOption(effort, configured.effort)) {
-        return finishDefaultApply(sessionId, { kind: "partial", model: confirmedModel, unavailable: "effort" })
+        return finishDefaultApply(sessionId, effortUnavailable(confirmedModel))
       }
       if (!(await setConfigOption(effort.id, configured.effort, sessionId))) {
         const latestModel = store.getState().sessions[sessionId]!.configOptions
           .find((option) => option.category === MODEL_CATEGORY)?.currentValue ?? confirmedModel
-        return finishDefaultApply(sessionId, { kind: "partial", model: latestModel, unavailable: "effort" })
+        return finishDefaultApply(sessionId, effortUnavailable(latestModel))
       }
       const finalOptions = store.getState().sessions[sessionId]!.configOptions
       const finalModel = finalOptions.find((option) => option.category === MODEL_CATEGORY)?.currentValue
       const confirmedEffort = finalOptions.find((option) => option.category === EFFORT_CATEGORY)?.currentValue
       if (confirmedEffort !== configured.effort) {
-        return finishDefaultApply(sessionId, {
-          kind: "partial",
-          model: finalModel ?? confirmedModel,
-          unavailable: "effort",
-        })
+        return finishDefaultApply(sessionId, effortUnavailable(finalModel ?? confirmedModel))
       }
-      return finishDefaultApply(sessionId, {
-        kind: "applied",
-        model: finalModel ?? confirmedModel,
-        effort: confirmedEffort,
-      })
+      const latestModel = finalModel ?? confirmedModel
+      return finishDefaultApply(
+        sessionId,
+        latestModel
+          ? { kind: "applied", model: latestModel, effort: confirmedEffort }
+          : { kind: "applied", effort: confirmedEffort },
+      )
     }
 
-    return finishDefaultApply(sessionId, { kind: "applied", model: confirmedModel })
+    return finishDefaultApply(sessionId, { kind: "applied", model: confirmedModel! })
   }
 
   function selectConversation(sessionId: SessionId, options?: SwitchFocusOptions): void {
@@ -746,6 +752,13 @@ function switchKind(option: ConfigOption | undefined): "model" | "effort" | unde
 /** Match opaque values only within one already allowlisted model/effort option. */
 function hasOption(option: ConfigOption, value: string): boolean {
   return option.options.some((candidate) => candidate.value === value)
+}
+
+/** An effort failure is partial only when the provider has already confirmed a model. */
+function effortUnavailable(model: string | undefined): DefaultApplyResult {
+  return model
+    ? { kind: "partial", model, unavailable: "effort" }
+    : { kind: "unavailable", unavailable: "effort" }
 }
 
 function errorMessage(error: unknown): string {
