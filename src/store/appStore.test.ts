@@ -3,8 +3,15 @@ import { describe, expect, it } from "bun:test"
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState } from "../core/shellReducer.ts"
+import type { StatuslineLayout, StatuslinePreference } from "../core/statusline.ts"
 import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
-import { createAppStore, defaultSessionSeeds, type AppStore, type AppState } from "./appStore.ts"
+import {
+  createAppStore,
+  defaultSessionSeeds,
+  type AppStore,
+  type AppState,
+  type StatuslineModalPhase,
+} from "./appStore.ts"
 import {
   selectApprovalOverlay,
   selectActiveModal,
@@ -24,6 +31,8 @@ import {
   selectSessionTurns,
   selectTabDialogOverlay,
   selectSettingsOverlay,
+  selectStatuslineOverlay,
+  selectStatuslinePreference,
   selectThemePreference,
 } from "./selectors.ts"
 
@@ -61,6 +70,16 @@ const HANDOFF_BUNDLE: HandoffBundle = {
   files: [{ path: "src/parser.ts", reason: "edited" }],
   pendingDiffs: [{ toolCallId: "call-1", path: "src/parser.ts", unified: "@@ -1 +1 @@" }],
   redactionCount: 0,
+}
+
+const STATUSLINE_LAYOUT: StatuslineLayout = {
+  separator: " · ",
+  line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+}
+
+const SAVED_STATUSLINE: StatuslinePreference = {
+  llmDisclosureAcknowledged: true,
+  layout: STATUSLINE_LAYOUT,
 }
 
 const CLARIFICATION_PAYLOAD: ClarificationPayload = {
@@ -105,13 +124,17 @@ describe("createAppStore", () => {
       handoffTarget: null,
       modelSelect: null,
       settings: null,
+      statusline: null,
       tabDialog: null,
       sessions: false,
       sessionPicker: false,
     })
     expect(state.restoration).toEqual({ "claude-code": null, codex: null, cursor: null })
     expect(state.restorationBundle).toBeNull()
-    expect(state.preferences).toEqual({ theme: "auto" })
+    expect(state.preferences).toEqual({
+      theme: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    })
     expect(selectClarificationCapability("claude-code")(state)).toEqual({
       status: "unsupported",
       reason: "unknown_recipe",
@@ -768,7 +791,10 @@ describe("preferences", () => {
     store.setThemePreference("dark")
 
     const afterChange = store.getState()
-    expect(afterChange.preferences).toEqual({ theme: "dark" })
+    expect(afterChange.preferences).toEqual({
+      theme: "dark",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    })
     expect(afterChange.preferences).not.toBe(before.preferences)
     expect(afterChange.sessions).toBe(before.sessions)
     expect(afterChange.overlays).toBe(before.overlays)
@@ -789,6 +815,136 @@ describe("preferences", () => {
 
     expect(turns).toEqual([])
   })
+
+  it("changes only the statusline preference and treats equal resolved writes as no-ops", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const notifications = trackSelector(store, selectStatuslinePreference)
+
+    store.setStatuslinePreference(SAVED_STATUSLINE)
+
+    const changed = store.getState()
+    expect(selectStatuslinePreference(changed)).toBe(SAVED_STATUSLINE)
+    expect(changed.preferences).not.toBe(before.preferences)
+    expect(changed.sessions).toBe(before.sessions)
+    expect(changed.overlays).toBe(before.overlays)
+    expect(changed.shell).toBe(before.shell)
+    expect(notifications).toEqual([SAVED_STATUSLINE])
+
+    store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+      },
+    })
+
+    expect(store.getState()).toBe(changed)
+    expect(notifications).toEqual([SAVED_STATUSLINE])
+  })
+
+  it("does not notify the saved preference for session, shell, or unrelated overlay updates", () => {
+    const store = createAppStore({ preferences: { statusline: SAVED_STATUSLINE } })
+    const notifications = trackSelector(store, selectStatuslinePreference)
+
+    store.applyEvent("codex", message("stream-1", "delta"))
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/workspace/other" })
+    store.openApproval({
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      request: APPROVAL_REQUEST,
+    })
+
+    expect(notifications).toEqual([])
+  })
+})
+
+describe("statusline modal state", () => {
+  const phases: readonly StatuslineModalPhase[] = [
+    { phase: "disclosure" },
+    { phase: "request", requestText: "folder then compact branch" },
+    { phase: "waiting", requestText: "folder then compact branch" },
+    {
+      phase: "preview",
+      requestText: "folder then compact branch",
+      layout: STATUSLINE_LAYOUT,
+      preset: null,
+    },
+    {
+      phase: "failure",
+      requestText: "folder then compact branch",
+      reason: "The response did not contain one fenced JSON proposal.",
+    },
+    {
+      phase: "presets",
+      requestText: "folder then compact branch",
+      reason: "Choose a recovery layout.",
+      selectedPreset: "Compact",
+    },
+  ]
+
+  it("opens every valid phase with its selected session and transient payload", () => {
+    for (const state of phases) {
+      const store = createAppStore({ preferences: { statusline: SAVED_STATUSLINE } })
+      const preference = selectStatuslinePreference(store.getState())
+
+      store.openStatusline({ sessionId: "codex", ...state })
+
+      expect(selectStatuslineOverlay(store.getState())).toEqual({ sessionId: "codex", ...state })
+      expect(selectStatuslinePreference(store.getState())).toBe(preference)
+      expect(selectHasOpenOverlay(store.getState())).toBe(true)
+      expect(selectActiveModal(store.getState())).toEqual({ kind: "statusline", sessionId: "codex" })
+    }
+  })
+
+  it("updates the phase without changing the captured session or saved preference", () => {
+    const store = createAppStore({ preferences: { statusline: SAVED_STATUSLINE } })
+    store.openStatusline({ sessionId: "codex", phase: "request", requestText: "compact" })
+    const preference = selectStatuslinePreference(store.getState())
+
+    const preview: StatuslineModalPhase = {
+      phase: "preview",
+      requestText: "compact",
+      layout: STATUSLINE_LAYOUT,
+      preset: "Compact",
+    }
+    store.updateStatusline(preview)
+
+    expect(selectStatuslineOverlay(store.getState())).toEqual({ sessionId: "codex", ...preview })
+    expect(selectStatuslinePreference(store.getState())).toBe(preference)
+  })
+
+  it("closing or cancelling a preview clears transient data and preserves the saved layout", () => {
+    const store = createAppStore({ preferences: { statusline: SAVED_STATUSLINE } })
+    store.openStatusline({
+      sessionId: "claude-code",
+      phase: "preview",
+      requestText: "agent details",
+      layout: STATUSLINE_LAYOUT,
+      preset: null,
+    })
+    const preference = selectStatuslinePreference(store.getState())
+
+    store.closeStatusline()
+
+    const closed = store.getState()
+    expect(selectStatuslineOverlay(closed)).toBeNull()
+    expect(selectStatuslinePreference(closed)).toBe(preference)
+    expect(selectStatuslinePreference(closed).layout).toBe(STATUSLINE_LAYOUT)
+
+    store.closeStatusline()
+    expect(store.getState()).toBe(closed)
+  })
+
+  it("ignores phase updates while the modal is closed", () => {
+    const store = createAppStore()
+    const before = store.getState()
+
+    store.updateStatusline({ phase: "request", requestText: "ignored" })
+
+    expect(store.getState()).toBe(before)
+  })
 })
 
 describe("integration: settings preference flow", () => {
@@ -805,7 +961,10 @@ describe("integration: settings preference flow", () => {
 
     store.setThemePreference("dark")
     const themed = store.getState()
-    expect(themed.preferences).toEqual({ theme: "dark" })
+    expect(themed.preferences).toEqual({
+      theme: "dark",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    })
     expect(themed.overlays).toBe(opened.overlays)
     expect(themed.sessions).toBe(opened.sessions)
     expect(themed.workspace.selectedVisibleId).toBe(opened.workspace.selectedVisibleId)

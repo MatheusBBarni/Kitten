@@ -8,6 +8,7 @@ import type {
   DomainSessionEvent,
   HandoffBundle,
 } from "../core/types.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
@@ -47,6 +48,8 @@ import {
   selectModelSelectOverlay,
   selectSettingsOverlay,
   selectShell,
+  selectStatuslineOverlay,
+  selectStatuslinePreference,
   selectThemePreference,
   selectActiveModal,
   selectAttentionQueue,
@@ -120,6 +123,11 @@ const EDIT_CALL: DomainSessionEvent = {
   },
 }
 
+const STATUSLINE_LAYOUT: StatuslineLayout = {
+  separator: " · ",
+  line: ["FOLDER", "MODEL"],
+}
+
 describe("focus selectors", () => {
   it("project the focused agent and per-agent focus flags", () => {
     const store = createAppStore()
@@ -172,12 +180,38 @@ describe("shell selector", () => {
 })
 
 describe("preference selectors", () => {
-  it("projects the default and configured theme preference", () => {
+  it("projects default and configured theme and statusline preferences", () => {
     const defaultStore = createAppStore()
-    const configuredStore = createAppStore({ preferences: { theme: "dark" } })
+    const configuredStore = createAppStore({
+      preferences: {
+        theme: "dark",
+        statusline: { llmDisclosureAcknowledged: true, layout: STATUSLINE_LAYOUT },
+      },
+    })
 
     expect(selectThemePreference(defaultStore.getState())).toBe("auto")
     expect(selectThemePreference(configuredStore.getState())).toBe("dark")
+    expect(selectStatuslinePreference(defaultStore.getState())).toEqual({
+      llmDisclosureAcknowledged: false,
+      layout: null,
+    })
+    expect(selectStatuslinePreference(configuredStore.getState())).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout: STATUSLINE_LAYOUT,
+    })
+  })
+
+  it("keeps the saved statusline preference reference across unrelated updates", () => {
+    const store = createAppStore({
+      preferences: { statusline: { llmDisclosureAcknowledged: true, layout: STATUSLINE_LAYOUT } },
+    })
+    const preference = selectStatuslinePreference(store.getState())
+
+    store.applyEvent("codex", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/other" })
+    store.openSettings()
+
+    expect(selectStatuslinePreference(store.getState())).toBe(preference)
   })
 })
 
@@ -543,11 +577,31 @@ describe("overlay selectors", () => {
     expect(selectClarificationOverlay(state)).toBeNull()
     expect(selectHandoffPreview(state)).toBeNull()
     expect(selectSettingsOverlay(state)).toBeNull()
+    expect(selectStatuslineOverlay(state)).toBeNull()
     expect(selectHasOpenOverlay(state)).toBe(false)
     expect(selectIsApprovalOpen(state)).toBe(false)
     expect(selectIsClarificationOpen(state)).toBe(false)
     expect(selectIsSessionsOpen(state)).toBe(false)
     expect(selectSessionPicker(state)).toBe(false)
+  })
+
+  it("projects the statusline modal slot by reference and includes it in modal gating", () => {
+    const store = createAppStore()
+    const overlay = {
+      sessionId: "codex" as const,
+      phase: "request" as const,
+      requestText: "show workspace and model",
+    }
+
+    store.openStatusline(overlay)
+    const opened = store.getState()
+
+    expect(selectStatuslineOverlay(opened)).toBe(overlay)
+    expect(selectHasOpenOverlay(opened)).toBe(true)
+    expect(selectActiveModal(opened)).toEqual({ kind: "statusline", sessionId: "codex" })
+
+    store.applyEvent("claude-code", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    expect(selectStatuslineOverlay(store.getState())).toBe(overlay)
   })
 
   it("gives clarification modal priority and reports it as the only open-overlay gate", () => {

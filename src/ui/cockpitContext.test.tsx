@@ -5,11 +5,16 @@ import { useMemo } from "react"
 
 import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import { selectSessionStatus } from "../store/selectors.ts"
+import {
+  selectSessionStatus,
+  selectStatuslineOverlay,
+  selectStatuslinePreference,
+} from "../store/selectors.ts"
 import { CockpitProvider, useAppSelector, useController } from "./cockpitContext.tsx"
 
 /** Counts how many times each agent's status subscriber actually re-rendered. */
 const renders: Record<string, number> = {}
+let statuslineRenders = 0
 
 function StatusProbe({ agentId }: { agentId: "claude-code" | "codex" }) {
   const selector = useMemo(() => selectSessionStatus(agentId), [agentId])
@@ -21,6 +26,15 @@ function StatusProbe({ agentId }: { agentId: "claude-code" | "codex" }) {
 function ControllerProbe() {
   const controller = useController()
   return <text>{`agents=${controller.runtimes().length}`}</text>
+}
+
+function StatuslineStateProbe() {
+  const preference = useAppSelector(selectStatuslinePreference)
+  const overlay = useAppSelector(selectStatuslineOverlay)
+  statuslineRenders++
+  return (
+    <text>{`ack=${preference.llmDisclosureAcknowledged};phase=${overlay?.phase ?? "closed"}`}</text>
+  )
 }
 
 describe("useController", () => {
@@ -88,6 +102,58 @@ describe("useAppSelector", () => {
     })
 
     expect(renders["codex"]).toBe(before)
+    await destroyMounted(renderer)
+  })
+
+  it("composes reactive statusline preference and modal transitions without streamed-update renders", async () => {
+    const controller = createFakeController()
+    statuslineRenders = 0
+    const { renderer, waitForFrame } = await testRender(
+      <CockpitProvider controller={controller}>
+        <StatuslineStateProbe />
+      </CockpitProvider>,
+      { width: 48, height: 2 },
+    )
+    expect(await waitForFrame((frame) => frame.includes("ack=false;phase=closed"))).toContain(
+      "ack=false;phase=closed",
+    )
+
+    await actAsync(() => {
+      controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
+    })
+    expect(await waitForFrame((frame) => frame.includes("ack=true;phase=closed"))).toContain(
+      "ack=true;phase=closed",
+    )
+
+    await actAsync(() => {
+      controller.store.openStatusline({
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "folder then model",
+        layout: { separator: " · ", line: ["FOLDER", "MODEL"] },
+        preset: null,
+      })
+    })
+    expect(await waitForFrame((frame) => frame.includes("ack=true;phase=preview"))).toContain(
+      "ack=true;phase=preview",
+    )
+    const beforeStream = statuslineRenders
+
+    await actAsync(() => {
+      controller.store.applyEvent("codex", {
+        kind: "agent_message",
+        messageId: "other-stream",
+        textDelta: "unrelated token",
+      })
+    })
+    expect(statuslineRenders).toBe(beforeStream)
+
+    await actAsync(() => controller.store.closeStatusline())
+    expect(await waitForFrame((frame) => frame.includes("ack=true;phase=closed"))).toContain(
+      "ack=true;phase=closed",
+    )
+    expect(statuslineRenders).toBeGreaterThan(beforeStream)
+
     await destroyMounted(renderer)
   })
 })
