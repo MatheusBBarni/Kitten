@@ -4,6 +4,7 @@
 // Boundary OUT: config persistence/watching and agent subprocess transport, owned by their integration suites.
 
 import { describe, expect, it, spyOn } from "bun:test"
+import { basename } from "node:path"
 
 import { createTestRenderer } from "@opentui/core/testing"
 import { KeyEvent } from "@opentui/core"
@@ -47,6 +48,8 @@ import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { STATUSLINE_PREVIEW_LABEL, STATUSLINE_REQUEST_PROMPT, STATUSLINE_TITLE } from "./StatuslineOverlay.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
+
+const PROJECT_FOLDER = basename(process.cwd())
 
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
 function lines(frame: string): string[] {
@@ -1181,7 +1184,7 @@ describe("/statusline cockpit integration", () => {
       llmDisclosureAcknowledged: true,
       layout,
     })
-    const applied = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes("kitten"))
+    const applied = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes(PROJECT_FOLDER))
     expect(lines(applied).at(-1)).not.toContain("Claude:")
     await destroyMounted(setup.renderer)
   })
@@ -1217,7 +1220,10 @@ describe("/statusline cockpit integration", () => {
   })
 
   it("keeps a saved footer bottom-pinned through 100-to-64-to-120 resize and returns to legacy when cleared", async () => {
-    const controller = createFakeController()
+    const statuslineCwd = "/workspace/kitten-statusline-preview"
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd })),
+    })
     controller.store.applyEvent("claude-code", {
       kind: "branch",
       branch: "feat/statusline-ui",
@@ -1236,20 +1242,20 @@ describe("/statusline cockpit integration", () => {
     const setup = await renderCockpitApp(controller, 100, 24)
 
     const wide = setup.captureCharFrame()
-    expect(lines(wide).at(-1)).toContain(`${process.cwd()} · feat/statusline-ui · Claude · opus`)
+    expect(lines(wide).at(-1)).toContain(`${statuslineCwd} · feat/statusline-ui · Claude · opus`)
     expectNoOverflow(wide, 100, 24)
 
     await actAsync(() => setup.resize(64, 24))
     const narrow = await setup.waitForFrame((frame) => {
       const footer = lines(frame).at(-1) ?? ""
-      return footer.includes(process.cwd()) && !footer.includes("feat/statusline-ui")
+      return footer.includes(statuslineCwd) && !footer.includes("feat/statusline-ui")
     })
     expect(lines(narrow).at(-1)).toContain(KEYMAP_HINT)
     expectNoOverflow(narrow, 64, 24)
 
     await actAsync(() => setup.resize(120, 24))
     const expanded = await setup.waitForFrame((frame) =>
-      (lines(frame).at(-1) ?? "").includes(`${process.cwd()} · feat/statusline-ui · Claude · opus`),
+      (lines(frame).at(-1) ?? "").includes(`${statuslineCwd} · feat/statusline-ui · Claude · opus`),
     )
     expectNoOverflow(expanded, 120, 24)
 

@@ -528,7 +528,7 @@ describe("clarification lifecycle integration", () => {
         sessionRef: "clarification-lifecycle",
       })
       const overview = await lifecycle.setup.waitForFrame((value) =>
-        value.includes(SESSIONS_TITLE) && value.includes("Background"),
+        value.includes(SESSIONS_TITLE) && value.includes("Background") && value.includes(STATUS_LABELS.finished),
       )
       expect(overview).toContain(STATUS_LABELS.finished)
       await actAsync(() => controller.store.closeSessions())

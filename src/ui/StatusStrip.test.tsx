@@ -2,6 +2,7 @@
 // Invariant: the footer is concise context, while live work belongs beside the transcript.
 
 import { describe, expect, it } from "bun:test"
+import { basename } from "node:path"
 
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
@@ -23,6 +24,7 @@ import {
 } from "./StatusStrip.tsx"
 
 const HEIGHT = 1
+const PROJECT_FOLDER = basename(process.cwd())
 
 function expectNoOverflow(frame: string, width: number): void {
   const rows = frame.replace(/\n$/, "").split("\n")
@@ -316,7 +318,10 @@ describe("StatusStrip", () => {
   })
 
   it("reacts to 80-to-64-column resizing by omitting trailing custom fields before containment", async () => {
-    const controller = createFakeController()
+    const statuslineCwd = "/workspace/kitten-statusline-preview"
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd })),
+    })
     saveCustomLayout(controller, {
       separator: " · ",
       line: ["FULL_PATH", "BRANCH", "PROVIDER", "MODEL"],
@@ -328,14 +333,14 @@ describe("StatusStrip", () => {
     const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus" } }))
 
     const wide = setup.captureCharFrame()
-    expect(wide).toContain(process.cwd())
+    expect(wide).toContain(statuslineCwd)
     expect(wide).toContain("feat/statusline-ui")
     expect(wide).toContain("Claude")
     expect(wide).not.toContain("opus")
     expectNoOverflow(wide, 80)
 
     await actAsync(() => setup.resize(64, HEIGHT))
-    const narrow = await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    const narrow = await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
     expect(narrow).not.toContain("feat/statusline-ui")
     expect(narrow).not.toContain("Claude")
     expect(narrow).not.toContain("opus")
@@ -413,12 +418,12 @@ describe("StatusStrip", () => {
     saveCustomLayout(controller, { separator: " · ", line: ["FOLDER"] })
     const setup = await renderStrip(controller)
 
-    expect(setup.captureCharFrame()).toContain("kitten")
+    expect(setup.captureCharFrame()).toContain(PROJECT_FOLDER)
     expect(setup.captureCharFrame()).toContain(KEYMAP_HINT)
 
     await actAsync(() => controller.store.setFocusedPane({ kind: "shell" }))
     const shell = await setup.waitForFrame((frame) => frame.includes(SHELL_EXIT_HINT))
-    expect(shell).toContain("kitten")
+    expect(shell).toContain(PROJECT_FOLDER)
     expect(shell).not.toContain(KEYMAP_HINT)
     expectNoOverflow(shell, 80)
 
