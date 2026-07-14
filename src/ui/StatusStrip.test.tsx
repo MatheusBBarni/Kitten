@@ -8,6 +8,7 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes } from "../../test/fakeController.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import type { ConfigOption, SessionId } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -70,6 +71,13 @@ function confirmModelAndEffort(
       },
     ],
   })
+}
+
+function saveCustomLayout(
+  controller: ReturnType<typeof createFakeController>,
+  layout: StatuslineLayout,
+): void {
+  controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout })
 }
 
 async function renderStrip(
@@ -258,6 +266,85 @@ describe("StatusStrip", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("renders a saved layout in declared order and omits unavailable values without duplicate separators", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: ["MODEL", "BRANCH", "PROVIDER", "EFFORT"],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: [{
+        id: "model",
+        category: "model",
+        label: "Model",
+        currentValue: "opus",
+        options: [{ value: "opus", name: "Opus" }],
+      }],
+    })
+    const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus" } }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Opus · Claude")
+    expect(frame).not.toContain("Opus ·  · Claude")
+    expect(frame).not.toContain("Claude:Opus")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses the core renderer's grapheme-safe branch ellipsis", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 12 }],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "branch",
+      branch: "feature/👨‍👩‍👧‍👦-statusline",
+    })
+    const setup = await renderStrip(controller, 80)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("feature/👨‍👩‍👧‍👦-s…")
+    expect(frame).not.toContain("feature/👨‍👩‍👧‍👦-statusline")
+    expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(HEIGHT)
+    expect(frame).not.toContain("਀")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("reacts to 80-to-64-column resizing by omitting trailing custom fields before containment", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: ["FULL_PATH", "BRANCH", "PROVIDER", "MODEL"],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "branch",
+      branch: "feat/statusline-ui",
+    })
+    const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus" } }))
+
+    const wide = setup.captureCharFrame()
+    expect(wide).toContain(process.cwd())
+    expect(wide).toContain("feat/statusline-ui")
+    expect(wide).toContain("Claude")
+    expect(wide).not.toContain("opus")
+    expectNoOverflow(wide, 80)
+
+    await actAsync(() => setup.resize(64, HEIGHT))
+    const narrow = await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    expect(narrow).not.toContain("feat/statusline-ui")
+    expect(narrow).not.toContain("Claude")
+    expect(narrow).not.toContain("opus")
+    expect(narrow).toContain(KEYMAP_HINT)
+    expectNoOverflow(narrow, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders a ready Cursor runtime through shared metadata within 80 columns", async () => {
     const cursor = {
       sessionId: "cursor",
@@ -317,6 +404,23 @@ describe("StatusStrip", () => {
     await actAsync(() => controller.store.setFocusedPane({ kind: "shell" }))
     const shell = await setup.waitForFrame((frame) => frame.includes(SHELL_EXIT_HINT))
     expect(shell).not.toContain(KEYMAP_HINT)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("retains the shell-exit affordance while saved custom left-side content is active", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, { separator: " · ", line: ["FOLDER"] })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain("kitten")
+    expect(setup.captureCharFrame()).toContain(KEYMAP_HINT)
+
+    await actAsync(() => controller.store.setFocusedPane({ kind: "shell" }))
+    const shell = await setup.waitForFrame((frame) => frame.includes(SHELL_EXIT_HINT))
+    expect(shell).toContain("kitten")
+    expect(shell).not.toContain(KEYMAP_HINT)
+    expectNoOverflow(shell, 80)
 
     await destroyMounted(setup.renderer)
   })

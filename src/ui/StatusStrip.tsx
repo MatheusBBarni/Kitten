@@ -6,9 +6,16 @@
  * state so the strip stays compact without a second status-only row.
  */
 
+import { useTerminalDimensions } from "@opentui/react"
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
+import {
+  renderStatusline,
+  statuslineText,
+  type StatuslineContext,
+  type StatuslineLayout,
+} from "../core/statusline.ts"
 import {
   EFFORT_CATEGORY,
   MODEL_CATEGORY,
@@ -26,7 +33,9 @@ import {
   selectIsShellFocused,
   selectSessionDefaultApplyResult,
   selectSessionHeadroom,
+  selectSessionBranch,
   selectSessionModel,
+  selectStatuslinePreference,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { formatHeadroom } from "./headroom.ts"
@@ -49,6 +58,9 @@ export const FOCUS_MARKER = "▸"
 
 /** Three cells keep both agent gauges inside the exact 80-column strip budget. */
 const STATUS_STRIP_HEADROOM_CELLS = 3
+
+/** Outer padding plus one readable cell between custom content and the fixed affordance. */
+const CUSTOM_STATUSLINE_RESERVED_CELLS = 3
 
 /** Workspace-level status shown when no Visible conversation is selected. */
 export const EMPTY_WORKSPACE_STATUS_LABEL = "workspace: no visible conversations"
@@ -95,8 +107,12 @@ export interface StatusStripProps {
 /** Focused provider, model, effort, and run state. */
 export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripProps): ReactNode {
   const palette = usePalette()
+  const { width } = useTerminalDimensions()
   const shellFocused = useAppSelector(selectIsShellFocused)
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
+  const statusline = useAppSelector(selectStatuslinePreference)
+  const hint = shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT
+  const customBudget = Math.max(0, width - CUSTOM_STATUSLINE_RESERVED_CELLS - [...hint].length)
 
   return (
     <box
@@ -111,17 +127,76 @@ export function StatusStrip({ selectors = DEFAULT_SLOT_SELECTORS }: StatusStripP
     >
       <box style={{ flexDirection: "row", justifyContent: "space-between", overflow: "hidden" }}>
         <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, gap: 1, overflow: "hidden" }}>
-          {focusedSessionId === null ? (
+          {statusline.layout !== null ? (
+            <CustomStatusline
+              layout={statusline.layout}
+              sessionId={focusedSessionId}
+              selectors={selectors}
+              helpText={hint}
+              columnBudget={customBudget}
+            />
+          ) : focusedSessionId === null ? (
             <WorkspaceStatusSummary />
           ) : (
             <SelectedAgentStatus sessionId={focusedSessionId} selectors={selectors} />
           )}
         </box>
         <box style={{ flexDirection: "row", flexShrink: 0, gap: 2, overflow: "hidden" }}>
-          <text fg={palette.accent}>{shellFocused ? SHELL_EXIT_HINT : KEYMAP_HINT}</text>
+          <text fg={palette.accent}>{hint}</text>
         </box>
       </box>
     </box>
+  )
+}
+
+/** Render one saved layout from existing selected-session read models only. */
+function CustomStatusline({
+  layout,
+  sessionId,
+  selectors,
+  helpText,
+  columnBudget,
+}: {
+  layout: StatuslineLayout
+  sessionId: string | null
+  selectors: StatusSlotSelectors
+  helpText: string
+  columnBudget: number
+}): ReactNode {
+  const controller = useController()
+  const palette = usePalette()
+  const runtime = sessionId === null ? undefined : controller.runtime(sessionId)
+  const branchSelector = useMemo(
+    () => sessionId === null ? (() => null) : selectSessionBranch(sessionId),
+    [sessionId],
+  )
+  const modelSelector = useMemo(
+    () => sessionId === null ? (() => null) : selectors.model(sessionId),
+    [selectors.model, sessionId],
+  )
+  const effortSelector = useMemo(
+    () => sessionId === null ? (() => undefined) : selectors.effort(sessionId),
+    [selectors.effort, sessionId],
+  )
+  const configOptionsSelector = useMemo(() => selectAgentConfigOptions(sessionId), [sessionId])
+  const branch = useAppSelector(branchSelector)
+  const model = useAppSelector(modelSelector)
+  const effort = useAppSelector(effortSelector)
+  const configOptions = useAppSelector(configOptionsSelector)
+  const context = useMemo<StatuslineContext>(() => ({
+    cwd: runtime?.cwd,
+    branch,
+    provider: runtime ? PROVIDER_METADATA[runtime.providerKind].compactLabel : null,
+    model: displayModelName(configOptions, model),
+    effort: displayEffortName(configOptions, effort),
+    helpText,
+  }), [branch, configOptions, effort, helpText, model, runtime])
+  const text = statuslineText(renderStatusline(layout, context, columnBudget))
+
+  return (
+    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none" fg={palette.text}>
+      {text}
+    </text>
   )
 }
 

@@ -1181,6 +1181,8 @@ describe("/statusline cockpit integration", () => {
       llmDisclosureAcknowledged: true,
       layout,
     })
+    const applied = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes("kitten"))
+    expect(lines(applied).at(-1)).not.toContain("Claude:")
     await destroyMounted(setup.renderer)
   })
 
@@ -1210,6 +1212,55 @@ describe("/statusline cockpit integration", () => {
     await setup.waitForFrame((frame) => frame.includes("(no fields fit)"))
     await actAsync(() => setup.resize(80, 24))
     await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a saved footer bottom-pinned through 100-to-64-to-120 resize and returns to legacy when cleared", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", {
+      kind: "branch",
+      branch: "feat/statusline-ui",
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: configOptions("opus", "high"),
+    })
+    controller.store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: ["FULL_PATH", "BRANCH", "PROVIDER", "MODEL"],
+      },
+    })
+    const setup = await renderCockpitApp(controller, 100, 24)
+
+    const wide = setup.captureCharFrame()
+    expect(lines(wide).at(-1)).toContain(`${process.cwd()} · feat/statusline-ui · Claude · opus`)
+    expectNoOverflow(wide, 100, 24)
+
+    await actAsync(() => setup.resize(64, 24))
+    const narrow = await setup.waitForFrame((frame) => {
+      const footer = lines(frame).at(-1) ?? ""
+      return footer.includes(process.cwd()) && !footer.includes("feat/statusline-ui")
+    })
+    expect(lines(narrow).at(-1)).toContain(KEYMAP_HINT)
+    expectNoOverflow(narrow, 64, 24)
+
+    await actAsync(() => setup.resize(120, 24))
+    const expanded = await setup.waitForFrame((frame) =>
+      (lines(frame).at(-1) ?? "").includes(`${process.cwd()} · feat/statusline-ui · Claude · opus`),
+    )
+    expectNoOverflow(expanded, 120, 24)
+
+    await actAsync(() => controller.store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: null,
+    }))
+    const legacy = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes("Claude:opus:high"))
+    expect(lines(legacy).at(-1)).toContain(KEYMAP_HINT)
+    expect(lines(legacy).at(-1)).not.toContain("feat/statusline-ui")
+    expectNoOverflow(legacy, 120, 24)
+
     await destroyMounted(setup.renderer)
   })
 })
