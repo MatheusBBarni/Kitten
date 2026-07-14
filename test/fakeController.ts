@@ -19,12 +19,14 @@ import {
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type PromptInput,
+  type StatuslineWriteResult,
   type SwitchFocusOptions,
 } from "../src/app/actions.ts"
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
+import type { StatuslineLayout } from "../src/core/statusline.ts"
 import {
   persistedSelectedConversationId,
   type PersistedRunRecord,
@@ -54,6 +56,8 @@ export interface RecordedCalls {
   cancel: (SessionId | undefined)[]
   setSessionConfigOption: { configId: string; value: string; sessionId: SessionId | undefined }[]
   applyProviderDefaults: SessionId[]
+  acknowledgeStatuslineDisclosure: number
+  confirmStatusline: StatuslineLayout[]
   providerDefaultContexts: Array<{
     sessionId: SessionId
     selectedSessionId: SessionId | null
@@ -94,6 +98,9 @@ export interface FakeControllerOptions {
   ) => RepositoryFileList | Promise<RepositoryFileList>
   /** Deterministic terminal results emitted when a view requests provider defaults. */
   providerDefaultResults?: Partial<Record<SessionId, DefaultApplyResult>>
+  /** Deterministic persistence outcomes for statusline UI tests. */
+  acknowledgeStatuslineResult?: StatuslineWriteResult
+  confirmStatuslineResult?: StatuslineWriteResult
 }
 
 /**
@@ -156,6 +163,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     cancel: [],
     setSessionConfigOption: [],
     applyProviderDefaults: [],
+    acknowledgeStatuslineDisclosure: 0,
+    confirmStatusline: [],
     providerDefaultContexts: [],
     switchFocus: [],
     jumpToNextNeedy: 0,
@@ -303,6 +312,24 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         })
         const result = options.providerDefaultResults?.[sessionId] ?? { kind: "none" }
         store.applyEvent(sessionId, { kind: "default_apply_result", result })
+        return result
+      },
+      async acknowledgeStatuslineDisclosure(): Promise<StatuslineWriteResult> {
+        calls.acknowledgeStatuslineDisclosure++
+        const result = options.acknowledgeStatuslineResult ?? { outcome: "saved" }
+        if (result.outcome === "saved") {
+          const current = store.getState().preferences.statusline
+          store.setStatuslinePreference({ ...current, llmDisclosureAcknowledged: true })
+        }
+        return result
+      },
+      async confirmStatusline(layout): Promise<StatuslineWriteResult> {
+        calls.confirmStatusline.push(layout)
+        const result = options.confirmStatuslineResult ?? { outcome: "saved" }
+        if (result.outcome === "saved") {
+          const acknowledged = store.getState().preferences.statusline.llmDisclosureAcknowledged
+          store.setStatuslinePreference({ llmDisclosureAcknowledged: acknowledged, layout })
+        }
         return result
       },
       switchFocus(sessionId?: SessionId, options?: SwitchFocusOptions): void {

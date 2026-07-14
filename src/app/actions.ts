@@ -29,6 +29,7 @@ import {
   type ProviderModelDefault,
   type SessionId,
 } from "../core/types.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
@@ -144,6 +145,11 @@ export type CloseConversationResult =
   | { outcome: "teardown-failed" }
   | { outcome: "ignored" }
 
+/** Explicit statusline writes resolve legibly and never reject into the UI. */
+export type StatuslineWriteResult =
+  | { outcome: "saved" }
+  | { outcome: "error"; message: string }
+
 /** The seams the actions need. The controller supplies all of them. */
 export interface ActionDeps {
   store: AppStore
@@ -177,6 +183,10 @@ export interface ActionDeps {
   createConversation?: () => Promise<SessionId | null>
   /** Apply an explicit close outcome through the controller-owned teardown path. */
   closeConversation?: (sessionId: SessionId, choice: CloseChoice) => Promise<CloseConversationResult>
+  /** Persist disclosure acknowledgement before applying it to the reactive store. */
+  acknowledgeStatuslineDisclosure?: () => Promise<StatuslineWriteResult>
+  /** Persist one complete layout before applying it to the reactive store. */
+  confirmStatusline?: (layout: StatuslineLayout) => Promise<StatuslineWriteResult>
 }
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
@@ -237,6 +247,10 @@ export interface ControllerActions {
   setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<boolean>
   /** Apply one session's latest provider default without throwing into the UI. */
   applyProviderDefaults(sessionId: SessionId): Promise<DefaultApplyResult>
+  /** Persist and apply the first-request disclosure acknowledgement. */
+  acknowledgeStatuslineDisclosure(): Promise<StatuslineWriteResult>
+  /** Persist and immediately apply one reviewed complete layout. */
+  confirmStatusline(layout: StatuslineLayout): Promise<StatuslineWriteResult>
   /**
    * Focus `sessionId`, or cycle to the next session when omitted. Sessions stay live.
    * `options.viaOverview` records the switch as one made through the `/sessions` overview
@@ -287,6 +301,10 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
+  const acknowledgeStatuslineDisclosure = deps.acknowledgeStatuslineDisclosure ??
+    (async () => ({ outcome: "error" as const, message: "Statusline preferences are unavailable." }))
+  const confirmStatusline = deps.confirmStatusline ??
+    (async () => ({ outcome: "error" as const, message: "Statusline preferences are unavailable." }))
   const defaultApplyQueues = new Map<SessionId, Promise<DefaultApplyResult>>()
 
   const focused = (): SessionId | undefined =>
@@ -623,6 +641,22 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
+    async acknowledgeStatuslineDisclosure(): Promise<StatuslineWriteResult> {
+      try {
+        return await acknowledgeStatuslineDisclosure()
+      } catch (error) {
+        return { outcome: "error", message: errorMessage(error) }
+      }
+    },
+
+    async confirmStatusline(layout): Promise<StatuslineWriteResult> {
+      try {
+        return await confirmStatusline(layout)
+      } catch (error) {
+        return { outcome: "error", message: errorMessage(error) }
+      }
+    },
+
     switchFocus(sessionId, options?: SwitchFocusOptions): void {
       const currentState = store.getState()
       const current = currentState.workspace.selectedVisibleId
@@ -712,4 +746,8 @@ function switchKind(option: ConfigOption | undefined): "model" | "effort" | unde
 /** Match opaque values only within one already allowlisted model/effort option. */
 function hasOption(option: ConfigOption, value: string): boolean {
   return option.options.some((candidate) => candidate.value === value)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

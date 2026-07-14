@@ -55,6 +55,21 @@ describe("createFakeController", () => {
     expect(controller.calls.closeConversation).toEqual([{ sessionId: created!, choice: "close" }])
   })
 
+  it("records statusline acknowledgement and confirmation without an ACP connection", async () => {
+    const controller = createFakeController({ runtimes: [] })
+    const layout = { separator: " | ", line: ["FOLDER", "MODEL"] } as const
+
+    expect(await controller.actions.acknowledgeStatuslineDisclosure()).toEqual({ outcome: "saved" })
+    expect(await controller.actions.confirmStatusline(layout)).toEqual({ outcome: "saved" })
+
+    expect(controller.calls.acknowledgeStatuslineDisclosure).toBe(1)
+    expect(controller.calls.confirmStatusline).toEqual([layout])
+    expect(controller.store.getState().preferences.statusline).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout,
+    })
+  })
+
   it("applies history actions through the real store contract selectors read", () => {
     const controller = createFakeController()
 

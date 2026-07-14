@@ -10,6 +10,7 @@ import { CockpitApp } from "../src/ui/CockpitApp.tsx"
 import type { AgentConnection, PromptBlock } from "../src/agent/agentConnection.ts"
 import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
+import type { StatuslineLayout } from "../src/core/statusline.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
 import { createCockpitRenderer, createCockpitSession, main, wireKeyboardCapability } from "../src/index.ts"
 import type { PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
@@ -76,6 +77,121 @@ function bootRun(cwd: string): PersistedRunRecordV1 {
     handoffBundle: null,
   }
 }
+
+const SAVED_STATUSLINE: StatuslineLayout = {
+  separator: " | ",
+  line: ["FOLDER", "MODEL"],
+}
+
+const EXTERNAL_STATUSLINE: StatuslineLayout = {
+  separator: " · ",
+  line: ["PROVIDER", "EFFORT"],
+}
+
+describe("statusline config lifecycle", () => {
+  it("persists explicit actions before apply, ignores previews, and reloads externally without write-back", async () => {
+    let onConfig: ((config: ReturnType<typeof defaultAppConfig>) => void) | undefined
+    const writes: unknown[] = []
+    const resolvers: Array<() => void> = []
+    const config = {
+      ...defaultAppConfig(),
+      statusline: { llmDisclosureAcknowledged: false, layout: SAVED_STATUSLINE },
+    }
+    const session = await createCockpitSession({
+      config,
+      buildController: async (options) => createFakeController({ store: options.store! }),
+      persistConfig: async () => {},
+      persistStatuslineConfig: async (patch) => {
+        writes.push(patch)
+        await new Promise<void>((resolve) => resolvers.push(resolve))
+      },
+      watchConfig: (callback) => {
+        onConfig = callback
+        return { close() {} }
+      },
+    })
+
+    try {
+      expect(session.controller.store.getState().preferences.statusline).toEqual(config.statusline)
+
+      session.controller.store.openStatusline({
+        sessionId: "codex",
+        phase: "preview",
+        requestText: "compact",
+        layout: EXTERNAL_STATUSLINE,
+        preset: null,
+      })
+      session.controller.store.updateStatusline({ phase: "request", requestText: "compact" })
+      expect(writes).toEqual([])
+
+      const acknowledgement = session.controller.actions.acknowledgeStatuslineDisclosure()
+      const confirmation = session.controller.actions.confirmStatusline(EXTERNAL_STATUSLINE)
+      await Promise.resolve()
+      expect(writes).toEqual([{ llmDisclosureAcknowledged: true }])
+      expect(session.controller.store.getState().preferences.statusline.llmDisclosureAcknowledged).toBe(false)
+      resolvers.shift()!()
+      expect(await acknowledgement).toEqual({ outcome: "saved" })
+      expect(session.controller.store.getState().preferences.statusline).toEqual({
+        llmDisclosureAcknowledged: true,
+        layout: SAVED_STATUSLINE,
+      })
+
+      await Promise.resolve()
+      expect(writes).toEqual([
+        { llmDisclosureAcknowledged: true },
+        {
+          llmDisclosureAcknowledged: true,
+          separator: EXTERNAL_STATUSLINE.separator,
+          line: EXTERNAL_STATUSLINE.line,
+        },
+      ])
+      expect(session.controller.store.getState().preferences.statusline.layout).toBe(SAVED_STATUSLINE)
+      resolvers.shift()!()
+      expect(await confirmation).toEqual({ outcome: "saved" })
+      expect(session.controller.store.getState().preferences.statusline.layout).toBe(EXTERNAL_STATUSLINE)
+
+      const reloadedLayout: StatuslineLayout = { separator: " / ", line: ["FULL_PATH"] }
+      onConfig!({
+        ...config,
+        statusline: { llmDisclosureAcknowledged: true, layout: reloadedLayout },
+      })
+      expect(session.controller.store.getState().preferences.statusline.layout).toBe(reloadedLayout)
+      expect(writes).toHaveLength(2)
+    } finally {
+      await session.controller.dispose()
+    }
+  })
+
+  it("returns a legible writer failure and leaves acknowledgement and layout unchanged", async () => {
+    const config = {
+      ...defaultAppConfig(),
+      statusline: { llmDisclosureAcknowledged: false, layout: SAVED_STATUSLINE },
+    }
+    const session = await createCockpitSession({
+      config,
+      buildController: async (options) => createFakeController({ store: options.store! }),
+      persistConfig: async () => {},
+      persistStatuslineConfig: async () => {
+        throw new Error("config directory is read-only")
+      },
+      watchConfig: () => ({ close() {} }),
+    })
+
+    try {
+      expect(await session.controller.actions.acknowledgeStatuslineDisclosure()).toEqual({
+        outcome: "error",
+        message: "config directory is read-only",
+      })
+      expect(await session.controller.actions.confirmStatusline(EXTERNAL_STATUSLINE)).toEqual({
+        outcome: "error",
+        message: "config directory is read-only",
+      })
+      expect(session.controller.store.getState().preferences.statusline).toEqual(config.statusline)
+    } finally {
+      await session.controller.dispose()
+    }
+  })
+})
 
 /**
  * Integration: boot the cockpit against an in-memory ("main-screen", memory

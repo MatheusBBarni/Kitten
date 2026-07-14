@@ -8,7 +8,7 @@ import { loadAppConfig } from "../src/config/configLoader.ts"
 import { watchUserConfig } from "../src/config/configWatcher.ts"
 import { persistUserConfig } from "../src/config/configWriter.ts"
 import { createAppStore } from "../src/store/appStore.ts"
-import { selectThemePreference } from "../src/store/selectors.ts"
+import { selectStatuslinePreference, selectThemePreference } from "../src/store/selectors.ts"
 import { createControllerActions } from "../src/app/actions.ts"
 import type { SessionController } from "../src/app/controller.ts"
 import type { AgentConnection } from "../src/agent/agentConnection.ts"
@@ -50,6 +50,57 @@ afterAll(async () => {
 })
 
 describe("boot config persistence integration", () => {
+  it("round-trips a confirmed statusline into a fresh cockpit while preserving unrelated settings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kitten-statusline-config-"))
+    tempDirs.push(dir)
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      theme: "light",
+      telemetryEnabled: true,
+      welcomeBanner: "always",
+    }))
+    const layout = { separator: " | ", line: ["FOLDER", "MODEL"] } as const
+
+    const first = await createCockpitSession({
+      loadConfig: () => loadAppConfig({ path }),
+      buildController: async (options) => controllerOver(options.store!),
+      persistConfig: (patch) => persistUserConfig(patch, { path }),
+      persistStatuslineConfig: (statusline) => persistUserConfig({ statusline }, { path }),
+      watchConfig: () => ({ close() {} }),
+    })
+    expect(await first.controller.actions.confirmStatusline(layout)).toEqual({ outcome: "saved" })
+    await first.controller.dispose()
+
+    const persisted = JSON.parse(await readFile(path, "utf8"))
+    expect(persisted).toMatchObject({
+      theme: "light",
+      telemetryEnabled: true,
+      welcomeBanner: "always",
+      statusline: {
+        llmDisclosureAcknowledged: false,
+        separator: " | ",
+        line: ["FOLDER", "MODEL"],
+      },
+    })
+
+    const second = await createCockpitSession({
+      loadConfig: () => loadAppConfig({ path }),
+      buildController: async (options) => controllerOver(options.store!),
+      persistConfig: (patch) => persistUserConfig(patch, { path }),
+      persistStatuslineConfig: (statusline) => persistUserConfig({ statusline }, { path }),
+      watchConfig: () => ({ close() {} }),
+    })
+    try {
+      expect(selectStatuslinePreference(second.controller.store.getState())).toEqual({
+        llmDisclosureAcknowledged: false,
+        layout,
+      })
+      expect(selectThemePreference(second.controller.store.getState())).toBe("light")
+    } finally {
+      await second.controller.dispose()
+    }
+  })
+
   it("round-trips a store theme to disk and ignores the following self-write reload", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-boot-config-"))
     tempDirs.push(dir)

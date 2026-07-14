@@ -20,7 +20,7 @@ import { createSessionController, type AgentRuntimeState, type SessionController
 import { formatMcpSelfCheckLine, formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
 import { configureTreeSitterWorker } from "./app/treeSitterWorker.ts"
 import { bannerVariant, markFirstRunSeen, readFirstRunSeen, type BannerVariant } from "./config/appState.ts"
-import { loadAppConfig, resolveSessions } from "./config/configLoader.ts"
+import { loadAppConfig, resolveSessions, type UserConfig } from "./config/configLoader.ts"
 import { watchUserConfig, type ConfigWatcher } from "./config/configWatcher.ts"
 import { persistUserConfig } from "./config/configWriter.ts"
 import {
@@ -33,6 +33,7 @@ import {
   type FirstRunReport,
 } from "./config/firstRun.ts"
 import type { AppConfig, ThemePreference } from "./core/types.ts"
+import type { StatuslineLayout } from "./core/statusline.ts"
 import { createOsNotificationChannel } from "./notify/channel.ts"
 import { createRendererFocusSource } from "./notify/focus.ts"
 import { createNotifier } from "./notify/notifier.ts"
@@ -138,6 +139,8 @@ export interface CockpitSessionDeps {
   createRunStore?: (enabled: boolean) => RunStore
   /** How to persist a settled preference change; defaults to the atomic config writer. */
   persistConfig?: (patch: { theme: ThemePreference }) => Promise<void>
+  /** How to persist explicit statusline acknowledgement and confirmation writes. */
+  persistStatuslineConfig?: (patch: NonNullable<UserConfig["statusline"]>) => Promise<void>
   /** How to observe reloaded user config; defaults to the filesystem config watcher. */
   watchConfig?: (onConfig: (config: AppConfig) => void) => ConfigWatcher
   /** Quiet period before the latest preference is persisted. */
@@ -168,7 +171,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   const runStore = (deps.createRunStore ?? ((enabled) => createRunStore({ enabled })))(config.persistenceEnabled)
   const store = createAppStore({
     seeds: resolveSessions(config, { launchCwd: cwd }).map((entry) => entry.seed),
-    preferences: { theme: config.theme },
+    preferences: { theme: config.theme, statusline: config.statusline },
   })
   const baseController = await (deps.buildController ?? createSessionController)({
     config,
@@ -186,6 +189,8 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   const stopRunWriter = runWriter.watch(baseController.store)
 
   const persistConfig = deps.persistConfig ?? ((patch) => persistUserConfig(patch))
+  const persistStatuslineConfig = deps.persistStatuslineConfig ??
+    ((statusline) => persistUserConfig({ statusline }))
   const setTimer = deps.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs))
   const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer))
   const persistDebounceMs = deps.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS
@@ -193,6 +198,48 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let pendingTheme: ThemePreference | undefined
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let writeChain = Promise.resolve()
+
+  function queueStatuslineWrite(
+    patch: () => NonNullable<UserConfig["statusline"]>,
+    apply: () => void,
+  ): Promise<{ outcome: "saved" } | { outcome: "error"; message: string }> {
+    const write = writeChain.then(async () => {
+      if (disposed) return { outcome: "error" as const, message: "Statusline preferences are unavailable." }
+      try {
+        await persistStatuslineConfig(patch())
+        if (disposed) return { outcome: "error" as const, message: "Statusline preferences are unavailable." }
+        apply()
+        return { outcome: "saved" as const }
+      } catch (error) {
+        return { outcome: "error" as const, message: errorMessage(error) }
+      }
+    })
+    writeChain = write.then(() => undefined)
+    return write
+  }
+
+  const acknowledgeStatuslineDisclosure = () => queueStatuslineWrite(
+    () => ({ llmDisclosureAcknowledged: true }),
+    () => {
+      const current = baseController.store.getState().preferences.statusline
+      baseController.store.setStatuslinePreference({ ...current, llmDisclosureAcknowledged: true })
+    },
+  )
+
+  const confirmStatusline = (layout: StatuslineLayout) => queueStatuslineWrite(
+    () => {
+      const acknowledged = baseController.store.getState().preferences.statusline.llmDisclosureAcknowledged
+      return {
+        llmDisclosureAcknowledged: acknowledged,
+        separator: layout.separator,
+        line: layout.line,
+      }
+    },
+    () => {
+      const acknowledged = baseController.store.getState().preferences.statusline.llmDisclosureAcknowledged
+      baseController.store.setStatuslinePreference({ llmDisclosureAcknowledged: acknowledged, layout })
+    },
+  )
 
   const stopPreference = baseController.store.subscribeSelector(selectThemePreference, (theme) => {
     recorder.themeSet(theme)
@@ -222,6 +269,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     watcher = (deps.watchConfig ?? ((onConfig) => watchUserConfig(onConfig)))((nextConfig) => {
       if (disposed) return
       baseController.store.setThemePreference(nextConfig.theme)
+      baseController.store.setStatuslinePreference(nextConfig.statusline)
       baseController.updateProviderDefaults(nextConfig.providerDefaults)
     })
   } catch (error) {
@@ -237,7 +285,11 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let disposal: Promise<void> | undefined
   const controller: SessionController = {
     store: baseController.store,
-    actions: baseController.actions,
+    actions: {
+      ...baseController.actions,
+      acknowledgeStatuslineDisclosure,
+      confirmStatusline,
+    },
     shell: baseController.shell,
     runtimes: () => baseController.runtimes(),
     runtime: (sessionId) => baseController.runtime(sessionId),
@@ -277,6 +329,10 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
 /** Default exit handler: exit the process cleanly once teardown has finished. */
 export function exitProcess(): void {
   process.exit(0)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
