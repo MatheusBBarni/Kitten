@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test"
 
-import { destroyTreeSitterClient, RGBA } from "@opentui/core"
+import { destroyTreeSitterClient, getTreeSitterClient, RGBA } from "@opentui/core"
 import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, settleMountedHighlights } from "../../test/reactTui.ts"
 import { composeHandoffBlocks, createHandoffEdits } from "../app/handoff.ts"
 import { bannerVariant, type BannerVariant } from "../config/appState.ts"
 import type { HandoffBundle, ProviderKind, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
@@ -21,9 +21,12 @@ import {
 } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
 import { KEYMAP_HINT } from "./keymap.ts"
+import { registerSyntaxParsers } from "./syntaxParsers.ts"
 import { DARK_PALETTE } from "./theme.ts"
 import { CONNECTOR, filetypeFor, STATUS_BULLET, TOOL_KIND_NAMES } from "./ToolCallRow.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
+
+registerSyntaxParsers()
 
 /** The `rgba(...)` string OpenTUI stores for a palette hex, for comparing to a captured cell. */
 function paletteColor(hex: string): string {
@@ -35,6 +38,10 @@ const HEIGHT = 20
 
 /** A unified diff of the shape `toUnifiedDiff` produces in the adapter. */
 const UNIFIED = ["--- a/src/app.ts", "+++ b/src/app.ts", "@@ -1,2 +1,2 @@", " const a = 1", "-const b = 2", "+const b = 3"].join("\n")
+
+function singleLineDiff(path: string, before: string, after: string): string {
+  return [`--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", `-${before}`, `+${after}`].join("\n")
+}
 
 const RESTORED_BUNDLE: HandoffBundle = {
   intent: "continue",
@@ -663,6 +670,100 @@ describe("ConversationView tool calls", () => {
     await destroyMounted(renderer)
   })
 
+  for (const { path, before, after, sentinel, plaintext } of [
+    {
+      path: "src/lib.rs",
+      before: "fn old() {}",
+      after: "fn build() { let ordinary = RustSentinel {}; }",
+      sentinel: "RustSentinel",
+      plaintext: "ordinary",
+    },
+    {
+      path: "cmd/main.go",
+      before: "func old() {}",
+      after: "func build() { var ordinary GoSentinel }",
+      sentinel: "GoSentinel",
+      plaintext: "ordinary",
+    },
+  ]) {
+    it(`highlights ${path.slice(path.lastIndexOf("."))} diff tokens from the file extension`, async () => {
+      const client = getTreeSitterClient()
+      await client.initialize()
+      expect(await client.preloadParser(filetypeFor(path)!)).toBeTrue()
+      const controller = createFakeController()
+      const { renderer, waitForFrame, waitFor, captureSpans } = await renderConversation(controller)
+
+      await actAsync(() =>
+        toolCall(controller, "claude-code", {
+          toolCallId: "language-diff",
+          kind: "edit",
+          title: `Update ${path}`,
+          status: "completed",
+          diff: { path, unified: singleLineDiff(path, before, after) },
+        }),
+      )
+      await waitForFrame((frame) => frame.includes(sentinel))
+      await settleMountedHighlights(renderer)
+      renderer.requestRender()
+      await renderer.idle()
+
+      const token = () =>
+        captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.includes(sentinel))
+      const plainToken = () =>
+        captureSpans()
+          .lines.flatMap((line) => line.spans)
+          .find((span) => span.text.includes(plaintext))
+      await waitFor(() => {
+        const styled = token()?.fg?.toString() !== plainToken()?.fg?.toString()
+        if (!styled) renderer.requestRender()
+        return styled
+      })
+
+      expect(token()).toBeDefined()
+      expect(plainToken()).toBeDefined()
+      expect(token()?.fg?.toString()).not.toBe(plainToken()?.fg?.toString())
+
+      await destroyMounted(renderer)
+    })
+  }
+
+  for (const path of ["Makefile", ".gitignore"]) {
+    it(`keeps an untyped ${path} diff unguessed`, async () => {
+      const sentinel = path === "Makefile" ? "ExtensionlessSentinel" : "DotfileSentinel"
+      const controller = createFakeController()
+      const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
+
+      await actAsync(() =>
+        toolCall(controller, "claude-code", {
+          toolCallId: "untyped-diff",
+          kind: "edit",
+          title: `Update ${path}`,
+          status: "completed",
+          diff: { path, unified: singleLineDiff(path, "plain old", `struct ${sentinel} {}`) },
+        }),
+      )
+      await waitForFrame((frame) => frame.includes(sentinel))
+      await settleMountedHighlights(renderer)
+      renderer.requestRender()
+      await renderer.idle()
+
+      const token = captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes(sentinel))
+      const plaintext = captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .find((span) => span.text.includes("plain old"))
+      expect(filetypeFor(path)).toBeUndefined()
+      expect(token).toBeDefined()
+      expect(plaintext).toBeDefined()
+      expect(token?.fg?.toString()).toBe(plaintext?.fg?.toString())
+
+      await destroyMounted(renderer)
+    })
+  }
+
   it("hangs an edit call's diff path off a `└ ` connector, above the diff body", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame } = await renderConversation(controller)
@@ -820,6 +921,8 @@ describe("filetypeFor", () => {
   it("reads the extension off a path", () => {
     expect(filetypeFor("src/app.ts")).toBe("ts")
     expect(filetypeFor("a/b/c/main.py")).toBe("py")
+    expect(filetypeFor("src/lib.rs")).toBe("rs")
+    expect(filetypeFor("cmd/main.go")).toBe("go")
     expect(filetypeFor("archive.tar.gz")).toBe("gz")
   })
 

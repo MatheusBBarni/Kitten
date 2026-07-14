@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { CodeRenderable, destroyTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
+import { CodeRenderable, destroyTreeSitterClient, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
 import { createMockMouse, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -13,7 +13,10 @@ import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { Markdown } from "./Markdown.tsx"
+import { registerSyntaxParsers } from "./syntaxParsers.ts"
 import { DARK_PALETTE, LIGHT_PALETTE } from "./theme.ts"
+
+registerSyntaxParsers()
 
 const WIDTH = 52
 const HEIGHT = 20
@@ -61,6 +64,22 @@ function collectCodeRenderables(root: BaseRenderable): CodeRenderable[] {
   return codes
 }
 
+async function settleMarkdownHighlights(setup: TestRendererSetup): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const codes = collectCodeRenderables(setup.renderer.root)
+    if (codes.length > 0) {
+      await Promise.all(codes.map((code) => code.highlightingDone))
+      setup.renderer.requestRender()
+      await setup.flush()
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    setup.renderer.requestRender()
+    await setup.flush()
+  }
+  throw new Error("Markdown code renderable did not mount")
+}
+
 async function destroyMarkdown(setup: TestRendererSetup): Promise<void> {
   await Promise.all(collectCodeRenderables(setup.renderer.root).map((code) => code.highlightingDone))
   await setup.flush()
@@ -84,6 +103,33 @@ describe("Markdown", () => {
 
     await destroyMarkdown(setup)
   })
+
+  for (const { label, source, sentinel } of [
+    { label: "rust", source: "struct RustSentinel {}", sentinel: "RustSentinel" },
+    { label: "rs", source: "struct RsSentinel {}", sentinel: "RsSentinel" },
+    { label: "go", source: "type GoSentinel struct {}", sentinel: "GoSentinel" },
+    { label: "golang", source: "type GolangSentinel struct {}", sentinel: "GolangSentinel" },
+  ]) {
+    it(`highlights a ${label} fence with a non-prose foreground`, async () => {
+      const client = getTreeSitterClient()
+      await client.initialize()
+      expect(await client.preloadParser(label)).toBeTrue()
+      const setup = await renderMarkdown(`\`\`\`${label}\n${source}\n\`\`\``)
+      await settleMarkdownHighlights(setup)
+      await setup.waitForFrame((frame) => frame.includes(source))
+      await setup.waitFor(() => {
+        const styled = spanContaining(setup, sentinel)?.fg.toString() !== paletteColor(DARK_PALETTE.text)
+        if (!styled) setup.renderer.requestRender()
+        return styled
+      })
+
+      const token = spanContaining(setup, sentinel)
+      expect(token).toBeDefined()
+      expect(token?.fg.toString()).not.toBe(paletteColor(DARK_PALETTE.text))
+
+      await destroyMarkdown(setup)
+    })
+  }
 
   it("renders strong Markdown with the bold text attribute", async () => {
     const setup = await renderMarkdown("**BOLD_SENTINEL**")
@@ -252,6 +298,32 @@ describe("Markdown", () => {
 
     await destroyMarkdown(setup)
   })
+
+  for (const { label, source } of [
+    { label: "rust", source: "fn rust_copy_sentinel() {}" },
+    { label: "go", source: "func goCopySentinel() {}" },
+  ]) {
+    it(`copies ${label} fenced source without renderer chrome`, async () => {
+      const client = getTreeSitterClient()
+      await client.initialize()
+      expect(await client.preloadParser(label)).toBeTrue()
+      const setup = await renderMarkdown(`\`\`\`${label}\n${source}\n\`\`\``)
+      await settleMarkdownHighlights(setup)
+      const frame = await setup.waitForFrame((candidate) => candidate.includes(source))
+      const rows = frame.split("\n")
+      const row = rows.findIndex((candidate) => candidate.includes(source))
+      const start = rows[row]!.indexOf(source)
+
+      const mouse = createMockMouse(setup.renderer)
+      await mouse.drag(start, row, start + source.length, row)
+      const selected = setup.renderer.getSelection()?.getSelectedText() ?? ""
+
+      expect(selected).toBe(source)
+      expect(selected).not.toMatch(/[│┌┐└┘─█▄▌▸]/)
+
+      await destroyMarkdown(setup)
+    })
+  }
 
   it("recolors its default foreground when the terminal theme changes", async () => {
     const setup = await renderMarkdown("THEME_SENTINEL")

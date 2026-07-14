@@ -1,10 +1,14 @@
 import { addDefaultParsers, type FiletypeParserOptions } from "@opentui/core"
 
+import goHighlights from "./syntax-assets/go/highlights.scm" with { type: "file" }
+import goWasm from "./syntax-assets/go/tree-sitter-go.wasm" with { type: "file" }
 import markdownHighlights from "./syntax-assets/markdown/highlights.scm" with { type: "file" }
 import markdownInjections from "./syntax-assets/markdown/injections.scm" with { type: "file" }
 import markdownWasm from "./syntax-assets/markdown/tree-sitter-markdown.wasm" with { type: "file" }
 import markdownInlineHighlights from "./syntax-assets/markdown_inline/highlights.scm" with { type: "file" }
 import markdownInlineWasm from "./syntax-assets/markdown_inline/tree-sitter-markdown_inline.wasm" with { type: "file" }
+import rustHighlights from "./syntax-assets/rust/highlights.scm" with { type: "file" }
+import rustWasm from "./syntax-assets/rust/tree-sitter-rust.wasm" with { type: "file" }
 
 export interface SyntaxFixture {
   readonly label: string
@@ -40,6 +44,10 @@ const MARKDOWN_INFO_STRING_MAP: Readonly<Record<string, string>> = {
   typescriptreact: "typescriptreact",
   markdown: "markdown",
   md: "markdown",
+  rust: "rust",
+  rs: "rust",
+  go: "go",
+  golang: "go",
 }
 
 const markdownParser: FiletypeParserOptions = {
@@ -63,6 +71,24 @@ const markdownInlineParser: FiletypeParserOptions = {
   wasm: markdownInlineWasm,
 }
 
+const rustParser: FiletypeParserOptions = {
+  filetype: "rust",
+  aliases: ["rs"],
+  queries: {
+    highlights: [rustHighlights],
+  },
+  wasm: rustWasm,
+}
+
+const goParser: FiletypeParserOptions = {
+  filetype: "go",
+  aliases: ["golang"],
+  queries: {
+    highlights: [goHighlights],
+  },
+  wasm: goWasm,
+}
+
 const markdownCapability: SyntaxCapability = {
   filetype: "markdown",
   aliases: ["md"],
@@ -81,10 +107,32 @@ const markdownCapability: SyntaxCapability = {
   ],
 }
 
+const rustCapability: SyntaxCapability = {
+  filetype: "rust",
+  aliases: ["rs"],
+  parser: rustParser,
+  fixtures: [
+    { label: "rust", token: "fn", source: "markdown" },
+    { label: "rs", token: "fn", source: "markdown" },
+    { label: "rs", token: "fn", source: "diff" },
+  ],
+}
+
+const goCapability: SyntaxCapability = {
+  filetype: "go",
+  aliases: ["golang"],
+  parser: goParser,
+  fixtures: [
+    { label: "go", token: "func", source: "markdown" },
+    { label: "golang", token: "func", source: "markdown" },
+    { label: "go", token: "func", source: "diff" },
+  ],
+}
+
 /** The sole source of parser assets, aliases, injection labels, and release fixtures. */
 export const syntaxParserManifest: SyntaxParserManifest = {
-  capabilities: [markdownCapability],
-  parsers: [markdownParser, markdownInlineParser],
+  capabilities: [markdownCapability, rustCapability, goCapability],
+  parsers: [markdownParser, markdownInlineParser, rustParser, goParser],
 }
 
 /** Resolve only an explicitly declared Markdown fence label; never guess a language. */

@@ -24,6 +24,22 @@ describe("syntaxParserManifest", () => {
     expect(resolveSyntaxFiletype("unknown")).toBeUndefined()
   })
 
+  it("resolves Rust and Go canonical labels and aliases to one capability each", () => {
+    expect(resolveSyntaxFiletype("rust")).toBe("rust")
+    expect(resolveSyntaxFiletype("rs")).toBe("rust")
+    expect(resolveSyntaxFiletype("go")).toBe("go")
+    expect(resolveSyntaxFiletype("golang")).toBe("go")
+
+    const rust = syntaxParserManifest.capabilities.filter(({ filetype }) => filetype === "rust")
+    const go = syntaxParserManifest.capabilities.filter(({ filetype }) => filetype === "go")
+    expect(rust).toHaveLength(1)
+    expect(rust[0]?.aliases).toEqual(["rs"])
+    expect(rust[0]?.parser.aliases).toEqual(["rs"])
+    expect(go).toHaveLength(1)
+    expect(go[0]?.aliases).toEqual(["golang"])
+    expect(go[0]?.parser.aliases).toEqual(["golang"])
+  })
+
   it("preserves the Markdown inline node mappings", () => {
     expect(resolveInjectedNodeFiletype("inline")).toBe("markdown_inline")
     expect(resolveInjectedNodeFiletype("pipe_table_cell")).toBe("markdown_inline")
@@ -45,38 +61,69 @@ describe("syntaxParserManifest", () => {
       typescriptreact: "typescriptreact",
       markdown: "markdown",
       md: "markdown",
+      rust: "rust",
+      rs: "rust",
+      go: "go",
+      golang: "go",
     })
   })
 
   it("keeps filetypes, aliases, and fixtures unique", () => {
     const filetypes = syntaxParserManifest.capabilities.map(({ filetype }) => filetype)
     const aliases = syntaxParserManifest.capabilities.flatMap(({ aliases }) => aliases)
-    const fixtureLabels = syntaxParserManifest.capabilities.flatMap(({ fixtures }) =>
-      fixtures.map(({ label }) => label),
+    const fixtureKeys = syntaxParserManifest.capabilities.flatMap(({ fixtures }) =>
+      fixtures.map(({ label, source }) => `${source}:${label}`),
     )
 
     expect(new Set(filetypes).size).toBe(filetypes.length)
     expect(new Set(aliases).size).toBe(aliases.length)
     expect(new Set([...filetypes, ...aliases]).size).toBe(filetypes.length + aliases.length)
-    expect(new Set(fixtureLabels).size).toBe(fixtureLabels.length)
-    expect(fixtureLabels.sort()).toEqual(
+    expect(new Set(fixtureKeys).size).toBe(fixtureKeys.length)
+    expect(fixtureKeys.sort()).toEqual(
       [
-        "javascript",
-        "javascriptreact",
-        "js",
-        "jsx",
-        "markdown",
-        "md",
-        "typescript",
-        "typescriptreact",
-        "ts",
-        "tsx",
+        "markdown:javascript",
+        "markdown:javascriptreact",
+        "markdown:js",
+        "markdown:jsx",
+        "markdown:markdown",
+        "markdown:md",
+        "markdown:typescript",
+        "markdown:typescriptreact",
+        "markdown:ts",
+        "markdown:tsx",
+        "markdown:rust",
+        "markdown:rs",
+        "diff:rs",
+        "markdown:go",
+        "markdown:golang",
+        "diff:go",
       ].sort(),
     )
   })
 
+  it("provides Markdown fixtures for every Rust and Go label plus extension-backed diff fixtures", () => {
+    const fixturesFor = (filetype: string) =>
+      syntaxParserManifest.capabilities.find((capability) => capability.filetype === filetype)?.fixtures
+
+    expect(fixturesFor("rust")).toEqual([
+      { label: "rust", token: "fn", source: "markdown" },
+      { label: "rs", token: "fn", source: "markdown" },
+      { label: "rs", token: "fn", source: "diff" },
+    ])
+    expect(fixturesFor("go")).toEqual([
+      { label: "go", token: "func", source: "markdown" },
+      { label: "golang", token: "func", source: "markdown" },
+      { label: "go", token: "func", source: "diff" },
+    ])
+  })
+
   it("uses existing local WASM and query assets for every parser option", () => {
-    expect(syntaxParserManifest.parsers.map(({ filetype }) => filetype)).toEqual(["markdown", "markdown_inline"])
+    expect(syntaxParserManifest.parsers.map(({ filetype }) => filetype)).toEqual([
+      "markdown",
+      "markdown_inline",
+      "rust",
+      "go",
+    ])
 
     for (const parser of syntaxParserManifest.parsers) {
       const paths = [parser.wasm, ...parser.queries.highlights, ...(parser.queries.injections ?? [])]

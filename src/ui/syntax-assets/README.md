@@ -1,14 +1,21 @@
 # Syntax asset provenance
 
 The Markdown assets in this directory were vendored byte-for-byte from the
-exact-pinned `@opentui/core` npm package at version `0.4.3`. Kitten owns these
-copies so its Markdown parser override uses public registration APIs and static
-file imports without reaching into unexported package paths at runtime.
+exact-pinned `@opentui/core` npm package at version `0.4.3`. The Rust and Go
+assets were vendored byte-for-byte from the official grammar npm packages
+`tree-sitter-rust@0.24.0` and `tree-sitter-go@0.25.0`. Kitten owns these copies
+so its parser manifest uses public registration APIs and static file imports
+without reaching into package paths at runtime.
 
 Upstream repository: <https://github.com/anomalyco/opentui/tree/main/packages/core>
 
-The accompanying `LICENSE.opentui` is the MIT license distributed with that
-package. Query files retain their embedded upstream attribution comments.
+Grammar repositories:
+
+- <https://github.com/tree-sitter/tree-sitter-rust/tree/v0.24.0>
+- <https://github.com/tree-sitter/tree-sitter-go/tree/v0.25.0>
+
+The accompanying `LICENSE.*` files are the licenses distributed with each
+source package. Query files retain their embedded upstream attribution comments.
 
 Reviewed on 2026-07-14 against the installed package and its current default
 Markdown parser configuration. SHA-256 checksums:
@@ -19,4 +26,8 @@ a2bf8c052454acbe765970a4ad2706c60cad7b62a762b927e28f60af1a0ef516  markdown/injec
 3e13182f21373634c40653f170e6f2d2790914eb2c243927086d79023c534f7a  markdown/tree-sitter-markdown.wasm
 ca9a109ddd21c5ffdc6b84f00c0a4b2eeb55ae36a0b8eeb9b02348269c5acd22  markdown_inline/highlights.scm
 9bbd71a70a23f6d0193bb162a72eecf2a2bd9ce76910d7ad3da9c5f80f122671  markdown_inline/tree-sitter-markdown_inline.wasm
+0f0343107f14a7690157f51090a979eb8f8bfe4eada7c61763ddb4c54b1311d1  rust/highlights.scm
+f65f354215611fd94ad34134b3427eb3d58cbb745df7b6509ba722184db73d57  rust/tree-sitter-rust.wasm
+81182c986547eba7fa6316e82dfd621fb13b8fc89efac85432aee51a48ed0896  go/highlights.scm
+9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7  go/tree-sitter-go.wasm
 ```
