@@ -713,6 +713,13 @@ describe("ConversationView tool calls", () => {
       sentinel: "SH_DIFF_SENTINEL",
       plaintext: "ordinary",
     },
+    {
+      path: "src/main.py",
+      before: "ordinary = 0",
+      after: 'ordinary = "PY_DIFF_SENTINEL"',
+      sentinel: "PY_DIFF_SENTINEL",
+      plaintext: "ordinary",
+    },
   ]) {
     it(`highlights ${path.slice(path.lastIndexOf("."))} diff tokens from the file extension`, async () => {
       const client = getTreeSitterClient()
@@ -800,7 +807,7 @@ describe("ConversationView tool calls", () => {
     it(`keeps an untyped ${path} diff unguessed`, async () => {
       const sentinel = path === "Makefile" ? "ExtensionlessSentinel" : "DotfileSentinel"
       const controller = createFakeController()
-      const { renderer, waitForFrame, captureSpans } = await renderConversation(controller)
+      const { renderer, waitForFrame, captureSpans, captureCharFrame } = await renderConversation(controller)
 
       await actAsync(() =>
         toolCall(controller, "claude-code", {
@@ -826,6 +833,14 @@ describe("ConversationView tool calls", () => {
       expect(token).toBeDefined()
       expect(plaintext).toBeDefined()
       expect(token?.fg?.toString()).toBe(plaintext?.fg?.toString())
+
+      const rows = captureCharFrame().split("\n")
+      const before = "plain old"
+      const after = `struct ${sentinel} {}`
+      const first = rows.findIndex((row) => row.includes(before))
+      const last = rows.findIndex((row) => row.includes(after))
+      const codeColumn = rows[first]!.indexOf(before)
+      expect(await selectText(renderer, [codeColumn, first], [rows[last]!.length, last])).toBe(`${before}\n${after}`)
 
       await destroyMounted(renderer)
     })

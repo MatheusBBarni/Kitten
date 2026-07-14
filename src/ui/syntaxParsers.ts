@@ -1,4 +1,5 @@
 import { addDefaultParsers, type FiletypeParserOptions } from "@opentui/core"
+import { existsSync } from "node:fs"
 
 import bashHighlights from "./syntax-assets/bash/highlights.scm" with { type: "file" }
 import bashWasm from "./syntax-assets/bash/tree-sitter-bash.wasm" with { type: "file" }
@@ -13,6 +14,8 @@ import markdownInlineHighlights from "./syntax-assets/markdown_inline/highlights
 import markdownInlineWasm from "./syntax-assets/markdown_inline/tree-sitter-markdown_inline.wasm" with { type: "file" }
 import ocamlHighlights from "./syntax-assets/ocaml/highlights.scm" with { type: "file" }
 import ocamlWasm from "./syntax-assets/ocaml/tree-sitter-ocaml.wasm" with { type: "file" }
+import pythonHighlights from "./syntax-assets/python/highlights.scm" with { type: "file" }
+import pythonWasm from "./syntax-assets/python/tree-sitter-python.wasm" with { type: "file" }
 import rustHighlights from "./syntax-assets/rust/highlights.scm" with { type: "file" }
 import rustWasm from "./syntax-assets/rust/tree-sitter-rust.wasm" with { type: "file" }
 
@@ -41,6 +44,37 @@ export interface SyntaxPlaintextFallback {
   readonly reason: "release_gate_unmet"
 }
 
+export type SyntaxAssetAvailability = (path: string) => boolean
+
+/** Keep Python outside the advertised manifest when either reviewed local asset is unavailable. */
+export function createPythonCapability(
+  assetAvailable: SyntaxAssetAvailability = existsSync,
+): SyntaxCapability | undefined {
+  if (!assetAvailable(pythonWasm) || !assetAvailable(pythonHighlights)) return undefined
+
+  const parser: FiletypeParserOptions = {
+    filetype: "python",
+    aliases: ["py"],
+    queries: {
+      highlights: [pythonHighlights],
+    },
+    wasm: pythonWasm,
+  }
+
+  return {
+    filetype: "python",
+    aliases: ["py"],
+    parser,
+    fixtures: [
+      { label: "python", token: "PythonSentinel", source: "markdown" },
+      { label: "py", token: "PySentinel", source: "markdown" },
+      { label: "py", token: "PY_DIFF_SENTINEL", source: "diff" },
+    ],
+  }
+}
+
+const pythonCapability = createPythonCapability()
+
 const MARKDOWN_NODE_TYPE_MAP: Readonly<Record<string, string>> = {
   inline: "markdown_inline",
   pipe_table_cell: "markdown_inline",
@@ -68,6 +102,7 @@ const MARKDOWN_INFO_STRING_MAP: Readonly<Record<string, string>> = {
   bash: "bash",
   sh: "bash",
   shell: "bash",
+  ...(pythonCapability === undefined ? {} : { python: "python", py: "python" }),
 }
 
 const markdownParser: FiletypeParserOptions = {
@@ -218,9 +253,26 @@ const rescriptPlaintextFallback: SyntaxPlaintextFallback = {
 
 /** The sole source of parser assets, aliases, injection labels, and release fixtures. */
 export const syntaxParserManifest: SyntaxParserManifest = {
-  capabilities: [markdownCapability, rustCapability, goCapability, ocamlCapability, jsonCapability, bashCapability],
+  capabilities: [
+    markdownCapability,
+    rustCapability,
+    goCapability,
+    ocamlCapability,
+    jsonCapability,
+    bashCapability,
+    ...(pythonCapability === undefined ? [] : [pythonCapability]),
+  ],
   plaintextFallbacks: [rescriptPlaintextFallback],
-  parsers: [markdownParser, markdownInlineParser, rustParser, goParser, ocamlParser, jsonParser, bashParser],
+  parsers: [
+    markdownParser,
+    markdownInlineParser,
+    rustParser,
+    goParser,
+    ocamlParser,
+    jsonParser,
+    bashParser,
+    ...(pythonCapability === undefined ? [] : [pythonCapability.parser]),
+  ],
 }
 
 /** Resolve only an explicitly declared Markdown fence label; never guess a language. */

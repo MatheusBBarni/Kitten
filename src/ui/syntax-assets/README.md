@@ -2,12 +2,12 @@
 
 The Markdown assets in this directory were vendored byte-for-byte from the
 exact-pinned `@opentui/core` npm package at version `0.4.3`. The Rust, Go,
-OCaml, JSON, and Bash assets were vendored byte-for-byte from the official
+OCaml, JSON, Bash, and Python assets were vendored byte-for-byte from the official
 grammar npm packages `tree-sitter-rust@0.24.0`, `tree-sitter-go@0.25.0`,
 `tree-sitter-ocaml@0.24.2`, `tree-sitter-json@0.24.8`, and
-`tree-sitter-bash@0.25.1`. Kitten owns these copies so its parser manifest uses
-public registration APIs and static file imports without reaching into package
-paths at runtime.
+`tree-sitter-bash@0.25.1`, and `tree-sitter-python@0.25.0`. Kitten owns these
+copies so its parser manifest uses public registration APIs and static file
+imports without reaching into package paths at runtime.
 
 Upstream repository: <https://github.com/anomalyco/opentui/tree/main/packages/core>
 
@@ -18,6 +18,7 @@ Grammar repositories:
 - <https://github.com/tree-sitter/tree-sitter-ocaml/tree/v0.24.2>
 - <https://github.com/tree-sitter/tree-sitter-json/tree/v0.24.8>
 - <https://github.com/tree-sitter/tree-sitter-bash/tree/v0.25.1>
+- <https://github.com/tree-sitter/tree-sitter-python/tree/v0.25.0>
 
 ReScript remains a declared plaintext fallback rather than a highlighted
 capability. The official `rescript-lang/tree-sitter-rescript` v6.0.0 release
@@ -47,4 +48,6 @@ f65f354215611fd94ad34134b3427eb3d58cbb745df7b6509ba722184db73d57  rust/tree-sitt
 d2119fb98d5912719b13f9458574f8608d2d29dfbe45f6be1f860ea1fe2a2405  json/tree-sitter-json.wasm
 b74220d954f485b7626d2b2b61f37b522e12eb1830803e388e57dd797dc99f11  bash/highlights.scm
 8292919c88a0f7d3fb31d0cd0253ca5a9531bc1ede82b0537f2c63dd8abe6a7a  bash/tree-sitter-bash.wasm
+a6708f209381618e2b398972c8f1ccd892f0c064eab35a2a3f911c3e22e79a7e  python/highlights.scm
+16108b50df4ee9a30168794252ab55e7c93bfc5765d7fa0aa3e335752c515f47  python/tree-sitter-python.wasm
 ```

@@ -116,6 +116,8 @@ describe("Markdown", () => {
     { label: "bash", source: "BASH_SENTINEL=value", sentinel: "BASH_SENTINEL" },
     { label: "sh", source: "SH_SENTINEL=value", sentinel: "SH_SENTINEL" },
     { label: "shell", source: "SHELL_SENTINEL=value", sentinel: "SHELL_SENTINEL" },
+    { label: "python", source: "class PythonSentinel: pass", sentinel: "PythonSentinel" },
+    { label: "py", source: "class PySentinel: pass", sentinel: "PySentinel" },
   ]) {
     it(`highlights a ${label} fence with a non-prose foreground`, async () => {
       const client = getTreeSitterClient()
@@ -336,6 +338,8 @@ describe("Markdown", () => {
     { label: "bash", source: "BASH_COPY_SENTINEL=value" },
     { label: "sh", source: "SH_COPY_SENTINEL=value" },
     { label: "shell", source: "SHELL_COPY_SENTINEL=value" },
+    { label: "python", source: "class PythonCopySentinel: pass" },
+    { label: "py", source: "class PyCopySentinel: pass" },
   ]) {
     it(`copies ${label} fenced source without renderer chrome`, async () => {
       const client = getTreeSitterClient()

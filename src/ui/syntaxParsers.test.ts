@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { existsSync } from "node:fs"
 
 import {
+  createPythonCapability,
   registerSyntaxParsers,
   resolveInjectedNodeFiletype,
   resolveSyntaxFiletype,
@@ -67,6 +68,22 @@ describe("syntaxParserManifest", () => {
     expect(bash[0]?.parser.aliases).toEqual(["sh", "shell"])
   })
 
+  it("resolves Python canonical and py labels to one complete local capability", () => {
+    expect(resolveSyntaxFiletype("python")).toBe("python")
+    expect(resolveSyntaxFiletype("py")).toBe("python")
+
+    const python = syntaxParserManifest.capabilities.filter(({ filetype }) => filetype === "python")
+    expect(python).toHaveLength(1)
+    expect(python[0]?.aliases).toEqual(["py"])
+    expect(python[0]?.parser.aliases).toEqual(["py"])
+  })
+
+  it("omits the Python capability when either reviewed static asset is unavailable", () => {
+    expect(createPythonCapability(() => false)).toBeUndefined()
+    expect(createPythonCapability((path) => path.endsWith(".wasm"))).toBeUndefined()
+    expect(createPythonCapability((path) => path.endsWith(".scm"))).toBeUndefined()
+  })
+
   it("keeps blocked ReScript labels out of highlighted resolution with a documented fallback", () => {
     for (const label of ["rescript", "res", "resi"]) {
       expect(resolveSyntaxFiletype(label)).toBeUndefined()
@@ -110,6 +127,8 @@ describe("syntaxParserManifest", () => {
       bash: "bash",
       sh: "bash",
       shell: "bash",
+      python: "python",
+      py: "python",
     })
   })
 
@@ -161,6 +180,9 @@ describe("syntaxParserManifest", () => {
         "markdown:sh",
         "markdown:shell",
         "diff:sh",
+        "markdown:python",
+        "markdown:py",
+        "diff:py",
       ].sort(),
     )
   })
@@ -196,6 +218,18 @@ describe("syntaxParserManifest", () => {
       { label: "shell", token: "SHELL_SENTINEL", source: "markdown" },
       { label: "sh", token: "SH_DIFF_SENTINEL", source: "diff" },
     ])
+    expect(fixturesFor("python")).toEqual([
+      { label: "python", token: "PythonSentinel", source: "markdown" },
+      { label: "py", token: "PySentinel", source: "markdown" },
+      { label: "py", token: "PY_DIFF_SENTINEL", source: "diff" },
+    ])
+
+    const pythonTokens = fixturesFor("python")?.map(({ token }) => token) ?? []
+    const nonPythonTokens = syntaxParserManifest.capabilities
+      .filter(({ filetype }) => filetype !== "python")
+      .flatMap(({ fixtures }) => fixtures.map(({ token }) => token))
+    expect(new Set(pythonTokens).size).toBe(pythonTokens.length)
+    for (const token of pythonTokens) expect(nonPythonTokens).not.toContain(token)
   })
 
   it("uses existing local WASM and query assets for every parser option", () => {
@@ -207,6 +241,7 @@ describe("syntaxParserManifest", () => {
       "ocaml",
       "json",
       "bash",
+      "python",
     ])
 
     for (const parser of syntaxParserManifest.parsers) {
