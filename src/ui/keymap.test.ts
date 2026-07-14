@@ -32,6 +32,7 @@ import {
   matchSessionPickerCommand,
   matchSessionsCommand,
   matchSettingsCommand,
+  matchStatuslineCommand,
   MODEL_SELECT_CONFIRM_HINT,
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
@@ -45,6 +46,8 @@ import {
   SHELL_HINT,
   SETTINGS_HINT,
   SETTINGS_KEYMAP,
+  STATUSLINE_HINT,
+  STATUSLINE_KEYMAP,
   tabNavigationHint,
   type CockpitKey,
 } from "./keymap.ts"
@@ -161,6 +164,7 @@ describe("COCKPIT_COMMANDS", () => {
       ["start-new-run", "new"],
       ["clear-run", "clear"],
       ["model-select", "model"],
+      ["statusline", "statusline"],
       ["open-settings", "settings"],
       ["toggle-help", "help"],
     ])
@@ -307,9 +311,29 @@ describe("HELP_ENTRIES", () => {
       ...SESSIONS_KEYMAP,
       ...MODEL_SELECT_KEYMAP,
       ...SETTINGS_KEYMAP,
+      ...STATUSLINE_KEYMAP,
     ]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
+  })
+})
+
+describe("statusline keymap", () => {
+  it("maps plain arrows, Enter variants, and Escape without claiming request text", () => {
+    expect(matchStatuslineCommand(key("up"))).toBe("prev-option")
+    expect(matchStatuslineCommand(key("down"))).toBe("next-option")
+    expect(matchStatuslineCommand(key("return"))).toBe("confirm")
+    expect(matchStatuslineCommand(key("kpenter"))).toBe("confirm")
+    expect(matchStatuslineCommand(key("escape"))).toBe("cancel")
+    expect(matchStatuslineCommand(key("a"))).toBeNull()
+    expect(matchStatuslineCommand(key("return", { shift: true }))).toBeNull()
+  })
+
+  it("binds each modal intent once and documents every binding", () => {
+    const commands = STATUSLINE_KEYMAP.map(({ command }) => command)
+    expect(commands).toEqual(["prev-option", "next-option", "confirm", "cancel"])
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const binding of STATUSLINE_KEYMAP) expect(STATUSLINE_HINT).toContain(binding.keys)
   })
 })
 

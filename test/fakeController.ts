@@ -101,6 +101,12 @@ export interface FakeControllerOptions {
   /** Deterministic persistence outcomes for statusline UI tests. */
   acknowledgeStatuslineResult?: StatuslineWriteResult
   confirmStatuslineResult?: StatuslineWriteResult
+  /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
+  sendPrompt?: (
+    input: PromptInput,
+    sessionId: SessionId | undefined,
+    store: AppStore,
+  ) => PromptResult | null | Promise<PromptResult | null>
 }
 
 /**
@@ -271,7 +277,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.sendPrompt.push({ input, sessionId })
-        return null
+        return await (options.sendPrompt?.(input, sessionId, store) ?? null)
       },
       recordPromptHistory(text: string, sessionId?: SessionId): void {
         calls.recordPromptHistory.push({ text, sessionId })

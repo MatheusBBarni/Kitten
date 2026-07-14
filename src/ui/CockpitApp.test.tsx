@@ -12,6 +12,8 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted, ESCAPE_DISAMBIGUATION_MS, sleep } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import { buildStatuslineProposalPrompt } from "../app/statuslineFlow.ts"
+import type { StatuslineLayout } from "../core/statusline.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
 import { wireKeyboardCapability } from "../index.ts"
 import type {
@@ -43,6 +45,7 @@ import { SETTINGS_TITLE } from "./SettingsView.tsx"
 import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.tsx"
 import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
+import { STATUSLINE_PREVIEW_LABEL, STATUSLINE_REQUEST_PROMPT, STATUSLINE_TITLE } from "./StatuslineOverlay.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
@@ -1134,6 +1137,79 @@ describe("CockpitApp keymap", () => {
     expect(frame).toContain("[Theme]")
     expect(frame).not.toContain(HELP_TITLE)
 
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("/statusline cockpit integration", () => {
+  it("runs the exact cockpit command through disclosure, one transcript proposal, and one confirmation", async () => {
+    const layout: StatuslineLayout = { separator: " · ", line: ["FOLDER", "MODEL"] }
+    const proposal = `\`\`\`json\n${JSON.stringify({ statusline: layout })}\n\`\`\``
+    const controller = createFakeController({
+      sendPrompt(input, sessionId, store) {
+        expect(sessionId).toBe("claude-code")
+        store.applyEvent("claude-code", { kind: "agent_message", messageId: "statusline-proposal", textDelta: proposal })
+        return { stopReason: "end_turn" }
+      },
+    })
+    const setup = await renderCockpitApp(controller)
+    expect(setup.renderer.currentFocusedEditor).not.toBeNull()
+
+    await runSlashCommand(setup, "statusline")
+    await setup.waitForFrame((frame) => frame.includes(STATUSLINE_TITLE))
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(setup.renderer.currentFocusedEditor).toBeNull()
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(STATUSLINE_REQUEST_PROMPT))
+    await actAsync(async () => setup.mockInput.typeText("folder and model"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(STATUSLINE_PREVIEW_LABEL))
+
+    expect(controller.calls.sendPrompt).toEqual([{
+      input: buildStatuslineProposalPrompt("folder and model"),
+      sessionId: "claude-code",
+    }])
+    expect(controller.calls.confirmStatusline).toHaveLength(0)
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => !frame.includes(STATUSLINE_TITLE))
+    await setup.waitFor(() => setup.renderer.currentFocusedEditor !== null)
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect(controller.calls.confirmStatusline).toEqual([layout])
+    expect(controller.store.getState().preferences.statusline).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout,
+    })
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps the prompt focused across resize before opening and uses the resized width for preview", async () => {
+    const controller = createFakeController()
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
+    const setup = await renderCockpitApp(controller, 80, 24)
+    await actAsync(async () => setup.mockInput.typeText("draft stays here"))
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("draft stays here")
+
+    await actAsync(() => setup.resize(48, 24))
+    await setup.waitForFrame((frame) => frame.includes("draft stays here"))
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("draft stays here")
+
+    await actAsync(() => {
+      setup.renderer.currentFocusedEditor?.clear()
+    })
+    await runSlashCommand(setup, "statusline")
+    await setup.waitForFrame((frame) => frame.includes("Describe the fields"))
+    expect(setup.renderer.currentFocusedEditor).toBeNull()
+    await actAsync(() => controller.store.updateStatusline({
+      phase: "preview",
+      requestText: "full path",
+      layout: { separator: " · ", line: ["FULL_PATH"] },
+      preset: null,
+    }))
+    await setup.waitForFrame((frame) => frame.includes("(no fields fit)"))
+    await actAsync(() => setup.resize(80, 24))
+    await setup.waitForFrame((frame) => frame.includes(process.cwd()))
     await destroyMounted(setup.renderer)
   })
 })
