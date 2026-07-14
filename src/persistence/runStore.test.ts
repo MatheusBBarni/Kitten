@@ -194,6 +194,74 @@ describe("createRunStore", () => {
     })
   })
 
+  it("round-trips a pointers-only Cursor conversation through V2 workspace membership", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "cursor-worktree")
+      const record = makeV2Record(cwd)
+      record.conversations.visible!.providerKind = "cursor"
+      record.conversations.visible!.initialTitle = "Cursor"
+      record.workspace.conversations.visible!.displayName = "Cursor"
+      const recordWithRuntimeDetails = {
+        ...record,
+        runtimeProfile: { kind: "cursor-certified", certifiedVersion: "9.9.9" },
+        credential: SECRET,
+        conversations: {
+          ...record.conversations,
+          visible: {
+            ...record.conversations.visible!,
+            authenticationMethod: "cursor_login",
+            cliVersion: "9.9.9",
+            transcript: [{ role: "agent", text: "must never persist" }],
+            capabilityResult: { clarification: true },
+            rawError: "sensitive runtime failure",
+            credential: SECRET,
+          },
+        },
+      } as unknown as PersistedRunRecord
+      const store = createRunStore({ enabled: true, path: base })
+
+      store.save(recordWithRuntimeDetails)
+
+      const path = join(base, "sessions", encodeProjectDirectory(cwd), "run-v2.json")
+      const raw = readFileSync(path, "utf8")
+      for (const forbidden of [
+        "runtimeProfile",
+        "authenticationMethod",
+        "cliVersion",
+        "transcript",
+        "capabilityResult",
+        "rawError",
+        "credential",
+        SECRET,
+      ]) {
+        expect(raw).not.toContain(forbidden)
+      }
+
+      const loaded = store.load(cwd, record.runId)
+      expect(loaded?.version).toBe(2)
+      if (loaded?.version !== 2) throw new Error("Expected V2 record")
+      expect(loaded.conversations.visible).toEqual({
+        sessionId: "visible",
+        providerKind: "cursor",
+        cwd: resolve(cwd),
+        initialTitle: "Cursor",
+        acpSessionId: "acp-visible",
+        lastPrompt: "implement persistence",
+        messageCount: 3,
+        status: "working",
+      })
+      expect(loaded.workspace.order).toEqual(["visible", "background"])
+      expect(loaded.workspace.selectedVisibleId).toBe("visible")
+      expect(loaded.workspace.conversations.visible).toEqual({
+        sessionId: "visible",
+        displayName: "Cursor",
+        lifecycle: "visible",
+        createdOrdinal: 4,
+        attention: { seen: true, sequence: 2 },
+      })
+    })
+  })
+
   it("accepts a background-only V2 workspace with null selection and branch", () => {
     withTempStore((base) => {
       const cwd = join(base, "project")

@@ -35,10 +35,10 @@ export type ClarificationContractResult =
       recipe: ExactClarificationRecipeIdentity
     }
 
-const BUILT_IN_ADAPTER_PACKAGES: Readonly<Record<ProviderKind, string>> = {
+const BUILT_IN_ADAPTER_PACKAGES: Readonly<Record<ProviderKind, string | null>> = {
   "claude-code": "@agentclientprotocol/claude-agent-acp",
   codex: "@agentclientprotocol/codex-acp",
-  cursor: "",
+  cursor: null,
 }
 
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
@@ -115,7 +115,7 @@ export function exactRecipeIdentity(
   recipe: Pick<AgentConfig, "id" | "command" | "args" | "env">,
 ): ExactClarificationRecipeIdentity | null {
   const adapterPackage = BUILT_IN_ADAPTER_PACKAGES[recipe.id]
-  if (!adapterPackage) return null
+  if (adapterPackage === null) return null
   const prefix = `${adapterPackage}@`
   const packageSpec = recipe.args.find((arg) => arg.startsWith(prefix))
   if (!packageSpec) return null
