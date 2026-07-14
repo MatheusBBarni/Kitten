@@ -536,6 +536,7 @@ const APP_CONFIG: AppConfig = {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   } as AppConfig["providers"],
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -625,6 +626,7 @@ describe("integration - two sessions of the same provider requesting permission 
 
     const config: AppConfig = {
       providers: APP_CONFIG.providers,
+      providerDefaults: {},
       sessions: [
         { provider: "claude-code", cwd: dirA, title: "repo-a" },
         { provider: "claude-code", cwd: dirB, title: "repo-b" },

@@ -76,6 +76,7 @@ const PROVIDERS = {
 } as AppConfig["providers"]
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
@@ -86,6 +87,7 @@ const APP_CONFIG: AppConfig = {
 }
 const CURSOR_APP_CONFIG: AppConfig = {
   ...APP_CONFIG,
+  providerDefaults: {},
   providers: {
     ...PROVIDERS,
     cursor: {
@@ -504,6 +506,7 @@ const FLEET_DIRS = {
 } as const
 const THREE_SESSION_CONFIG: AppConfig = {
   providers: PROVIDERS,
+  providerDefaults: {},
   sessions: [
     { provider: "claude-code", cwd: FLEET_DIRS.alpha, title: "Alpha" },
     { provider: "claude-code", cwd: FLEET_DIRS.beta, title: "Beta" },
@@ -1048,6 +1051,7 @@ describe("createSessionController - persisted restore", () => {
   it("Should retain a record-only conversation when its provider recipe is unavailable", async () => {
     const config: AppConfig = {
       ...APP_CONFIG,
+      providerDefaults: {},
       providers: { codex: PROVIDERS.codex } as AppConfig["providers"],
     }
     const record = dynamicPersistedRun()
@@ -1543,6 +1547,7 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
   it("preflights dynamic, fresh-run, fresh-context, and restored Cursor replacements and emits Cursor tab creation", async () => {
     const cursorOnly: AppConfig = {
       ...CURSOR_APP_CONFIG,
+      providerDefaults: {},
       sessions: [{ provider: "cursor", cwd: process.cwd(), title: "Cursor" }],
     }
     const lifecycle: Array<{ kind: "preflight" | "create"; config: unknown }> = []
@@ -1799,6 +1804,7 @@ describe("createSessionController - multi-session fleet", () => {
   it("Should send a session's optional first task as its opening prompt", async () => {
     const config: AppConfig = {
       providers: PROVIDERS,
+      providerDefaults: {},
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       mcpServers: [],
       shell: APP_CONFIG.shell,
@@ -1823,6 +1829,7 @@ describe("createSessionController - multi-session fleet", () => {
   it("does not send an initial task when boot has a persisted run to restore", async () => {
     const config: AppConfig = {
       providers: PROVIDERS,
+      providerDefaults: {},
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       mcpServers: [],
       shell: APP_CONFIG.shell,
@@ -3357,6 +3364,7 @@ describe("integration - two mock ACP agents", () => {
     })
     const config: AppConfig = {
       ...APP_CONFIG,
+      providerDefaults: {},
       providers: PROVIDERS,
       sessions: [{ provider: "claude-code", cwd: process.cwd(), title: "Planner" }],
     }
