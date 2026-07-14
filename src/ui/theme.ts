@@ -67,6 +67,8 @@ export interface CockpitPalette {
    * on a light terminal) that `text` stays legible on top of it.
    */
   readonly userMessageSurface: string
+  /** Background for the currently selected row in an interactive list. */
+  readonly selectionSurface: string
   /** Syntax colors, kept in the palette so code has no independent color source. */
   readonly syntax: Readonly<{
     keyword: string
@@ -116,6 +118,7 @@ export const DARK_PALETTE: CockpitPalette = {
   // A dark navy a step off `surface` (#1C1C1C): bluer and slightly lighter, so the
   // band is visible without shouting, and `text` (#E6E6E6) sits at high contrast on it.
   userMessageSurface: "#22303F",
+  selectionSurface: "#2A2A2A",
   syntax: {
     keyword: "#C586C0",
     string: "#CE9178",
@@ -164,6 +167,7 @@ export const LIGHT_PALETTE: CockpitPalette = {
   // A soft blue a step off `surface` (#F4F4F4): faintly darker with a blue lean, so the
   // band is visible without shouting, and `text` (#1C1C1C) sits at high contrast on it.
   userMessageSurface: "#E4ECF7",
+  selectionSurface: "#E0E4E8",
   syntax: {
     keyword: "#7B2D8E",
     string: "#8A3B12",
@@ -208,6 +212,7 @@ export const CATPPUCCIN_MOCHA_PALETTE: CockpitPalette = {
     failed: "#F38BA8",
   },
   userMessageSurface: "#313244",
+  selectionSurface: "#45475A",
   syntax: {
     keyword: "#CBA6F7",
     string: "#FAB387",
@@ -252,6 +257,7 @@ export const CATPPUCCIN_LATTE_PALETTE: CockpitPalette = {
     failed: "#D20F39",
   },
   userMessageSurface: "#E6E9EF",
+  selectionSurface: "#DCE0E8",
   syntax: {
     keyword: "#8839EF",
     string: "#B44900",

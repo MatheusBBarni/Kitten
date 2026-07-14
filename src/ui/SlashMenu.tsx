@@ -199,7 +199,12 @@ function SlashMenuRow({
   return (
     <box
       id={highlighted ? HIGHLIGHTED_COMMAND_ROW_ID : undefined}
-      style={{ height: 1, flexShrink: 0 }}
+      style={{
+        height: 1,
+        width: "100%",
+        flexShrink: 0,
+        backgroundColor: highlighted ? palette.selectionSurface : undefined,
+      }}
       onMouseDown={activate}
     >
       <text>

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test"
 
-import type { CreateElicitationRequest, PermissionOption } from "@agentclientprotocol/sdk"
+import type { CreateElicitationRequest, PermissionOption, SessionUpdate } from "@agentclientprotocol/sdk"
 
 import type { AgentConfig, ClarificationPayload, DomainSessionEvent, McpServerConfig, ResolvedAgentConfig } from "../core/types.ts"
 import { startMockAgent, type MockAgentOptions } from "../../test/mockAgent.ts"
 import {
   createAgentConnection,
+  CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS,
   createFrameScheduler,
   type AgentConnection,
   type FrameScheduler,
@@ -22,6 +23,7 @@ import { KITTEN_VERSION } from "../version.ts"
  */
 
 const CONFIG: AgentConfig = { id: "claude-code", displayName: "Claude", command: "unused", args: [], env: {} }
+const CODEX_CONFIG: AgentConfig = { id: "codex", displayName: "Codex", command: "unused", args: [], env: {} }
 const MCP_SERVERS: McpServerConfig[] = [
   { name: "github", command: "/opt/bin/github-mcp", args: ["--stdio"], env: { TOKEN: "secret" } },
 ]
@@ -258,6 +260,74 @@ describe("connect / session lifecycle", () => {
     const { conn } = setup()
     await expect(conn.prompt("s", [{ type: "text", text: "hi" }])).rejects.toThrow(/not connected/)
   })
+})
+
+describe("Codex compaction recovery", () => {
+  const compacted = (): SessionUpdate => ({
+    sessionUpdate: "agent_message_chunk",
+    messageId: "compaction",
+    content: { type: "text", text: "*Context compacted to fit the model's context window.*\n\n" },
+  })
+
+  const idle = (): SessionUpdate =>
+    ({
+      sessionUpdate: "session_info_update",
+      _meta: { codex: { threadStatus: { type: "idle" } } },
+    }) as SessionUpdate
+
+  it("releases a quiet post-compaction Codex abort that the adapter leaves unresolved", async () => {
+    const never = new Promise<never>(() => {})
+    const { conn, events } = await connected(
+      {
+        onPrompt: async (_request, ctx) => {
+          await ctx.update(compacted())
+          await ctx.update(idle())
+          return await never
+        },
+      },
+      undefined,
+      CODEX_CONFIG,
+    )
+
+    await expect(conn.prompt("codex-session", [{ type: "text", text: "Continue" }])).resolves.toEqual({
+      stopReason: "cancelled",
+    })
+    expect(lastStatus(events)).toBe("idle")
+    await conn.dispose()
+  }, CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS + 1_000)
+
+  it("does not recover when Codex resumes emitting updates after a compaction idle transition", async () => {
+    let finish!: () => void
+    const done = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const { conn, events } = await connected(
+      {
+        onPrompt: async (_request, ctx) => {
+          await ctx.update(compacted())
+          await ctx.update(idle())
+          await ctx.update({
+            sessionUpdate: "agent_message_chunk",
+            messageId: "resumed",
+            content: { type: "text", text: "Still working" },
+          })
+          await done
+          return "end_turn" as const
+        },
+      },
+      undefined,
+      CODEX_CONFIG,
+    )
+
+    const prompt = conn.prompt("codex-session", [{ type: "text", text: "Continue" }])
+    await delay(CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS + 20)
+    expect(lastStatus(events)).toBe("working")
+
+    finish()
+    await expect(prompt).resolves.toEqual({ stopReason: "end_turn" })
+    expect(lastStatus(events)).toBe("finished")
+    await conn.dispose()
+  }, CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS + 1_000)
 })
 
 describe("streaming coalescing (ADR-004)", () => {

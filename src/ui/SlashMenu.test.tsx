@@ -57,6 +57,15 @@ function foregroundOf(setup: TestRendererSetup, needle: string): string | undefi
     ?.fg.toString()
 }
 
+/** The painted background of the first span containing `needle`. */
+function backgroundOf(setup: TestRendererSetup, needle: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text.includes(needle))
+    ?.bg.toString()
+}
+
 function paletteColor(hex: string): string {
   return RGBA.fromHex(hex).toString()
 }
@@ -79,11 +88,13 @@ describe("SlashMenu", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("applies the highlight style only to the flattened highlighted row", async () => {
+  it("applies a foreground and full-row background highlight only to the flattened selected row", async () => {
     const setup = await renderMenu(0)
 
     expect(foregroundOf(setup, handoffRow.label)).toBe(paletteColor(DARK_PALETTE.text))
     expect(foregroundOf(setup, reviewRow.label)).toBe(paletteColor(DARK_PALETTE.muted))
+    expect(backgroundOf(setup, handoffRow.label)).toBe(paletteColor(DARK_PALETTE.selectionSurface))
+    expect(backgroundOf(setup, reviewRow.label)).not.toBe(paletteColor(DARK_PALETTE.selectionSurface))
 
     await destroyMounted(setup.renderer)
   })
