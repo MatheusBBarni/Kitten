@@ -46,6 +46,32 @@ function slotSelectors(values: {
   }
 }
 
+function confirmModelAndEffort(
+  controller: ReturnType<typeof createFakeController>,
+  model: { value: string; name: string },
+  effort: { value: string; name: string; alternatives?: Array<{ value: string; name: string }> },
+): void {
+  controller.store.applyEvent("claude-code", {
+    kind: "config_options",
+    options: [
+      {
+        id: "model",
+        category: "model",
+        label: "Model",
+        currentValue: model.value,
+        options: [model],
+      },
+      {
+        id: "effort",
+        category: "thought_level",
+        label: "Reasoning effort",
+        currentValue: effort.value,
+        options: [{ value: effort.value, name: effort.name }, ...(effort.alternatives ?? [])],
+      },
+    ],
+  })
+}
+
 async function renderStrip(
   controller = createFakeController(),
   width = 80,
@@ -91,6 +117,96 @@ describe("StatusStrip", () => {
     expect(frame).not.toContain("Codex:")
     expect(frame).toContain(KEYMAP_HINT)
     expectNoOverflow(frame, 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows confirmed provider, model, and effort with an applied-default label", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(controller, { value: "opus", name: "Opus" }, { value: "medium", name: "Medium" })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "applied", model: "opus", effort: "medium" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "opus" },
+      effort: { "claude-code": "medium" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Opus:Medium")
+    expect(frame).toContain("default applied")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows post-model confirmed effort with explicit partial feedback at 64 columns", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(
+      controller,
+      { value: "opus", name: "Opus" },
+      { value: "medium", name: "Medium", alternatives: [{ value: "ultra", name: "Ultra" }] },
+    )
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "partial", model: "opus", unavailable: "effort" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "opus" },
+      effort: { "claude-code": "medium" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Opus:Medium")
+    expect(frame).not.toContain(":Ultra")
+    expect(frame).toContain("effort unavailable")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("retains prior confirmed values with explicit unavailable-model feedback", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(controller, { value: "sonnet", name: "Sonnet" }, { value: "low", name: "Low" })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "unavailable", unavailable: "model" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "sonnet" },
+      effort: { "claude-code": "low" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Sonnet:Low")
+    expect(frame).toContain("model unavailable")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("preserves legacy confirmed output without a label for a none result", async () => {
+    const controller = createFakeController()
+    confirmModelAndEffort(controller, { value: "opus", name: "Opus" }, { value: "high", name: "High" })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "none" },
+    })
+    const setup = await renderStrip(controller, 64, slotSelectors({
+      model: { "claude-code": "opus" },
+      effort: { "claude-code": "high" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Claude:Opus:High")
+    expect(frame).not.toContain("default applied")
+    expect(frame).not.toContain("unavailable")
+    expect(frame).toContain(KEYMAP_HINT)
+    expectNoOverflow(frame, 64)
 
     await destroyMounted(setup.renderer)
   })

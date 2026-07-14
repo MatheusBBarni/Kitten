@@ -328,6 +328,29 @@ describe("CockpitApp layout", () => {
 describe("CockpitApp resize", () => {
   it("re-lays out the frame on a resize without overflow artifacts", async () => {
     const controller = createFakeController()
+    controller.store.applyEvent("claude-code", {
+      kind: "config_options",
+      options: [
+        {
+          id: "model",
+          category: MODEL_CATEGORY,
+          label: "Model",
+          currentValue: "opus",
+          options: [{ value: "opus", name: "Opus" }],
+        },
+        {
+          id: "effort",
+          category: EFFORT_CATEGORY,
+          label: "Reasoning effort",
+          currentValue: "medium",
+          options: [{ value: "medium", name: "Medium" }],
+        },
+      ],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "default_apply_result",
+      result: { kind: "partial", model: "opus", unavailable: "effort" },
+    })
     const { renderer, captureCharFrame, resize, waitForFrame } = await renderCockpitApp(controller, 100, 30)
 
     expectNoOverflow(captureCharFrame(), 100, 30)
@@ -340,7 +363,9 @@ describe("CockpitApp resize", () => {
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
-    expect(lines(shrunk).at(-1)).toContain("Claude:—")
+    expect(lines(shrunk).at(-1)).toContain("Claude:Opus:Medium")
+    expect(lines(shrunk).at(-1)).toContain("effort unavailable")
+    expect(lines(shrunk).at(-1)).toContain(KEYMAP_HINT)
 
     await actAsync(() => {
       resize(120, 40)
@@ -348,7 +373,8 @@ describe("CockpitApp resize", () => {
     const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(WELCOME_GREETING))
 
     expectNoOverflow(grown, 120, 40)
-    expect(lines(grown).at(-1)).toContain("Claude:—")
+    expect(lines(grown).at(-1)).toContain("Claude:Opus:Medium")
+    expect(lines(grown).at(-1)).toContain("effort unavailable")
 
     await destroyMounted(renderer)
   })

@@ -9,7 +9,13 @@
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, PROVIDER_METADATA, type ConfigOption } from "../core/types.ts"
+import {
+  EFFORT_CATEGORY,
+  MODEL_CATEGORY,
+  PROVIDER_METADATA,
+  type ConfigOption,
+  type DefaultApplyResult,
+} from "../core/types.ts"
 import type { Selector } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
@@ -18,6 +24,7 @@ import {
   selectBackgroundWork,
   selectFocusedSessionId,
   selectIsShellFocused,
+  selectSessionDefaultApplyResult,
   selectSessionHeadroom,
   selectSessionModel,
 } from "../store/selectors.ts"
@@ -54,6 +61,12 @@ export const BACKGROUND_ATTENTION_LABEL = "needs attention"
 
 /** Compact label for the focused session's MCP provisioning result. */
 export const MCP_STATUS_LABEL = "mcp"
+
+/** Compact status-strip copy for reducer-confirmed provider-default outcomes. */
+export const DEFAULT_APPLIED_STATUS_LABEL = "default applied"
+export const DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL = "effort unavailable"
+export const DEFAULT_MODEL_UNAVAILABLE_STATUS_LABEL = "model unavailable"
+export const DEFAULT_SESSION_UNAVAILABLE_STATUS_LABEL = "session unavailable"
 
 /** Selector factories consumed by the bar; injectable so delegated model slots can be exercised in isolation. */
 export interface StatusSlotSelectors {
@@ -146,10 +159,15 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
   const modelSelector = useMemo(() => selectors.model(runtime.sessionId), [selectors.model, runtime.sessionId])
   const effortSelector = useMemo(() => selectors.effort(runtime.sessionId), [selectors.effort, runtime.sessionId])
   const configOptionsSelector = useMemo(() => selectAgentConfigOptions(runtime.sessionId), [runtime.sessionId])
+  const defaultApplyResultSelector = useMemo(
+    () => selectSessionDefaultApplyResult(runtime.sessionId),
+    [runtime.sessionId],
+  )
   const headroomSelector = useMemo(() => selectSessionHeadroom(runtime.sessionId), [runtime.sessionId])
   const model = useAppSelector(modelSelector)
   const effort = useAppSelector(effortSelector)
   const configOptions = useAppSelector(configOptionsSelector)
+  const defaultApplyResult = useAppSelector(defaultApplyResultSelector)
   const selectedHeadroom = useAppSelector(headroomSelector)
   const displayModel = displayModelName(configOptions, model)
   const displayEffort = displayEffortName(configOptions, effort)
@@ -170,8 +188,35 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
           <span fg={palette.muted}>{"░".repeat(headroom.cells - headroom.filled)}</span>
         </>
       )}
+      <DefaultApplyStatus result={defaultApplyResult} />
       <McpStatus runtime={runtime} />
     </text>
+  )
+}
+
+/** Render only the terminal result; confirmed option values remain the spans above. */
+function DefaultApplyStatus({ result }: { result: DefaultApplyResult | null }): ReactNode {
+  const palette = usePalette()
+  if (result === null || result.kind === "none") return null
+
+  const label = result.kind === "applied"
+    ? DEFAULT_APPLIED_STATUS_LABEL
+    : result.kind === "partial"
+      ? DEFAULT_EFFORT_UNAVAILABLE_STATUS_LABEL
+      : result.unavailable === "model"
+        ? DEFAULT_MODEL_UNAVAILABLE_STATUS_LABEL
+        : DEFAULT_SESSION_UNAVAILABLE_STATUS_LABEL
+  const color = result.kind === "applied"
+    ? palette.tool.completed
+    : result.kind === "partial"
+      ? palette.status.awaiting_approval
+      : palette.status.error
+
+  return (
+    <>
+      <span fg={palette.muted}> · </span>
+      <span fg={color}>{label}</span>
+    </>
   )
 }
 
