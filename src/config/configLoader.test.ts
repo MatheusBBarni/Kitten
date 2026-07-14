@@ -18,6 +18,7 @@ import {
   mergeAppConfig,
   parseAppConfig,
   resolveConfigPath,
+  resolveProviderRuntimeProfile,
   resolveSessions,
 } from "./configLoader.ts"
 
@@ -57,11 +58,11 @@ afterAll(async () => {
 })
 
 describe("defaults", () => {
-  it("Should return the two default provider recipes when no user config exists", async () => {
+  it("Should return the three default provider recipes when no user config exists", async () => {
     const missing = join(tmpdir(), "kitten-does-not-exist", "config.json")
     const config = await loadAppConfig({ path: missing })
 
-    expect(Object.keys(config.providers)).toEqual(["claude-code", "codex"])
+    expect(Object.keys(config.providers)).toEqual(["claude-code", "codex", "cursor"])
     expect(config.sessions).toEqual([])
     expect(findAgentConfig(config, "claude-code")).toEqual({
       id: "claude-code",
@@ -70,6 +71,7 @@ describe("defaults", () => {
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      runtimeProfile: { kind: "standard" },
     })
     expect(findAgentConfig(config, "codex")).toEqual({
       id: "codex",
@@ -78,6 +80,16 @@ describe("defaults", () => {
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      runtimeProfile: { kind: "standard" },
+    })
+    expect(findAgentConfig(config, "cursor")).toEqual({
+      id: "cursor",
+      displayName: "Cursor",
+      command: "agent",
+      args: ["acp"],
+      env: {},
+      clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      runtimeProfile: { kind: "standard" },
     })
   })
 
@@ -98,12 +110,16 @@ describe("defaults", () => {
     first.providers["claude-code"].args.push("--rogue")
     first.providers["claude-code"].env.ROGUE = "1"
     first.providers.codex.env.INITIAL_AGENT_MODE = "agent"
+    first.providers.cursor.args.push("--rogue")
+    first.providers.cursor.env.ROGUE = "1"
     first.mcpServers.push({ name: "rogue", command: "rogue", args: [], env: {} })
 
     const second = defaultAppConfig()
     expect(second.providers["claude-code"].args).toEqual(["-y", CLAUDE_CODE_ACP_PACKAGE])
     expect(second.providers["claude-code"].env).toEqual({})
     expect(second.providers.codex.env).toEqual({ INITIAL_AGENT_MODE: CODEX_YOLO_MODE })
+    expect(second.providers.cursor.args).toEqual(["acp"])
+    expect(second.providers.cursor.env).toEqual({})
     expect(second.mcpServers).toEqual([])
   })
 })
@@ -261,9 +277,41 @@ describe("user overrides", () => {
   })
 
   it("Should accept the deprecated `agents` key as an alias for `providers`", () => {
-    const config = parseAppConfig(JSON.stringify({ agents: { codex: { command: "/opt/bin/codex-acp" } } }))
+    const config = parseAppConfig(JSON.stringify({ agents: { cursor: { command: "/opt/bin/agent" } } }))
 
-    expect(findAgentConfig(config, "codex")?.command).toBe("/opt/bin/codex-acp")
+    expect(findAgentConfig(config, "cursor")?.command).toBe("/opt/bin/agent")
+  })
+
+  it("Should merge Cursor recipe deltas per field while preserving isolated args and env", () => {
+    const config = parseAppConfig(JSON.stringify({ providers: { cursor: { command: "/opt/bin/agent", env: { A: "1" } } } }))
+    const cursor = findAgentConfig(config, "cursor")!
+
+    expect(cursor).toMatchObject({ command: "/opt/bin/agent", args: ["acp"], env: { A: "1" } })
+    expect(cursor.runtimeProfile).toEqual({ kind: "standard" })
+    cursor.args.push("--mutated")
+    cursor.env.B = "2"
+    expect(findAgentConfig(defaultAppConfig(), "cursor")).toMatchObject({ args: ["acp"], env: {} })
+  })
+
+  it("Should derive certification from the final command, ordered args, and complete env only", () => {
+    const certified = {
+      kind: "cursor-certified" as const,
+      command: "agent" as const,
+      args: ["acp"] as const,
+      env: {},
+      certifiedVersion: "1.2.3",
+      authenticationMethod: "cursor_login" as const,
+    }
+    const base = { id: "cursor" as const, command: "agent", args: ["acp"], env: {} }
+    const renamed = { ...base, displayName: "Not a certification input" }
+
+    expect(resolveProviderRuntimeProfile(base, [certified])).toEqual(certified)
+    expect(resolveProviderRuntimeProfile(renamed, [certified])).toEqual(certified)
+    expect(resolveProviderRuntimeProfile({ ...base, command: "/opt/bin/agent" }, [certified])).toEqual({ kind: "standard" })
+    expect(resolveProviderRuntimeProfile({ ...base, args: ["acp", "--debug"] }, [certified])).toEqual({ kind: "standard" })
+    expect(resolveProviderRuntimeProfile({ ...base, env: { CURSOR_HOME: "/tmp" } }, [certified])).toEqual({ kind: "standard" })
+    expect(resolveProviderRuntimeProfile({ ...base, args: ["--debug", "acp"] }, [certified])).toEqual({ kind: "standard" })
+    expect(defaultAppConfig().providers.cursor).not.toHaveProperty("runtimeProfile")
   })
 })
 
@@ -320,14 +368,33 @@ describe("resolveSessions", () => {
 
     const resolved = resolveSessions(config, { launchCwd: "/launch/dir" })
 
-    expect(resolved.map((session) => session.seed.id)).toEqual(["codex", "claude-code"])
-    expect(resolved.map((session) => session.seed.providerKind)).toEqual(["codex", "claude-code"])
+    expect(resolved.map((session) => session.seed.id)).toEqual(["codex", "claude-code", "cursor"])
+    expect(resolved.map((session) => session.seed.providerKind)).toEqual(["codex", "claude-code", "cursor"])
     expect(resolved.every((session) => session.seed.cwd === "/launch/dir")).toBe(true)
     // Preserve today's titles: the provider display name, not the launch-dir basename.
-    expect(resolved.map((session) => session.seed.title)).toEqual(["Codex", "Claude Code"])
+    expect(resolved.map((session) => session.seed.title)).toEqual(["Codex", "Claude Code", "Cursor"])
     // The resolved spawn recipe carries the provider's id for the connection factory.
     expect(resolved[0]!.spawn).toEqual(findAgentConfig(config, "codex")!)
     expect(resolved.every((session) => session.spawn.clarificationCapability.status === "unsupported")).toBe(true)
+    expect(resolved.every((session) => session.spawn.runtimeProfile.kind === "standard")).toBe(true)
+  })
+
+  it("Should resolve an explicit Cursor session through the ordinary per-session path", () => {
+    const config = {
+      ...defaultAppConfig(),
+      sessions: [{ provider: "cursor" as const, cwd: "../cursor-repo", title: "Cursor task", task: "inspect it" }],
+    }
+
+    const [session] = resolveSessions(config, { launchCwd: "/launch/dir", dirExists: () => true })
+
+    expect(session!.seed).toEqual({
+      id: "cursor",
+      providerKind: "cursor",
+      cwd: "/launch/cursor-repo",
+      title: "Cursor task",
+      task: "inspect it",
+    })
+    expect(session!.spawn).toEqual(findAgentConfig(config, "cursor")!)
   })
 
   it("Should resolve two sessions of the same provider into distinct ids, titles, and directories", () => {
@@ -506,6 +573,17 @@ describe("invalid config", () => {
   it("Should reject an unknown provider id", () => {
     expect(() => parseAppConfig(JSON.stringify({ providers: { gemini: { command: "gemini" } } }))).toThrow(ConfigError)
   })
+
+  it.each(["certifiedVersion", "authenticationMethod", "runtimeProfile", "version"])(
+    "Should reject user-authored Cursor runtime field %s under providers and agents",
+    (field) => {
+      for (const root of ["providers", "agents"] as const) {
+        const parse = () => parseAppConfig(JSON.stringify({ [root]: { cursor: { [field]: "forbidden" } } }))
+        expect(parse).toThrow(ConfigError)
+        expect(parse).toThrow(new RegExp(`${root}\\.cursor.*${field}`))
+      }
+    },
+  )
 
   it("Should reject an unknown key inside a session descriptor", () => {
     expect(() =>

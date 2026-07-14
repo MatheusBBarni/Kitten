@@ -100,7 +100,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     runStore.save(record)
     const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
     const prompts: Array<{ id: ProviderKind; sessionId: string; blocks: PromptBlock[] }> = []
-    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     let session: Awaited<ReturnType<typeof createCockpitSession>> | undefined
 
     try {
@@ -143,7 +143,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       shell: { ...defaultAppConfig().shell, enabled: false },
     }
     const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
-    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     const unavailableStore: RunStore = {
       save() {},
       list() {
@@ -177,7 +177,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       expect(session.controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
-      expect(freshStarts).toHaveLength(2)
+      expect(freshStarts).toHaveLength(3)
     } finally {
       await session?.controller.dispose()
     }
@@ -194,7 +194,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     }
     const runStore = createRunStore({ enabled: true, path: base })
     runStore.save(bootRun(cwd))
-    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0 }
+    const generations: Record<ProviderKind, number> = { "claude-code": 0, codex: 0, cursor: 0 }
     const freshStarts: Array<{ id: ProviderKind; cwd: string; generation: number }> = []
     let booted: Awaited<ReturnType<typeof main>> | undefined
 
@@ -230,8 +230,9 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       expect(freshStarts).toEqual([
         { id: "codex", cwd, generation: 0 },
         { id: "claude-code", cwd, generation: 0 },
+        { id: "cursor", cwd, generation: 0 },
       ])
-      expect(booted?.controller.store.getState().workspace.order).toHaveLength(2)
+      expect(booted?.controller.store.getState().workspace.order).toHaveLength(3)
     } finally {
       if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
       await booted?.closed

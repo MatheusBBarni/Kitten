@@ -203,6 +203,7 @@ describe("ModelSelect visibility and content", () => {
     await actAsync(() => {
       controller.store.backgroundConversation("claude-code")
       controller.store.backgroundConversation("codex")
+      controller.store.backgroundConversation("cursor")
     })
     await setup.waitFor(() => controller.store.getState().overlays.modelSelect === null)
     const closed = await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
@@ -624,7 +625,7 @@ const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-  },
+  } as AppConfig["providers"],
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -672,10 +673,10 @@ describe("integration - a confirmed switch across a mock agent", () => {
   it("renders the agent-confirmed model after the switch, with no unverified tag", async () => {
     const claude = connectionToMockAgent(CLAUDE)
     const codex = connectionToMockAgent(CODEX)
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,

@@ -21,10 +21,10 @@ import { actAsync, destroyMounted } from "./reactTui.ts"
  * `finished`, and the visible workspace must paint that state for the session.
  */
 
-const PROVIDERS: AppConfig["providers"] = {
+const PROVIDERS = {
   "claude-code": { displayName: "Claude Code", command: "claude-acp", args: [], env: {} },
   codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
-}
+} as unknown as AppConfig["providers"]
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
   sessions: [],
@@ -64,10 +64,10 @@ function connectionToMockAgent(
 
 describe("session status integration (end_turn -> finished)", () => {
   it("drives a mock session to end_turn and renders the finished state in its visible tab", async () => {
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": endTurnConnection({ id: "claude-code", ...PROVIDERS["claude-code"] }),
       codex: endTurnConnection({ id: "codex", ...PROVIDERS.codex }),
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",
@@ -159,10 +159,10 @@ describe("session status integration (end_turn -> finished)", () => {
         },
       },
     )
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",

@@ -13,6 +13,7 @@
 import type { PermissionOutcome, PromptResult } from "../src/agent/agentConnection.ts"
 import {
   nextSessionId,
+  previousSessionId,
   type CloseChoice,
   type CloseConversationResult,
   type FileSelectorDiscoveryOutcome,
@@ -282,14 +283,18 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         calls.setSessionConfigOption.push({ configId, value, sessionId })
         return true
       },
-      switchFocus(sessionId?: SessionId): void {
+      switchFocus(sessionId?: SessionId, options?: SwitchFocusOptions): void {
         calls.switchFocus.push(sessionId)
         const state = store.getState()
         const target =
           sessionId ??
           (state.workspace.selectedVisibleId
-            ? nextSessionId(state.workspace.order, state.workspace.selectedVisibleId)
-            : state.workspace.order[0])
+            ? options?.direction === "previous"
+              ? previousSessionId(state.workspace.order, state.workspace.selectedVisibleId)
+              : nextSessionId(state.workspace.order, state.workspace.selectedVisibleId)
+            : options?.direction === "previous"
+              ? state.workspace.order.at(-1)
+              : state.workspace.order[0])
         if (target) store.setFocus(target)
       },
       jumpToNextNeedy(): void {

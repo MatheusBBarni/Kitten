@@ -44,7 +44,7 @@ const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-  },
+  } as AppConfig["providers"],
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },

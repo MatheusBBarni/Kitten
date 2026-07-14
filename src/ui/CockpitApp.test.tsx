@@ -230,7 +230,7 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
     expect(frame).toContain("[selected] Claude Code")
-    expect(frame).toContain("[tab] Codex")
+    expect(frame).toContain("shared×3 Sessions +2")
 
     // The strip keeps selected-provider context only; live work is transcript-local.
     const strip = rows.at(-1) ?? ""

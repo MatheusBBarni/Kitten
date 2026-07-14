@@ -41,7 +41,7 @@ const CWD = process.cwd()
 const WIDTH = 92
 const HEIGHT = 28
 
-const SUPPORTED_ADAPTER: Record<ProviderKind, { adapterPackage: string; adapterVersion: string }> = {
+const SUPPORTED_ADAPTER: Partial<Record<ProviderKind, { adapterPackage: string; adapterVersion: string }>> = {
   "claude-code": {
     adapterPackage: "@agentclientprotocol/claude-agent-acp",
     adapterVersion: "0.57.0",
@@ -80,10 +80,13 @@ function wireAgent(providerKind: ProviderKind, options: MockAgentOptions = {}): 
   const pair = createInMemoryTransportPair()
   const agent = startMockAgent(pair.agent, options)
   const recipe = defaultAppConfig().providers[providerKind]
+  const supportedAdapter = SUPPORTED_ADAPTER[providerKind]
+  if (!supportedAdapter) throw new Error(`No clarification contract fixture for ${providerKind}`)
   const config: ResolvedAgentConfig = {
     id: providerKind,
     ...recipe,
-    clarificationCapability: { status: "supported", ...SUPPORTED_ADAPTER[providerKind] },
+    clarificationCapability: { status: "supported", ...supportedAdapter },
+    runtimeProfile: { kind: "standard" },
   }
   const connection = createAgentConnection({
     config,
@@ -439,10 +442,10 @@ describe("clarification lifecycle integration", () => {
         await ctx.createElicitation(singleForm(request.sessionId, "Background decision"))
       },
     })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: appConfig([
         { provider: "claude-code", cwd: CWD, title: "Foreground" },

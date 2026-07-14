@@ -69,10 +69,10 @@ import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.t
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
-const PROVIDERS: AppConfig["providers"] = {
+const PROVIDERS = {
   "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
   codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-}
+} as AppConfig["providers"]
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
   sessions: [],
@@ -460,7 +460,7 @@ async function controllerWithStubs(
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
     codex: createStubConnection("codex", stubs.codex),
-  } satisfies Record<ProviderKind, StubConnection>
+  } as Record<ProviderKind, StubConnection>
 
   const controller = await createSessionController({
     config: overrides.config ?? APP_CONFIG,
@@ -630,15 +630,15 @@ async function controllerForRestore(
   const startup = {
     "claude-code": createStubConnection("claude-code"),
     codex: createStubConnection("codex"),
-  } satisfies Record<ProviderKind, StubConnection>
+  } as Record<ProviderKind, StubConnection>
   const restored = {
     "claude-code": createStubConnection("claude-code", restoreOptions["claude-code"]),
     codex: createStubConnection("codex", restoreOptions.codex),
-  } satisfies Record<ProviderKind, StubConnection>
+  } as Record<ProviderKind, StubConnection>
   const queues = {
     "claude-code": [startup["claude-code"], restored["claude-code"]],
     codex: [startup.codex, restored.codex],
-  }
+  } as Record<ProviderKind, StubConnection[]>
 
   const controller = await createSessionController({
     config: APP_CONFIG,
@@ -2898,6 +2898,7 @@ describe("createControllerActions", () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     store.backgroundConversation("claude-code")
     store.backgroundConversation("codex")
+    store.backgroundConversation("cursor")
     let lookups = 0
     const actions = createControllerActions({
       store,
@@ -3190,10 +3191,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -3235,10 +3236,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -3278,10 +3279,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: CWD,
@@ -3342,10 +3343,10 @@ describe("integration - two mock ACP agents", () => {
       },
     })
     const codex = connectionToMockAgent(CODEX, { sessionId: "codex-session" })
-    const connections: Record<ProviderKind, AgentConnection> = {
+    const connections = {
       "claude-code": claude.connection,
       codex: codex.connection,
-    }
+    } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,

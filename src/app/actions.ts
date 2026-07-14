@@ -19,7 +19,7 @@ import {
   type PromptHistoryDirection,
   type PromptHistorySelection,
 } from "../core/promptHistory.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ClarificationOutcome, type ConfigOption, type SessionId } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ClarificationOutcome, type ConfigOption, type ProviderKind, type SessionId } from "../core/types.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
@@ -90,7 +90,7 @@ export type TabCreationSource = "inherited" | "default"
 export type TabSelectionSource = "mouse" | "kitty_chord" | "sessions_fallback" | "attention_jump" | "model_select"
 
 export interface TabTelemetry {
-  tabCreated(provider: "claude-code" | "codex", source: TabCreationSource): void
+  tabCreated(provider: ProviderKind, source: TabCreationSource): void
   tabSelectionStarted(source: TabSelectionSource): void
   tabBackgrounded(): void
   tabCloseConfirmed(outcome: "cancel" | "idle_close"): void

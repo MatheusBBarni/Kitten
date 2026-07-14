@@ -88,11 +88,12 @@ function trackSelector<T>(store: AppStore, selector: (state: AppState) => T): T[
 }
 
 describe("createAppStore", () => {
-  it("starts both agents empty and idle, unfocused overlays, focus on the first agent", () => {
+  it("starts all providers empty and idle, unfocused overlays, focus on the first provider", () => {
     const state = createAppStore().getState()
     expect(state.sessions["claude-code"]).toEqual(createSessionState(seed("claude-code")))
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
-    expect(state.workspace.order).toEqual(["claude-code", "codex"])
+    expect(state.sessions.cursor).toEqual(createSessionState(seed("cursor")))
+    expect(state.workspace.order).toEqual(["claude-code", "codex", "cursor"])
     expect(state.workspace.selectedVisibleId).toBe("claude-code")
     expect(state.focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
     expect(state.shell).toEqual(createShellState())
@@ -108,7 +109,7 @@ describe("createAppStore", () => {
       sessions: false,
       sessionPicker: false,
     })
-    expect(state.restoration).toEqual({ "claude-code": null, codex: null })
+    expect(state.restoration).toEqual({ "claude-code": null, codex: null, cursor: null })
     expect(state.restorationBundle).toBeNull()
     expect(state.preferences).toEqual({ theme: "auto" })
     expect(selectClarificationCapability("claude-code")(state)).toEqual({
@@ -575,6 +576,7 @@ describe("overlay slots", () => {
 
     store.backgroundConversation("claude-code")
     store.backgroundConversation("codex")
+    store.backgroundConversation("cursor")
     expect(store.getState().workspace.selectedVisibleId).toBeNull()
     store.openModelSelect({ sessionId: "codex" })
     expect(store.getState().overlays.modelSelect).toBeNull()

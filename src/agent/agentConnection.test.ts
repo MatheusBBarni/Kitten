@@ -34,10 +34,12 @@ const SUPPORTED_CONFIG: ResolvedAgentConfig = {
     adapterPackage: "@agentclientprotocol/claude-agent-acp",
     adapterVersion: "0.14.1",
   },
+  runtimeProfile: { kind: "standard" },
 }
 const UNSUPPORTED_CONFIG: ResolvedAgentConfig = {
   ...CONFIG,
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  runtimeProfile: { kind: "standard" },
 }
 
 /** A hand-driven frame scheduler: `tick()` runs the single coalesced flush. */

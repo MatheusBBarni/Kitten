@@ -1,13 +1,49 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  DEFAULT_PROVIDER_ORDER,
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_KINDS,
+  PROVIDER_METADATA,
   VISIBLE_CATEGORIES,
   visibleConfigOptions,
   type ClarificationField,
   type ClarificationOutcome,
   type ClarificationPayload,
   type ConfigOption,
+  type ProviderRuntimeProfile,
+  type SessionId,
 } from "./types.ts"
+
+describe("provider identity contracts", () => {
+  it("keeps provider constants and shared display metadata exhaustive for Cursor", () => {
+    expect(PROVIDER_KINDS).toEqual(["claude-code", "codex", "cursor"])
+    expect(DEFAULT_PROVIDER_ORDER).toEqual(["codex", "claude-code", "cursor"])
+    expect(PROVIDER_METADATA).toEqual({
+      "claude-code": { displayName: "Claude Code", compactLabel: "Claude" },
+      codex: { displayName: "Codex", compactLabel: "Codex" },
+      cursor: { displayName: "Cursor", compactLabel: "Cursor" },
+    })
+    expect(PROVIDER_DISPLAY_NAMES).toEqual({ "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor" })
+  })
+
+  it("keeps runtime profiles protocol-free and session identity per instance", () => {
+    const standard: ProviderRuntimeProfile = { kind: "standard" }
+    const certified: ProviderRuntimeProfile = {
+      kind: "cursor-certified",
+      command: "agent",
+      args: ["acp"],
+      env: {},
+      certifiedVersion: "1.2.3",
+      authenticationMethod: "cursor_login",
+    }
+    const sessions: SessionId[] = ["cursor", "cursor-2"]
+
+    expect(standard).toEqual({ kind: "standard" })
+    expect(certified).not.toHaveProperty("protocolVersion")
+    expect(sessions).toEqual(["cursor", "cursor-2"])
+  })
+})
 
 describe("clarification contracts", () => {
   it("represents normalized single, multi, and text fields without lifecycle data", () => {

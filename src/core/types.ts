@@ -17,7 +17,7 @@ import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
  * own identity (ADR-004). Two sessions can share a `ProviderKind`; each still gets
  * its own {@link SessionId}. Renamed from the former `AgentId`.
  */
-export type ProviderKind = "claude-code" | "codex"
+export type ProviderKind = "claude-code" | "codex" | "cursor"
 
 /**
  * A Kitten-assigned session instance identity, opaque and stable from config load,
@@ -27,20 +27,32 @@ export type ProviderKind = "claude-code" | "codex"
 export type SessionId = string
 
 /** Every provider kind Kitten understands, kept stable for config validation. */
-export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex"]
+export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex", "cursor"]
 
 /**
- * The launch order for Kitten's built-in two-provider cockpit. Codex is the
+ * The launch order for Kitten's built-in three-provider cockpit. Codex is the
  * default focused agent, while explicitly configured session arrays retain the
  * order the user declared.
  */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude-code"]
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude-code", "cursor"]
+
+/** Shared full and compact labels for every closed provider identity. */
+export interface ProviderDisplayMetadata {
+  displayName: string
+  compactLabel: string
+}
+
+/** Total UI-facing metadata; views never need provider-specific label branches. */
+export const PROVIDER_METADATA = {
+  "claude-code": { displayName: "Claude Code", compactLabel: "Claude" },
+  codex: { displayName: "Codex", compactLabel: "Codex" },
+  cursor: { displayName: "Cursor", compactLabel: "Cursor" },
+} as const satisfies Readonly<Record<ProviderKind, ProviderDisplayMetadata>>
 
 /** The human-facing name for each provider kind; the default session title. */
-export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-}
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<ProviderKind, string>> = Object.fromEntries(
+  PROVIDER_KINDS.map((kind) => [kind, PROVIDER_METADATA[kind].displayName]),
+) as Record<ProviderKind, string>
 
 /**
  * Coarse per-session lifecycle state surfaced to the UI status strip and the
@@ -537,9 +549,25 @@ export interface AgentConfig extends ProviderRecipe {
   id: ProviderKind
 }
 
-/** A provider config after exact clarification capability classification. */
+/**
+ * Runtime-only provider behavior derived from a fully merged recipe. The certified
+ * branch is sealed to Cursor's native ACP command and carries no protocol types.
+ */
+export type ProviderRuntimeProfile =
+  | { readonly kind: "standard" }
+  | {
+      readonly kind: "cursor-certified"
+      readonly command: "agent"
+      readonly args: readonly ["acp"]
+      readonly env: Readonly<Record<string, string>>
+      readonly certifiedVersion: string
+      readonly authenticationMethod: "cursor_login"
+    }
+
+/** A provider config after all runtime-only capability classification. */
 export interface ResolvedAgentConfig extends AgentConfig {
   clarificationCapability: ClarificationCapability
+  runtimeProfile: ProviderRuntimeProfile
 }
 
 /**

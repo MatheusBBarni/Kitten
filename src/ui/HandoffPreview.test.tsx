@@ -998,7 +998,7 @@ const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
-  },
+  } as AppConfig["providers"],
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
@@ -1047,7 +1047,7 @@ describe("integration - hand-off across two mock agents", () => {
       })
     })
     const codex = connectionToMockAgent(CODEX, undefined, targetAgentConfigOptions())
-    const connections: Record<ProviderKind, AgentConnection> = { "claude-code": claude.connection, codex: codex.connection }
+    const connections = { "claude-code": claude.connection, codex: codex.connection } as Record<ProviderKind, AgentConnection>
 
     const controller = await createSessionController({
       config: APP_CONFIG,

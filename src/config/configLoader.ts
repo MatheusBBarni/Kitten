@@ -31,6 +31,7 @@ import type {
   McpServerConfig,
   ProviderKind,
   ProviderRecipe,
+  ProviderRuntimeProfile,
   ResolvedAgentConfig,
   ResolvedSession,
   SessionDescriptor,
@@ -71,7 +72,21 @@ const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
     args: ["-y", CODEX_ACP_PACKAGE],
     env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
   },
+  cursor: {
+    displayName: "Cursor",
+    command: "agent",
+    args: ["acp"],
+    env: {},
+  },
 }
+
+type CertifiedCursorRuntimeProfile = Extract<ProviderRuntimeProfile, { kind: "cursor-certified" }>
+
+/**
+ * Reviewed credentialed evidence is added by the opt-in certification task. An
+ * empty list is intentional: no Cursor version is guessed by configuration work.
+ */
+const CERTIFIED_CURSOR_RUNTIME_PROFILES: readonly CertifiedCursorRuntimeProfile[] = []
 
 /** Telemetry is opt-in and off until the user says otherwise (PRD privacy stance). */
 const DEFAULT_TELEMETRY_ENABLED = false
@@ -120,6 +135,7 @@ const PROVIDERS_SCHEMA = z
   .object({
     "claude-code": PROVIDER_OVERRIDE_SCHEMA.optional(),
     codex: PROVIDER_OVERRIDE_SCHEMA.optional(),
+    cursor: PROVIDER_OVERRIDE_SCHEMA.optional(),
   })
   .strict()
 
@@ -340,6 +356,31 @@ export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAg
   return {
     ...resolved,
     clarificationCapability: classifyClarificationCapability(resolved),
+    runtimeProfile: resolveProviderRuntimeProfile(resolved),
+  }
+}
+
+/**
+ * Derive runtime behavior only from the final identity-bearing recipe. Display
+ * metadata is intentionally absent, and ordered args plus the complete env must
+ * match reviewed evidence exactly.
+ */
+export function resolveProviderRuntimeProfile(
+  recipe: Pick<AgentConfig, "id" | "command" | "args" | "env">,
+  certifiedProfiles: readonly CertifiedCursorRuntimeProfile[] = CERTIFIED_CURSOR_RUNTIME_PROFILES,
+): ProviderRuntimeProfile {
+  if (recipe.id !== "cursor") return { kind: "standard" }
+  const certified = certifiedProfiles.find(
+    (profile) =>
+      recipe.command === profile.command &&
+      sameOrderedValues(recipe.args, profile.args) &&
+      sameEnvironment(recipe.env, profile.env),
+  )
+  if (!certified) return { kind: "standard" }
+  return {
+    ...certified,
+    args: [...certified.args] as ["acp"],
+    env: { ...certified.env },
   }
 }
 
@@ -409,6 +450,16 @@ function assignSessionId(provider: ProviderKind, used: Map<ProviderKind, number>
   const count = (used.get(provider) ?? 0) + 1
   used.set(provider, count)
   return count === 1 ? provider : `${provider}-${count}`
+}
+
+function sameOrderedValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameEnvironment(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return sameOrderedValues(leftKeys, rightKeys) && leftKeys.every((key) => left[key] === right[key])
 }
 
 function formatIssues(error: z.ZodError): string {
