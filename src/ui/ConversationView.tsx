@@ -62,7 +62,7 @@ export function ConversationView({
   workspaceChrome = false,
 }: {
   welcomeBannerVariant?: BannerVariant
-  /** Render tab navigation as transcript content instead of a fixed application header. */
+  /** Render tab navigation above the focused conversation. */
   workspaceChrome?: boolean
 }): ReactNode {
   const controller = useController()
@@ -81,33 +81,41 @@ export function ConversationView({
   if (focusedSessionId === null) return null
   const chrome = workspaceChrome ? <TabWorkspace /> : null
 
+  let content: ReactNode
   if (restoration === "unavailable") {
     // A provider that cannot restore at all stays on the explicit degraded pane.
     // But when we successfully opened a replacement ACP session (for example a
     // stale Codex rollout), keep the cockpit usable and surface that truth as a
     // compact notice above the normal fresh-session view.
     if (controller.isReady(focusedSessionId) && bundle === null) {
-      return renderConversationContent(
+      content = renderConversationContent(
         controller,
         focusedSessionId,
         turns,
         welcomeBannerVariant,
-        <>{chrome}<FreshRestorationBadge /></>,
+        <FreshRestorationBadge />,
       )
+    } else {
+      content = <UnavailableRestoration bundle={bundle} />
     }
-    return <UnavailableRestoration bundle={bundle} chrome={chrome} />
+  } else if (restoration === null) {
+    content = renderConversationContent(controller, focusedSessionId, turns, welcomeBannerVariant, null)
+  } else {
+    content = renderConversationContent(
+      controller,
+      focusedSessionId,
+      turns,
+      welcomeBannerVariant,
+      <LiveRestorationBadge />,
+    )
   }
 
-  if (restoration === null) {
-    return renderConversationContent(controller, focusedSessionId, turns, welcomeBannerVariant, chrome)
-  }
-
-  return renderConversationContent(
-    controller,
-    focusedSessionId,
-    turns,
-    welcomeBannerVariant,
-    <>{chrome}<LiveRestorationBadge /></>,
+  if (chrome === null) return content
+  return (
+    <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
+      {chrome}
+      {content}
+    </box>
   )
 }
 
@@ -116,12 +124,12 @@ function renderConversationContent(
   focusedSessionId: SessionId,
   turns: Turn[],
   welcomeBannerVariant: BannerVariant,
-  chrome: ReactNode,
+  notice: ReactNode,
 ): ReactNode {
   if (turns.length === 0) {
     if (welcomeBannerVariant === "none") {
-      return chrome ? (
-        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>{chrome}</box>
+      return notice ? (
+        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>{notice}</box>
       ) : null
     }
 
@@ -133,7 +141,7 @@ function renderConversationContent(
 
     return (
       <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
-        {chrome}
+        {notice}
         <WelcomeBanner
           variant={welcomeBannerVariant}
           agents={agents}
@@ -151,7 +159,7 @@ function renderConversationContent(
       scrollX={false}
     horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
   >
-      {chrome}
+      {notice}
       {turns.map((turn, index) => (
         <TurnView key={keyFor(turn, index)} turn={turn} />
       ))}
@@ -178,15 +186,14 @@ function FreshRestorationBadge(): ReactNode {
   )
 }
 
-function UnavailableRestoration({ bundle, chrome }: { bundle: HandoffBundle | null; chrome: ReactNode }): ReactNode {
+function UnavailableRestoration({ bundle }: { bundle: HandoffBundle | null }): ReactNode {
   const palette = usePalette()
   return (
     <scrollbox
       style={{ flexGrow: 1, flexShrink: 1 }}
       scrollX={false}
       horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
-    >
-      {chrome}
+  >
       <text style={{ marginTop: 1 }} fg={palette.status.error}>
         {RESTORATION_UNAVAILABLE_LABEL}
       </text>

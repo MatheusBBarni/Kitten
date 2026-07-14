@@ -179,6 +179,27 @@ describe("ConversationView turns", () => {
     await destroyMounted(renderer)
   })
 
+  it("keeps workspace tabs visible above a sticky-scrolled transcript", async () => {
+    const controller = createFakeController()
+    const { renderer, waitForFrame } = await renderConversation(controller)
+
+    await actAsync(() => {
+      for (let index = 0; index < 40; index += 1) {
+        userMessage(controller, "claude-code", `m${index}`, `LONG_TRANSCRIPT_TURN_${index}`)
+      }
+    })
+    const frame = await waitForFrame((candidate) => candidate.includes("LONG_TRANSCRIPT_TURN_39"))
+    const rows = frame.split("\n")
+    const tabsRow = rows.findIndex((row) => row.includes("[selected] Claude Code"))
+    const finalTurnRow = rows.findIndex((row) => row.includes("LONG_TRANSCRIPT_TURN_39"))
+
+    expect(tabsRow).toBeGreaterThanOrEqual(0)
+    expect(tabsRow).toBeLessThan(3)
+    expect(tabsRow).toBeLessThan(finalTurnRow)
+
+    await destroyMounted(renderer)
+  })
+
   it("renders the user turn unlabelled and the agent turn under its role label, in order", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame } = await renderConversation(controller)

@@ -288,8 +288,8 @@ function CockpitFrame({
   )
   const focusedAvailability = useAppSelector(focusedAvailabilitySelector)
   const focused = focusedSessionId ? controller.runtime(focusedSessionId) : undefined
-  // Conversation chrome belongs to the transcript so it moves with the history;
-  // only the transient shell mode needs a fixed pane title.
+  // ConversationView keeps workspace navigation fixed above the transcript;
+  // only the transient shell mode needs a fixed pane title here.
   const paneTitle = isShellFocused ? "Shell · focused" : undefined
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
 
