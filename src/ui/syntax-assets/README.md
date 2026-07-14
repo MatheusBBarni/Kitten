@@ -1,10 +1,11 @@
 # Syntax asset provenance
 
 The Markdown assets in this directory were vendored byte-for-byte from the
-exact-pinned `@opentui/core` npm package at version `0.4.3`. The Rust, Go, and
-OCaml assets were vendored byte-for-byte from the official grammar npm packages
-`tree-sitter-rust@0.24.0`, `tree-sitter-go@0.25.0`, and
-`tree-sitter-ocaml@0.24.2`. Kitten owns these copies so its parser manifest uses
+exact-pinned `@opentui/core` npm package at version `0.4.3`. The Rust, Go,
+OCaml, JSON, and Bash assets were vendored byte-for-byte from the official
+grammar npm packages `tree-sitter-rust@0.24.0`, `tree-sitter-go@0.25.0`,
+`tree-sitter-ocaml@0.24.2`, `tree-sitter-json@0.24.8`, and
+`tree-sitter-bash@0.25.1`. Kitten owns these copies so its parser manifest uses
 public registration APIs and static file imports without reaching into package
 paths at runtime.
 
@@ -15,6 +16,8 @@ Grammar repositories:
 - <https://github.com/tree-sitter/tree-sitter-rust/tree/v0.24.0>
 - <https://github.com/tree-sitter/tree-sitter-go/tree/v0.25.0>
 - <https://github.com/tree-sitter/tree-sitter-ocaml/tree/v0.24.2>
+- <https://github.com/tree-sitter/tree-sitter-json/tree/v0.24.8>
+- <https://github.com/tree-sitter/tree-sitter-bash/tree/v0.25.1>
 
 ReScript remains a declared plaintext fallback rather than a highlighted
 capability. The official `rescript-lang/tree-sitter-rescript` v6.0.0 release
@@ -40,4 +43,8 @@ f65f354215611fd94ad34134b3427eb3d58cbb745df7b6509ba722184db73d57  rust/tree-sitt
 9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7  go/tree-sitter-go.wasm
 9bdabb038c60c159cef48f4d9f775bdd951230190dd7721da9aaea073a2c8cce  ocaml/highlights.scm
 761a78a804931cfac1fa0c6238989b4b0e86cc70db461b1315d743de923f8246  ocaml/tree-sitter-ocaml.wasm
+0511524465b56aed122580792254e68b6abbbfde7119f1d02b135acbe278233f  json/highlights.scm
+d2119fb98d5912719b13f9458574f8608d2d29dfbe45f6be1f860ea1fe2a2405  json/tree-sitter-json.wasm
+b74220d954f485b7626d2b2b61f37b522e12eb1830803e388e57dd797dc99f11  bash/highlights.scm
+8292919c88a0f7d3fb31d0cd0253ca5a9531bc1ede82b0537f2c63dd8abe6a7a  bash/tree-sitter-bash.wasm
 ```

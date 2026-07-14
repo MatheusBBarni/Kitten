@@ -699,6 +699,20 @@ describe("ConversationView tool calls", () => {
       sentinel: "MliSentinel",
       plaintext: "ordinary",
     },
+    {
+      path: "config/settings.json",
+      before: '{"ordinary": "old"}',
+      after: '{"ordinary": "new", "count": 424242}',
+      sentinel: "424242",
+      plaintext: "ordinary",
+    },
+    {
+      path: "scripts/setup.sh",
+      before: "OLD_VALUE=ordinary",
+      after: "export SH_DIFF_SENTINEL=ordinary",
+      sentinel: "SH_DIFF_SENTINEL",
+      plaintext: "ordinary",
+    },
   ]) {
     it(`highlights ${path.slice(path.lastIndexOf("."))} diff tokens from the file extension`, async () => {
       const client = getTreeSitterClient()
@@ -980,6 +994,8 @@ describe("filetypeFor", () => {
     expect(filetypeFor("lib/model.mli")).toBe("mli")
     expect(filetypeFor("src/model.res")).toBe("res")
     expect(filetypeFor("src/model.resi")).toBe("resi")
+    expect(filetypeFor("config/settings.json")).toBe("json")
+    expect(filetypeFor("scripts/setup.sh")).toBe("sh")
     expect(filetypeFor("archive.tar.gz")).toBe("gz")
   })
 

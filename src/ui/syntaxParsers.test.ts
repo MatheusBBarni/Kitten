@@ -51,6 +51,22 @@ describe("syntaxParserManifest", () => {
     expect(ocaml[0]?.parser.aliases).toEqual(["ml", "mli"])
   })
 
+  it("resolves JSON and Bash labels to complete local capabilities", () => {
+    expect(resolveSyntaxFiletype("json")).toBe("json")
+    expect(resolveSyntaxFiletype("bash")).toBe("bash")
+    expect(resolveSyntaxFiletype("sh")).toBe("bash")
+    expect(resolveSyntaxFiletype("shell")).toBe("bash")
+
+    const json = syntaxParserManifest.capabilities.filter(({ filetype }) => filetype === "json")
+    const bash = syntaxParserManifest.capabilities.filter(({ filetype }) => filetype === "bash")
+    expect(json).toHaveLength(1)
+    expect(json[0]?.aliases).toEqual([])
+    expect(json[0]?.parser.aliases).toBeUndefined()
+    expect(bash).toHaveLength(1)
+    expect(bash[0]?.aliases).toEqual(["sh", "shell"])
+    expect(bash[0]?.parser.aliases).toEqual(["sh", "shell"])
+  })
+
   it("keeps blocked ReScript labels out of highlighted resolution with a documented fallback", () => {
     for (const label of ["rescript", "res", "resi"]) {
       expect(resolveSyntaxFiletype(label)).toBeUndefined()
@@ -90,6 +106,10 @@ describe("syntaxParserManifest", () => {
       ocaml: "ocaml",
       ml: "ocaml",
       mli: "ocaml",
+      json: "json",
+      bash: "bash",
+      sh: "bash",
+      shell: "bash",
     })
   })
 
@@ -135,6 +155,12 @@ describe("syntaxParserManifest", () => {
         "markdown:mli",
         "diff:ml",
         "diff:mli",
+        "markdown:json",
+        "diff:json",
+        "markdown:bash",
+        "markdown:sh",
+        "markdown:shell",
+        "diff:sh",
       ].sort(),
     )
   })
@@ -160,6 +186,16 @@ describe("syntaxParserManifest", () => {
       { label: "ml", token: "let", source: "diff" },
       { label: "mli", token: "val", source: "diff" },
     ])
+    expect(fixturesFor("json")).toEqual([
+      { label: "json", token: "424242", source: "markdown" },
+      { label: "json", token: "424242", source: "diff" },
+    ])
+    expect(fixturesFor("bash")).toEqual([
+      { label: "bash", token: "BASH_SENTINEL", source: "markdown" },
+      { label: "sh", token: "SH_SENTINEL", source: "markdown" },
+      { label: "shell", token: "SHELL_SENTINEL", source: "markdown" },
+      { label: "sh", token: "SH_DIFF_SENTINEL", source: "diff" },
+    ])
   })
 
   it("uses existing local WASM and query assets for every parser option", () => {
@@ -169,6 +205,8 @@ describe("syntaxParserManifest", () => {
       "rust",
       "go",
       "ocaml",
+      "json",
+      "bash",
     ])
 
     for (const parser of syntaxParserManifest.parsers) {

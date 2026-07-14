@@ -112,6 +112,10 @@ describe("Markdown", () => {
     { label: "ocaml", source: "type ocamlSentinel = string", sentinel: "ocamlSentinel" },
     { label: "ml", source: "type mlSentinel = string", sentinel: "mlSentinel" },
     { label: "mli", source: "type mliSentinel = string", sentinel: "mliSentinel" },
+    { label: "json", source: '{"jsonSentinel": 424242}', sentinel: "424242" },
+    { label: "bash", source: "BASH_SENTINEL=value", sentinel: "BASH_SENTINEL" },
+    { label: "sh", source: "SH_SENTINEL=value", sentinel: "SH_SENTINEL" },
+    { label: "shell", source: "SHELL_SENTINEL=value", sentinel: "SHELL_SENTINEL" },
   ]) {
     it(`highlights a ${label} fence with a non-prose foreground`, async () => {
       const client = getTreeSitterClient()
@@ -328,6 +332,10 @@ describe("Markdown", () => {
     { label: "rust", source: "fn rust_copy_sentinel() {}" },
     { label: "go", source: "func goCopySentinel() {}" },
     { label: "ocaml", source: "let ocaml_copy_sentinel = 1" },
+    { label: "json", source: '{"json_copy_sentinel": 424242}' },
+    { label: "bash", source: "BASH_COPY_SENTINEL=value" },
+    { label: "sh", source: "SH_COPY_SENTINEL=value" },
+    { label: "shell", source: "SHELL_COPY_SENTINEL=value" },
   ]) {
     it(`copies ${label} fenced source without renderer chrome`, async () => {
       const client = getTreeSitterClient()

@@ -1,7 +1,11 @@
 import { addDefaultParsers, type FiletypeParserOptions } from "@opentui/core"
 
+import bashHighlights from "./syntax-assets/bash/highlights.scm" with { type: "file" }
+import bashWasm from "./syntax-assets/bash/tree-sitter-bash.wasm" with { type: "file" }
 import goHighlights from "./syntax-assets/go/highlights.scm" with { type: "file" }
 import goWasm from "./syntax-assets/go/tree-sitter-go.wasm" with { type: "file" }
+import jsonHighlights from "./syntax-assets/json/highlights.scm" with { type: "file" }
+import jsonWasm from "./syntax-assets/json/tree-sitter-json.wasm" with { type: "file" }
 import markdownHighlights from "./syntax-assets/markdown/highlights.scm" with { type: "file" }
 import markdownInjections from "./syntax-assets/markdown/injections.scm" with { type: "file" }
 import markdownWasm from "./syntax-assets/markdown/tree-sitter-markdown.wasm" with { type: "file" }
@@ -60,6 +64,10 @@ const MARKDOWN_INFO_STRING_MAP: Readonly<Record<string, string>> = {
   ocaml: "ocaml",
   ml: "ocaml",
   mli: "ocaml",
+  json: "json",
+  bash: "bash",
+  sh: "bash",
+  shell: "bash",
 }
 
 const markdownParser: FiletypeParserOptions = {
@@ -108,6 +116,23 @@ const ocamlParser: FiletypeParserOptions = {
     highlights: [ocamlHighlights],
   },
   wasm: ocamlWasm,
+}
+
+const jsonParser: FiletypeParserOptions = {
+  filetype: "json",
+  queries: {
+    highlights: [jsonHighlights],
+  },
+  wasm: jsonWasm,
+}
+
+const bashParser: FiletypeParserOptions = {
+  filetype: "bash",
+  aliases: ["sh", "shell"],
+  queries: {
+    highlights: [bashHighlights],
+  },
+  wasm: bashWasm,
 }
 
 const markdownCapability: SyntaxCapability = {
@@ -163,6 +188,28 @@ const ocamlCapability: SyntaxCapability = {
   ],
 }
 
+const jsonCapability: SyntaxCapability = {
+  filetype: "json",
+  aliases: [],
+  parser: jsonParser,
+  fixtures: [
+    { label: "json", token: "424242", source: "markdown" },
+    { label: "json", token: "424242", source: "diff" },
+  ],
+}
+
+const bashCapability: SyntaxCapability = {
+  filetype: "bash",
+  aliases: ["sh", "shell"],
+  parser: bashParser,
+  fixtures: [
+    { label: "bash", token: "BASH_SENTINEL", source: "markdown" },
+    { label: "sh", token: "SH_SENTINEL", source: "markdown" },
+    { label: "shell", token: "SHELL_SENTINEL", source: "markdown" },
+    { label: "sh", token: "SH_DIFF_SENTINEL", source: "diff" },
+  ],
+}
+
 const rescriptPlaintextFallback: SyntaxPlaintextFallback = {
   filetype: "rescript",
   aliases: ["res", "resi"],
@@ -171,9 +218,9 @@ const rescriptPlaintextFallback: SyntaxPlaintextFallback = {
 
 /** The sole source of parser assets, aliases, injection labels, and release fixtures. */
 export const syntaxParserManifest: SyntaxParserManifest = {
-  capabilities: [markdownCapability, rustCapability, goCapability, ocamlCapability],
+  capabilities: [markdownCapability, rustCapability, goCapability, ocamlCapability, jsonCapability, bashCapability],
   plaintextFallbacks: [rescriptPlaintextFallback],
-  parsers: [markdownParser, markdownInlineParser, rustParser, goParser, ocamlParser],
+  parsers: [markdownParser, markdownInlineParser, rustParser, goParser, ocamlParser, jsonParser, bashParser],
 }
 
 /** Resolve only an explicitly declared Markdown fence label; never guess a language. */
