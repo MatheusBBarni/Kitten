@@ -91,6 +91,7 @@ export type TelemetryEventType =
   | "effort_switched"
   | "switch_confirmed"
   | "switch_unverified"
+  | "provider_default_outcome"
   | "effort_change_kept"
   | "agent_ready"
   | "agent_unready"
@@ -203,6 +204,7 @@ export type TabRestoreCountBucket = "zero" | "one" | "two_to_four" | "five_or_mo
 export type TabSwitchLatencyBucket = "under_200ms" | "200_to_499ms" | "500_to_999ms" | "1s_or_more"
 export type TabAttentionStatus = "awaiting_approval" | "error" | "finished"
 export type TabLifecycle = "visible" | "background"
+export type ProviderDefaultOutcome = "none" | "applied" | "partial" | "unavailable"
 
 /** Exact restore facts accepted by the recorder before it reduces them to buckets. */
 export interface TabRestoreInput {
@@ -278,6 +280,8 @@ export interface TelemetryRecord {
   unavailableCountBucket?: TabRestoreCountBucket
   switchLatencyBucket?: TabSwitchLatencyBucket
   attentionStatus?: TabAttentionStatus
+  /** The bounded terminal provider-default category; no requested values are recorded. */
+  defaultOutcome?: ProviderDefaultOutcome
   lifecycle?: TabLifecycle
 }
 
@@ -323,6 +327,8 @@ export interface TelemetryRecorder {
    * arms the content-free kept-change watch only for a confirmed value change.
    */
   recordSwitch(sessionId: SessionId, kind: "model" | "effort", confirmed: boolean, effortChanged: boolean): void
+  /** Record only the terminal category of one explicit provider-default attempt. */
+  recordProviderDefaultOutcome(outcome: ProviderDefaultOutcome): void
   /** Count an accepted composer submission and emit eligibility exactly at the second. */
   promptHistorySubmitted(sessionId: SessionId): void
   /** Record a successful history selection. */
@@ -447,6 +453,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   configWrite() {},
   configWriteError() {},
   recordSwitch() {},
+  recordProviderDefaultOutcome() {},
   promptHistorySubmitted() {},
   promptHistoryRecalled() {},
   promptHistoryCleared() {},
@@ -619,6 +626,10 @@ class ActiveRecorder implements TelemetryRecorder {
     if (kind === "effort" && confirmed && effortChanged) {
       this.watchFor(sessionId).effortRetention = [{ kind: "effort_change" }]
     }
+  }
+
+  recordProviderDefaultOutcome(outcome: ProviderDefaultOutcome): void {
+    this.record({ type: "provider_default_outcome", defaultOutcome: outcome })
   }
 
   promptHistorySubmitted(sessionId: SessionId): void {

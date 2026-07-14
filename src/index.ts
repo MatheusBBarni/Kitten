@@ -240,6 +240,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     runtimes: () => baseController.runtimes(),
     runtime: (sessionId) => baseController.runtime(sessionId),
     isReady: (sessionId) => baseController.isReady(sessionId),
+    updateProviderDefaults: (defaults) => baseController.updateProviderDefaults(defaults),
     closeConversation: (sessionId, choice) => baseController.closeConversation(sessionId, choice),
     restore: (record, mode) => baseController.restore(record, mode),
     dispose(): Promise<void> {

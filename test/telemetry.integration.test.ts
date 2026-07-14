@@ -80,6 +80,7 @@ function realController(
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId)?.ready === true,
+    updateProviderDefaults: () => {},
     closeConversation: async () => ({ outcome: "ignored" }),
     restore: async () => {},
     dispose: async () => {},
@@ -291,6 +292,99 @@ describe("telemetry over a scripted hand-off session", () => {
           ),
         ).toBe(true)
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("provider-default outcome JSONL privacy", () => {
+  it("writes only bounded terminal categories and excludes every sentinel content class", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-default-telemetry-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => 77,
+        sessionRef: "run-defaults",
+      })
+      const sentinels = {
+        model: "MODEL_SENTINEL_private",
+        effort: "EFFORT_SENTINEL_private",
+        prompt: "PROMPT_SENTINEL_private",
+        code: "CODE_SENTINEL_private",
+        error: "ERROR_SENTINEL_private",
+        adapter: "ADAPTER_SENTINEL_private",
+      }
+      const store = createAppStore()
+      let configured: { model?: string; effort?: string } | undefined
+      let failModel = false
+      let effortAvailable = true
+      const option = (id: string, category: string, currentValue: string, values: string[]): ConfigOption => ({
+        id,
+        category,
+        label: id,
+        currentValue,
+        options: values.map((value) => ({ value, name: value })),
+      })
+      const confirmed = (): ConfigOption[] => [
+        option("model", "model", sentinels.model, [sentinels.model]),
+        option("effort", "thought_level", effortAvailable ? sentinels.effort : "low", effortAvailable
+          ? ["low", sentinels.effort]
+          : ["low"]),
+      ]
+      const connection = {
+        setSessionConfigOption: async (_sessionId: string, configId: string): Promise<ConfigOption[]> => {
+          if (configId === "model" && failModel) throw new Error(sentinels.error)
+          return confirmed()
+        },
+      } as unknown as AgentConnection
+      const observedErrors: unknown[] = []
+      const actions = createControllerActions({
+        store,
+        getSession: (sessionId) => ({ sessionId, acpSessionId: sentinels.adapter, connection }),
+        getProviderDefault: () => configured,
+        resolvePermission: () => {},
+        recorder,
+        onError: (_sessionId, error) => observedErrors.push(error),
+      })
+      store.applyEvent("codex", { kind: "config_options", options: confirmed() })
+      store.applyEvent("codex", { kind: "user_message", messageId: "private-prompt", text: sentinels.prompt })
+      store.applyEvent("codex", { kind: "agent_message", messageId: "private-code", textDelta: sentinels.code })
+
+      expect(await actions.applyProviderDefaults("codex")).toEqual({ kind: "none" })
+      configured = { model: sentinels.model }
+      failModel = true
+      expect(await actions.applyProviderDefaults("codex")).toEqual({ kind: "unavailable", unavailable: "model" })
+      failModel = false
+      configured = { model: sentinels.model, effort: sentinels.effort }
+      expect(await actions.applyProviderDefaults("codex")).toEqual({
+        kind: "applied",
+        model: sentinels.model,
+        effort: sentinels.effort,
+      })
+      effortAvailable = false
+      expect(await actions.applyProviderDefaults("codex")).toEqual({
+        kind: "partial",
+        model: sentinels.model,
+        unavailable: "effort",
+      })
+      expect(observedErrors).toEqual([new Error(sentinels.error)])
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw.trimEnd().split("\n").map((line) => JSON.parse(line) as TelemetryRecord)
+      const outcomes = records.filter((record) => record.type === "provider_default_outcome")
+      expect(outcomes.map((record) => record.defaultOutcome)).toEqual([
+        "none",
+        "unavailable",
+        "applied",
+        "partial",
+      ])
+      expect(outcomes.every((record) => Object.keys(record).every((key) =>
+        ["type", "defaultOutcome", "at", "sessionRef"].includes(key),
+      ))).toBe(true)
+      for (const sentinel of Object.values(sentinels)) expect(raw).not.toContain(sentinel)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -269,6 +269,16 @@ function modelOption(currentValue: string): ConfigOption {
   }
 }
 
+function effortOption(currentValue: string, values = ["low", "high"]): ConfigOption {
+  return {
+    id: "effort",
+    category: "thought_level",
+    label: "Effort",
+    currentValue,
+    options: values.map((value) => ({ value, name: value })),
+  }
+}
+
 /** A stub `AgentConnection` recording what the controller asked of it. */
 interface StubConnection extends AgentConnection {
   /** Push a domain event as if the agent had streamed it. */
@@ -307,6 +317,8 @@ interface StubOptions {
   configResponse?: ConfigOption[]
   /** Make `setSessionConfigOption` reject, to exercise the action's error path. */
   setConfigThrows?: unknown
+  /** Per-call confirmed responses or failures for ordered default application. */
+  setConfig?: (sessionId: string, configId: string, value: string, callIndex: number) => Promise<ConfigOption[]> | ConfigOption[]
   /** Options the agent advertises during `newSession`, emitted so the controller can seed them. */
   newSessionConfig?: ConfigOption[]
 }
@@ -420,6 +432,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     },
     async setSessionConfigOption(sessionId, configId, value) {
       configCalls.push({ sessionId, configId, value })
+      if (options.setConfig) return options.setConfig(sessionId, configId, value, configCalls.length - 1)
       if (options.setConfigThrows !== undefined) throw options.setConfigThrows
       return options.configResponse ?? []
     },
@@ -1908,6 +1921,7 @@ describe("actions - sendPrompt", () => {
     const controller = await createSessionController({
       config: {
         providers: PROVIDERS,
+        providerDefaults: {},
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         mcpServers: [],
         shell: APP_CONFIG.shell,
@@ -2093,6 +2107,209 @@ describe("actions - setSessionConfigOption", () => {
 
     expect(selectAgentModel("claude-code")(controller.store.getState())).toBe("sonnet")
 
+    await controller.dispose()
+  })
+})
+
+describe("actions - applyProviderDefaults", () => {
+  it("records none exactly once without touching confirmed options or the adapter", async () => {
+    const outcomes: string[] = []
+    const { controller, connections } = await controllerWithStubs(
+      { codex: { newSessionConfig: [modelOption("sonnet"), effortOption("low")] } },
+      {
+        recorder: {
+          focusSwitch() {},
+          recordProviderDefaultOutcome: (outcome) => outcomes.push(outcome),
+        },
+      },
+    )
+    const before = controller.store.getState().sessions.codex!.configOptions
+    let terminalChanges = 0
+    const unsubscribe = controller.store.subscribe((state, previous) => {
+      if (state.sessions.codex?.defaultApplyResult !== previous.sessions.codex?.defaultApplyResult) terminalChanges += 1
+    })
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({ kind: "none" })
+
+    expect(connections.codex.configCalls).toEqual([])
+    expect(controller.store.getState().sessions.codex!.configOptions).toBe(before)
+    expect(controller.store.getState().sessions.codex!.defaultApplyResult).toEqual({ kind: "none" })
+    expect(terminalChanges).toBe(1)
+    expect(outcomes).toEqual(["none"])
+    unsubscribe()
+    await controller.dispose()
+  })
+
+  it("reports a stale model unavailable without making an adapter call", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "missing" } } }
+    const { controller, connections } = await controllerWithStubs(
+      { codex: { newSessionConfig: [modelOption("sonnet"), effortOption("low")] } },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "unavailable",
+      unavailable: "model",
+    })
+    expect(connections.codex.configCalls).toEqual([])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("sonnet"),
+      effortOption("low"),
+    ])
+    await controller.dispose()
+  })
+
+  it("applies model before effort and resolves effort from the refreshed confirmed options", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+          setConfig: (_sessionId, configId) => configId === "model"
+            ? [modelOption("opus"), effortOption("low", ["low", "high"])]
+            : [modelOption("opus"), effortOption("high", ["low", "high"])],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "applied",
+      model: "opus",
+      effort: "high",
+    })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "model", value: "opus" },
+      { sessionId: "codex-session", configId: "effort", value: "high" },
+    ])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("high", ["low", "high"]),
+    ])
+    await controller.dispose()
+  })
+
+  it("keeps the confirmed model and reports partial when refreshed effort is unavailable", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+          setConfig: () => [modelOption("opus"), effortOption("low", ["low"])],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "partial",
+      model: "opus",
+      unavailable: "effort",
+    })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "model", value: "opus" },
+    ])
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("low", ["low"]),
+    ])
+    await controller.dispose()
+  })
+
+  it("does not roll back or substitute when the effort request is rejected", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus", effort: "high" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+          setConfig: (_sessionId, configId) => configId === "model"
+            ? [modelOption("opus"), effortOption("low")]
+            : [modelOption("opus"), effortOption("low")],
+        },
+      },
+      { config },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "partial",
+      model: "opus",
+      unavailable: "effort",
+    })
+    expect(connections.codex.configCalls).toHaveLength(2)
+    expect(connections.codex.configCalls.filter((call) => call.configId === "model")).toHaveLength(1)
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("low"),
+    ])
+    await controller.dispose()
+  })
+
+  it("fails softly for a not-ready session and a model transport failure", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { "claude-code": { model: "opus" }, codex: { model: "opus" } } }
+    const errors: Array<[SessionId, unknown]> = []
+    const { controller } = await controllerWithStubs(
+      {
+        "claude-code": { ready: { ready: false, error: "down" } },
+        codex: { newSessionConfig: [modelOption("sonnet")], setConfigThrows: new Error("transport secret") },
+      },
+      { config, onError: (sessionId, error) => errors.push([sessionId, error]) },
+    )
+
+    expect(await controller.actions.applyProviderDefaults("claude-code")).toEqual({
+      kind: "unavailable",
+      unavailable: "session",
+    })
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "unavailable",
+      unavailable: "model",
+    })
+    expect(errors).toEqual([["codex", new Error("transport secret")]])
+    await controller.dispose()
+  })
+
+  it("replaces the snapshot without mutating a session and uses it on the next explicit attempt", async () => {
+    const config = { ...APP_CONFIG, providerDefaults: { codex: { model: "opus" } } }
+    const { controller, connections } = await controllerWithStubs(
+      {
+        codex: {
+          newSessionConfig: [modelOption("opus")],
+          setConfig: (_sessionId, _configId, value) => [modelOption(value)],
+        },
+      },
+      { config },
+    )
+    const before = controller.store.getState().sessions.codex
+
+    controller.updateProviderDefaults({ codex: { model: "sonnet" } })
+
+    expect(controller.store.getState().sessions.codex).toBe(before)
+    expect(connections.codex.configCalls).toEqual([])
+    expect(await controller.actions.applyProviderDefaults("codex")).toEqual({ kind: "applied", model: "sonnet" })
+    expect(connections.codex.configCalls).toEqual([
+      { sessionId: "codex-session", configId: "model", value: "sonnet" },
+    ])
+    await controller.dispose()
+  })
+
+  it("shares a provider default but targets only the addressed duplicate-provider runtime", async () => {
+    const config: AppConfig = {
+      ...THREE_SESSION_CONFIG,
+      providerDefaults: { "claude-code": { model: "opus" } },
+    }
+    const { controller, created } = await controllerOverFleet(config, () => ({
+      newSessionConfig: [modelOption("sonnet")],
+      setConfig: (_sessionId, _configId, value) => [modelOption(value)],
+    }))
+
+    expect(await controller.actions.applyProviderDefaults("claude-code-2")).toEqual({
+      kind: "applied",
+      model: "opus",
+    })
+    expect(created[0]!.configCalls).toEqual([])
+    expect(created[1]!.configCalls).toEqual([
+      { sessionId: "acp-1", configId: "model", value: "opus" },
+    ])
+    expect(created[2]!.configCalls).toEqual([])
     await controller.dispose()
   })
 })
@@ -2870,6 +3087,7 @@ describe("createSessionController - dispose", () => {
     const controller = await createSessionController({
       config: {
         providers: PROVIDERS,
+        providerDefaults: {},
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         mcpServers: [],
         shell: APP_CONFIG.shell,

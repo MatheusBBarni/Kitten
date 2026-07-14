@@ -283,6 +283,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         calls.setSessionConfigOption.push({ configId, value, sessionId })
         return true
       },
+      async applyProviderDefaults(sessionId: SessionId) {
+        const result = { kind: "none" } as const
+        store.applyEvent(sessionId, { kind: "default_apply_result", result })
+        return result
+      },
       switchFocus(sessionId?: SessionId, options?: SwitchFocusOptions): void {
         calls.switchFocus.push(sessionId)
         const state = store.getState()
@@ -342,6 +347,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
+    updateProviderDefaults: () => {},
     closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {
       calls.restore.push(record)

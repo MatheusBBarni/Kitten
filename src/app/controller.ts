@@ -29,7 +29,7 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import {
   migratePersistedRunV1,
   type PersistedAgent,
@@ -195,6 +195,8 @@ export interface SessionController {
   runtime(sessionId: SessionId): AgentRuntimeState | undefined
   /** Whether the session completed its handshake and holds a live ACP session. */
   isReady(sessionId: SessionId): boolean
+  /** Replace the controller-owned provider-default snapshot without mutating sessions. */
+  updateProviderDefaults(defaults: Partial<Record<ProviderKind, ProviderModelDefault>>): void
   /** Replace the current sessions with the independently restored sides of one persisted run. */
   restore(record: PersistedRunRecord, mode?: ResumeMode): Promise<void>
   /** Apply one explicit close outcome without affecting any sibling conversation. */
@@ -516,6 +518,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const readBranch = options.readBranch ?? readGitBranch
   const repositoryFileSource = options.repositoryFileSource ?? productionRepositoryFileSource
   const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
+  let providerDefaults = cloneProviderDefaults(options.config.providerDefaults ?? {})
   const usageSeenSink = options.config.telemetryEnabled
     ? options.usageSeenSink ?? createUsageSeenJsonlFileSink(resolveTelemetryPath())
     : undefined
@@ -1181,6 +1184,10 @@ export async function createSessionController(options: SessionControllerOptions)
   const actions = createControllerActions({
     store,
     getSession,
+    getProviderDefault: (sessionId) => {
+      const provider = runtimes.get(sessionId)?.seed.providerKind
+      return provider ? providerDefaults[provider] : undefined
+    },
     resolvePermission,
     resolveClarification,
     newMessageId: options.newMessageId,
@@ -1238,6 +1245,9 @@ export async function createSessionController(options: SessionControllerOptions)
     runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),
     runtime: (sessionId) => runtimes.get(sessionId)?.state,
     isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
+    updateProviderDefaults(defaults): void {
+      providerDefaults = cloneProviderDefaults(defaults)
+    },
     closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {
       if (disposed) return
@@ -1311,6 +1321,15 @@ export async function createSessionController(options: SessionControllerOptions)
       )
     },
   }
+}
+
+/** Copy the small declarative snapshot so external config objects cannot mutate it. */
+function cloneProviderDefaults(
+  defaults: Partial<Record<ProviderKind, ProviderModelDefault>>,
+): Partial<Record<ProviderKind, ProviderModelDefault>> {
+  return Object.fromEntries(
+    Object.entries(defaults).map(([provider, value]) => [provider, { ...value }]),
+  ) as Partial<Record<ProviderKind, ProviderModelDefault>>
 }
 
 /** Non-Cursor providers retain their established one-connection lifecycle. */
