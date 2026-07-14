@@ -12,7 +12,7 @@ import { createControllerActions } from "../src/app/actions.ts"
 import type { SessionController } from "../src/app/controller.ts"
 import type { ConfigWatcher } from "../src/config/configWatcher.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
-import type { AppConfig, ThemePreference } from "../src/core/types.ts"
+import type { AppConfig, ConfigOption, ThemePreference } from "../src/core/types.ts"
 import type { PersistedRunRecord, PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
 import { createRunStore } from "../src/persistence/runStore.ts"
 import { createAppStore } from "../src/store/appStore.ts"
@@ -65,11 +65,26 @@ function controlledTimer(): {
 function controllerOver(
   store: ReturnType<typeof createAppStore>,
   onRestore: (record: PersistedRunRecord) => void = () => {},
+  options: {
+    providerDefaults?: AppConfig["providerDefaults"]
+    onDefaultsUpdate?: (defaults: AppConfig["providerDefaults"]) => void
+    setConfigOption?: (configId: string, value: string) => ConfigOption[]
+  } = {},
 ): SessionController {
   const runtimes = readyRuntimes()
+  let providerDefaults = options.providerDefaults ?? {}
+  const connection = {
+    ...CONNECTION_STUB,
+    setSessionConfigOption: async (_sessionId: string, configId: string, value: string) =>
+      options.setConfigOption?.(configId, value) ?? [],
+  } as AgentConnection
   const actions = createControllerActions({
     store,
-    getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: CONNECTION_STUB }),
+    getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection }),
+    getProviderDefault: (sessionId) => {
+      const provider = runtimes.find((runtime) => runtime.sessionId === sessionId)?.providerKind
+      return provider ? providerDefaults[provider] : undefined
+    },
     resolvePermission: () => {},
   })
   return {
@@ -79,10 +94,28 @@ function controllerOver(
     runtimes: () => runtimes,
     runtime: (sessionId) => runtimes.find((runtime) => runtime.sessionId === sessionId),
     isReady: () => true,
-    updateProviderDefaults: () => {},
+    updateProviderDefaults: (defaults) => {
+      providerDefaults = Object.fromEntries(
+        Object.entries(defaults).map(([provider, value]) => [provider, { ...value }]),
+      ) as AppConfig["providerDefaults"]
+      options.onDefaultsUpdate?.(providerDefaults)
+    },
     closeConversation: async () => ({ outcome: "ignored" }),
     restore: async (record) => onRestore(record),
     dispose: async () => {},
+  }
+}
+
+function modelOption(currentValue: string): ConfigOption {
+  return {
+    id: "model",
+    category: "model",
+    label: "Model",
+    currentValue,
+    options: [
+      { value: "opus", name: "Opus" },
+      { value: "sonnet", name: "Sonnet" },
+    ],
   }
 }
 
@@ -444,6 +477,85 @@ describe("createCockpitSession", () => {
     expect(timer.pending()).toBe(false)
     await session.controller.dispose()
     expect(writes).toEqual(["dark"])
+  })
+
+  it("replaces only provider defaults on reload and uses them on a later explicit apply", async () => {
+    let onConfig: ((config: AppConfig) => void) | undefined
+    const defaultsUpdates: AppConfig["providerDefaults"][] = []
+    const optionRequests: Array<{ configId: string; value: string }> = []
+    const config = {
+      ...defaultAppConfig(),
+      theme: "light" as const,
+      providerDefaults: { codex: { model: "opus" } },
+    }
+    const session = await createCockpitSession({
+      config,
+      buildController: async (options) => {
+        options.store!.applyEvent("codex", { kind: "config_options", options: [modelOption("opus")] })
+        return controllerOver(options.store!, undefined, {
+          providerDefaults: options.config.providerDefaults,
+          onDefaultsUpdate: (defaults) => defaultsUpdates.push(defaults),
+          setConfigOption: (configId, value) => {
+            optionRequests.push({ configId, value })
+            return [modelOption(value)]
+          },
+        })
+      },
+      persistConfig: async () => {},
+      watchConfig: (callback) => {
+        onConfig = callback
+        return NOOP_WATCHER
+      },
+    })
+    const beforeOptions = session.controller.store.getState().sessions.codex!.configOptions
+    const beforeResult = session.controller.store.getState().sessions.codex!.defaultApplyResult
+
+    onConfig!({
+      ...config,
+      theme: "dark",
+      providerDefaults: { codex: { model: "sonnet" } },
+    })
+
+    expect(selectThemePreference(session.controller.store.getState())).toBe("dark")
+    expect(defaultsUpdates).toEqual([{ codex: { model: "sonnet" } }])
+    expect(optionRequests).toEqual([])
+    expect(session.controller.store.getState().sessions.codex!.configOptions).toBe(beforeOptions)
+    expect(session.controller.store.getState().sessions.codex!.defaultApplyResult).toBe(beforeResult)
+
+    expect(await session.controller.actions.applyProviderDefaults("codex")).toEqual({
+      kind: "applied",
+      model: "sonnet",
+    })
+    expect(optionRequests).toEqual([{ configId: "model", value: "sonnet" }])
+    await session.controller.dispose()
+  })
+
+  it("ignores a captured watcher callback after disposal", async () => {
+    let onConfig: ((config: AppConfig) => void) | undefined
+    const defaultsUpdates: AppConfig["providerDefaults"][] = []
+    const optionRequests: Array<{ configId: string; value: string }> = []
+    const session = await createCockpitSession({
+      config: { ...defaultAppConfig(), providerDefaults: { codex: { model: "opus" } } },
+      buildController: async (options) => controllerOver(options.store!, undefined, {
+        providerDefaults: options.config.providerDefaults,
+        onDefaultsUpdate: (defaults) => defaultsUpdates.push(defaults),
+        setConfigOption: (configId, value) => {
+          optionRequests.push({ configId, value })
+          return [modelOption(value)]
+        },
+      }),
+      persistConfig: async () => {},
+      watchConfig: (callback) => {
+        onConfig = callback
+        return NOOP_WATCHER
+      },
+    })
+
+    await session.controller.dispose()
+    onConfig!({ ...defaultAppConfig(), providerDefaults: { codex: { model: "sonnet" } } })
+
+    expect(defaultsUpdates).toEqual([])
+    expect(optionRequests).toEqual([])
   })
 
   it("closes the watcher and cancels a pending persist on dispose", async () => {

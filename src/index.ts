@@ -220,7 +220,9 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let watcher: ConfigWatcher
   try {
     watcher = (deps.watchConfig ?? ((onConfig) => watchUserConfig(onConfig)))((nextConfig) => {
-      if (!disposed) baseController.store.setThemePreference(nextConfig.theme)
+      if (disposed) return
+      baseController.store.setThemePreference(nextConfig.theme)
+      baseController.updateProviderDefaults(nextConfig.providerDefaults)
     })
   } catch (error) {
     stopPreference()
