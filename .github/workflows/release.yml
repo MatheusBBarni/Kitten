@@ -56,8 +56,8 @@ jobs:
           fi
 
           version="${TAG_NAME#kitten-v}"
-          if npm view "kitten@$version" version >/dev/null 2>&1; then
-            echo "::error::kitten@$version is already published; refusing an immutable npm republish"
+          if npm view "@matheusbbarni/kitten@$version" version >/dev/null 2>&1; then
+            echo "::error::@matheusbbarni/kitten@$version is already published; refusing an immutable npm republish"
             exit 1
           fi
 
@@ -145,7 +145,7 @@ jobs:
           path: |
             dist/kitten-${{ matrix.platform }}
             dist/kitten-${{ matrix.platform }}.sha256
-            dist/npm/@kitten/${{ matrix.platform }}
+            dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}
 
   attach:
     name: Attach binaries and SHA256SUMS
@@ -252,10 +252,10 @@ jobs:
         run: |
           set -euo pipefail
           for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
-            package_dir="staging/kitten-$platform/npm/@kitten/$platform"
+            package_dir="staging/kitten-$platform/npm/@matheusbbarni/kitten-$platform"
             binary="$package_dir/kitten-$platform"
             if [[ ! -f "$package_dir/package.json" || ! -f "$binary" ]]; then
-              echo "::error::missing staged npm package for @kitten/$platform"
+              echo "::error::missing staged npm package for @matheusbbarni/kitten-$platform"
               exit 1
             fi
 
@@ -268,7 +268,7 @@ jobs:
                   "; expected " + expectedName + "@" + expectedVersion,
                 )
               }
-            ' "$package_dir/package.json" "@kitten/$platform" "$VERSION"
+            ' "$package_dir/package.json" "@matheusbbarni/kitten-$platform" "$VERSION"
 
             # Artifact transfer normalizes modes; npm must receive an executable.
             chmod +x "$package_dir/kitten-$platform"
@@ -290,7 +290,7 @@ jobs:
             throw new Error(`package version ${pkg.version} does not match ${version}`)
           }
           for (const platform of platforms) {
-            const name = `@kitten/${platform}`
+            const name = `@matheusbbarni/kitten-${platform}`
             pkg.optionalDependencies[name] = version
           }
           fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
@@ -342,11 +342,11 @@ jobs:
           set -euo pipefail
           version="${TAG_NAME#kitten-v}"
           for attempt in {1..12}; do
-            if [[ "$(npm view "kitten@$version" version 2>/dev/null || true)" == "$version" ]]; then
+            if [[ "$(npm view "@matheusbbarni/kitten@$version" version 2>/dev/null || true)" == "$version" ]]; then
               exit 0
             fi
             if [[ "$attempt" == 12 ]]; then
-              echo "::error::kitten@$version did not become visible on npm"
+              echo "::error::@matheusbbarni/kitten@$version did not become visible on npm"
               exit 1
             fi
             sleep 10
@@ -359,16 +359,16 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${TAG_NAME#kitten-v}"
-          actual_version="$(npx --yes "kitten@$VERSION" --version)"
+          actual_version="$(npx --yes "@matheusbbarni/kitten@$VERSION" --version)"
           if [[ "$actual_version" != "$VERSION" ]]; then
-            echo "::error::kitten reported $actual_version; expected $VERSION"
+            echo "::error::@matheusbbarni/kitten reported $actual_version; expected $VERSION"
             exit 1
           fi
-          npx --yes "kitten@$VERSION" --self-check
+          npx --yes "@matheusbbarni/kitten@$VERSION" --self-check
 
           audit_dir="$RUNNER_TEMP/kitten-signature-audit"
           mkdir -p "$audit_dir"
           cd "$audit_dir"
           npm init --yes >/dev/null
-          npm install --ignore-scripts "kitten@$VERSION"
+          npm install --ignore-scripts "@matheusbbarni/kitten@$VERSION"
           npm audit signatures

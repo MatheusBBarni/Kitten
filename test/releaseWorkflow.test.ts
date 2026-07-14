@@ -104,7 +104,7 @@ describe("consolidated release workflow", () => {
 
   it("transfers each generated platform package from the same native build", () => {
     const upload = build.steps?.find((step) => step.uses === "actions/upload-artifact@v4")
-    expect(upload?.with?.path).toContain("dist/npm/@kitten/${{ matrix.platform }}")
+    expect(upload?.with?.path).toContain("dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}")
   })
 
   it("publishes all platform packages before the exact-pinned main shim", () => {
@@ -116,6 +116,7 @@ describe("consolidated release workflow", () => {
     expect(platformIndex).toBeGreaterThan(-1)
     expect(mainIndex).toBeGreaterThan(platformIndex)
     expect(platformStep?.run).toContain("darwin-arm64 darwin-x64 linux-x64 linux-arm64")
+    expect(platformStep?.run).toContain("@matheusbbarni/kitten-$platform")
     expect(platformStep?.run).toContain('chmod +x "$package_dir/kitten-$platform"')
     expect(platformStep?.run).toContain('npm publish "$package_dir" --provenance --access public')
     expect(mainStep?.run).toContain("pkg.optionalDependencies[name] = version")
@@ -165,8 +166,8 @@ describe("consolidated release workflow", () => {
     const uses = smoke.steps?.map((step) => step.uses ?? "").join("\n") ?? ""
     expect(commands).toContain("command -v bun")
     expect(commands).toContain("npm audit signatures")
-    expect(commands).toContain('npx --yes "kitten@$VERSION" --version')
-    expect(commands).toContain('npx --yes "kitten@$VERSION" --self-check')
+    expect(commands).toContain('npx --yes "@matheusbbarni/kitten@$VERSION" --version')
+    expect(commands).toContain('npx --yes "@matheusbbarni/kitten@$VERSION" --self-check')
     expect(uses).toContain("actions/setup-node@v4")
     expect(uses).not.toContain("setup-bun")
   })
@@ -193,13 +194,19 @@ describe("consolidated release workflow", () => {
     expect(fallback?.run).toContain('^kitten-v[0-9]+\\.[0-9]+\\.[0-9]+$')
     expect(fallback?.run).toContain('version="${TAG_NAME#kitten-v}"')
     expect(fallback?.run).toContain('gh release view "$TAG_NAME"')
-    expect(fallback?.run).toContain('npm view "kitten@$version" version')
+    expect(fallback?.run).toContain('npm view "@matheusbbarni/kitten@$version" version')
     expect(fallback?.run).toContain("expected_assets=(")
     expect(fallback?.run).toContain('grep -Fqx "$asset"')
     expect(fallback?.run).toContain('if [[ "$PUBLISH_ONLY" == "true" && "$asset_exists" != "true" ]]')
     expect(fallback?.run).toContain('if [[ "$PUBLISH_ONLY" != "true" && "$asset_exists" == "true" ]]')
     expect(fallback?.run).toContain('echo "release_created=true" >> "$GITHUB_OUTPUT"')
     expect(fallback?.run).toContain('echo "publish_only=$PUBLISH_ONLY" >> "$GITHUB_OUTPUT"')
+  })
+
+  it("derives the semver from the validated release-please kitten-v tag before publishing", () => {
+    const versionStep = publish.steps?.find((step) => step.name === "Validate the release version")
+    expect(versionStep?.run).toContain('^kitten-v[0-9]+\\.[0-9]+\\.[0-9]+$')
+    expect(versionStep?.run).toContain('tag_version="${TAG_NAME#kitten-v}"')
   })
 
   it("keeps ordinary pushes release-only and references no elevated or npm token", () => {

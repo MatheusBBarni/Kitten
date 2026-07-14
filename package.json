@@ -1,5 +1,5 @@
 {
-  "name": "kitten",
+  "name": "@matheusbbarni/kitten",
   "version": "0.2.1",
   "description": "Kitten - Cross-Agent Hand-off Cockpit: a terminal cockpit that hands a live coding task between AI agents over ACP.",
   "type": "module",
@@ -13,10 +13,10 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@kitten/darwin-arm64": "0.2.1",
-    "@kitten/darwin-x64": "0.2.1",
-    "@kitten/linux-arm64": "0.2.1",
-    "@kitten/linux-x64": "0.2.1"
+    "@matheusbbarni/kitten-darwin-arm64": "0.2.1",
+    "@matheusbbarni/kitten-darwin-x64": "0.2.1",
+    "@matheusbbarni/kitten-linux-arm64": "0.2.1",
+    "@matheusbbarni/kitten-linux-x64": "0.2.1"
   },
   "scripts": {
     "start": "bun run src/index.ts",

@@ -563,7 +563,7 @@ export interface CliFlagDispatchOptions {
 
 function formatCliHelp(): string {
   return `Examples:
-  npx kitten                      Try Kitten without installing
+  npx @matheusbbarni/kitten       Try Kitten without installing
   kitten                          Launch in the current Git repository
   kitten --self-check             Run the headless boot check
 
@@ -578,7 +578,7 @@ Options:
   --self-check                    Verify Kitten can boot headlessly
 
 Install or upgrade:
-  npm / npx channel:              npm i -g kitten@latest
+  npm / npx channel:              npm i -g @matheusbbarni/kitten@latest
   standalone binary channel:     curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | sh
 `
 }

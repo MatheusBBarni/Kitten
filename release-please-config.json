@@ -6,22 +6,22 @@
         {
           "type": "json",
           "path": "package.json",
-          "jsonpath": "$.optionalDependencies['@kitten/darwin-arm64']"
+          "jsonpath": "$.optionalDependencies['@matheusbbarni/kitten-darwin-arm64']"
         },
         {
           "type": "json",
           "path": "package.json",
-          "jsonpath": "$.optionalDependencies['@kitten/darwin-x64']"
+          "jsonpath": "$.optionalDependencies['@matheusbbarni/kitten-darwin-x64']"
         },
         {
           "type": "json",
           "path": "package.json",
-          "jsonpath": "$.optionalDependencies['@kitten/linux-arm64']"
+          "jsonpath": "$.optionalDependencies['@matheusbbarni/kitten-linux-arm64']"
         },
         {
           "type": "json",
           "path": "package.json",
-          "jsonpath": "$.optionalDependencies['@kitten/linux-x64']"
+          "jsonpath": "$.optionalDependencies['@matheusbbarni/kitten-linux-x64']"
         }
       ],
       "changelog-sections": [
