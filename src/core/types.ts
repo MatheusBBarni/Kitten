@@ -295,6 +295,22 @@ export interface ConfigOption {
   options: ConfigSelectOption[]
 }
 
+/** User-authored model and reasoning-effort preferences for one provider. */
+export interface ProviderModelDefault {
+  model?: string
+  effort?: string
+}
+
+/**
+ * Protocol-free terminal outcome of the latest explicit provider-default attempt.
+ * Values appear only after the live provider has confirmed them.
+ */
+export type DefaultApplyResult =
+  | { kind: "none" }
+  | { kind: "applied"; model: string; effort?: string }
+  | { kind: "partial"; model: string; unavailable: "effort" }
+  | { kind: "unavailable"; unavailable: "model" | "session" }
+
 /**
  * A protocol-free slash command advertised by an agent for one live session.
  *
@@ -437,6 +453,8 @@ export interface SessionState {
    * agent always returns the complete set. Empty when nothing is advertised.
    */
   configOptions: ConfigOption[]
+  /** Terminal result of the latest explicit provider-default attempt, if any. */
+  defaultApplyResult: DefaultApplyResult | null
   /** The latest complete slash-command list advertised for this session. */
   commands: AvailableCommand[]
   /** Current-run composer submissions and recall position, private to this session. */
@@ -489,6 +507,7 @@ export type DomainSessionEvent =
   | { kind: "usage"; used: number; size: number }
   | { kind: "branch"; branch: string }
   | { kind: "config_options"; options: ConfigOption[] } // wholesale replace of the advertised config option set
+  | { kind: "default_apply_result"; result: DefaultApplyResult }
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
   | PromptHistoryEvent
 
@@ -606,6 +625,8 @@ export interface ShellConfig {
  */
 export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
+  /** @temporary Optional only while existing typed fixtures migrate in tasks 2-3. */
+  providerDefaults?: Partial<Record<ProviderKind, ProviderModelDefault>>
   sessions: SessionDescriptor[]
   mcpServers: McpServerConfig[]
   shell: ShellConfig

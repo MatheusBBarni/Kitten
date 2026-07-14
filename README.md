@@ -194,6 +194,29 @@ Malformed config files fail fast. There is no silent fallback.
 
 Telemetry is disabled by default. When enabled, it writes local content-free JSONL counters only.
 
+### Provider model defaults
+
+You can declare a default model, reasoning effort, or both for each provider. These are personal, declarative preferences: only `model` and `effort` are accepted, and Kitten never creates or rewrites them. Manual changes made in a live session also remain session-local.
+
+<!-- provider-defaults-example:start -->
+```json
+{
+  "providerDefaults": {
+    "claude-code": {
+      "model": "claude-opus-4-1",
+      "effort": "high"
+    },
+    "codex": {
+      "model": "gpt-5.4",
+      "effort": "high"
+    }
+  }
+}
+```
+<!-- provider-defaults-example:end -->
+
+Provider defaults are restored only by the intentional provider-selection flow. Editing this file does not silently change a live session, and Kitten never writes selections back to it.
+
 ### MCP servers
 
 Declare shared MCP servers in the top-level `mcpServers` object. It is a name-keyed map: each key is the server name shown in Kitten's readouts, and each value is a stdio launch recipe with these fields:

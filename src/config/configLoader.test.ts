@@ -3,6 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 
+import { PROVIDER_KINDS } from "../core/types.ts"
+
 import {
   CLAUDE_CODE_ACP_PACKAGE,
   CODEX_ACP_PACKAGE,
@@ -33,7 +35,9 @@ import {
 const tempDirs: string[] = []
 const README_PATH = join(import.meta.dir, "..", "..", "README.md")
 
-async function readReadmeJsonExample(name: "mcp-config-example" | "mcp-remote-example"): Promise<string> {
+async function readReadmeJsonExample(
+  name: "mcp-config-example" | "mcp-remote-example" | "provider-defaults-example",
+): Promise<string> {
   const readme = await Bun.file(README_PATH).text()
   const match = readme.match(new RegExp(`<!-- ${name}:start -->\\s*\`\`\`json\\s*([\\s\\S]*?)\\s*\`\`\`\\s*<!-- ${name}:end -->`))
   if (!match?.[1]) throw new Error(`README example ${name} is missing`)
@@ -63,6 +67,7 @@ describe("defaults", () => {
     const config = await loadAppConfig({ path: missing })
 
     expect(Object.keys(config.providers)).toEqual(["claude-code", "codex", "cursor"])
+    expect(config.providerDefaults).toEqual({})
     expect(config.sessions).toEqual([])
     expect(findAgentConfig(config, "claude-code")).toEqual({
       id: "claude-code",
@@ -121,6 +126,60 @@ describe("defaults", () => {
     expect(second.providers.cursor.args).toEqual(["acp"])
     expect(second.providers.cursor.env).toEqual({})
     expect(second.mcpServers).toEqual([])
+    expect(second.providerDefaults).toEqual({})
+  })
+})
+
+describe("provider defaults", () => {
+  it.each([...PROVIDER_KINDS])("Should parse model-only, effort-only, and combined defaults for %s", (provider) => {
+    expect(parseAppConfig(JSON.stringify({ providerDefaults: { [provider]: { model: "model-id" } } })).providerDefaults).toEqual({
+      [provider]: { model: "model-id" },
+    })
+    expect(parseAppConfig(JSON.stringify({ providerDefaults: { [provider]: { effort: "high" } } })).providerDefaults).toEqual({
+      [provider]: { effort: "high" },
+    })
+    expect(
+      parseAppConfig(JSON.stringify({ providerDefaults: { [provider]: { model: "model-id", effort: "high" } } }))
+        .providerDefaults,
+    ).toEqual({ [provider]: { model: "model-id", effort: "high" } })
+  })
+
+  it("Should resolve omission to an empty map and defensively copy merged preferences", () => {
+    expect(parseAppConfig("{}").providerDefaults).toEqual({})
+
+    const preference = { model: "gpt-5.4", effort: "high" }
+    const user = { providerDefaults: { codex: preference } }
+    const config = mergeAppConfig(user)
+
+    expect(config.providerDefaults).toEqual({ codex: preference })
+    expect(config.providerDefaults).not.toBe(user.providerDefaults)
+    expect(config.providerDefaults?.codex).not.toBe(preference)
+    preference.model = "mutated-input"
+    expect(config.providerDefaults?.codex?.model).toBe("gpt-5.4")
+  })
+
+  it.each([
+    ["unknown provider", { providerDefaults: { gemini: { model: "gemini-3" } } }, /providerDefaults.*gemini/],
+    ["unknown nested key", { providerDefaults: { codex: { mode: "agent" } } }, /providerDefaults\.codex.*mode/],
+    ["empty model", { providerDefaults: { codex: { model: "" } } }, /providerDefaults\.codex\.model/],
+    ["empty effort", { providerDefaults: { codex: { effort: "" } } }, /providerDefaults\.codex\.effort/],
+    ["wrong model type", { providerDefaults: { codex: { model: 42 } } }, /providerDefaults\.codex\.model/],
+    ["wrong effort type", { providerDefaults: { codex: { effort: true } } }, /providerDefaults\.codex\.effort/],
+    ["wrong provider map type", { providerDefaults: [] }, /providerDefaults/],
+  ])("Should reject %s with a field-specific path", (_case, value, path) => {
+    const parse = () => parseAppConfig(JSON.stringify(value))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(path)
+  })
+
+  it("Should load the marked README example through the real loader", async () => {
+    const path = await writeConfig(await readReadmeJsonExample("provider-defaults-example"))
+
+    expect((await loadAppConfig({ path })).providerDefaults).toEqual({
+      "claude-code": { model: "claude-opus-4-1", effort: "high" },
+      codex: { model: "gpt-5.4", effort: "high" },
+    })
   })
 })
 

@@ -139,6 +139,23 @@ const PROVIDERS_SCHEMA = z
   })
   .strict()
 
+/** One strict user-authored model/effort preference. */
+const PROVIDER_MODEL_DEFAULT_SCHEMA = z
+  .object({
+    model: z.string().min(1).optional(),
+    effort: z.string().min(1).optional(),
+  })
+  .strict()
+
+/** Provider defaults are closed over the same known provider identities as recipes. */
+const PROVIDER_DEFAULTS_SCHEMA = z
+  .object({
+    "claude-code": PROVIDER_MODEL_DEFAULT_SCHEMA.optional(),
+    codex: PROVIDER_MODEL_DEFAULT_SCHEMA.optional(),
+    cursor: PROVIDER_MODEL_DEFAULT_SCHEMA.optional(),
+  })
+  .strict()
+
 /**
  * One declared session. `provider` must name a known provider kind; `cwd` is
  * required and non-empty (a session with no directory has nowhere to run). `title`
@@ -189,6 +206,7 @@ export const USER_CONFIG_SCHEMA = z
     theme: z.enum(THEME_PREFERENCES).optional(),
     welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
+    providerDefaults: PROVIDER_DEFAULTS_SCHEMA.optional(),
     /** @deprecated Use `providers`. Kept as an alias for one migration window. */
     agents: PROVIDERS_SCHEMA.optional(),
     sessions: z.array(SESSION_DESCRIPTOR_SCHEMA).optional(),
@@ -215,6 +233,7 @@ export type ProvidersOverride = z.infer<typeof PROVIDERS_SCHEMA>
 export function defaultAppConfig(): AppConfig {
   return {
     providers: cloneProviders(DEFAULT_PROVIDERS),
+    providerDefaults: {},
     sessions: [],
     mcpServers: [],
     shell: {
@@ -256,6 +275,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
   }
   return {
     providers: config.providers,
+    providerDefaults: cloneProviderDefaults(user.providerDefaults),
     sessions: user.sessions?.map((session) => ({ ...session })) ?? [],
     mcpServers: normalizeMcpServers(user.mcpServers),
     shell: {
@@ -268,6 +288,18 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     theme: user.theme ?? config.theme,
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
   }
+}
+
+function cloneProviderDefaults(
+  defaults: UserConfig["providerDefaults"],
+): NonNullable<AppConfig["providerDefaults"]> {
+  if (!defaults) return {}
+  return Object.fromEntries(
+    PROVIDER_KINDS.flatMap((kind) => {
+      const preference = defaults[kind]
+      return preference ? [[kind, { ...preference }]] : []
+    }),
+  )
 }
 
 function normalizeMcpServers(servers: UserConfig["mcpServers"]): McpServerConfig[] {

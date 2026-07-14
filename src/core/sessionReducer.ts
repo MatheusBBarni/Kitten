@@ -46,6 +46,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     plan: [],
     usage: undefined,
     configOptions: [],
+    defaultApplyResult: null,
     commands: [],
     promptHistory: createPromptHistoryState(),
   }
@@ -87,6 +88,11 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       // The agent always returns the complete option set, so replace wholesale
       // (ADR-003); config options never touch turns, status, or derived fields.
       return { ...state, configOptions: event.options }
+
+    case "default_apply_result":
+      // The terminal attempt result is independent of the agent-advertised
+      // option set; later layers must never use it to patch confirmed options.
+      return { ...state, defaultApplyResult: event.result }
 
     case "commands":
       // Agents advertise a complete command set. The newest update wins without
