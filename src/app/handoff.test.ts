@@ -107,11 +107,11 @@ function targetConfigOptions(currentModel = "sonnet", currentEffort = "low"): Co
   ]
 }
 
-/** A three-session fleet (two sharing a provider), each in its own directory. */
+/** A ready Claude Code, Codex, and Cursor fleet, each in its own directory. */
 const FLEET_SEEDS: SessionSeed[] = [
   { id: "a", providerKind: "claude-code", title: "Alpha", cwd: "/work/alpha" },
   { id: "b", providerKind: "codex", title: "Beta", cwd: "/work/beta" },
-  { id: "c", providerKind: "claude-code", title: "Gamma", cwd: "/work/gamma" },
+  { id: "c", providerKind: "cursor", title: "Cursor", cwd: "/work/cursor" },
 ]
 
 /** A ready runtime per seed, save for any id mapped to `false` in `notReady`. */
@@ -775,6 +775,28 @@ describe("HandoffFlow.begin - fleet targeting", () => {
 })
 
 describe("HandoffFlow.chooseTarget", () => {
+  it("requires choosing ready Cursor and explicit confirmation before the first send", async () => {
+    const controller = fleetControllerWithWork()
+    const flow = createHandoffFlow({ controller })
+
+    expect(flow.begin()).toEqual({ ok: true })
+    expect(controller.store.getState().overlays.handoffTarget).toEqual({ sourceSessionId: "a" })
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+
+    expect(flow.chooseTarget("c")).toBe(true)
+    expect(controller.store.getState().overlays.handoffPreview).toMatchObject({
+      sourceSessionId: "a",
+      targetSessionId: "c",
+    })
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+
+    await flow.confirm(createHandoffEdits(openBundle(controller)))
+
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect(controller.calls.sendPrompt[0]!.sessionId).toBe("c")
+    expect(controller.calls.switchFocus).toEqual(["c"])
+  })
+
   it("opens the preview toward the chosen target and closes the picker", () => {
     const controller = fleetControllerWithWork()
     const flow = createHandoffFlow({ controller })

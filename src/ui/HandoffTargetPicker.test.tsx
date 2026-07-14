@@ -34,11 +34,11 @@ const HEIGHT = 30
 /** Typed at the modal picker; must never reach the composer beneath it. */
 const DRAFT_MARKER = "zzq"
 
-/** A three-session fleet (two sharing a provider), each in its own directory. */
+/** A ready Claude Code, Codex, and Cursor fleet, each in its own directory. */
 const FLEET: SessionSeed[] = [
   { id: "a", providerKind: "claude-code", title: "Alpha", cwd: "/work/alpha" },
   { id: "b", providerKind: "codex", title: "Beta", cwd: "/work/beta" },
-  { id: "c", providerKind: "claude-code", title: "Gamma", cwd: "/work/gamma" },
+  { id: "c", providerKind: "cursor", title: "Cursor", cwd: "/work/cursor" },
 ]
 
 /** A ready runtime per seed, so the shell mounts a live cockpit over the fleet. */
@@ -137,7 +137,7 @@ describe("HandoffTargetPicker visibility", () => {
     expect(frame).toContain(HANDOFF_TARGET_TITLE)
     // Both candidates, and not the source: you cannot hand a task to yourself.
     expect(frame).toContain("Beta")
-    expect(frame).toContain("Gamma")
+    expect(frame).toContain("Cursor")
     // The source is absent from the candidate list. Assert on its directory, which the
     // picker card shows but the status strip (now labeled by title) does not, so the
     // source's title appearing in the strip cannot mask a leak into the picker.
@@ -173,12 +173,12 @@ describe("HandoffTargetPicker selection", () => {
     const setup = await renderCockpit(controller)
     await openPicker(setup)
 
-    // Move the highlight from Beta to Gamma, then choose it.
+    // Move the highlight from Codex to Cursor, then choose it.
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
     })
     await setup.waitForFrame((frame) => {
-      const line = frame.split("\n").find((l) => l.includes("Gamma"))
+      const line = frame.split("\n").find((l) => l.includes("Cursor"))
       return line?.includes(SESSION_MARKER) === true
     })
 
@@ -229,13 +229,13 @@ describe("HandoffTargetPicker modality", () => {
     await openPicker(setup)
     const suspendedPicker = controller.store.getState().overlays.handoffTarget
 
-    // Select Gamma locally before preemption. This index lives only in the mounted
+    // Select Cursor locally before preemption. This index lives only in the mounted
     // picker and therefore proves the dialog was resumed rather than reconstructed.
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
     })
     await setup.waitForFrame((frame) => {
-      const line = frame.split("\n").find((candidate) => candidate.includes("Gamma"))
+      const line = frame.split("\n").find((candidate) => candidate.includes("Cursor"))
       return line?.includes(SESSION_MARKER) === true
     })
 
@@ -250,7 +250,7 @@ describe("HandoffTargetPicker modality", () => {
     expect(controller.store.getState().overlays.handoffTarget).toBe(suspendedPicker)
     expect(controller.store.getState().overlays.handoffPreview).toBeNull()
     await setup.waitForFrame((frame) => {
-      const line = frame.split("\n").find((candidate) => candidate.includes("Gamma"))
+      const line = frame.split("\n").find((candidate) => candidate.includes("Cursor"))
       return line?.includes(SESSION_MARKER) === true
     })
 
@@ -302,23 +302,24 @@ describe("HandoffTargetPicker modality", () => {
 })
 
 describe("integration - hand-off and hand-back across three sessions", () => {
-  it("hands off from A to a chosen C, then hands back from C to A", async () => {
+  it("hands off from Claude Code to Cursor, then hands back through the same picker and preview", async () => {
     const controller = fleetController("a")
     const setup = await renderCockpit(controller)
 
-    // Hand off from A. Two candidates (B, C); choose C (Gamma), the second row.
+    // Hand off from Claude Code. Two candidates (Codex, Cursor); choose Cursor.
     await openPicker(setup)
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
     })
     await setup.waitForFrame((frame) => {
-      const line = frame.split("\n").find((l) => l.includes("Gamma"))
+      const line = frame.split("\n").find((l) => l.includes("Cursor"))
       return line?.includes(SESSION_MARKER) === true
     })
     await actAsync(() => {
       setup.mockInput.pressEnter()
     })
     await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))
+    expect(controller.calls.sendPrompt).toHaveLength(0)
 
     // Confirm the preview: the bundle lands in C and focus moves to it.
     await actAsync(() => {
@@ -337,12 +338,12 @@ describe("integration - hand-off and hand-back across three sessions", () => {
       controller.store.applyEvent("c", { kind: "user_message", messageId: "handed", text: "continue" })
     })
 
-    // C now holds the handed-over turn, so hand-back is the same flow pointed back.
-    // From C the candidates are A and B; A (Alpha) is the first row - choose it directly.
+    // Cursor now holds the handed-over turn, so hand-back is the same flow pointed back.
+    // From Cursor the candidates are Claude Code and Codex; choose Claude Code directly.
     await openPicker(setup)
-    // Source C (Gamma) is excluded from the picker; assert on its directory, which the
+    // Source Cursor is excluded from the picker; assert on its directory, which the
     // strip does not show, rather than its title, which the strip now does.
-    expect(setup.captureCharFrame()).not.toContain("/work/gamma")
+    expect(setup.captureCharFrame()).not.toContain("/work/cursor")
     await setup.waitForFrame((frame) => {
       const line = frame.split("\n").find((l) => l.includes("Alpha"))
       return line?.includes(SESSION_MARKER) === true
@@ -351,6 +352,7 @@ describe("integration - hand-off and hand-back across three sessions", () => {
       setup.mockInput.pressEnter()
     })
     await setup.waitForFrame((f) => f.includes(HANDOFF_HINT))
+    expect(controller.calls.sendPrompt).toHaveLength(1)
     await actAsync(() => {
       setup.mockInput.pressEnter()
     })

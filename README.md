@@ -2,8 +2,8 @@
 
 Kitten is a terminal cockpit for passing a live coding task from one AI agent to another without losing context.
 
-It runs **Claude Code** and **Codex** together in one terminal using the [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk).  
-If one agent stalls, you can hand its active task to the other with one action.
+It runs **Claude Code**, **Codex**, and **Cursor** together in one terminal using the [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk).
+If one agent stalls, you can hand its active task to another ready session through a reviewed transfer.
 
 ## Install Kitten
 
@@ -25,9 +25,16 @@ kitten
 - macOS or Linux on arm64 or x64
 - Claude Code installed and authenticated
 - Codex installed and authenticated
+- Cursor's local `agent` CLI installed and authenticated to use the Cursor session
 - A git repository to launch Kitten from
 
 Kitten launches the agents' published [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk) adapters. It does not install the agent CLIs or manage their authentication. The npm channel will be documented here when its native-binary install path is published and verified.
+
+### Local Cursor session
+
+Cursor is Kitten's third local coding-agent session. Kitten starts Cursor through its native `agent acp` stdio server and supports only the reviewed, certified local profile. This integration does not connect to Cursor cloud agents, background agents, or other remote Cursor products.
+
+Cursor is checked independently. If its CLI is missing, unauthenticated, incompatible, or outside Kitten's certified profile, Kitten reports a Cursor-specific recovery action while ready Claude Code and Codex sessions remain usable. Until a credentialed contract run is reviewed, Kitten does not claim an exact certified Cursor version or enable unverified Cursor-only capabilities.
 
 ## Showcase Site
 
@@ -93,11 +100,13 @@ Handing work from one coding agent to another usually means copying a transcript
 
 ## How handoffs work
 
-When you start a handoff, Kitten collects a bounded transcript excerpt, relevant file references, pending diffs, and any captured shell context. The sessions stay live throughout, so the receiving agent can continue from the context you explicitly choose to send.
+When you start a handoff, Kitten collects a bounded transcript excerpt, relevant file references, pending diffs, and any captured shell context. The sessions stay live throughout, so the receiving agent can continue from the context you explicitly choose to send. Cursor uses this same reviewed flow in both directions; there is no Cursor-only shortcut.
 
 1. Press `Ctrl+T` to start a handoff. If more than one other session is ready, choose the destination first.
 2. Review the preview. Move through files and diffs with the arrow keys, use `Space` to keep or drop an item, `e` to edit the summary, and `m` to set the target model or reasoning effort.
 3. Press `Enter` to send the curated bundle and focus the destination, or `Esc` to cancel without sending anything.
+
+Nothing is sent when you start the handoff, choose a target, or open and curate the preview. Only explicit confirmation from the preview sends the bundle.
 
 Kitten redacts recognised credentials before showing the preview. Review is still the final safeguard: redaction reduces risk, but it is not a promise that every secret has been found.
 
@@ -121,7 +130,7 @@ Type `/` in the prompt to filter the command menu, or write the full command and
 - `/help` — Show all available Kitten commands.
 - `/shell` — Focus the integrated shell.
 - `/copy` — Copy the latest shell command for an external terminal.
-- `/handoff` — Build and send a handoff summary to the other agent.
+- `/handoff` — Start a reviewed handoff to another ready session.
 - `/sessions` — Show all sessions and jump to one that needs you.
 - `/previous-tab` and `/next-tab` — Select the adjacent visible conversation.
 - `/resume` — Find and resume a saved run for this project.
@@ -144,7 +153,7 @@ Source development requires [Bun](https://bun.sh) 1.3.5 or newer.
 git clone https://github.com/MatheusBBarni/Kitten.git && cd Kitten && bun install && bun start
 ```
 
-On first launch, Kitten checks each configured agent and reports readiness. If one adapter cannot start, the other stays usable.
+On first launch, Kitten checks each configured agent and reports readiness. A missing, unauthenticated, incompatible, or uncertified Cursor session does not block ready siblings; its recovery message is shown without prompt, code, credential, or repository content.
 
 Check setup without opening the cockpit:
 

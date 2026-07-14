@@ -73,6 +73,62 @@ describe("main() repo gate", () => {
 })
 
 describe("main() readiness gate", () => {
+  it("keeps the cockpit mounted and reports only Cursor's safe recovery gap when siblings are ready", async () => {
+    const { renderer } = await createTestRenderer({ width: 80, height: 24 })
+    const cwd = process.cwd()
+    const cursorGap =
+      "Cursor: authentication is required: sign in to Cursor. Sign in to Cursor, then restart Kitten."
+    const runtimes: AgentRuntimeState[] = [
+      { sessionId: "claude-code", providerKind: "claude-code", displayName: "Claude Code", title: "Claude Code", cwd, ready: true, acpSessionId: "session-claude" },
+      { sessionId: "codex", providerKind: "codex", displayName: "Codex", title: "Codex", cwd, ready: true, acpSessionId: "session-codex" },
+      { sessionId: "cursor", providerKind: "cursor", displayName: "Cursor", title: "Cursor", cwd, ready: false, error: cursorGap },
+    ]
+    const store = createAppStore({
+      seeds: runtimes.map((runtime) => ({
+        id: runtime.sessionId,
+        providerKind: runtime.providerKind,
+        title: runtime.title,
+        cwd: runtime.cwd,
+      })),
+      selectedVisibleId: "codex",
+    })
+    const controller = createFakeController({ store, runtimes })
+    let reported: FirstRunReport | undefined
+    let blocked = 0
+
+    let result: Awaited<ReturnType<typeof main>> | undefined
+    await actAsync(async () => {
+      result = await main({
+        checkRepo: () => true,
+        createRenderer: async () => renderer,
+        createController: async () => controller,
+        loadConfig: async () => defaultAppConfig(),
+        readFirstRunSeen: () => false,
+        markFirstRunSeen: () => {},
+        renderBootBanner: () => () => {},
+        reportFirstRun: (report) => {
+          reported = report
+        },
+        onBlocked: () => blocked++,
+        onExit: () => {},
+        wireNotifier: () => {},
+      })
+    })
+
+    expect(result).not.toBeNull()
+    expect(renderer.isDestroyed).toBe(false)
+    expect(blocked).toBe(0)
+    expect(reported?.blocked).toBe(false)
+    expect(reported?.gaps).toEqual([cursorGap])
+    expect(reported?.agents.filter((agent) => agent.ready).map((agent) => agent.agentId)).toEqual([
+      "claude-code",
+      "codex",
+    ])
+
+    await destroyMounted(renderer)
+    await result?.closed
+  })
+
   it("restores the terminal and reports gaps when no agent is ready", async () => {
     const { renderer } = await createTestRenderer({ width: 80, height: 24 })
     const notReady: AgentRuntimeState[] = [
