@@ -7,9 +7,14 @@ import {
   type ReadyState,
 } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import type { AgentConfig, AppConfig } from "../core/types.ts"
+import type { AppConfig, ResolvedAgentConfig } from "../core/types.ts"
 import { startMockAgent, type MockAgentOptions } from "../../test/mockAgent.ts"
-import { checkAgentReadiness, checkAllAgentsReadiness, DEFAULT_HANDSHAKE_TIMEOUT_MS } from "./readiness.ts"
+import {
+  checkAgentReadiness,
+  checkAllAgentsReadiness,
+  DEFAULT_HANDSHAKE_TIMEOUT_MS,
+  preflightAgentReadiness,
+} from "./readiness.ts"
 
 /**
  * Readiness is verified two ways.
@@ -25,19 +30,47 @@ import { checkAgentReadiness, checkAllAgentsReadiness, DEFAULT_HANDSHAKE_TIMEOUT
 
 const UNSUPPORTED_CLARIFICATION = { status: "unsupported", reason: "unknown_recipe" } as const
 
-const CLAUDE: AgentConfig = {
+const CLAUDE: ResolvedAgentConfig = {
   id: "claude-code",
   displayName: "Claude Code",
   command: "claude-code-acp",
   args: ["--stdio"],
   env: {},
+  clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  runtimeProfile: { kind: "standard" },
 }
-const CODEX: AgentConfig = {
+const CODEX: ResolvedAgentConfig = {
   id: "codex",
   displayName: "Codex",
   command: "codex-acp",
   args: [],
   env: {},
+  clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  runtimeProfile: { kind: "standard" },
+}
+
+const CURSOR_VERSION = "1.2.3"
+const CURSOR: ResolvedAgentConfig = {
+  id: "cursor",
+  displayName: "Cursor",
+  command: "agent",
+  args: ["acp"],
+  env: {},
+  clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  runtimeProfile: {
+    kind: "cursor-certified",
+    command: "agent",
+    args: ["acp"],
+    env: {},
+    certifiedVersion: CURSOR_VERSION,
+    authenticationMethod: "cursor_login",
+  },
+}
+
+const UNCERTIFIED_CURSOR: ResolvedAgentConfig = {
+  ...CURSOR,
+  command: "/opt/cursor/agent",
+  runtimeProfile: { kind: "standard" },
 }
 
 const APP_CONFIG: AppConfig = {
@@ -52,6 +85,19 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+}
+
+const THREE_PROVIDER_CONFIG: AppConfig = {
+  ...APP_CONFIG,
+  providers: {
+    ...APP_CONFIG.providers,
+    cursor: {
+      displayName: CURSOR.displayName,
+      command: CURSOR.command,
+      args: CURSOR.args,
+      env: CURSOR.env,
+    },
+  },
 }
 
 /** A stub connection: only `connect` and `dispose` are exercised by readiness. */
@@ -71,7 +117,7 @@ function stubConnection(connect: () => Promise<ReadyState>): {
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
-function connectionToMockAgent(config: AgentConfig, mockOptions: MockAgentOptions = {}): AgentConnection {
+function connectionToMockAgent(config: ResolvedAgentConfig, mockOptions: MockAgentOptions = {}): AgentConnection {
   const pair = createInMemoryTransportPair()
   startMockAgent(pair.agent, mockOptions)
   return createAgentConnection({
@@ -101,7 +147,7 @@ describe("checkAgentReadiness - failure taxonomy", () => {
   })
 
   it("Should report binary_not_found via the real PATH probe when the command does not exist", async () => {
-    const missing: AgentConfig = { ...CODEX, command: "kitten-nonexistent-agent-binary" }
+    const missing: ResolvedAgentConfig = { ...CODEX, command: "kitten-nonexistent-agent-binary" }
 
     const result = await checkAgentReadiness(missing)
 
@@ -185,6 +231,162 @@ describe("checkAgentReadiness - failure taxonomy", () => {
   })
 })
 
+describe("checkAgentReadiness - Cursor preflight", () => {
+  it("Should expose a lightweight successful preflight with no connection dependency", async () => {
+    const result = await preflightAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async (profile) => ({ exitCode: 0, stdout: profile.certifiedVersion }),
+    })
+
+    expect(result).toEqual({ ready: true })
+  })
+
+  it("Should skip both the version probe and connection when the Cursor binary is missing", async () => {
+    let probed = false
+    let created = false
+
+    const result = await checkAgentReadiness(CURSOR, {
+      binaryExists: () => false,
+      probeCursorVersion: async () => {
+        probed = true
+        return { exitCode: 0, stdout: CURSOR_VERSION }
+      },
+      createConnection: () => {
+        created = true
+        throw new Error("must not connect")
+      },
+    })
+
+    expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "binary_not_found" })
+    expect(probed).toBe(false)
+    expect(created).toBe(false)
+  })
+
+  it("Should reject an uncertified Cursor recipe before probing or connecting", async () => {
+    let probed = false
+    let created = false
+
+    const result = await checkAgentReadiness(UNCERTIFIED_CURSOR, {
+      binaryExists: () => {
+        throw new Error("must not check an uncertified command")
+      },
+      probeCursorVersion: async () => {
+        probed = true
+        return { exitCode: 0, stdout: CURSOR_VERSION }
+      },
+      createConnection: () => {
+        created = true
+        throw new Error("must not connect")
+      },
+    })
+
+    expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "uncertified_recipe" })
+    expect(result.ready === false && result.message).toContain("built-in `agent acp` recipe")
+    expect(probed).toBe(false)
+    expect(created).toBe(false)
+  })
+
+  it.each([
+    ["empty", { exitCode: 0, stdout: "" }],
+    ["malformed", { exitCode: 0, stdout: "Cursor agent version one" }],
+    ["nonzero", { exitCode: 1, stdout: CURSOR_VERSION }],
+    ["mismatched", { exitCode: 0, stdout: "1.2.4" }],
+  ])("Should return version_mismatch for %s version output before connection creation", async (_case, probeResult) => {
+    let created = false
+    const result = await checkAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => probeResult,
+      createConnection: () => {
+        created = true
+        throw new Error("must not connect")
+      },
+    })
+
+    expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "version_mismatch" })
+    expect(result.ready === false && result.message).toContain("certified Cursor CLI version")
+    expect(created).toBe(false)
+  })
+
+  it("Should return version_mismatch when the version probe throws", async () => {
+    let created = false
+    const result = await checkAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => {
+        throw new Error("version process failed")
+      },
+      createConnection: () => {
+        created = true
+        throw new Error("must not connect")
+      },
+    })
+
+    expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "version_mismatch" })
+    expect(created).toBe(false)
+  })
+
+  it("Should continue through one handshake and dispose it after an exact semantic version", async () => {
+    const stub = stubConnection(async () => ({
+      ready: true,
+      protocolVersion: SUPPORTED_PROTOCOL_VERSION,
+      canLoadSession: false,
+    }))
+    let created = 0
+
+    const result = await checkAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => ({ exitCode: 0, stdout: ` ${CURSOR_VERSION}\n` }),
+      createConnection: () => {
+        created += 1
+        return stub.connection
+      },
+    })
+
+    expect(result).toMatchObject({ agentId: "cursor", ready: true })
+    expect(created).toBe(1)
+    expect(stub.disposed()).toBe(true)
+  })
+
+  it("Should map the adapter authentication discriminator without changing legacy generic failures", async () => {
+    const authenticationRequired = await checkAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => ({ exitCode: 0, stdout: CURSOR_VERSION }),
+      createConnection: () =>
+        stubConnection(async () => ({
+          ready: false,
+          reason: "authentication_required",
+          error: "sign in to Cursor",
+        }) as ReadyState).connection,
+    })
+    const genericFailure = await checkAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => ({ exitCode: 0, stdout: CURSOR_VERSION }),
+      createConnection: () => stubConnection(async () => ({ ready: false, error: "initialize failed" })).connection,
+    })
+
+    expect(authenticationRequired).toMatchObject({ ready: false, reason: "authentication_required" })
+    expect(authenticationRequired.ready === false && authenticationRequired.message).toContain("sign in to Cursor")
+    expect(genericFailure).toMatchObject({ ready: false, reason: "handshake_failed" })
+  })
+
+  it.each([CLAUDE, CODEX])("Should bypass Cursor version probing for $id", async (config) => {
+    const stub = stubConnection(async () => ({
+      ready: true,
+      protocolVersion: SUPPORTED_PROTOCOL_VERSION,
+      canLoadSession: false,
+    }))
+    const result = await checkAgentReadiness(config, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => {
+        throw new Error("non-Cursor providers must not be version probed")
+      },
+      createConnection: () => stub.connection,
+    })
+
+    expect(result.ready).toBe(true)
+    expect(stub.disposed()).toBe(true)
+  })
+})
+
 describe("checkAgentReadiness - against the mock ACP agent", () => {
   it("Should report ready when the agent completes the initialize handshake", async () => {
     const result = await checkAgentReadiness(CLAUDE, {
@@ -227,7 +429,56 @@ describe("checkAgentReadiness - against the mock ACP agent", () => {
   })
 })
 
+const CURSOR_PREFLIGHT_FAILURES: Array<
+  [
+    string,
+    {
+      binaryExists: (command: string) => boolean
+      uncertified?: boolean
+      probeCursorVersion?: () => Promise<{ exitCode: number; stdout: string }>
+    },
+  ]
+> = [
+  ["binary missing", { binaryExists: (command) => command !== "agent" }],
+  ["uncertified recipe", { binaryExists: alwaysInstalled, uncertified: true }],
+  [
+    "version mismatch",
+    { binaryExists: alwaysInstalled, probeCursorVersion: async () => ({ exitCode: 0, stdout: "9.9.9" }) },
+  ],
+]
+
 describe("checkAllAgentsReadiness", () => {
+  it.each(CURSOR_PREFLIGHT_FAILURES)(
+    "Should keep ready siblings usable when the Cursor preflight reports %s",
+    async (_case, preflight) => {
+      const config = preflight.uncertified
+        ? {
+            ...THREE_PROVIDER_CONFIG,
+            providers: {
+              ...THREE_PROVIDER_CONFIG.providers,
+              cursor: { ...THREE_PROVIDER_CONFIG.providers.cursor, command: "/opt/cursor/agent" },
+            },
+          }
+        : THREE_PROVIDER_CONFIG
+      const results = await checkAllAgentsReadiness(config, {
+        binaryExists: preflight.binaryExists,
+        probeCursorVersion:
+          preflight.probeCursorVersion ?? (async () => ({ exitCode: 0, stdout: CURSOR_VERSION })),
+        resolveAgentConfig: (_config, kind) => {
+          if (kind !== "cursor") return kind === "claude-code" ? CLAUDE : CODEX
+          return preflight.uncertified ? UNCERTIFIED_CURSOR : CURSOR
+        },
+        createConnection: (config) => connectionToMockAgent(config),
+      })
+
+      expect(results.map((result) => [result.agentId, result.ready])).toEqual([
+        ["claude-code", true],
+        ["codex", true],
+        ["cursor", false],
+      ])
+    },
+  )
+
   it("Should report each agent independently when one rejects the handshake", async () => {
     const results = await checkAllAgentsReadiness(APP_CONFIG, {
       binaryExists: alwaysInstalled,

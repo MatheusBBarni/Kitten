@@ -18,9 +18,15 @@ import {
   type AgentConnection,
   type ReadyState,
 } from "../agent/agentConnection.ts"
-import type { AgentConfig, ClarificationCapability, ProviderKind, AppConfig } from "../core/types.ts"
+import type {
+  AppConfig,
+  ClarificationCapability,
+  ProviderKind,
+  ProviderRuntimeProfile,
+  ResolvedAgentConfig,
+} from "../core/types.ts"
 import { PROVIDER_KINDS } from "../core/types.ts"
-import { classifyClarificationCapability } from "./clarificationCapability.ts"
+import { findAgentConfig } from "./configLoader.ts"
 
 /** Why an agent is not ready. Each value maps to one distinct, actionable failure. */
 export type NotReadyReason =
@@ -32,6 +38,12 @@ export type NotReadyReason =
   | "handshake_timeout"
   /** `initialize` succeeded at a protocol version Kitten does not speak. */
   | "capability_mismatch"
+  /** Cursor's final resolved recipe does not match a reviewed certified profile. */
+  | "uncertified_recipe"
+  /** Cursor's CLI version could not be proven to exactly match its certified profile. */
+  | "version_mismatch"
+  /** Cursor initialized but its adapter-owned login did not complete. */
+  | "authentication_required"
 
 /** One agent's startup verdict: handshake completed, or a legible reason it did not. */
 export type AgentReadiness =
@@ -54,39 +66,112 @@ export type AgentReadiness =
 /** How long to wait for `initialize` before declaring the agent unresponsive. */
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000
 
-/** Injectable seams so readiness is testable without spawning real subprocesses. */
-export interface ReadinessOptions {
-  /** Build the connection to probe; defaults to a real spawning `AgentConnection`. */
-  createConnection?: (config: AgentConfig) => AgentConnection
-  /** Whether `command` resolves to an executable; defaults to `Bun.which`. */
+type CertifiedCursorRuntimeProfile = Extract<ProviderRuntimeProfile, { kind: "cursor-certified" }>
+
+/** Content-free output from running the certified Cursor CLI's version command. */
+export interface CursorVersionProbeResult {
+  exitCode: number
+  stdout: string
+}
+
+/** Injectable subprocess seam for `agent --version`. */
+export type CursorVersionProbe = (
+  profile: CertifiedCursorRuntimeProfile,
+) => Promise<CursorVersionProbeResult>
+
+/** Lightweight controller-facing result; success deliberately carries no ACP state. */
+export type PreflightNotReadyReason = "binary_not_found" | "uncertified_recipe" | "version_mismatch"
+
+export type AgentReadinessPreflight =
+  | { ready: true }
+  | {
+      ready: false
+      reason: PreflightNotReadyReason
+      message: string
+    }
+
+/** Dependencies used by the preflight without constructing an ACP connection. */
+export interface ReadinessPreflightOptions {
+  /** Whether a resolved command is executable; defaults to `Bun.which`. */
   binaryExists?: (command: string) => boolean
+  /** Run the certified Cursor version command; defaults to a Bun subprocess. */
+  probeCursorVersion?: CursorVersionProbe
+}
+
+/** Injectable seams so readiness is testable without spawning real subprocesses. */
+export interface ReadinessOptions extends ReadinessPreflightOptions {
+  /** Build the connection to probe; defaults to a real spawning `AgentConnection`. */
+  createConnection?: (config: ResolvedAgentConfig) => AgentConnection
   /** Handshake budget; defaults to {@link DEFAULT_HANDSHAKE_TIMEOUT_MS}. */
   timeoutMs?: number
+  /** Resolve runtime-only profile metadata for aggregate checks. */
+  resolveAgentConfig?: (config: AppConfig, kind: ProviderKind) => ResolvedAgentConfig | undefined
 }
 
 /** Sentinel distinguishing "the handshake budget elapsed" from any resolved state. */
 const TIMED_OUT = Symbol("timed-out")
 
 /**
- * Probe one agent: resolve its binary, spawn it, run the `initialize` handshake, and
- * tear the probe connection down again. The connection is disposed on every path -
- * readiness must not leak a subprocess, and the session controller (task_07) spawns
- * its own long-lived connections afterwards.
- *
- * Never throws: every failure becomes a not-ready result.
+ * Validate the resolved recipe and executable without constructing an ACP
+ * connection. Long-lived controller paths use this seam before their one live
+ * connection; the full readiness helper below composes it with a disposable handshake.
  */
-export async function checkAgentReadiness(
-  config: AgentConfig,
-  options: ReadinessOptions = {},
-): Promise<AgentReadiness> {
-  const binaryExists = options.binaryExists ?? defaultBinaryExists
-  if (!binaryExists(config.command)) {
-    return notReady(
+export async function preflightAgentReadiness(
+  config: ResolvedAgentConfig,
+  options: ReadinessPreflightOptions = {},
+): Promise<AgentReadinessPreflight> {
+  if (config.id === "cursor" && config.runtimeProfile.kind !== "cursor-certified") {
+    return preflightNotReady(
       config,
-      "binary_not_found",
-      `command "${config.command}" was not found on your PATH. Install it, then restart Kitten.`,
+      "uncertified_recipe",
+      "the configured recipe is not certified. Restore the built-in `agent acp` recipe, then restart Kitten.",
     )
   }
+
+  const binaryExists = options.binaryExists ?? defaultBinaryExists
+  const command = config.runtimeProfile.kind === "cursor-certified" ? config.runtimeProfile.command : config.command
+  if (!binaryExists(command)) {
+    return preflightNotReady(
+      config,
+      "binary_not_found",
+      `command "${command}" was not found on your PATH. Install it, then restart Kitten.`,
+    )
+  }
+
+  if (config.runtimeProfile.kind !== "cursor-certified") return { ready: true }
+
+  try {
+    const probe = options.probeCursorVersion ?? defaultCursorVersionProbe
+    const result = await probe(config.runtimeProfile)
+    const version = result.stdout.trim()
+    if (
+      result.exitCode !== 0 ||
+      !SEMANTIC_VERSION.test(version) ||
+      version !== config.runtimeProfile.certifiedVersion
+    ) {
+      return cursorVersionMismatch(config)
+    }
+  } catch {
+    return cursorVersionMismatch(config)
+  }
+
+  return { ready: true }
+}
+
+/**
+ * Run the lightweight preflight, then spawn one disposable connection for the shared
+ * `initialize` readiness handshake. The connection is disposed on every path so this
+ * helper cannot leak a subprocess.
+ *
+ * Never throws under the production dependencies: every expected failure becomes a
+ * not-ready result.
+ */
+export async function checkAgentReadiness(
+  config: ResolvedAgentConfig,
+  options: ReadinessOptions = {},
+): Promise<AgentReadiness> {
+  const preflight = await preflightAgentReadiness(config, options)
+  if (!preflight.ready) return preflightVerdict(config, preflight)
 
   const create = options.createConnection ?? defaultCreateConnection
   const timeoutMs = options.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
@@ -127,16 +212,24 @@ export async function checkAllAgentsReadiness(
   config: AppConfig,
   options: ReadinessOptions = {},
 ): Promise<AgentReadiness[]> {
+  const resolve = options.resolveAgentConfig ?? findAgentConfig
   return Promise.all(
-    PROVIDER_KINDS.filter((kind) => config.providers[kind]).map((kind) =>
-      checkAgentReadiness({ id: kind, ...config.providers[kind] }, options),
-    ),
+    PROVIDER_KINDS.map((kind) => resolve(config, kind))
+      .filter((agent): agent is ResolvedAgentConfig => agent !== undefined)
+      .map((agent) => checkAgentReadiness(agent, options)),
   )
 }
 
 /** Turn a completed `connect()` into a verdict, rejecting versions we cannot speak. */
-function verdict(config: AgentConfig, state: ReadyState): AgentReadiness {
+function verdict(config: ResolvedAgentConfig, state: ReadyState): AgentReadiness {
   if (!state.ready) {
+    if (config.id === "cursor" && authenticationRequired(state)) {
+      return notReady(
+        config,
+        "authentication_required",
+        `authentication is required: ${state.error}. Sign in to Cursor, then restart Kitten.`,
+      )
+    }
     return notReady(
       config,
       "handshake_failed",
@@ -155,17 +248,17 @@ function verdict(config: AgentConfig, state: ReadyState): AgentReadiness {
   return {
     agentId: config.id,
     displayName: config.displayName,
-    clarificationCapability: classifyClarificationCapability(config),
+    clarificationCapability: config.clarificationCapability,
     ready: true,
     protocolVersion: state.protocolVersion,
   }
 }
 
-function notReady(config: AgentConfig, reason: NotReadyReason, detail: string): AgentReadiness {
+function notReady(config: ResolvedAgentConfig, reason: NotReadyReason, detail: string): AgentReadiness {
   return {
     agentId: config.id,
     displayName: config.displayName,
-    clarificationCapability: classifyClarificationCapability(config),
+    clarificationCapability: config.clarificationCapability,
     ready: false,
     reason,
     message: `${config.displayName}: ${detail}`,
@@ -195,7 +288,7 @@ async function disposeQuietly(connection: AgentConnection | undefined): Promise<
   }
 }
 
-function defaultCreateConnection(config: AgentConfig): AgentConnection {
+function defaultCreateConnection(config: ResolvedAgentConfig): AgentConnection {
   return createAgentConnection({ config })
 }
 
@@ -204,8 +297,57 @@ function defaultBinaryExists(command: string): boolean {
   return Bun.which(command) !== null
 }
 
-function commandLine(config: AgentConfig): string {
+function commandLine(config: ResolvedAgentConfig): string {
   return [config.command, ...config.args].join(" ")
+}
+
+function preflightNotReady(
+  config: ResolvedAgentConfig,
+  reason: PreflightNotReadyReason,
+  detail: string,
+): AgentReadinessPreflight {
+  return { ready: false, reason, message: `${config.displayName}: ${detail}` }
+}
+
+function preflightVerdict(
+  config: ResolvedAgentConfig,
+  preflight: Extract<AgentReadinessPreflight, { ready: false }>,
+): AgentReadiness {
+  return {
+    agentId: config.id,
+    displayName: config.displayName,
+    clarificationCapability: config.clarificationCapability,
+    ...preflight,
+  }
+}
+
+function cursorVersionMismatch(config: ResolvedAgentConfig): AgentReadinessPreflight {
+  return preflightNotReady(
+    config,
+    "version_mismatch",
+    "the installed CLI does not match Kitten's certified Cursor CLI version. Install the supported Cursor CLI, then restart Kitten.",
+  )
+}
+
+function authenticationRequired(state: Extract<ReadyState, { ready: false }>): boolean {
+  return (state as { reason?: unknown }).reason === "authentication_required"
+}
+
+const SEMANTIC_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/
+
+async function defaultCursorVersionProbe(
+  profile: CertifiedCursorRuntimeProfile,
+): Promise<CursorVersionProbeResult> {
+  const subprocess = Bun.spawn({
+    cmd: [profile.command, "--version"],
+    env: { ...globalThis.process.env, ...profile.env },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+  const [stdout, exitCode] = await Promise.all([new Response(subprocess.stdout).text(), subprocess.exited])
+  return { exitCode, stdout }
 }
 
 function errorMessage(error: unknown): string {
