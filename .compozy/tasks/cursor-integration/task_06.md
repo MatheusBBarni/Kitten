@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render Cursor through shared provider metadata"
 type: frontend
 complexity: medium
@@ -28,10 +28,10 @@ Remove the remaining two-provider UI label branches so a ready Cursor session re
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Replace the status-strip binary provider label with shared metadata.
-- [ ] 6.2 Replace model-selector base tab labels with shared metadata.
-- [ ] 6.3 Add a ready Cursor runtime fixture to status-strip coverage.
-- [ ] 6.4 Add a three-session model-selector fixture and preserve existing keyboard behavior.
+- [x] 6.1 Replace the status-strip binary provider label with shared metadata.
+- [x] 6.2 Replace model-selector base tab labels with shared metadata.
+- [x] 6.3 Add a ready Cursor runtime fixture to status-strip coverage.
+- [x] 6.4 Add a three-session model-selector fixture and preserve existing keyboard behavior.
 
 ## Implementation Details
 
@@ -61,12 +61,12 @@ Follow the TechSpec "Component Overview" and "Impact Analysis" sections. Do not 
 
 ## Tests
 - Unit tests:
-  - [ ] A ready Cursor status chip uses its shared compact label, advertised model label, and normal headroom/MCP rendering without other provider labels.
-  - [ ] An 80-column status strip with Cursor retains the existing no-overflow contract.
-  - [ ] Model tabs show metadata-derived Claude, Codex, and Cursor labels while duplicate providers still disambiguate by title.
-  - [ ] Keyboard navigation reaches Cursor and applies only Cursor's opaque configuration option after the existing confirmation flow.
+  - [x] A ready Cursor status chip uses its shared compact label, advertised model label, and normal headroom/MCP rendering without other provider labels.
+  - [x] An 80-column status strip with Cursor retains the existing no-overflow contract.
+  - [x] Model tabs show metadata-derived Claude, Codex, and Cursor labels while duplicate providers still disambiguate by title.
+  - [x] Keyboard navigation reaches Cursor and applies only Cursor's opaque configuration option after the existing confirmation flow.
 - Integration tests:
-  - [ ] A rendered three-session selector retains visible-only filtering, tab order, wrapping, close/select/reopen flow, and session-ID-based actions.
+  - [x] A rendered three-session selector retains visible-only filtering, tab order, wrapping, close/select/reopen flow, and session-ID-based actions.
 - Test coverage target: >=80%
 - All tests must pass
 

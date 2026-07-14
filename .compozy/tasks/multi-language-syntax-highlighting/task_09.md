@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Publish the supported-label contract"
 type: docs
 complexity: low

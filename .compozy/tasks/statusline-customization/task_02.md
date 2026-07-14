@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Strict Statusline Config and Symlink-Safe Persistence"
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Extend Kitten's strict user configuration model to persist a disclosure acknowle
 
 ## Subtasks
 
-- [ ] 2.1 Extend resolved configuration and defaults with the legacy-compatible statusline preference.
-- [ ] 2.2 Add strict user-config delta validation and field-level merge behavior for acknowledgement and optional layout.
-- [ ] 2.3 Preserve unrelated root configuration keys during acknowledgement-only and complete-layout write patches.
-- [ ] 2.4 Reject symlink targets before config reads or atomic replacements while retaining existing private permission behavior.
-- [ ] 2.5 Add temporary-directory coverage for schema, merge, round-trip, preservation, and unsafe-target failures.
+- [x] 2.1 Extend resolved configuration and defaults with the legacy-compatible statusline preference.
+- [x] 2.2 Add strict user-config delta validation and field-level merge behavior for acknowledgement and optional layout.
+- [x] 2.3 Preserve unrelated root configuration keys during acknowledgement-only and complete-layout write patches.
+- [x] 2.4 Reject symlink targets before config reads or atomic replacements while retaining existing private permission behavior.
+- [x] 2.5 Add temporary-directory coverage for schema, merge, round-trip, preservation, and unsafe-target failures.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Implement the config boundary from TechSpec "Data Models" and "User config and w
 ## Tests
 
 - Unit tests:
-  - [ ] Parsing no `statusline` block yields an unacknowledged preference with a null layout.
-  - [ ] Acknowledgement-only and complete-layout blocks parse and merge correctly.
-  - [ ] A layout with only one of `separator` or `line`, an unknown nested key, an invalid item, or an invalid separator fails as a hard config error.
-  - [ ] Merging a statusline delta retains provider, session, theme, shell, MCP, and telemetry settings.
-  - [ ] A symlink config target causes persistence to reject before the target content changes.
+  - [x] Parsing no `statusline` block yields an unacknowledged preference with a null layout.
+  - [x] Acknowledgement-only and complete-layout blocks parse and merge correctly.
+  - [x] A layout with only one of `separator` or `line`, an unknown nested key, an invalid item, or an invalid separator fails as a hard config error.
+  - [x] Merging a statusline delta retains provider, session, theme, shell, MCP, and telemetry settings.
+  - [x] A symlink config target causes persistence to reject before the target content changes.
 - Integration tests:
-  - [ ] A temporary config with unrelated settings survives acknowledgement-only then complete-layout atomic writes and reloads to the expected resolved preference with private file permissions.
+  - [x] A temporary config with unrelated settings survives acknowledgement-only then complete-layout atomic writes and reloads to the expected resolved preference with private file permissions.
 - Test coverage target: >=80%
 - All tests must pass
 

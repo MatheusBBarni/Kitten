@@ -98,6 +98,32 @@ Until a separately reviewed post-launch instrumentation change exists, maintaine
 
 Handing work from one coding agent to another usually means copying a transcript, finding the relevant files, and hoping you did not leave out the one detail that matters. Kitten prepares a focused handoff instead, then leaves the final decision with you.
 
+## Syntax highlighting
+
+Kitten enhances code only after its parser, aliases, source behavior, and compiled-binary behavior pass the same release gate.
+
+### Released fence labels
+
+| Language | Canonical label | Aliases |
+| --- | --- | --- |
+| JavaScript | `javascript` | `js`, `jsx`, `javascriptreact` |
+| TypeScript | `typescript` | `ts`, `tsx`, `typescriptreact` |
+| Rust | `rust` | `rs` |
+| Go | `go` | `golang` |
+| OCaml | `ocaml` | `ml`, `mli` |
+| JSON | `json` | — |
+| Bash | `bash` | `sh`, `shell` |
+| Python | `python` | `py` |
+| Markdown | `markdown` | `md` |
+
+### Fallback contract
+
+Only the documented, release-gated labels above receive syntax highlighting. Unknown, malformed, unavailable, and unlabelled fences remain visibly bounded, copy-safe plaintext; when source declares a label, Kitten retains that label. Kitten never guesses a language from unlabelled code, extensionless diffs, or dotfile diffs.
+
+The canonical `diff` format is Kitten's built-in unified-diff surface, with no aliases. It adds language-specific enhancement only when a recognized file extension supplies real context; otherwise the diff remains plaintext.
+
+ReScript (`rescript`, aliases `res` and `resi`) has not met the release gate and is therefore not in the highlighted-support list. ReScript fences and diffs remain labelled, bounded, copy-safe plaintext until that gate passes.
+
 ## How handoffs work
 
 When you start a handoff, Kitten collects a bounded transcript excerpt, relevant file references, pending diffs, and any captured shell context. The sessions stay live throughout, so the receiving agent can continue from the context you explicitly choose to send. Cursor uses this same reviewed flow in both directions; there is no Cursor-only shortcut.

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Prove the support matrix in self-check and compiled artifacts"
 type: test
 complexity: high

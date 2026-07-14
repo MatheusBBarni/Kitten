@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Cursor provider identity and runtime-profile config"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Add Cursor to Kitten's closed provider model and resolve a sealed, protocol-free
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Extend the closed provider identity and shared provider metadata for Cursor.
-- [ ] 1.2 Define the runtime-only standard and certified Cursor profile contract.
-- [ ] 1.3 Add the default Cursor recipe and strict configuration delta validation.
-- [ ] 1.4 Resolve profiles only after complete recipe merging and preserve isolated default clones.
-- [ ] 1.5 Cover default, override, rejection, and three-session resolution behavior.
+- [x] 1.1 Extend the closed provider identity and shared provider metadata for Cursor.
+- [x] 1.2 Define the runtime-only standard and certified Cursor profile contract.
+- [x] 1.3 Add the default Cursor recipe and strict configuration delta validation.
+- [x] 1.4 Resolve profiles only after complete recipe merging and preserve isolated default clones.
+- [x] 1.5 Cover default, override, rejection, and three-session resolution behavior.
 
 ## Implementation Details
 
@@ -66,13 +66,13 @@ Follow the TechSpec sections "Data Models" and "Provider Resolution and Readines
 
 ## Tests
 - Unit tests:
-  - [ ] Default config includes three provider recipes and resolves Cursor metadata/profile without mutable shared args or env.
-  - [ ] Cursor command, args, and env deltas retain unmodified fields while preserving clone isolation.
-  - [ ] `providers.cursor.certifiedVersion`, `authenticationMethod`, and `runtimeProfile` fail strict parsing.
-  - [ ] Provider constants and metadata are exhaustive for Cursor while SessionId remains a distinct per-session identity.
+  - [x] Default config includes three provider recipes and resolves Cursor metadata/profile without mutable shared args or env.
+  - [x] Cursor command, args, and env deltas retain unmodified fields while preserving clone isolation.
+  - [x] `providers.cursor.certifiedVersion`, `authenticationMethod`, and `runtimeProfile` fail strict parsing.
+  - [x] Provider constants and metadata are exhaustive for Cursor while SessionId remains a distinct per-session identity.
 - Integration tests:
-  - [ ] Zero-config resolution yields `codex`, `claude-code`, and `cursor` IDs, provider kinds, and titles in order.
-  - [ ] An explicit Cursor session resolves its cwd, title, task, and first-session ID through the normal path.
+  - [x] Zero-config resolution yields `codex`, `claude-code`, and `cursor` IDs, provider kinds, and titles in order.
+  - [x] An explicit Cursor session resolves its cwd, title, task, and first-session ID through the normal path.
 - Test coverage target: >=80%
 - All tests must pass
 

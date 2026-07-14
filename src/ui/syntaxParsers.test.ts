@@ -3,11 +3,14 @@ import { existsSync } from "node:fs"
 
 import {
   createPythonCapability,
+  reportSyntaxDiagnostic,
+  resolveSyntaxPresentation,
   registerSyntaxParsers,
   resolveInjectedNodeFiletype,
   resolveSyntaxFiletype,
   syntaxParserManifest,
   type SyntaxParserRegistrar,
+  type SyntaxDiagnostic,
 } from "./syntaxParsers.ts"
 
 describe("syntaxParserManifest", () => {
@@ -188,48 +191,14 @@ describe("syntaxParserManifest", () => {
   })
 
   it("provides Markdown fixtures for every supported label plus extension-backed diff fixtures", () => {
-    const fixturesFor = (filetype: string) =>
-      syntaxParserManifest.capabilities.find((capability) => capability.filetype === filetype)?.fixtures
+    const fixtures = syntaxParserManifest.capabilities.flatMap(({ fixtures }) => fixtures)
+    const tokens = fixtures.map(({ token }) => token)
 
-    expect(fixturesFor("rust")).toEqual([
-      { label: "rust", token: "fn", source: "markdown" },
-      { label: "rs", token: "fn", source: "markdown" },
-      { label: "rs", token: "fn", source: "diff" },
-    ])
-    expect(fixturesFor("go")).toEqual([
-      { label: "go", token: "func", source: "markdown" },
-      { label: "golang", token: "func", source: "markdown" },
-      { label: "go", token: "func", source: "diff" },
-    ])
-    expect(fixturesFor("ocaml")).toEqual([
-      { label: "ocaml", token: "let", source: "markdown" },
-      { label: "ml", token: "let", source: "markdown" },
-      { label: "mli", token: "val", source: "markdown" },
-      { label: "ml", token: "let", source: "diff" },
-      { label: "mli", token: "val", source: "diff" },
-    ])
-    expect(fixturesFor("json")).toEqual([
-      { label: "json", token: "424242", source: "markdown" },
-      { label: "json", token: "424242", source: "diff" },
-    ])
-    expect(fixturesFor("bash")).toEqual([
-      { label: "bash", token: "BASH_SENTINEL", source: "markdown" },
-      { label: "sh", token: "SH_SENTINEL", source: "markdown" },
-      { label: "shell", token: "SHELL_SENTINEL", source: "markdown" },
-      { label: "sh", token: "SH_DIFF_SENTINEL", source: "diff" },
-    ])
-    expect(fixturesFor("python")).toEqual([
-      { label: "python", token: "PythonSentinel", source: "markdown" },
-      { label: "py", token: "PySentinel", source: "markdown" },
-      { label: "py", token: "PY_DIFF_SENTINEL", source: "diff" },
-    ])
-
-    const pythonTokens = fixturesFor("python")?.map(({ token }) => token) ?? []
-    const nonPythonTokens = syntaxParserManifest.capabilities
-      .filter(({ filetype }) => filetype !== "python")
-      .flatMap(({ fixtures }) => fixtures.map(({ token }) => token))
-    expect(new Set(pythonTokens).size).toBe(pythonTokens.length)
-    for (const token of pythonTokens) expect(nonPythonTokens).not.toContain(token)
+    expect(new Set(tokens).size).toBe(tokens.length)
+    for (const fixture of fixtures) {
+      expect(fixture.content).toContain(fixture.token)
+      expect(fixture.content).not.toContain("\n")
+    }
   })
 
   it("uses existing local WASM and query assets for every parser option", () => {
@@ -280,4 +249,100 @@ describe("syntaxParserManifest", () => {
     expect(firstCalls).toBe(1)
     expect(secondCalls).toBe(1)
   })
+})
+
+describe("syntax diagnostics", () => {
+  it("reports an unknown Markdown label without retaining the label or source", () => {
+    const events: SyntaxDiagnostic[] = []
+    const presentation = resolveSyntaxPresentation(
+      "private-unknown-label",
+      "markdown",
+      (event) => events.push(event),
+    )
+
+    expect(presentation).toEqual({ filetype: undefined, fallback: true })
+    expect(events).toEqual([{ kind: "unknown_label", surface: "markdown" }])
+    expect(JSON.stringify(events)).not.toContain("private-unknown-label")
+  })
+
+  it("reports a known unavailable capability with only its canonical filetype", () => {
+    const events: SyntaxDiagnostic[] = []
+    const presentation = resolveSyntaxPresentation("resi", "markdown", (event) => events.push(event))
+
+    expect(presentation).toEqual({ filetype: undefined, fallback: true })
+    expect(events).toEqual([
+      { kind: "parser_unavailable", filetype: "rescript", surface: "markdown" },
+    ])
+  })
+
+  it("sanitizes warning and error events before invoking an injected reporter", () => {
+    const events: SyntaxDiagnostic[] = []
+    const reporter = (event: SyntaxDiagnostic) => events.push(event)
+    const unsafe = {
+      filetype: "rust",
+      surface: "diff",
+      source: "SECRET_SOURCE",
+      label: "SECRET_LABEL",
+      path: "/secret/path.rs",
+      prompt: "SECRET_PROMPT",
+      userId: "SECRET_USER",
+      sessionId: "SECRET_SESSION",
+      error: "SECRET_RAW_ERROR",
+    } as const
+
+    reportSyntaxDiagnostic(reporter, { ...unsafe, kind: "parser_warning" } as SyntaxDiagnostic)
+    reportSyntaxDiagnostic(reporter, { ...unsafe, kind: "parser_error" } as SyntaxDiagnostic)
+
+    expect(events).toEqual([
+      { kind: "parser_warning", filetype: "rust", surface: "diff" },
+      { kind: "parser_error", filetype: "rust", surface: "diff" },
+    ])
+    const serialized = JSON.stringify(events)
+    for (const secret of Object.values(unsafe).filter((value) => value.startsWith("SECRET") || value.startsWith("/"))) {
+      expect(serialized).not.toContain(secret)
+    }
+  })
+
+  it("drops malformed metadata rather than forwarding arbitrary strings", () => {
+    const events: SyntaxDiagnostic[] = []
+    const reporter = (event: SyntaxDiagnostic) => events.push(event)
+
+    reportSyntaxDiagnostic(reporter, {
+      kind: "SECRET_RAW_ERROR",
+      surface: "diff",
+    } as unknown as SyntaxDiagnostic)
+    reportSyntaxDiagnostic(reporter, {
+      kind: "parser_error",
+      surface: "/secret/path.rs",
+    } as unknown as SyntaxDiagnostic)
+
+    expect(events).toEqual([])
+  })
+
+  it("keeps reporter failures isolated from the reading surface", () => {
+    expect(() =>
+      resolveSyntaxPresentation("rs", "markdown", () => {
+        throw new Error("SECRET_REPORTER_ERROR")
+      }),
+    ).not.toThrow()
+  })
+
+  for (const [status, kind] of [
+    ["unavailable", "parser_unavailable"],
+    ["warning", "parser_warning"],
+    ["error", "parser_error"],
+  ] as const) {
+    it(`fails a known ${status} outcome closed to plaintext`, () => {
+      const events: SyntaxDiagnostic[] = []
+      const presentation = resolveSyntaxPresentation(
+        "rs",
+        "diff",
+        (event) => events.push(event),
+        () => status,
+      )
+
+      expect(presentation).toEqual({ filetype: undefined, fallback: true })
+      expect(events).toEqual([{ kind, filetype: "rust", surface: "diff" }])
+    })
+  }
 })

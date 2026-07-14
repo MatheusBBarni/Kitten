@@ -2,11 +2,10 @@ import { describe, expect, it } from "bun:test"
 
 import { RGBA } from "@opentui/core"
 import { setRendererCapabilities, type TestRendererSetup } from "@opentui/core/testing"
-import { testRender } from "@opentui/react/test-utils"
 import type { SessionConfigOption } from "@agentclientprotocol/sdk"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, testRender } from "../../test/reactTui.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createAgentConnection, type AgentConnection, type PromptBlock } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
@@ -999,6 +998,7 @@ const APP_CONFIG: AppConfig = {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
     codex: { displayName: CODEX.displayName, command: CODEX.command, args: CODEX.args, env: CODEX.env },
   } as AppConfig["providers"],
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },

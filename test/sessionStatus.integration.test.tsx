@@ -27,6 +27,7 @@ const PROVIDERS = {
 } as unknown as AppConfig["providers"]
 const APP_CONFIG: AppConfig = {
   providers: PROVIDERS,
+  providerDefaults: {},
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },

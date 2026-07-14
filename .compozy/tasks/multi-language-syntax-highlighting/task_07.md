@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add content-free diagnostics and safe fallback contracts"
 type: frontend
 complexity: medium

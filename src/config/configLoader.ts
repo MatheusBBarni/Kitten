@@ -85,7 +85,7 @@ const DEFAULT_PROVIDERS: Readonly<Record<ProviderKind, ProviderRecipe>> = {
   },
 }
 
-type CertifiedCursorRuntimeProfile = Extract<ProviderRuntimeProfile, { kind: "cursor-certified" }>
+export type CertifiedCursorRuntimeProfile = Extract<ProviderRuntimeProfile, { kind: "cursor-certified" }>
 
 /**
  * Reviewed credentialed evidence is added by the opt-in certification task. An
@@ -487,6 +487,22 @@ export function resolveProviderRuntimeProfile(
     args: [...certified.args] as ["acp"],
     env: { ...certified.env },
   }
+}
+
+/**
+ * Match one observed Cursor CLI version to the complete reviewed native profile.
+ * The credentialed contract uses this stricter form before it may emit evidence;
+ * normal configuration resolution still has no authority to invent an observed
+ * version or certify an empty profile list.
+ */
+export function matchCertifiedCursorRuntimeProfile(
+  recipe: Pick<AgentConfig, "id" | "command" | "args" | "env">,
+  exactVersion: string,
+  certifiedProfiles: readonly CertifiedCursorRuntimeProfile[] = CERTIFIED_CURSOR_RUNTIME_PROFILES,
+): CertifiedCursorRuntimeProfile | undefined {
+  const profile = resolveProviderRuntimeProfile(recipe, certifiedProfiles)
+  if (profile.kind !== "cursor-certified" || profile.certifiedVersion !== exactVersion) return undefined
+  return profile
 }
 
 /** Seams so {@link resolveSessions} can validate `cwd` without touching the real disk. */

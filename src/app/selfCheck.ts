@@ -20,30 +20,73 @@ import { CodeRenderable, getTreeSitterClient, type BaseRenderable, type Captured
 import { createAgentConnection, type AgentConnection } from "../agent/agentConnection.ts"
 import { loadAppConfig, resolveSessions } from "../config/configLoader.ts"
 import { resolveMcpServers } from "../config/mcpResolver.ts"
-import type { AgentConfig, AppConfig, DomainSessionEvent } from "../core/types.ts"
+import type { AgentConfig, AppConfig, DomainSessionEvent, ToolCallDiff } from "../core/types.ts"
 import { selfCheckElement } from "../ui/main.tsx"
+import { syntaxParserManifest, type SyntaxFixture } from "../ui/syntaxParsers.ts"
 import { createSessionController, type McpRuntimeReadout } from "./controller.ts"
 import { configureTreeSitterWorker } from "./treeSitterWorker.ts"
 
 /** Plain prose used to discover the active default foreground in the captured frame. */
 export const SELF_CHECK_DEFAULT_TOKEN = "selfCheckDefaultText"
 
-/** Identifier that must receive TypeScript highlighting inside the Markdown fence. */
-export const SELF_CHECK_MARKDOWN_TOKEN = "compiledMarkdownToken"
+export interface SelfCheckSyntaxFixture extends SyntaxFixture {
+  readonly capability: string
+}
 
-/** Identifier that must receive TypeScript highlighting inside the unified diff. */
-export const SELF_CHECK_DIFF_TOKEN = "compiledDiffToken"
+export interface SelfCheckDiffFixture extends SelfCheckSyntaxFixture {
+  readonly diff: ToolCallDiff
+}
 
-/** Deterministic Markdown fixture mounted by the real cockpit during self-check. */
-export const SELF_CHECK_MARKDOWN = `${SELF_CHECK_DEFAULT_TOKEN}\n\n\`\`\`typescript\nconst ${SELF_CHECK_MARKDOWN_TOKEN} = true\n\`\`\``
+/** Explicit plaintext control. It is rendered but deliberately excluded from highlighted evidence. */
+export const SELF_CHECK_UNKNOWN_LABEL = "kitten-unknown-self-check"
+export const SELF_CHECK_UNKNOWN_TOKEN = "UnknownPlaintextSelfCheck"
+export const SELF_CHECK_UNKNOWN_CONTENT = `${SELF_CHECK_UNKNOWN_TOKEN} = unchanged`
 
-/** Deterministic diff fixture mounted beside the Markdown fixture. */
-export const SELF_CHECK_DIFF = [
-  "--- a/src/selfCheck.ts",
-  "+++ b/src/selfCheck.ts",
-  "@@ -0,0 +1 @@",
-  `+const ${SELF_CHECK_DIFF_TOKEN} = true`,
-].join("\n")
+/** Internal compiled-artifact fault injection used only by the integration test. */
+export const SELF_CHECK_MISSING_EVIDENCE_ENV = "KITTEN_TEST_SELF_CHECK_MISSING_EVIDENCE"
+
+/** Every declared Markdown fixture, derived from the sole capability manifest. */
+export const SELF_CHECK_MARKDOWN_FIXTURES: readonly SelfCheckSyntaxFixture[] = syntaxParserManifest.capabilities
+  .flatMap(({ filetype: capability, fixtures }) =>
+    fixtures
+      .filter(({ source }) => source === "markdown")
+      .map((fixture) => ({ ...fixture, capability })),
+  )
+
+/** Every declared extension-backed diff fixture, derived from the same manifest. */
+export const SELF_CHECK_DIFF_FIXTURES: readonly SelfCheckDiffFixture[] = syntaxParserManifest.capabilities
+  .flatMap(({ filetype: capability, fixtures }) =>
+    fixtures
+      .filter(({ source }) => source === "diff")
+      .map((fixture) => {
+        const path = `self-check/${capability}-${fixture.label}.${fixture.label}`
+        return {
+          ...fixture,
+          capability,
+          diff: {
+            path,
+            unified: [
+              `--- a/${path}`,
+              `+++ b/${path}`,
+              "@@ -0,0 +1 @@",
+              `+${fixture.content}`,
+            ].join("\n"),
+          },
+        }
+      }),
+  )
+
+export const SELF_CHECK_EXPECTED_FIXTURES: readonly SelfCheckSyntaxFixture[] = [
+  ...SELF_CHECK_MARKDOWN_FIXTURES,
+  ...SELF_CHECK_DIFF_FIXTURES,
+]
+
+/** Deterministic Markdown matrix mounted by the real cockpit during self-check. */
+export const SELF_CHECK_MARKDOWN = [
+  SELF_CHECK_DEFAULT_TOKEN,
+  ...SELF_CHECK_MARKDOWN_FIXTURES.map(({ label, content }) => `\`\`\`${label}\n${content}\n\`\`\``),
+  `\`\`\`${SELF_CHECK_UNKNOWN_LABEL}\n${SELF_CHECK_UNKNOWN_CONTENT}\n\`\`\``,
+].join("\n\n")
 
 /** What the self-check reports back to the CLI dispatcher. */
 export interface SelfCheckResult {
@@ -86,8 +129,15 @@ export interface ReloadProbeDeps {
 /** Foreground evidence returned only after the in-process assertion succeeds. */
 export interface SelfCheckHighlights {
   defaultForeground: string
-  markdownForeground: string
-  diffForeground: string
+  fixtures: readonly SelfCheckHighlightEvidence[]
+  unknownForeground: string
+}
+
+export interface SelfCheckHighlightEvidence {
+  capability: string
+  label: string
+  surface: "markdown" | "diff"
+  foreground: string
 }
 
 /** Injectable seams so the self-check is unit-testable in-process. */
@@ -101,6 +151,8 @@ export interface SelfCheckDeps {
   configureWorker?: () => Promise<string | null>
   /** Absent/false keeps the compiled smoke test process-free. */
   reloadProbe?: ReloadProbeDeps | false
+  /** Test-only selector (`surface:capability:label`) that removes one captured span. */
+  missingEvidenceKey?: string
 }
 
 const RELOAD_PROBE_PROMPT = "Reply with exactly: kitten reload probe."
@@ -300,11 +352,11 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
   const { renderer, waitForFrame, flush, captureSpans } = await testRender(
     selfCheckElement(controller, {
       markdown: SELF_CHECK_MARKDOWN,
-      diff: { path: "src/selfCheck.ts", unified: SELF_CHECK_DIFF },
+      diffs: SELF_CHECK_DIFF_FIXTURES.map(({ diff }) => diff),
     }),
     {
       width: deps.width ?? 80,
-      height: deps.height ?? 24,
+      height: deps.height ?? Math.max(24, SELF_CHECK_EXPECTED_FIXTURES.length * 4 + 16),
     },
   )
 
@@ -312,14 +364,27 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
     let result: SelfCheckResult | undefined
     await act(async () => {
       await waitForFrame((candidate) => candidate.includes(SELF_CHECK_DEFAULT_TOKEN))
-      await Promise.all(collectCodeRenderables(renderer.root).map((code) => code.highlightingDone))
+      const codeRenderables = collectCodeRenderables(renderer.root)
+      await Promise.all(codeRenderables.map((code) => code.highlightingDone))
       await flush()
       const frame = await waitForFrame(
-        (candidate) => candidate.includes(SELF_CHECK_MARKDOWN_TOKEN) && candidate.includes(SELF_CHECK_DIFF_TOKEN),
+        (candidate) =>
+          SELF_CHECK_EXPECTED_FIXTURES.every(({ token }) => candidate.includes(token)) &&
+          candidate.includes(SELF_CHECK_UNKNOWN_TOKEN),
       )
+      const unknownRenderable = codeRenderables.find(({ content }) => content.includes(SELF_CHECK_UNKNOWN_TOKEN))
+      if (!unknownRenderable) throw new Error("unknown-label plaintext control was not rendered on markdown surface")
+      if (unknownRenderable.filetype !== undefined) {
+        throw new Error("unknown-label plaintext control was promoted to highlighted capability on markdown surface")
+      }
+      const captured = captureSpans()
       result = {
         frame,
-        highlights: assertSelfCheckHighlights(captureSpans()),
+        highlights: assertSelfCheckHighlights(
+          deps.missingEvidenceKey === undefined
+            ? captured
+            : removeSelfCheckEvidence(captured, deps.missingEvidenceKey),
+        ),
         reloadProbe,
         mcp: controller.runtimes().map((runtime) => {
           const mcp = runtime.mcp ?? { loaded: [], skipped: [] }
@@ -348,27 +413,60 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
   }
 }
 
-/** Assert that both known syntax tokens differ from the frame's body-text color. */
+/** Assert that every declared fixture differs from body text and the unknown control does not. */
 export function assertSelfCheckHighlights(frame: CapturedFrame): SelfCheckHighlights {
-  const defaultForeground = foregroundFor(frame, SELF_CHECK_DEFAULT_TOKEN)
-  const markdownForeground = foregroundFor(frame, SELF_CHECK_MARKDOWN_TOKEN)
-  const diffForeground = foregroundFor(frame, SELF_CHECK_DIFF_TOKEN)
-
-  for (const [surface, foreground] of [
-    ["Markdown fence", markdownForeground],
-    ["diff", diffForeground],
-  ] as const) {
+  const defaultForeground = foregroundForControl(frame, "default foreground", SELF_CHECK_DEFAULT_TOKEN)
+  const fixtures = SELF_CHECK_EXPECTED_FIXTURES.map(({ capability, label, source: surface, token }) => {
+    const foreground = foregroundForFixture(frame, { capability, label, source: surface, token })
     if (foreground === defaultForeground) {
-      throw new Error(`${surface} token rendered with the default foreground; tree-sitter highlighting is unavailable`)
+      throw new Error(
+        `syntax evidence for capability "${capability}" on ${surface} surface (label "${label}") rendered with the default foreground`,
+      )
     }
+    return { capability, label, surface, foreground }
+  })
+  const unknownForeground = foregroundForControl(frame, "unknown-label plaintext control", SELF_CHECK_UNKNOWN_TOKEN)
+  if (unknownForeground !== defaultForeground) {
+    throw new Error("unknown-label plaintext control was counted as highlighted on markdown surface")
   }
 
-  return { defaultForeground, markdownForeground, diffForeground }
+  return { defaultForeground, fixtures, unknownForeground }
 }
 
-function foregroundFor(frame: CapturedFrame, token: string): string {
+export function selfCheckEvidenceKey(
+  fixture: Pick<SelfCheckSyntaxFixture, "source" | "capability" | "label">,
+): string {
+  return `${fixture.source}:${fixture.capability}:${fixture.label}`
+}
+
+function removeSelfCheckEvidence(frame: CapturedFrame, key: string): CapturedFrame {
+  const fixture = SELF_CHECK_EXPECTED_FIXTURES.find((candidate) => selfCheckEvidenceKey(candidate) === key)
+  if (!fixture) throw new Error(`unknown self-check evidence selector: ${key}`)
+  return {
+    ...frame,
+    lines: frame.lines.map((line) => ({
+      ...line,
+      spans: line.spans.filter(({ text }) => !text.includes(fixture.token)),
+    })),
+  }
+}
+
+function foregroundForFixture(
+  frame: CapturedFrame,
+  fixture: Pick<SelfCheckSyntaxFixture, "capability" | "label" | "source" | "token">,
+): string {
+  const span = frame.lines.flatMap((line) => line.spans).find((candidate) => candidate.text.includes(fixture.token))
+  if (!span) {
+    throw new Error(
+      `syntax evidence missing for capability "${fixture.capability}" on ${fixture.source} surface (label "${fixture.label}")`,
+    )
+  }
+  return span.fg.toString()
+}
+
+function foregroundForControl(frame: CapturedFrame, control: string, token: string): string {
   const span = frame.lines.flatMap((line) => line.spans).find((candidate) => candidate.text.includes(token))
-  if (!span) throw new Error(`self-check token was not rendered: ${token}`)
+  if (!span) throw new Error(`${control} was not rendered on markdown surface`)
   return span.fg.toString()
 }
 

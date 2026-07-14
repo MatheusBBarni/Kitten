@@ -22,6 +22,7 @@ import rustWasm from "./syntax-assets/rust/tree-sitter-rust.wasm" with { type: "
 export interface SyntaxFixture {
   readonly label: string
   readonly token: string
+  readonly content: string
   readonly source: "markdown" | "diff"
 }
 
@@ -42,6 +43,24 @@ export interface SyntaxPlaintextFallback {
   readonly filetype: string
   readonly aliases: readonly string[]
   readonly reason: "release_gate_unmet"
+}
+
+export type SyntaxDiagnosticKind = "unknown_label" | "parser_unavailable" | "parser_warning" | "parser_error"
+export type SyntaxSurface = "markdown" | "diff"
+
+export interface SyntaxDiagnostic {
+  readonly kind: SyntaxDiagnosticKind
+  readonly filetype?: string
+  readonly surface: SyntaxSurface
+}
+
+export type SyntaxDiagnosticReporter = (event: SyntaxDiagnostic) => void
+export type SyntaxParserStatus = "available" | "unavailable" | "warning" | "error"
+export type SyntaxParserStatusResolver = (filetype: string, surface: SyntaxSurface) => SyntaxParserStatus
+
+export interface SyntaxPresentation {
+  readonly filetype: string | undefined
+  readonly fallback: boolean
 }
 
 export type SyntaxAssetAvailability = (path: string) => boolean
@@ -66,9 +85,14 @@ export function createPythonCapability(
     aliases: ["py"],
     parser,
     fixtures: [
-      { label: "python", token: "PythonSentinel", source: "markdown" },
-      { label: "py", token: "PySentinel", source: "markdown" },
-      { label: "py", token: "PY_DIFF_SENTINEL", source: "diff" },
+      {
+        label: "python",
+        token: "PythonSelfCheck",
+        content: "class PythonSelfCheck: pass",
+        source: "markdown",
+      },
+      { label: "py", token: "PySelfCheck", content: "class PySelfCheck: pass", source: "markdown" },
+      { label: "py", token: "PythonDiffSelfCheck", content: "class PythonDiffSelfCheck: pass", source: "diff" },
     ],
   }
 }
@@ -175,16 +199,31 @@ const markdownCapability: SyntaxCapability = {
   aliases: ["md"],
   parser: markdownParser,
   fixtures: [
-    { label: "javascript", token: "const", source: "markdown" },
-    { label: "js", token: "const", source: "markdown" },
-    { label: "jsx", token: "const", source: "markdown" },
-    { label: "javascriptreact", token: "const", source: "markdown" },
-    { label: "typescript", token: "interface", source: "markdown" },
-    { label: "ts", token: "interface", source: "markdown" },
-    { label: "tsx", token: "interface", source: "markdown" },
-    { label: "typescriptreact", token: "interface", source: "markdown" },
-    { label: "markdown", token: "heading", source: "markdown" },
-    { label: "md", token: "heading", source: "markdown" },
+    { label: "javascript", token: "JavaScriptSelfCheck", content: "const JavaScriptSelfCheck = true", source: "markdown" },
+    { label: "js", token: "JsSelfCheck", content: "const JsSelfCheck = true", source: "markdown" },
+    { label: "jsx", token: "JsxSelfCheck", content: "const JsxSelfCheck = true", source: "markdown" },
+    {
+      label: "javascriptreact",
+      token: "JavaScriptReactSelfCheck",
+      content: "const JavaScriptReactSelfCheck = true",
+      source: "markdown",
+    },
+    {
+      label: "typescript",
+      token: "TypeScriptSelfCheck",
+      content: "interface TypeScriptSelfCheck { ready: boolean }",
+      source: "markdown",
+    },
+    { label: "ts", token: "TsSelfCheck", content: "interface TsSelfCheck { ready: boolean }", source: "markdown" },
+    { label: "tsx", token: "TsxSelfCheck", content: "interface TsxSelfCheck { ready: boolean }", source: "markdown" },
+    {
+      label: "typescriptreact",
+      token: "TypeScriptReactSelfCheck",
+      content: "interface TypeScriptReactSelfCheck { ready: boolean }",
+      source: "markdown",
+    },
+    { label: "markdown", token: "MarkdownSelfCheck", content: "# MarkdownSelfCheck", source: "markdown" },
+    { label: "md", token: "MdSelfCheck", content: "# MdSelfCheck", source: "markdown" },
   ],
 }
 
@@ -193,9 +232,9 @@ const rustCapability: SyntaxCapability = {
   aliases: ["rs"],
   parser: rustParser,
   fixtures: [
-    { label: "rust", token: "fn", source: "markdown" },
-    { label: "rs", token: "fn", source: "markdown" },
-    { label: "rs", token: "fn", source: "diff" },
+    { label: "rust", token: "RustSelfCheck", content: "fn RustSelfCheck() {}", source: "markdown" },
+    { label: "rs", token: "RsSelfCheck", content: "fn RsSelfCheck() {}", source: "markdown" },
+    { label: "rs", token: "RustDiffSelfCheck", content: "fn RustDiffSelfCheck() {}", source: "diff" },
   ],
 }
 
@@ -204,9 +243,9 @@ const goCapability: SyntaxCapability = {
   aliases: ["golang"],
   parser: goParser,
   fixtures: [
-    { label: "go", token: "func", source: "markdown" },
-    { label: "golang", token: "func", source: "markdown" },
-    { label: "go", token: "func", source: "diff" },
+    { label: "go", token: "GoSelfCheck", content: "func GoSelfCheck() {}", source: "markdown" },
+    { label: "golang", token: "GolangSelfCheck", content: "func GolangSelfCheck() {}", source: "markdown" },
+    { label: "go", token: "GoDiffSelfCheck", content: "func GoDiffSelfCheck() {}", source: "diff" },
   ],
 }
 
@@ -215,11 +254,11 @@ const ocamlCapability: SyntaxCapability = {
   aliases: ["ml", "mli"],
   parser: ocamlParser,
   fixtures: [
-    { label: "ocaml", token: "let", source: "markdown" },
-    { label: "ml", token: "let", source: "markdown" },
-    { label: "mli", token: "val", source: "markdown" },
-    { label: "ml", token: "let", source: "diff" },
-    { label: "mli", token: "val", source: "diff" },
+    { label: "ocaml", token: "ocamlSelfCheck", content: "let ocamlSelfCheck = 1", source: "markdown" },
+    { label: "ml", token: "mlSelfCheck", content: "let mlSelfCheck = 1", source: "markdown" },
+    { label: "mli", token: "mliSelfCheck", content: "val mliSelfCheck : int", source: "markdown" },
+    { label: "ml", token: "ocamlDiffSelfCheck", content: "let ocamlDiffSelfCheck = 1", source: "diff" },
+    { label: "mli", token: "mliDiffSelfCheck", content: "val mliDiffSelfCheck : int", source: "diff" },
   ],
 }
 
@@ -228,8 +267,8 @@ const jsonCapability: SyntaxCapability = {
   aliases: [],
   parser: jsonParser,
   fixtures: [
-    { label: "json", token: "424242", source: "markdown" },
-    { label: "json", token: "424242", source: "diff" },
+    { label: "json", token: "JsonSelfCheck", content: "{\"JsonSelfCheck\": 424242}", source: "markdown" },
+    { label: "json", token: "JsonDiffSelfCheck", content: "{\"JsonDiffSelfCheck\": 424243}", source: "diff" },
   ],
 }
 
@@ -238,10 +277,10 @@ const bashCapability: SyntaxCapability = {
   aliases: ["sh", "shell"],
   parser: bashParser,
   fixtures: [
-    { label: "bash", token: "BASH_SENTINEL", source: "markdown" },
-    { label: "sh", token: "SH_SENTINEL", source: "markdown" },
-    { label: "shell", token: "SHELL_SENTINEL", source: "markdown" },
-    { label: "sh", token: "SH_DIFF_SENTINEL", source: "diff" },
+    { label: "bash", token: "BashSelfCheck", content: "BashSelfCheck=value", source: "markdown" },
+    { label: "sh", token: "ShSelfCheck", content: "ShSelfCheck=value", source: "markdown" },
+    { label: "shell", token: "ShellSelfCheck", content: "ShellSelfCheck=value", source: "markdown" },
+    { label: "sh", token: "BashDiffSelfCheck", content: "BashDiffSelfCheck=value", source: "diff" },
   ],
 }
 
@@ -275,6 +314,19 @@ export const syntaxParserManifest: SyntaxParserManifest = {
   ],
 }
 
+const SYNTAX_DIAGNOSTIC_KINDS: ReadonlySet<string> = new Set<SyntaxDiagnosticKind>([
+  "unknown_label",
+  "parser_unavailable",
+  "parser_warning",
+  "parser_error",
+])
+const SYNTAX_DIAGNOSTIC_SURFACES: ReadonlySet<string> = new Set<SyntaxSurface>(["markdown", "diff"])
+const CANONICAL_DIAGNOSTIC_FILETYPES: ReadonlySet<string> = new Set([
+  ...Object.values(MARKDOWN_NODE_TYPE_MAP),
+  ...Object.values(MARKDOWN_INFO_STRING_MAP),
+  ...syntaxParserManifest.plaintextFallbacks.map(({ filetype }) => filetype),
+])
+
 /** Resolve only an explicitly declared Markdown fence label; never guess a language. */
 export function resolveSyntaxFiletype(label: string): string | undefined {
   return MARKDOWN_INFO_STRING_MAP[label]
@@ -283,6 +335,75 @@ export function resolveSyntaxFiletype(label: string): string | undefined {
 /** Resolve an injected Markdown node to the parser that owns it. */
 export function resolveInjectedNodeFiletype(nodeType: string): string | undefined {
   return MARKDOWN_NODE_TYPE_MAP[nodeType]
+}
+
+function resolvePlaintextFallbackFiletype(label: string): string | undefined {
+  return syntaxParserManifest.plaintextFallbacks.find(
+    ({ filetype, aliases }) => filetype === label || aliases.includes(label),
+  )?.filetype
+}
+
+/** Invoke an injected reporter with a newly constructed, allowlisted event only. */
+export function reportSyntaxDiagnostic(
+  reporter: SyntaxDiagnosticReporter | undefined,
+  event: SyntaxDiagnostic,
+): void {
+  if (reporter === undefined) return
+  if (!SYNTAX_DIAGNOSTIC_KINDS.has(event.kind) || !SYNTAX_DIAGNOSTIC_SURFACES.has(event.surface)) return
+  const filetype =
+    event.filetype !== undefined && CANONICAL_DIAGNOSTIC_FILETYPES.has(event.filetype)
+      ? event.filetype
+      : undefined
+  const safeEvent: SyntaxDiagnostic =
+    filetype === undefined
+      ? { kind: event.kind, surface: event.surface }
+      : { kind: event.kind, filetype, surface: event.surface }
+  try {
+    reporter(safeEvent)
+  } catch {
+    // Diagnostics must never break the reading surface or become an implicit logger.
+  }
+}
+
+/** Resolve an explicit label to highlighting or a content-preserving plaintext fallback. */
+export function resolveSyntaxPresentation(
+  label: string,
+  surface: SyntaxSurface,
+  reporter?: SyntaxDiagnosticReporter,
+  parserStatus: SyntaxParserStatusResolver = () => "available",
+): SyntaxPresentation {
+  const unavailableFiletype = resolvePlaintextFallbackFiletype(label)
+  if (unavailableFiletype !== undefined) {
+    reportSyntaxDiagnostic(reporter, {
+      kind: "parser_unavailable",
+      filetype: unavailableFiletype,
+      surface,
+    })
+    return { filetype: undefined, fallback: true }
+  }
+
+  const filetype = resolveSyntaxFiletype(label)
+  if (filetype === undefined) {
+    reportSyntaxDiagnostic(reporter, { kind: "unknown_label", surface })
+    return { filetype: undefined, fallback: true }
+  }
+
+  let status: SyntaxParserStatus
+  try {
+    status = parserStatus(filetype, surface)
+  } catch {
+    status = "error"
+  }
+  if (status === "available") return { filetype, fallback: false }
+
+  const kind: SyntaxDiagnosticKind =
+    status === "unavailable"
+      ? "parser_unavailable"
+      : status === "warning"
+        ? "parser_warning"
+        : "parser_error"
+  reportSyntaxDiagnostic(reporter, { kind, filetype, surface })
+  return { filetype: undefined, fallback: true }
 }
 
 export type SyntaxParserRegistrar = (parsers: FiletypeParserOptions[]) => void

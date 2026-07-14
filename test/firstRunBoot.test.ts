@@ -460,8 +460,9 @@ describe("runSelfCheck", () => {
       configureWorker: async () => null,
     })
     expect(frame).toContain(SELF_CHECK_DEFAULT_TOKEN)
-    expect(highlights.markdownForeground).not.toBe(highlights.defaultForeground)
-    expect(highlights.diffForeground).not.toBe(highlights.defaultForeground)
+    expect(highlights.fixtures.length).toBeGreaterThan(0)
+    expect(highlights.fixtures.every(({ foreground }) => foreground !== highlights.defaultForeground)).toBeTrue()
+    expect(highlights.unknownForeground).toBe(highlights.defaultForeground)
   })
 
   it("reports each skipped MCP declaration without leaking environment values", async () => {

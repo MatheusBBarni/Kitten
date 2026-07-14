@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add transitional provider-default config and core result contract"
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Add the strict user configuration shape for per-provider model and effort defaul
 
 ## Subtasks
 
-- [ ] 1.1 Add strict provider-default parsing and empty resolved defaults.
-- [ ] 1.2 Define preference, result, session-state, and event contracts.
-- [ ] 1.3 Add reducer initialization and replacement behavior.
-- [ ] 1.4 Document a valid non-mutating configuration example.
-- [ ] 1.5 Cover valid, invalid, merge, and reducer-state cases.
+- [x] 1.1 Add strict provider-default parsing and empty resolved defaults.
+- [x] 1.2 Define preference, result, session-state, and event contracts.
+- [x] 1.3 Add reducer initialization and replacement behavior.
+- [x] 1.4 Document a valid non-mutating configuration example.
+- [x] 1.5 Cover valid, invalid, merge, and reducer-state cases.
 
 ## Implementation Details
 
@@ -70,13 +70,13 @@ Follow TechSpec Data Models and Default Application Algorithm. Keep writer behav
 ## Tests
 
 - Unit tests:
-  - [ ] Parse model-only, effort-only, and combined defaults for each known provider.
-  - [ ] Resolve omitted defaults to an empty map and prove merge does not retain mutable input references.
-  - [ ] Reject unknown providers, keys, empty strings, and wrong types with field-specific ConfigError paths.
-  - [ ] Replace only defaultApplyResult while retaining configOptions and unrelated state references.
+  - [x] Parse model-only, effort-only, and combined defaults for each known provider.
+  - [x] Resolve omitted defaults to an empty map and prove merge does not retain mutable input references.
+  - [x] Reject unknown providers, keys, empty strings, and wrong types with field-specific ConfigError paths.
+  - [x] Replace only defaultApplyResult while retaining configOptions and unrelated state references.
 - Integration tests:
-  - [ ] Parse the marked README example with the real loader.
-  - [ ] Confirm no-config boot retains resolved empty defaults.
+  - [x] Parse the marked README example with the real loader.
+  - [x] Confirm no-config boot retains resolved empty defaults.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -274,6 +274,7 @@ describe("createCockpitSession", () => {
     const runStore = createRunStore({ enabled: true, path: stateBase })
     const config: AppConfig = {
       ...defaultAppConfig(),
+      providerDefaults: {},
       persistenceEnabled: true,
       sessions: [
         { provider: "claude-code", cwd: alphaCwd },

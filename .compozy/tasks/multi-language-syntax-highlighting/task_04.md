@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add JSON and Bash grammar capabilities"
 type: frontend
 complexity: high
@@ -29,10 +29,10 @@ Add JSON and Bash to the shared capability manifest with local assets, explicit 
 
 ## Subtasks
 
-- [ ] 4.1 Add reviewed JSON assets and manifest metadata.
-- [ ] 4.2 Add reviewed Bash assets and alias metadata.
-- [ ] 4.3 Extend Markdown and diff fixture coverage.
-- [ ] 4.4 Verify label, copy, and no-guess contracts.
+- [x] 4.1 Add reviewed JSON assets and manifest metadata.
+- [x] 4.2 Add reviewed Bash assets and alias metadata.
+- [x] 4.3 Extend Markdown and diff fixture coverage.
+- [x] 4.4 Verify label, copy, and no-guess contracts.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Follow the TechSpec **Data Models**, **Integration Points**, and **Testing Appro
 ## Tests
 
 - Unit tests:
-  - [ ] `json` resolves to a complete local capability.
-  - [ ] `bash`, `sh`, and `shell` resolve to one Bash capability.
-  - [ ] Injection labels, assets, and fixtures remain unique across the full manifest.
+  - [x] `json` resolves to a complete local capability.
+  - [x] `bash`, `sh`, and `shell` resolve to one Bash capability.
+  - [x] Injection labels, assets, and fixtures remain unique across the full manifest.
 - Integration tests:
-  - [ ] JSON and Bash canonical/alias fences render sentinel foregrounds distinct from prose after highlighting settles.
-  - [ ] `.json` and `.sh` diff tokens render highlighted through the shared diff body.
-  - [ ] Extensionless and dotfile diffs retain the existing unguessed plain behavior.
+  - [x] JSON and Bash canonical/alias fences render sentinel foregrounds distinct from prose after highlighting settles.
+  - [x] `.json` and `.sh` diff tokens render highlighted through the shared diff body.
+  - [x] Extensionless and dotfile diffs retain the existing unguessed plain behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

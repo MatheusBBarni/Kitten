@@ -539,6 +539,7 @@ describe("clarification lifecycle over controller and local JSONL", () => {
             env: {},
           },
         } as unknown as AppConfig["providers"],
+        providerDefaults: {},
         sessions: [{ provider: "claude-code", cwd: dir, title: "Private" }],
         mcpServers: [],
         shell: { enabled: false, command: "/bin/sh", scrollback: 100 },

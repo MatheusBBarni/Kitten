@@ -17,7 +17,13 @@ import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/cor
 import { join } from "node:path"
 
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
-import { formatMcpSelfCheckLine, formatReloadProbeLine, reloadProbePassed, runSelfCheck } from "./app/selfCheck.ts"
+import {
+  formatMcpSelfCheckLine,
+  formatReloadProbeLine,
+  reloadProbePassed,
+  runSelfCheck,
+  SELF_CHECK_MISSING_EVIDENCE_ENV,
+} from "./app/selfCheck.ts"
 import { configureTreeSitterWorker } from "./app/treeSitterWorker.ts"
 import { bannerVariant, markFirstRunSeen, readFirstRunSeen, type BannerVariant } from "./config/appState.ts"
 import { loadAppConfig, resolveSessions, type UserConfig } from "./config/configLoader.ts"
@@ -678,6 +684,7 @@ if (import.meta.main) {
     try {
       const { frame, reloadProbe, mcp } = await runSelfCheck({
         reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
+        missingEvidenceKey: process.env[SELF_CHECK_MISSING_EVIDENCE_ENV],
       })
       const probeLines = reloadProbe.map(formatReloadProbeLine)
       const mcpLines = mcp.map(formatMcpSelfCheckLine)

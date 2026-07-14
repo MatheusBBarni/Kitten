@@ -3,7 +3,6 @@ import { join } from "node:path"
 import { describe, expect, it } from "bun:test"
 
 import type { TestRendererSetup } from "@opentui/core/testing"
-import { testRender } from "@opentui/react/test-utils"
 
 import { createAgentConnection, type AgentConnection, type PermissionRequest } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
@@ -12,7 +11,7 @@ import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionStatus } f
 import type { AppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, testRender } from "../../test/reactTui.ts"
 import { APPROVAL_HINT } from "./keymap.ts"
 import { approvalTitleFor, OPTION_MARKER, UNTITLED_ACTION } from "./ApprovalPrompt.tsx"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"

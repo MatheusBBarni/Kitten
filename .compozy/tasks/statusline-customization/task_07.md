@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Render Saved Custom Layouts While Retaining the Legacy Footer"
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Teach the footer to render a saved custom statusline through the shared pure ren
 
 ## Subtasks
 
-- [ ] 7.1 Add a custom-layout render branch to the status strip while retaining the legacy-null branch unchanged.
-- [ ] 7.2 Map existing focused-session, runtime, selector, and shell-hint values into the pure renderer context without new I/O.
-- [ ] 7.3 Supply the current reactive terminal width to the renderer and retain single-line containment styles.
-- [ ] 7.4 Extend direct strip coverage for legacy, custom ordering, unavailable values, ellipsis, and constrained widths.
-- [ ] 7.5 Extend cockpit integration coverage for bottom-pinned footer behavior across terminal resize.
+- [x] 7.1 Add a custom-layout render branch to the status strip while retaining the legacy-null branch unchanged.
+- [x] 7.2 Map existing focused-session, runtime, selector, and shell-hint values into the pure renderer context without new I/O.
+- [x] 7.3 Supply the current reactive terminal width to the renderer and retain single-line containment styles.
+- [x] 7.4 Extend direct strip coverage for legacy, custom ordering, unavailable values, ellipsis, and constrained widths.
+- [x] 7.5 Extend cockpit integration coverage for bottom-pinned footer behavior across terminal resize.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ Implement TechSpec "OpenTUI width" and "StatusStrip" impact guidance. `StatusStr
 ## Tests
 
 - Unit tests:
-  - [ ] A null saved layout preserves the prior legacy status-strip output, including workspace summary and the existing right-side hint.
-  - [ ] A custom layout renders fields in its declared order and omits a missing branch or model without adjacent duplicated separators.
-  - [ ] An `ELLIPSIS_BRANCH` item displays the core renderer's grapheme-safe shortened value rather than a UI-local truncation.
-  - [ ] Custom layouts at 80 and 64 columns stay one line, contain no overflow sentinel, and omit trailing segments before display containment applies.
-  - [ ] The shell-focused variant retains its shell-exit hint while custom left-side content changes.
+  - [x] A null saved layout preserves the prior legacy status-strip output, including workspace summary and the existing right-side hint.
+  - [x] A custom layout renders fields in its declared order and omits a missing branch or model without adjacent duplicated separators.
+  - [x] An `ELLIPSIS_BRANCH` item displays the core renderer's grapheme-safe shortened value rather than a UI-local truncation.
+  - [x] Custom layouts at 80 and 64 columns stay one line, contain no overflow sentinel, and omit trailing segments before display containment applies.
+  - [x] The shell-focused variant retains its shell-exit hint while custom left-side content changes.
 - Integration tests:
-  - [ ] A mounted cockpit with a saved custom layout remains bottom-pinned through a 100 → 64 → 120 column resize sequence, preserves no-overflow rendering, and leaves the legacy expectation unchanged when the layout is cleared.
+  - [x] A mounted cockpit with a saved custom layout remains bottom-pinned through a 100 → 64 → 120 column resize sequence, preserves no-overflow rendering, and leaves the legacy expectation unchanged when the layout is cleared.
 - Test coverage target: >=80%
 - All tests must pass
 

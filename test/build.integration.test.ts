@@ -10,7 +10,13 @@ import {
   writePlatformPackage,
   type BuildTarget,
 } from "../scripts/build.ts"
-import { SELF_CHECK_DEFAULT_TOKEN, SELF_CHECK_DIFF_TOKEN, SELF_CHECK_MARKDOWN_TOKEN } from "../src/app/selfCheck.ts"
+import {
+  SELF_CHECK_DEFAULT_TOKEN,
+  SELF_CHECK_EXPECTED_FIXTURES,
+  SELF_CHECK_MISSING_EVIDENCE_ENV,
+  SELF_CHECK_UNKNOWN_TOKEN,
+  selfCheckEvidenceKey,
+} from "../src/app/selfCheck.ts"
 import pkg from "../package.json" with { type: "json" }
 
 /**
@@ -42,8 +48,25 @@ describe("compiled artifact self-check (ADR-006)", () => {
       expect(run.exitCode).toBe(0)
       expect(stdout).toContain("SELF-CHECK OK")
       expect(stdout).toContain(SELF_CHECK_DEFAULT_TOKEN)
-      expect(stdout).toContain(SELF_CHECK_MARKDOWN_TOKEN)
-      expect(stdout).toContain(SELF_CHECK_DIFF_TOKEN)
+      for (const { token } of SELF_CHECK_EXPECTED_FIXTURES) expect(stdout).toContain(token)
+      expect(stdout).toContain(SELF_CHECK_UNKNOWN_TOKEN)
+
+      const missingFixture = SELF_CHECK_EXPECTED_FIXTURES.find(
+        ({ capability, label, source }) => capability === "rust" && label === "rust" && source === "markdown",
+      )!
+      const missingRun = Bun.spawnSync([outfile, "--self-check"], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          [SELF_CHECK_MISSING_EVIDENCE_ENV]: selfCheckEvidenceKey(missingFixture),
+        },
+      })
+      const missingStderr = missingRun.stderr.toString()
+      expect(missingRun.exitCode).not.toBe(0)
+      expect(missingStderr).toContain('capability "rust" on markdown surface')
+      expect(missingStderr).not.toContain(missingFixture.token)
+      expect(missingStderr).not.toContain(missingFixture.content)
 
       const versionRun = Bun.spawnSync([outfile, "--version"], { stdout: "pipe", stderr: "pipe" })
       expect(versionRun.exitCode).toBe(0)

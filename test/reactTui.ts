@@ -8,7 +8,11 @@
  */
 
 import { CodeRenderable, type BaseRenderable, type CliRenderer } from "@opentui/core"
-import { act } from "react"
+import { createTestRenderer, type TestRendererOptions, type TestRendererSetup } from "@opentui/core/testing"
+import { createRoot } from "@opentui/react"
+import { act, type ReactNode } from "react"
+
+const mountedRoots = new WeakMap<CliRenderer, ReturnType<typeof createRoot>>()
 
 /** Run a callback with React's act environment enabled, restoring the flag after. */
 export async function withActEnvironment(fn: () => Promise<void>): Promise<void> {
@@ -32,11 +36,32 @@ export async function actAsync(fn: () => void | Promise<void>): Promise<void> {
 }
 
 /**
+ * Render a React tree with its root registered for explicit teardown.
+ *
+ * OpenTUI's bundled `testRender` unmounts the root from the renderer's destroy
+ * callback. That is too late for code leaves: renderer destruction has already
+ * disposed the shared Tree-sitter client. Keeping the root here lets
+ * `destroyMounted` unmount it while the renderer is still usable.
+ */
+export async function testRender(node: ReactNode, options: TestRendererOptions): Promise<TestRendererSetup> {
+  const setup = await createTestRenderer(options)
+  const root = createRoot(setup.renderer)
+  mountedRoots.set(setup.renderer, root)
+  await actAsync(() => {
+    root.render(node)
+  })
+  return setup
+}
+
+/**
  * How long OpenTUI's stdin parser holds a lone `ESC` byte before deciding it is not
  * the prefix of a longer escape sequence (its `DEFAULT_TIMEOUT_MS` is 20ms). A test
  * that presses Escape must outwait that, since frame passes alone can spin faster.
  */
 export const ESCAPE_DISAMBIGUATION_MS = 40
+
+/** Time for a detached code leaf's debounced highlighter to finish before teardown. */
+const HIGHLIGHT_TEARDOWN_SETTLE_MS = 100
 
 /** Yield to the event loop for `ms` of real time. */
 export function sleep(ms: number): Promise<void> {
@@ -59,13 +84,29 @@ export async function settleMountedHighlights(renderer: CliRenderer): Promise<vo
 /** Destroy a renderer that has a mounted React root, flushing teardown inside act. */
 export async function destroyMounted(renderer: CliRenderer): Promise<void> {
   if (renderer.isDestroyed) return
+  const root = mountedRoots.get(renderer)
   // OpenTUI tears down its shared Tree-sitter client before React unmounts the root.
   // Let a just-committed React update reach the native tree, then await in-flight
   // syntax work and its follow-up paint. Otherwise an overlay removed by the last
   // input event can leave a Markdown leaf resuming against the destroyed client.
   await renderer.idle()
+  if (root) {
+    await actAsync(async () => {
+      await sleep(HIGHLIGHT_TEARDOWN_SETTLE_MS)
+    })
+    await renderer.idle()
+  }
   await settleMountedHighlights(renderer)
   await renderer.idle()
+  if (root) {
+    await actAsync(() => {
+      root.unmount()
+    })
+    mountedRoots.delete(renderer)
+    await renderer.idle()
+    await settleMountedHighlights(renderer)
+    await renderer.idle()
+  }
   await actAsync(() => {
     renderer.destroy()
   })

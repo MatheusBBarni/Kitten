@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Build the Keyboard-First Statusline Command and Modal Workflow"
 type: frontend
 complexity: high
@@ -29,12 +29,12 @@ Add `/statusline` to the cockpit command registry and implement its modal disclo
 
 ## Subtasks
 
-- [ ] 6.1 Add the discoverable `/statusline` command and route its exact draft invocation through the cockpit command dispatcher.
-- [ ] 6.2 Mount a modal overlay owned by the app-store slot and preserve established overlay precedence.
-- [ ] 6.3 Implement concise disclosure, request entry, waiting, preview/diff, failure, and three-preset recovery states.
-- [ ] 6.4 Use the shared renderer with reactive terminal dimensions to preview the active context at the current width.
-- [ ] 6.5 Wire acknowledgement, request, Confirm, Cancel, and recovery selection through injected controller actions and flow outcomes.
-- [ ] 6.6 Add command-dispatch and modal interaction coverage, including approval and clarification precedence.
+- [x] 6.1 Add the discoverable `/statusline` command and route its exact draft invocation through the cockpit command dispatcher.
+- [x] 6.2 Mount a modal overlay owned by the app-store slot and preserve established overlay precedence.
+- [x] 6.3 Implement concise disclosure, request entry, waiting, preview/diff, failure, and three-preset recovery states.
+- [x] 6.4 Use the shared renderer with reactive terminal dimensions to preview the active context at the current width.
+- [x] 6.5 Wire acknowledgement, request, Confirm, Cancel, and recovery selection through injected controller actions and flow outcomes.
+- [x] 6.6 Add command-dispatch and modal interaction coverage, including approval and clarification precedence.
 
 ## Implementation Details
 
@@ -75,15 +75,15 @@ Follow TechSpec "Data Models", "OpenTUI width", and "Impact Analysis" plus the e
 ## Tests
 
 - Unit tests:
-  - [ ] `COCKPIT_COMMANDS` exposes one unique `statusline` name with concise help copy and exact no-argument dispatch accepts `/statusline` but not `/statusline describe compact`.
-  - [ ] The first invocation shows disclosure; acceptance performs one request and decline opens presets without sending a prompt.
-  - [ ] A valid proposal shows one-line preview plus exact config change, then Confirm calls the controller once while Cancel makes no confirmation call.
-  - [ ] Invalid and unavailable outcomes explain the recovery state and expose exactly Workspace, Agent, and Compact presets.
-  - [ ] A preset follows the same preview and Confirm/Cancel path as a valid proposal.
-  - [ ] Escape, arrows, Enter, and text entry are consumed by the modal while approval or clarification overlays retain their existing higher precedence.
+  - [x] `COCKPIT_COMMANDS` exposes one unique `statusline` name with concise help copy and exact no-argument dispatch accepts `/statusline` but not `/statusline describe compact`.
+  - [x] The first invocation shows disclosure; acceptance performs one request and decline opens presets without sending a prompt.
+  - [x] A valid proposal shows one-line preview plus exact config change, then Confirm calls the controller once while Cancel makes no confirmation call.
+  - [x] Invalid and unavailable outcomes explain the recovery state and expose exactly Workspace, Agent, and Compact presets.
+  - [x] A preset follows the same preview and Confirm/Cancel path as a valid proposal.
+  - [x] Escape, arrows, Enter, and text entry are consumed by the modal while approval or clarification overlays retain their existing higher precedence.
 - Integration tests:
-  - [ ] An in-memory cockpit invokes `/statusline`, acknowledges disclosure, receives a fake transcript proposal, confirms it, and shows the immediate saved-state path without sending an extra agent prompt.
-  - [ ] Resizing the terminal changes preview width while retaining one line and preserving focused prompt-editor behavior before the modal opens.
+  - [x] An in-memory cockpit invokes `/statusline`, acknowledges disclosure, receives a fake transcript proposal, confirms it, and shows the immediate saved-state path without sending an extra agent prompt.
+  - [x] Resizing the terminal changes preview width while retaining one line and preserving focused prompt-editor behavior before the modal opens.
 - Test coverage target: >=80%
 - All tests must pass
 

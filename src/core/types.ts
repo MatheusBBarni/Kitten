@@ -626,8 +626,7 @@ export interface ShellConfig {
  */
 export interface AppConfig {
   providers: Record<ProviderKind, ProviderRecipe>
-  /** @temporary Optional only while existing typed fixtures migrate in tasks 2-3. */
-  providerDefaults?: Partial<Record<ProviderKind, ProviderModelDefault>>
+  providerDefaults: Partial<Record<ProviderKind, ProviderModelDefault>>
   sessions: SessionDescriptor[]
   mcpServers: McpServerConfig[]
   shell: ShellConfig

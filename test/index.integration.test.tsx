@@ -204,7 +204,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       cmd: [
         process.execPath,
         "-e",
-        'import { mock } from "bun:test"; let calls = 0; mock.module("./src/ui/syntaxParsers.ts", () => ({ registerSyntaxParsers: () => { calls += 1 } })); await import("./src/index.ts"); console.log(`calls=${calls}`)',
+        'import { mock } from "bun:test"; let calls = 0; mock.module("./src/ui/syntaxParsers.ts", () => ({ registerSyntaxParsers: () => { calls += 1 }, resolveSyntaxPresentation: () => ({ filetype: undefined, fallback: true }), syntaxParserManifest: { capabilities: [], plaintextFallbacks: [], parsers: [] } })); await import("./src/index.ts"); console.log(`calls=${calls}`)',
       ],
       cwd: process.cwd(),
       stdout: "pipe",

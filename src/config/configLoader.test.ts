@@ -17,6 +17,7 @@ import {
   defaultAppConfig,
   findAgentConfig,
   loadAppConfig,
+  matchCertifiedCursorRuntimeProfile,
   mergeAppConfig,
   parseAppConfig,
   resolveConfigPath,
@@ -456,6 +457,27 @@ describe("user overrides", () => {
     expect(resolveProviderRuntimeProfile({ ...base, env: { CURSOR_HOME: "/tmp" } }, [certified])).toEqual({ kind: "standard" })
     expect(resolveProviderRuntimeProfile({ ...base, args: ["--debug", "acp"] }, [certified])).toEqual({ kind: "standard" })
     expect(defaultAppConfig().providers.cursor).not.toHaveProperty("runtimeProfile")
+  })
+
+  it("Should match an observed version only to the exact complete certified Cursor profile", () => {
+    const certified = {
+      kind: "cursor-certified" as const,
+      command: "agent" as const,
+      args: ["acp"] as const,
+      env: {},
+      certifiedVersion: "1.2.3",
+      authenticationMethod: "cursor_login" as const,
+    }
+    const native = { id: "cursor" as const, command: "agent", args: ["acp"], env: {} }
+
+    expect(matchCertifiedCursorRuntimeProfile(native, "1.2.3", [certified])).toEqual(certified)
+    expect(matchCertifiedCursorRuntimeProfile(native, "1.2.4", [certified])).toBeUndefined()
+    expect(
+      matchCertifiedCursorRuntimeProfile({ ...native, command: "/opt/bin/agent" }, "1.2.3", [certified]),
+    ).toBeUndefined()
+    expect(matchCertifiedCursorRuntimeProfile({ ...native, args: ["acp", "--debug"] }, "1.2.3", [certified])).toBeUndefined()
+    expect(matchCertifiedCursorRuntimeProfile({ ...native, args: ["--debug", "acp"] }, "1.2.3", [certified])).toBeUndefined()
+    expect(matchCertifiedCursorRuntimeProfile({ ...native, env: { CURSOR_HOME: "/tmp" } }, "1.2.3", [certified])).toBeUndefined()
   })
 })
 

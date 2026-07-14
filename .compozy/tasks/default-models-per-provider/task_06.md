@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Bridge valid config reloads without live-session mutation"
 type: backend
 complexity: medium
@@ -29,11 +29,11 @@ Make a valid external configuration edit replace the controller defaults snapsho
 
 ## Subtasks
 
-- [ ] 6.1 Forward valid reloaded defaults to the controller snapshot.
-- [ ] 6.2 Preserve current theme reload behavior.
-- [ ] 6.3 Keep invalid and unchanged delivery side-effect-free.
-- [ ] 6.4 Prove later explicit application uses the latest valid snapshot.
-- [ ] 6.5 Cover disposal behavior.
+- [x] 6.1 Forward valid reloaded defaults to the controller snapshot.
+- [x] 6.2 Preserve current theme reload behavior.
+- [x] 6.3 Keep invalid and unchanged delivery side-effect-free.
+- [x] 6.4 Prove later explicit application uses the latest valid snapshot.
+- [x] 6.5 Cover disposal behavior.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Implement TechSpec Integration Points using the existing watcher lifecycle. The 
 ## Tests
 
 - Unit tests:
-  - [ ] Replace snapshot A with valid B and assert no option request, config-options mutation, or result mutation.
-  - [ ] Deliver an invalid edit and prove prior valid defaults remain usable.
-  - [ ] Deliver unchanged resolved config twice and assert no duplicate update.
+  - [x] Replace snapshot A with valid B and assert no option request, config-options mutation, or result mutation.
+  - [x] Deliver an invalid edit and prove prior valid defaults remain usable.
+  - [x] Deliver unchanged resolved config twice and assert no duplicate update.
 - Integration tests:
-  - [ ] Explicitly apply after valid reload and assert B rather than A is requested.
-  - [ ] Dispose, invoke captured watcher callback, and assert no snapshot update or request.
-  - [ ] Preserve existing theme reload assertions.
+  - [x] Explicitly apply after valid reload and assert B rather than A is requested.
+  - [x] Dispose, invoke captured watcher callback, and assert no snapshot update or request.
+  - [x] Preserve existing theme reload assertions.
 - Test coverage target: >=80%
 - All tests must pass
 

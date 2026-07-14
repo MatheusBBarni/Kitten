@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Python grammar capability"
 type: frontend
 complexity: medium
@@ -29,10 +29,10 @@ Add Python to the completed shared grammar manifest with the `python` and `py` l
 
 ## Subtasks
 
-- [ ] 5.1 Add Python asset provenance and manifest metadata.
-- [ ] 5.2 Add Python labels and fixtures to the shared capability contract.
-- [ ] 5.3 Add fenced-code, diff, copy, and fallback regression evidence.
-- [ ] 5.4 Run focused manifest and renderer verification.
+- [x] 5.1 Add Python asset provenance and manifest metadata.
+- [x] 5.2 Add Python labels and fixtures to the shared capability contract.
+- [x] 5.3 Add fenced-code, diff, copy, and fallback regression evidence.
+- [x] 5.4 Run focused manifest and renderer verification.
 
 ## Implementation Details
 
@@ -67,13 +67,13 @@ Apply the TechSpec **Core Interfaces**, **Data Models**, and **Testing Approach*
 ## Tests
 
 - Unit tests:
-  - [ ] `python` and `py` resolve to one complete local capability.
-  - [ ] Python injection labels and fixture tokens are unique in the manifest.
-  - [ ] The capability remains absent when its static assets are unavailable.
+  - [x] `python` and `py` resolve to one complete local capability.
+  - [x] Python injection labels and fixture tokens are unique in the manifest.
+  - [x] The capability remains absent when its static assets are unavailable.
 - Integration tests:
-  - [ ] `python` and `py` fenced sentinels receive non-prose foregrounds after highlighting settles.
-  - [ ] A `.py` diff token receives a non-prose foreground through the shared diff renderer.
-  - [ ] Extensionless and dotfile diffs remain unhighlighted and copy-safe.
+  - [x] `python` and `py` fenced sentinels receive non-prose foregrounds after highlighting settles.
+  - [x] A `.py` diff token receives a non-prose foreground through the shared diff renderer.
+  - [x] Extensionless and dotfile diffs remain unhighlighted and copy-safe.
 - Test coverage target: >=80%
 - All tests must pass
 

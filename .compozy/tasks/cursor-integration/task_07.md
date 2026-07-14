@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Cursor onboarding, docs, and reviewed-handoff regression coverage"
 type: docs
 complexity: high
@@ -29,11 +29,11 @@ Document Cursor as a certified local third session with independent availability
 </requirements>
 
 ## Subtasks
-- [ ] 7.1 Document the certified local-session scope, recovery behavior, and capability boundary.
-- [ ] 7.2 Add README contract coverage for truthful third-session and safety claims.
-- [ ] 7.3 Cover first-run and boot continuity for an unavailable Cursor with ready siblings.
-- [ ] 7.4 Add flow-level reviewed Cursor target and confirmation regressions.
-- [ ] 7.5 Add rendered Cursor hand-back coverage through the shared picker and preview.
+- [x] 7.1 Document the certified local-session scope, recovery behavior, and capability boundary.
+- [x] 7.2 Add README contract coverage for truthful third-session and safety claims.
+- [x] 7.3 Cover first-run and boot continuity for an unavailable Cursor with ready siblings.
+- [x] 7.4 Add flow-level reviewed Cursor target and confirmation regressions.
+- [x] 7.5 Add rendered Cursor hand-back coverage through the shared picker and preview.
 
 ## Implementation Details
 
@@ -67,13 +67,13 @@ Follow the TechSpec "User Experience," "Integration Points," and "Testing Approa
 
 ## Tests
 - Unit tests:
-  - [ ] A first-run report with ready Claude Code/Codex and unavailable Cursor is unblocked, retains sibling readiness, and contains Cursor's exact safe gap.
-  - [ ] README contract requires third local session, independent recovery, reviewed handoff, and cloud/background exclusion wording.
-  - [ ] Claude-source handoff with ready Codex/Cursor sends nothing at begin or Cursor target selection and sends once only after confirm.
+  - [x] A first-run report with ready Claude Code/Codex and unavailable Cursor is unblocked, retains sibling readiness, and contains Cursor's exact safe gap.
+  - [x] README contract requires third local session, independent recovery, reviewed handoff, and cloud/background exclusion wording.
+  - [x] Claude-source handoff with ready Codex/Cursor sends nothing at begin or Cursor target selection and sends once only after confirm.
 - Integration tests:
-  - [ ] Boot with the same fleet keeps the cockpit mounted and reports only Cursor's actionable content-free recovery gap.
-  - [ ] Rendered picker shows Cursor but not its source, opens preview on selection, and sends only on the following confirmation.
-  - [ ] Cursor hands work back to Claude through the same picker, preview, and confirmation sequence.
+  - [x] Boot with the same fleet keeps the cockpit mounted and reports only Cursor's actionable content-free recovery gap.
+  - [x] Rendered picker shows Cursor but not its source, opens preview on selection, and sends only on the following confirmation.
+  - [x] Cursor hands work back to Claude through the same picker, preview, and confirmation sequence.
 - Test coverage target: >=80%
 - All tests must pass
 

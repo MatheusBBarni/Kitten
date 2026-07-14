@@ -14,7 +14,7 @@ import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { Markdown } from "./Markdown.tsx"
-import { registerSyntaxParsers } from "./syntaxParsers.ts"
+import { registerSyntaxParsers, type SyntaxDiagnostic } from "./syntaxParsers.ts"
 import { DARK_PALETTE, LIGHT_PALETTE } from "./theme.ts"
 
 const WIDTH = 52
@@ -188,7 +188,8 @@ describe("Markdown", () => {
     const code = collectCodeRenderables(setup.renderer.root).find((candidate) => candidate.content.includes(source))
     const token = spanContaining(setup, "rescriptFallbackSentinel")
 
-    expect(code?.filetype).toBe("rescript")
+    expect(code?.filetype).toBeUndefined()
+    expect(frame).toContain("rescript")
     expect(token).toBeDefined()
     expect(token?.fg.toString()).toBe(paletteColor(DARK_PALETTE.text))
 
@@ -201,6 +202,51 @@ describe("Markdown", () => {
 
     await destroyMarkdown(setup)
   })
+
+  for (const { label, expected } of [
+    {
+      label: "private-unknown-label",
+      expected: { kind: "unknown_label", surface: "markdown" },
+    },
+    {
+      label: "resi",
+      expected: { kind: "parser_unavailable", filetype: "rescript", surface: "markdown" },
+    },
+  ] as const) {
+    it(`keeps a complete ${label} fence labelled, bounded, visible, and copy-safe`, async () => {
+      const source = "first fallback byte\nsecond fallback byte"
+      const events: SyntaxDiagnostic[] = []
+      const controller = createFakeController()
+      const setup = await testRender(
+        <CockpitProvider controller={controller}>
+          <Markdown content={`\`\`\`${label}\n${source}\n\`\`\``} diagnosticReporter={(event) => events.push(event)} />
+        </CockpitProvider>,
+        { width: WIDTH, height: HEIGHT },
+      )
+      const frame = await setup.waitForFrame(
+        (candidate) => candidate.includes(label) && candidate.includes("second fallback byte"),
+      )
+      const code = collectCodeRenderables(setup.renderer.root).find((candidate) => candidate.content === source)
+
+      expect(code).toBeDefined()
+      expect(code?.filetype).toBeUndefined()
+      expect(frame).toContain(label)
+      expect(frame).toContain("first fallback byte")
+      expect(events).toContainEqual(expected)
+      expect(JSON.stringify(events)).not.toContain("fallback byte")
+      if (expected.kind === "unknown_label") expect(JSON.stringify(events)).not.toContain(label)
+
+      const rows = frame.split("\n")
+      const first = rows.findIndex((row) => row.includes("first fallback byte"))
+      const last = rows.findIndex((row) => row.includes("second fallback byte"))
+      const column = rows[first]!.indexOf("first fallback byte")
+      const mouse = createMockMouse(setup.renderer)
+      await mouse.drag(column, first, column + "second fallback byte".length, last)
+      expect(setup.renderer.getSelection()?.getSelectedText()).toBe(source)
+
+      await destroyMarkdown(setup)
+    })
+  }
 
   it("renders strong Markdown with the bold text attribute", async () => {
     const setup = await renderMarkdown("**BOLD_SENTINEL**")
