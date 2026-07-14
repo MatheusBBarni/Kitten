@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.3.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.2.1...kitten-v0.3.0) (2026-07-14)
+
+
+### Features
+
+* add Cursor ACP and syntax highlighting ([7ccaa6e](https://github.com/MatheusBBarni/Kitten/commit/7ccaa6eaec49b25bb8f9d6827250716ad4d18c27))
+* add pure statusline layout renderer ([fe6eefb](https://github.com/MatheusBBarni/Kitten/commit/fe6eefb7203b86555e1120539a971f7f7982aeb0))
+* add Python syntax grammar capability ([37561fd](https://github.com/MatheusBBarni/Kitten/commit/37561fded1ff7acf34e22d271f87dfaefb493123))
+* add reactive statusline store state ([c49bbea](https://github.com/MatheusBBarni/Kitten/commit/c49bbeaa9e1325ae4af1a840d3f2ae3a71115450))
+* add strict statusline config persistence ([12ccb66](https://github.com/MatheusBBarni/Kitten/commit/12ccb66c5731f55d56f0eb293a5f60b09f2b7a27))
+* **agent:** authenticate certified Cursor profiles ([c93776d](https://github.com/MatheusBBarni/Kitten/commit/c93776d9087afd00e3df42bdb30703d7f5441c8c))
+* **app:** apply provider defaults with private telemetry ([03e4e48](https://github.com/MatheusBBarni/Kitten/commit/03e4e480fa6617e13a6882ceedbab23acda9f8eb))
+* **config:** add Cursor provider runtime profile ([8d108c3](https://github.com/MatheusBBarni/Kitten/commit/8d108c330aca013d85756468145df36b918c63ca))
+* **config:** add Cursor readiness preflight ([ef4e8e4](https://github.com/MatheusBBarni/Kitten/commit/ef4e8e473c1fe1d3c1c51c9f9fa57adc9b2f85bc))
+* **config:** add provider default contracts ([67f3958](https://github.com/MatheusBBarni/Kitten/commit/67f3958124209bbb5b8b7a0904b2e55d75f2ab25))
+* **config:** bridge provider defaults on reload ([f26b8d3](https://github.com/MatheusBBarni/Kitten/commit/f26b8d32a0ec9732f0f56f354d474faf122f3d7e))
+* Cursor ACP and statusline customization ([68335bc](https://github.com/MatheusBBarni/Kitten/commit/68335bce16c1bb651f1e356b7747c298ff259deb))
+* extend Cursor runtime orchestration and telemetry ([dd60cc8](https://github.com/MatheusBBarni/Kitten/commit/dd60cc86254bace3c4c485cfdbe91091c4f2a790))
+* **model-select:** apply provider defaults on tab selection ([0630993](https://github.com/MatheusBBarni/Kitten/commit/0630993373a00acfdfec920100e28da7c60be289))
+* render default outcomes in status strip ([17b6485](https://github.com/MatheusBBarni/Kitten/commit/17b6485757775ddf170c769bf85d492a7dead755))
+* render saved custom statusline layouts ([773b0e3](https://github.com/MatheusBBarni/Kitten/commit/773b0e3bf62c2b8f70643d00cec72d9d9c7427bf))
+* **statusline:** orchestrate focused-agent proposals ([d88c5c5](https://github.com/MatheusBBarni/Kitten/commit/d88c5c528c79a93f9c5834c3b4b573bd8d050521))
+* **ui:** add JSON and Bash syntax grammars ([1f2d271](https://github.com/MatheusBBarni/Kitten/commit/1f2d27145f597c0f8604a3b2efa5dc06990f8c34))
+* **ui:** add OCaml syntax grammar and ReScript fallback ([afef01d](https://github.com/MatheusBBarni/Kitten/commit/afef01da29bbbfa4c3af83f98e5dc6daa01a599b))
+* **ui:** add Rust and Go syntax grammars ([d79ddda](https://github.com/MatheusBBarni/Kitten/commit/d79ddda9f4cf5d0c3a5fad01aa388b6f1ebba4ca))
+* **ui:** add statusline command workflow ([494afda](https://github.com/MatheusBBarni/Kitten/commit/494afdacd1fdb8450b157e24a75f08494c1719fb))
+* **ui:** add syntax parser manifest foundation ([b7b8113](https://github.com/MatheusBBarni/Kitten/commit/b7b81138acf8ad7f85385ba9f6bcabd62ad3279f))
+* **ui:** register syntax parsers at render entry points ([6b63341](https://github.com/MatheusBBarni/Kitten/commit/6b6334105e553f089192a87a7559abf8d37093a8))
+* **ui:** render Cursor from provider metadata ([957b332](https://github.com/MatheusBBarni/Kitten/commit/957b332985171e08b7dfdfedf00443a2e397624a))
+* wire statusline persistence lifecycle ([705a7d1](https://github.com/MatheusBBarni/Kitten/commit/705a7d1d5ee2d3aea8a22dad0ae3ae89ec0a9ee3))
+
+
+### Fixes
+
+* add provider default model decision record ([a46589e](https://github.com/MatheusBBarni/Kitten/commit/a46589edc86bea2c181cff5aa331bbebf40d8ee2))
+* cap command picker and expose tab creation ([14df63e](https://github.com/MatheusBBarni/Kitten/commit/14df63e9aae13f1390844e58ecd99b2e98b655cc))
+* improve cockpit command routing and session startup ([a5acbb3](https://github.com/MatheusBBarni/Kitten/commit/a5acbb3fbba316529f8c5ec02be00144f6059189))
+* keep workspace tabs visible during transcript scrolling ([01d3040](https://github.com/MatheusBBarni/Kitten/commit/01d3040418d98bf20a769cc52ff1328c181896b9))
+* preserve Cursor clarification and persistence boundaries ([319795b](https://github.com/MatheusBBarni/Kitten/commit/319795babea2316b075563a00e7f9830a3cb3d42))
+* preserve statusline resume boundaries ([542ebc7](https://github.com/MatheusBBarni/Kitten/commit/542ebc74da5f205dd61fbdb0f21fe863807c180d))
+* preserve statusline review behavior ([83d32b8](https://github.com/MatheusBBarni/Kitten/commit/83d32b8c2ee2de7c11bd8d625f52c3b5c879a89f))
+* recover stalled Codex compaction turns ([bb91185](https://github.com/MatheusBBarni/Kitten/commit/bb91185b4ea62019f33086e4cae8ad928c523ad1))
+* restore session tabs and resilient cockpit recovery ([7480596](https://github.com/MatheusBBarni/Kitten/commit/7480596a9f112cd3096d74fc93c6690549bbb41d))
+* restore session tabs and resilient cockpit recovery ([1824828](https://github.com/MatheusBBarni/Kitten/commit/1824828fafc551fa28fee7cbbd1d2b3efb98bb78))
+* stabilize CI statusline tests ([602b010](https://github.com/MatheusBBarni/Kitten/commit/602b010613fc6323f2beb4afa934bb394431703a))
+
 ## [0.2.1](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.2.0...kitten-v0.2.1) (2026-07-13)
 
 
