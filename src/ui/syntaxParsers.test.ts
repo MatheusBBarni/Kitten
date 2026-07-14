@@ -40,6 +40,28 @@ describe("syntaxParserManifest", () => {
     expect(go[0]?.parser.aliases).toEqual(["golang"])
   })
 
+  it("resolves OCaml canonical and extension labels to one asset-backed capability", () => {
+    expect(resolveSyntaxFiletype("ocaml")).toBe("ocaml")
+    expect(resolveSyntaxFiletype("ml")).toBe("ocaml")
+    expect(resolveSyntaxFiletype("mli")).toBe("ocaml")
+
+    const ocaml = syntaxParserManifest.capabilities.filter(({ filetype }) => filetype === "ocaml")
+    expect(ocaml).toHaveLength(1)
+    expect(ocaml[0]?.aliases).toEqual(["ml", "mli"])
+    expect(ocaml[0]?.parser.aliases).toEqual(["ml", "mli"])
+  })
+
+  it("keeps blocked ReScript labels out of highlighted resolution with a documented fallback", () => {
+    for (const label of ["rescript", "res", "resi"]) {
+      expect(resolveSyntaxFiletype(label)).toBeUndefined()
+    }
+    expect(syntaxParserManifest.capabilities.some(({ filetype }) => filetype === "rescript")).toBeFalse()
+    expect(syntaxParserManifest.parsers.some(({ filetype }) => filetype === "rescript")).toBeFalse()
+    expect(syntaxParserManifest.plaintextFallbacks).toEqual([
+      { filetype: "rescript", aliases: ["res", "resi"], reason: "release_gate_unmet" },
+    ])
+  })
+
   it("preserves the Markdown inline node mappings", () => {
     expect(resolveInjectedNodeFiletype("inline")).toBe("markdown_inline")
     expect(resolveInjectedNodeFiletype("pipe_table_cell")).toBe("markdown_inline")
@@ -65,12 +87,19 @@ describe("syntaxParserManifest", () => {
       rs: "rust",
       go: "go",
       golang: "go",
+      ocaml: "ocaml",
+      ml: "ocaml",
+      mli: "ocaml",
     })
   })
 
   it("keeps filetypes, aliases, and fixtures unique", () => {
     const filetypes = syntaxParserManifest.capabilities.map(({ filetype }) => filetype)
     const aliases = syntaxParserManifest.capabilities.flatMap(({ aliases }) => aliases)
+    const fallbackLabels = syntaxParserManifest.plaintextFallbacks.flatMap(({ filetype, aliases }) => [
+      filetype,
+      ...aliases,
+    ])
     const fixtureKeys = syntaxParserManifest.capabilities.flatMap(({ fixtures }) =>
       fixtures.map(({ label, source }) => `${source}:${label}`),
     )
@@ -78,6 +107,10 @@ describe("syntaxParserManifest", () => {
     expect(new Set(filetypes).size).toBe(filetypes.length)
     expect(new Set(aliases).size).toBe(aliases.length)
     expect(new Set([...filetypes, ...aliases]).size).toBe(filetypes.length + aliases.length)
+    expect(new Set(fallbackLabels).size).toBe(fallbackLabels.length)
+    expect(new Set([...filetypes, ...aliases, ...fallbackLabels]).size).toBe(
+      filetypes.length + aliases.length + fallbackLabels.length,
+    )
     expect(new Set(fixtureKeys).size).toBe(fixtureKeys.length)
     expect(fixtureKeys.sort()).toEqual(
       [
@@ -97,11 +130,16 @@ describe("syntaxParserManifest", () => {
         "markdown:go",
         "markdown:golang",
         "diff:go",
+        "markdown:ocaml",
+        "markdown:ml",
+        "markdown:mli",
+        "diff:ml",
+        "diff:mli",
       ].sort(),
     )
   })
 
-  it("provides Markdown fixtures for every Rust and Go label plus extension-backed diff fixtures", () => {
+  it("provides Markdown fixtures for every supported label plus extension-backed diff fixtures", () => {
     const fixturesFor = (filetype: string) =>
       syntaxParserManifest.capabilities.find((capability) => capability.filetype === filetype)?.fixtures
 
@@ -115,6 +153,13 @@ describe("syntaxParserManifest", () => {
       { label: "golang", token: "func", source: "markdown" },
       { label: "go", token: "func", source: "diff" },
     ])
+    expect(fixturesFor("ocaml")).toEqual([
+      { label: "ocaml", token: "let", source: "markdown" },
+      { label: "ml", token: "let", source: "markdown" },
+      { label: "mli", token: "val", source: "markdown" },
+      { label: "ml", token: "let", source: "diff" },
+      { label: "mli", token: "val", source: "diff" },
+    ])
   })
 
   it("uses existing local WASM and query assets for every parser option", () => {
@@ -123,6 +168,7 @@ describe("syntaxParserManifest", () => {
       "markdown_inline",
       "rust",
       "go",
+      "ocaml",
     ])
 
     for (const parser of syntaxParserManifest.parsers) {

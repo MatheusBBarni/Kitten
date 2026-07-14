@@ -7,6 +7,8 @@ import markdownInjections from "./syntax-assets/markdown/injections.scm" with { 
 import markdownWasm from "./syntax-assets/markdown/tree-sitter-markdown.wasm" with { type: "file" }
 import markdownInlineHighlights from "./syntax-assets/markdown_inline/highlights.scm" with { type: "file" }
 import markdownInlineWasm from "./syntax-assets/markdown_inline/tree-sitter-markdown_inline.wasm" with { type: "file" }
+import ocamlHighlights from "./syntax-assets/ocaml/highlights.scm" with { type: "file" }
+import ocamlWasm from "./syntax-assets/ocaml/tree-sitter-ocaml.wasm" with { type: "file" }
 import rustHighlights from "./syntax-assets/rust/highlights.scm" with { type: "file" }
 import rustWasm from "./syntax-assets/rust/tree-sitter-rust.wasm" with { type: "file" }
 
@@ -25,7 +27,14 @@ export interface SyntaxCapability {
 
 export interface SyntaxParserManifest {
   readonly capabilities: readonly SyntaxCapability[]
+  readonly plaintextFallbacks: readonly SyntaxPlaintextFallback[]
   readonly parsers: readonly FiletypeParserOptions[]
+}
+
+export interface SyntaxPlaintextFallback {
+  readonly filetype: string
+  readonly aliases: readonly string[]
+  readonly reason: "release_gate_unmet"
 }
 
 const MARKDOWN_NODE_TYPE_MAP: Readonly<Record<string, string>> = {
@@ -48,6 +57,9 @@ const MARKDOWN_INFO_STRING_MAP: Readonly<Record<string, string>> = {
   rs: "rust",
   go: "go",
   golang: "go",
+  ocaml: "ocaml",
+  ml: "ocaml",
+  mli: "ocaml",
 }
 
 const markdownParser: FiletypeParserOptions = {
@@ -87,6 +99,15 @@ const goParser: FiletypeParserOptions = {
     highlights: [goHighlights],
   },
   wasm: goWasm,
+}
+
+const ocamlParser: FiletypeParserOptions = {
+  filetype: "ocaml",
+  aliases: ["ml", "mli"],
+  queries: {
+    highlights: [ocamlHighlights],
+  },
+  wasm: ocamlWasm,
 }
 
 const markdownCapability: SyntaxCapability = {
@@ -129,10 +150,30 @@ const goCapability: SyntaxCapability = {
   ],
 }
 
+const ocamlCapability: SyntaxCapability = {
+  filetype: "ocaml",
+  aliases: ["ml", "mli"],
+  parser: ocamlParser,
+  fixtures: [
+    { label: "ocaml", token: "let", source: "markdown" },
+    { label: "ml", token: "let", source: "markdown" },
+    { label: "mli", token: "val", source: "markdown" },
+    { label: "ml", token: "let", source: "diff" },
+    { label: "mli", token: "val", source: "diff" },
+  ],
+}
+
+const rescriptPlaintextFallback: SyntaxPlaintextFallback = {
+  filetype: "rescript",
+  aliases: ["res", "resi"],
+  reason: "release_gate_unmet",
+}
+
 /** The sole source of parser assets, aliases, injection labels, and release fixtures. */
 export const syntaxParserManifest: SyntaxParserManifest = {
-  capabilities: [markdownCapability, rustCapability, goCapability],
-  parsers: [markdownParser, markdownInlineParser, rustParser, goParser],
+  capabilities: [markdownCapability, rustCapability, goCapability, ocamlCapability],
+  plaintextFallbacks: [rescriptPlaintextFallback],
+  parsers: [markdownParser, markdownInlineParser, rustParser, goParser, ocamlParser],
 }
 
 /** Resolve only an explicitly declared Markdown fence label; never guess a language. */

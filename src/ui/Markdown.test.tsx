@@ -109,6 +109,9 @@ describe("Markdown", () => {
     { label: "rs", source: "struct RsSentinel {}", sentinel: "RsSentinel" },
     { label: "go", source: "type GoSentinel struct {}", sentinel: "GoSentinel" },
     { label: "golang", source: "type GolangSentinel struct {}", sentinel: "GolangSentinel" },
+    { label: "ocaml", source: "type ocamlSentinel = string", sentinel: "ocamlSentinel" },
+    { label: "ml", source: "type mlSentinel = string", sentinel: "mlSentinel" },
+    { label: "mli", source: "type mliSentinel = string", sentinel: "mliSentinel" },
   ]) {
     it(`highlights a ${label} fence with a non-prose foreground`, async () => {
       const client = getTreeSitterClient()
@@ -130,6 +133,28 @@ describe("Markdown", () => {
       await destroyMarkdown(setup)
     })
   }
+
+  it("keeps a blocked ReScript fence declared, plaintext, and copy-safe", async () => {
+    const source = "let rescriptFallbackSentinel = 1"
+    const setup = await renderMarkdown(`\`\`\`rescript\n${source}\n\`\`\``)
+    await settleMarkdownHighlights(setup)
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(source))
+    const code = collectCodeRenderables(setup.renderer.root).find((candidate) => candidate.content.includes(source))
+    const token = spanContaining(setup, "rescriptFallbackSentinel")
+
+    expect(code?.filetype).toBe("rescript")
+    expect(token).toBeDefined()
+    expect(token?.fg.toString()).toBe(paletteColor(DARK_PALETTE.text))
+
+    const rows = frame.split("\n")
+    const row = rows.findIndex((candidate) => candidate.includes(source))
+    const start = rows[row]!.indexOf(source)
+    const mouse = createMockMouse(setup.renderer)
+    await mouse.drag(start, row, start + source.length, row)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe(source)
+
+    await destroyMarkdown(setup)
+  })
 
   it("renders strong Markdown with the bold text attribute", async () => {
     const setup = await renderMarkdown("**BOLD_SENTINEL**")
@@ -302,6 +327,7 @@ describe("Markdown", () => {
   for (const { label, source } of [
     { label: "rust", source: "fn rust_copy_sentinel() {}" },
     { label: "go", source: "func goCopySentinel() {}" },
+    { label: "ocaml", source: "let ocaml_copy_sentinel = 1" },
   ]) {
     it(`copies ${label} fenced source without renderer chrome`, async () => {
       const client = getTreeSitterClient()

@@ -1,11 +1,12 @@
 # Syntax asset provenance
 
 The Markdown assets in this directory were vendored byte-for-byte from the
-exact-pinned `@opentui/core` npm package at version `0.4.3`. The Rust and Go
-assets were vendored byte-for-byte from the official grammar npm packages
-`tree-sitter-rust@0.24.0` and `tree-sitter-go@0.25.0`. Kitten owns these copies
-so its parser manifest uses public registration APIs and static file imports
-without reaching into package paths at runtime.
+exact-pinned `@opentui/core` npm package at version `0.4.3`. The Rust, Go, and
+OCaml assets were vendored byte-for-byte from the official grammar npm packages
+`tree-sitter-rust@0.24.0`, `tree-sitter-go@0.25.0`, and
+`tree-sitter-ocaml@0.24.2`. Kitten owns these copies so its parser manifest uses
+public registration APIs and static file imports without reaching into package
+paths at runtime.
 
 Upstream repository: <https://github.com/anomalyco/opentui/tree/main/packages/core>
 
@@ -13,6 +14,13 @@ Grammar repositories:
 
 - <https://github.com/tree-sitter/tree-sitter-rust/tree/v0.24.0>
 - <https://github.com/tree-sitter/tree-sitter-go/tree/v0.25.0>
+- <https://github.com/tree-sitter/tree-sitter-ocaml/tree/v0.24.2>
+
+ReScript remains a declared plaintext fallback rather than a highlighted
+capability. The official `rescript-lang/tree-sitter-rescript` v6.0.0 release
+contains an MIT-licensed grammar and highlight query, but publishes no npm or
+GitHub-release WASM asset. Without a versioned upstream binary to review and
+vendor, it does not meet Kitten's local-asset provenance gate.
 
 The accompanying `LICENSE.*` files are the licenses distributed with each
 source package. Query files retain their embedded upstream attribution comments.
@@ -30,4 +38,6 @@ ca9a109ddd21c5ffdc6b84f00c0a4b2eeb55ae36a0b8eeb9b02348269c5acd22  markdown_inlin
 f65f354215611fd94ad34134b3427eb3d58cbb745df7b6509ba722184db73d57  rust/tree-sitter-rust.wasm
 81182c986547eba7fa6316e82dfd621fb13b8fc89efac85432aee51a48ed0896  go/highlights.scm
 9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7  go/tree-sitter-go.wasm
+9bdabb038c60c159cef48f4d9f775bdd951230190dd7721da9aaea073a2c8cce  ocaml/highlights.scm
+761a78a804931cfac1fa0c6238989b4b0e86cc70db461b1315d743de923f8246  ocaml/tree-sitter-ocaml.wasm
 ```

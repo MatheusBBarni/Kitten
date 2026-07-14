@@ -685,6 +685,20 @@ describe("ConversationView tool calls", () => {
       sentinel: "GoSentinel",
       plaintext: "ordinary",
     },
+    {
+      path: "lib/model.ml",
+      before: "module Old = struct end",
+      after: "module MlSentinel = struct let ordinary = 1 end",
+      sentinel: "MlSentinel",
+      plaintext: "ordinary",
+    },
+    {
+      path: "lib/model.mli",
+      before: "module Old : sig end",
+      after: "module MliSentinel : sig val ordinary : int end",
+      sentinel: "MliSentinel",
+      plaintext: "ordinary",
+    },
   ]) {
     it(`highlights ${path.slice(path.lastIndexOf("."))} diff tokens from the file extension`, async () => {
       const client = getTreeSitterClient()
@@ -724,6 +738,45 @@ describe("ConversationView tool calls", () => {
       expect(token()).toBeDefined()
       expect(plainToken()).toBeDefined()
       expect(token()?.fg?.toString()).not.toBe(plainToken()?.fg?.toString())
+
+      await destroyMounted(renderer)
+    })
+  }
+
+  for (const path of ["src/model.res", "src/model.resi"]) {
+    it(`keeps a blocked ${path.slice(path.lastIndexOf("."))} diff plaintext and copy-safe`, async () => {
+      const before = "let fallbackBefore = 0"
+      const after = "let rescriptFallbackSentinel = 1"
+      const controller = createFakeController()
+      const { renderer, waitForFrame, captureSpans, captureCharFrame } = await renderConversation(controller)
+
+      await actAsync(() =>
+        toolCall(controller, "claude-code", {
+          toolCallId: "rescript-fallback-diff",
+          kind: "edit",
+          title: `Update ${path}`,
+          status: "completed",
+          diff: { path, unified: singleLineDiff(path, before, after) },
+        }),
+      )
+      await waitForFrame((frame) => frame.includes("rescriptFallbackSentinel"))
+      await settleMountedHighlights(renderer)
+      renderer.requestRender()
+      await renderer.idle()
+
+      const spans = captureSpans().lines.flatMap((line) => line.spans)
+      const token = spans.find((span) => span.text.includes("rescriptFallbackSentinel"))
+      const plaintext = spans.find((span) => span.text.includes("fallbackBefore"))
+      expect(filetypeFor(path)).toBe(path.endsWith(".resi") ? "resi" : "res")
+      expect(token).toBeDefined()
+      expect(plaintext).toBeDefined()
+      expect(token?.fg?.toString()).toBe(plaintext?.fg?.toString())
+
+      const rows = captureCharFrame().split("\n")
+      const first = rows.findIndex((row) => row.includes(before))
+      const last = rows.findIndex((row) => row.includes(after))
+      const codeColumn = rows[first]!.indexOf(before)
+      expect(await selectText(renderer, [codeColumn, first], [rows[last]!.length, last])).toBe(`${before}\n${after}`)
 
       await destroyMounted(renderer)
     })
@@ -923,6 +976,10 @@ describe("filetypeFor", () => {
     expect(filetypeFor("a/b/c/main.py")).toBe("py")
     expect(filetypeFor("src/lib.rs")).toBe("rs")
     expect(filetypeFor("cmd/main.go")).toBe("go")
+    expect(filetypeFor("lib/model.ml")).toBe("ml")
+    expect(filetypeFor("lib/model.mli")).toBe("mli")
+    expect(filetypeFor("src/model.res")).toBe("res")
+    expect(filetypeFor("src/model.resi")).toBe("resi")
     expect(filetypeFor("archive.tar.gz")).toBe("gz")
   })
 
