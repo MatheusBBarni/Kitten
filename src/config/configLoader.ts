@@ -39,6 +39,11 @@ import type {
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import {
+  normalizeStatuslineLayout,
+  type StatuslineItem,
+  type StatuslinePreference,
+} from "../core/statusline.ts"
 import { classifyClarificationCapability } from "./clarificationCapability.ts"
 
 /**
@@ -192,6 +197,51 @@ const MCP_SERVER_SCHEMA = z
 /** MCP declarations are keyed by their stable, user-facing server name. */
 const MCP_SERVERS_SCHEMA = z.record(z.string().min(1), MCP_SERVER_SCHEMA)
 
+/** The optional on-disk statusline delta; layout fields are always paired. */
+export interface UserStatuslineDelta {
+  llmDisclosureAcknowledged: boolean
+  separator?: string
+  line?: readonly StatuslineItem[]
+}
+
+const STATUSLINE_CONFIG_SCHEMA = z
+  .object({
+    llmDisclosureAcknowledged: z.boolean(),
+    separator: z.unknown().optional(),
+    line: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const hasSeparator = Object.hasOwn(value, "separator")
+    const hasLine = Object.hasOwn(value, "line")
+    if (hasSeparator !== hasLine) {
+      context.addIssue({
+        code: "custom",
+        path: [hasSeparator ? "line" : "separator"],
+        message: "separator and line must be provided together",
+      })
+      return
+    }
+    if (!hasSeparator) return
+
+    const normalized = normalizeStatuslineLayout({ separator: value.separator, line: value.line })
+    if (normalized.kind === "invalid") {
+      context.addIssue({ code: "custom", path: ["line"], message: normalized.reason })
+    }
+  })
+  .transform((value): UserStatuslineDelta => {
+    if (!Object.hasOwn(value, "separator")) {
+      return { llmDisclosureAcknowledged: value.llmDisclosureAcknowledged }
+    }
+    const normalized = normalizeStatuslineLayout({ separator: value.separator, line: value.line })
+    if (normalized.kind === "invalid") throw new Error(normalized.reason)
+    return {
+      llmDisclosureAcknowledged: value.llmDisclosureAcknowledged,
+      separator: normalized.layout.separator,
+      line: normalized.layout.line,
+    }
+  })
+
 /**
  * The shape of the on-disk config file. Every field is optional: the file only ever
  * expresses deltas from {@link defaultAppConfig}. `strict()` rejects unknown keys so
@@ -212,6 +262,7 @@ export const USER_CONFIG_SCHEMA = z
     sessions: z.array(SESSION_DESCRIPTOR_SCHEMA).optional(),
     mcpServers: MCP_SERVERS_SCHEMA.optional(),
     shell: SHELL_OVERRIDE_SCHEMA.optional(),
+    statusline: STATUSLINE_CONFIG_SCHEMA.optional(),
   })
   .strict()
 
@@ -245,6 +296,7 @@ export function defaultAppConfig(): AppConfig {
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
     theme: DEFAULT_THEME,
     welcomeBanner: DEFAULT_WELCOME_BANNER,
+    statusline: defaultStatuslinePreference(),
   }
 }
 
@@ -287,6 +339,27 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     theme: user.theme ?? config.theme,
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
+    statusline: mergeStatuslinePreference(user.statusline),
+  }
+}
+
+function defaultStatuslinePreference(): StatuslinePreference {
+  return { llmDisclosureAcknowledged: false, layout: null }
+}
+
+function mergeStatuslinePreference(statusline: UserConfig["statusline"]): StatuslinePreference {
+  if (!statusline) return defaultStatuslinePreference()
+  if (statusline.separator === undefined || statusline.line === undefined) {
+    return { llmDisclosureAcknowledged: statusline.llmDisclosureAcknowledged, layout: null }
+  }
+
+  const normalized = normalizeStatuslineLayout({ separator: statusline.separator, line: statusline.line })
+  if (normalized.kind === "invalid") {
+    throw new ConfigError(`statusline is not valid: ${normalized.reason}`)
+  }
+  return {
+    llmDisclosureAcknowledged: statusline.llmDisclosureAcknowledged,
+    layout: normalized.layout,
   }
 }
 

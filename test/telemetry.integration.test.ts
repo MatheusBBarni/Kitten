@@ -546,6 +546,7 @@ describe("clarification lifecycle over controller and local JSONL", () => {
         telemetryEnabled: true,
         theme: "auto",
         welcomeBanner: "auto",
+        statusline: { llmDisclosureAcknowledged: false, layout: null },
       }
       const controller = await createSessionController({
         config,

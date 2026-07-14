@@ -1006,6 +1006,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */

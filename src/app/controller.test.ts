@@ -84,6 +84,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 const CURSOR_APP_CONFIG: AppConfig = {
   ...APP_CONFIG,
@@ -531,6 +532,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /**
@@ -1825,6 +1827,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
     const { controller, created } = await controllerOverFleet(config)
 
@@ -1850,6 +1853,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
     const { controller, created } = await controllerOverFleet(config, undefined, { sendInitialTasks: false })
 
@@ -1929,6 +1933,7 @@ describe("actions - sendPrompt", () => {
         telemetryEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
+        statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
       cwd: CWD,
       createConnection: () => connection,
@@ -3095,6 +3100,7 @@ describe("createSessionController - dispose", () => {
         telemetryEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
+        statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
       cwd: CWD,
       createConnection: () => connection,

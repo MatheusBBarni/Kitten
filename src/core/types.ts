@@ -11,6 +11,7 @@
  */
 
 import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
+import type { StatuslinePreference } from "./statusline.ts"
 
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
@@ -634,6 +635,7 @@ export interface AppConfig {
   telemetryEnabled: boolean
   theme: ThemePreference
   welcomeBanner: WelcomeBannerPreference
+  statusline: StatuslinePreference
 }
 
 /**

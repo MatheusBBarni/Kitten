@@ -34,6 +34,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 /** A real adapter over a mock agent whose prompt turns always stop with `end_turn`. */

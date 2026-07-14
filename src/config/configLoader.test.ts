@@ -127,6 +127,91 @@ describe("defaults", () => {
     expect(second.providers.cursor.env).toEqual({})
     expect(second.mcpServers).toEqual([])
     expect(second.providerDefaults).toEqual({})
+    expect(second.statusline).toEqual({ llmDisclosureAcknowledged: false, layout: null })
+  })
+})
+
+describe("statusline config", () => {
+  it("Should preserve the legacy footer and require no disclosure acknowledgement when omitted", async () => {
+    expect(defaultAppConfig().statusline).toEqual({ llmDisclosureAcknowledged: false, layout: null })
+    expect(parseAppConfig("{}").statusline).toEqual({ llmDisclosureAcknowledged: false, layout: null })
+
+    const path = join(await makeTempDir(), "missing.json")
+    await expect(loadAppConfig({ path })).resolves.toMatchObject({
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    })
+  })
+
+  it("Should parse acknowledgement-only and complete layout deltas", () => {
+    expect(
+      parseAppConfig(JSON.stringify({ statusline: { llmDisclosureAcknowledged: true } })).statusline,
+    ).toEqual({ llmDisclosureAcknowledged: true, layout: null })
+
+    expect(
+      parseAppConfig(JSON.stringify({
+        statusline: {
+          llmDisclosureAcknowledged: true,
+          separator: " · ",
+          line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        },
+      })).statusline,
+    ).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+      },
+    })
+  })
+
+  it.each([
+    ["missing acknowledgement", { separator: " | ", line: ["FOLDER"] }],
+    ["separator without line", { llmDisclosureAcknowledged: true, separator: " | " }],
+    ["line without separator", { llmDisclosureAcknowledged: true, line: ["FOLDER"] }],
+    ["unknown nested key", { llmDisclosureAcknowledged: true, request: "show my branch" }],
+    ["invalid item", { llmDisclosureAcknowledged: true, separator: " | ", line: ["COST"] }],
+    [
+      "unknown item key",
+      {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 24, command: "git branch" }],
+      },
+    ],
+    ["invalid separator", { llmDisclosureAcknowledged: true, separator: "\n", line: ["FOLDER"] }],
+  ])("Should reject %s as a hard config error", (_name, statusline) => {
+    const parse = () => parseAppConfig(JSON.stringify({ statusline }))
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/statusline/)
+  })
+
+  it("Should merge statusline independently while retaining every unrelated config family", () => {
+    const config = parseAppConfig(JSON.stringify({
+      persistenceEnabled: false,
+      telemetryEnabled: true,
+      theme: "catppuccin-mocha",
+      welcomeBanner: "off",
+      providers: { codex: { command: "/opt/bin/codex-acp", env: { TOKEN: "private" } } },
+      providerDefaults: { codex: { model: "gpt-5.4", effort: "high" } },
+      sessions: [{ provider: "codex", cwd: "/workspace", title: "Primary" }],
+      mcpServers: { github: { type: "stdio", command: "github-mcp", args: ["serve"], env: { A: "1" } } },
+      shell: { enabled: false, command: "/bin/fish", scrollback: 2_500 },
+      statusline: { llmDisclosureAcknowledged: true, separator: " | ", line: ["PROVIDER", "MODEL"] },
+    }))
+
+    expect(config.statusline).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout: { separator: " | ", line: ["PROVIDER", "MODEL"] },
+    })
+    expect(config.persistenceEnabled).toBe(false)
+    expect(config.telemetryEnabled).toBe(true)
+    expect(config.theme).toBe("catppuccin-mocha")
+    expect(config.welcomeBanner).toBe("off")
+    expect(config.providers.codex).toMatchObject({ command: "/opt/bin/codex-acp", env: { TOKEN: "private" } })
+    expect(config.providerDefaults).toEqual({ codex: { model: "gpt-5.4", effort: "high" } })
+    expect(config.sessions).toEqual([{ provider: "codex", cwd: "/workspace", title: "Primary" }])
+    expect(config.mcpServers).toEqual([{ name: "github", command: "github-mcp", args: ["serve"], env: { A: "1" } }])
+    expect(config.shell).toEqual({ enabled: false, command: "/bin/fish", scrollback: 2_500 })
   })
 })
 

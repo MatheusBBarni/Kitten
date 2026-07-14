@@ -35,6 +35,7 @@ const CONTROLLER_CONFIG: AppConfig = {
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
+  statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
 
 function createReadyConnection(): AgentConnection {
