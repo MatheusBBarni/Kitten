@@ -36,8 +36,13 @@ describe("MessageView", () => {
 
     const rows = frame.split("\n")
     expect(ROLE_LABELS.agent).toBe("Agent")
+    const userTextRow = rows.findIndex((row) => row.includes("USER_SENTINEL"))
     const agentLabelRow = rows.findIndex((row) => row.includes(ROLE_LABELS.agent))
     const agentTextRow = rows.findIndex((row) => row.includes("AGENT_SENTINEL"))
+    expect(userTextRow).toBeGreaterThan(0)
+    expect(rows[userTextRow - 1]?.trim()).toBe("")
+    expect(rows[userTextRow + 1]?.trim()).toBe("")
+    expect(agentLabelRow).toBe(userTextRow + 3)
     expect(agentTextRow).toBe(agentLabelRow + 1)
 
     const spans = setup.captureSpans().lines.flatMap((line) => line.spans)

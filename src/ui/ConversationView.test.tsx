@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { destroyTreeSitterClient, getTreeSitterClient, RGBA } from "@opentui/core"
+import { destroyTreeSitterClient, getTreeSitterClient, RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -12,6 +12,7 @@ import type { HandoffBundle, ProviderKind, ToolCallKind, ToolCallUpdate } from "
 import { CockpitApp } from "./CockpitApp.tsx"
 import {
   ConversationView,
+  CONVERSATION_SCROLLBOX_ID,
   EMPTY_TRANSCRIPT_HINT,
   RESTORATION_CONTEXT_LABEL,
   RESTORATION_FRESH_LABEL,
@@ -183,25 +184,25 @@ describe("ConversationView turns", () => {
     await destroyMounted(renderer)
   })
 
-  it("keeps workspace tabs visible above a sticky-scrolled transcript", async () => {
+  it("scrolls workspace tabs away with a sticky-scrolled transcript", async () => {
     const controller = createFakeController()
-    const { renderer, waitForFrame } = await renderConversation(controller)
+    const setup = await renderConversation(controller)
 
     await actAsync(() => {
       for (let index = 0; index < 40; index += 1) {
         userMessage(controller, "claude-code", `m${index}`, `LONG_TRANSCRIPT_TURN_${index}`)
       }
     })
-    const frame = await waitForFrame((candidate) => candidate.includes("LONG_TRANSCRIPT_TURN_39"))
-    const rows = frame.split("\n")
-    const tabsRow = rows.findIndex((row) => row.includes("[selected] Claude Code"))
-    const finalTurnRow = rows.findIndex((row) => row.includes("LONG_TRANSCRIPT_TURN_39"))
+    const bottom = await setup.waitForFrame((candidate) => candidate.includes("LONG_TRANSCRIPT_TURN_39"))
+    expect(bottom).not.toContain("[selected] Claude Code")
 
-    expect(tabsRow).toBeGreaterThanOrEqual(0)
-    expect(tabsRow).toBeLessThan(3)
-    expect(tabsRow).toBeLessThan(finalTurnRow)
+    const scrollbox = setup.renderer.root.findDescendantById(CONVERSATION_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+    expect(scrollbox).toBeDefined()
+    await actAsync(() => scrollbox!.scrollTo(0))
+    const top = await setup.waitForFrame((candidate) => candidate.includes("[selected] Claude Code"))
+    expect(top).not.toContain("LONG_TRANSCRIPT_TURN_39")
 
-    await destroyMounted(renderer)
+    await destroyMounted(setup.renderer)
   })
 
   it("renders the user turn unlabelled and the agent turn under its role label, in order", async () => {
@@ -249,6 +250,44 @@ describe("ConversationView turns", () => {
     const narrow = await setup.waitForFrame((frame) => frame.includes("terminal narrows") && frame !== wide)
     expectAlignedTranscriptTable(narrow)
     expect(narrow).not.toContain("…")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("constrains long prose to the transcript viewport width", async () => {
+    const controller = createFakeController()
+    const setup = await renderConversation(controller, 44, 24)
+    const prose = `LONG_PROSE_START ${"abcdefghij".repeat(12)} LONG_PROSE_END`
+
+    await actAsync(() => agentDelta(controller, "claude-code", "m1", prose))
+    await setup.waitForFrame(
+      (frame) => frame.includes("LONG_PROSE_START") && frame.includes("LONG_PROSE_END"),
+    )
+
+    const scrollbox = setup.renderer.root.findDescendantById(CONVERSATION_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+    expect(scrollbox).toBeDefined()
+    expect(scrollbox!.scrollWidth).toBeLessThanOrEqual(scrollbox!.viewport.width)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("constrains long table cells to the transcript viewport width", async () => {
+    const controller = createFakeController()
+    const setup = await renderConversation(controller, 44, 32)
+    const table = [
+      "| KPI | Target |",
+      "| --- | --- |",
+      `| ${"abcdefghij".repeat(10)} | LONG_TABLE_END |`,
+    ].join("\n")
+
+    await actAsync(() => agentDelta(controller, "claude-code", "m1", table))
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("LONG_TABLE_END"))
+
+    const scrollbox = setup.renderer.root.findDescendantById(CONVERSATION_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+    expect(scrollbox).toBeDefined()
+    expect(scrollbox!.scrollWidth).toBeLessThanOrEqual(scrollbox!.viewport.width)
+    expectAlignedTranscriptTable(frame)
+    expect(frame).not.toContain("…")
 
     await destroyMounted(setup.renderer)
   })

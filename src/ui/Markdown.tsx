@@ -182,6 +182,7 @@ function MarkdownLeaf({
 }): ReactNode {
   return (
     <markdown
+      width="100%"
       content={normalizeMarkdownForDisplay(content)}
       syntaxStyle={syntaxStyle}
       streaming={MARKDOWN_STREAMING}
@@ -203,7 +204,7 @@ export function Markdown({ content, fg, diagnosticReporter, parserStatus }: Mark
     return <MarkdownLeaf content={segments[0].content} fg={foreground} syntaxStyle={syntaxStyle} />
   }
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+    <box style={{ width: "100%", flexDirection: "column", flexShrink: 0 }}>
       {segments.map((segment, index) =>
         segment.kind === "markdown" ? (
           <MarkdownLeaf key={`markdown-${index}`} content={segment.content} fg={foreground} syntaxStyle={syntaxStyle} />

@@ -345,6 +345,7 @@ function createStubShellRuntime(): StubShellRuntime {
     },
     bufferType: () => "normal",
     write() {},
+    paste() {},
     interrupt() {},
     resize() {},
     view: () => [],

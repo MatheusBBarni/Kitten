@@ -69,6 +69,7 @@ export interface ShellRuntime {
   onBufferChange(cb: (buffer: ShellBufferType) => void): Unsubscribe
   bufferType(): ShellBufferType
   write(bytes: Uint8Array): void
+  paste(bytes: Uint8Array): void
   interrupt(): void
   resize(cols: number, rows: number): void
   view(): readonly StyledLine[]
@@ -171,6 +172,19 @@ class ShellRuntimeImpl implements ShellRuntime {
   write(bytes: Uint8Array): void {
     if (this.disposed) return
     this.pty.write(bytes)
+  }
+
+  paste(bytes: Uint8Array): void {
+    if (this.disposed) return
+    if (!this.emulator.modes.bracketedPasteMode) {
+      this.pty.write(bytes)
+      return
+    }
+    const wrapped = new Uint8Array(bytes.length + 12)
+    wrapped.set([0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e])
+    wrapped.set(bytes, 6)
+    wrapped.set([0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e], bytes.length + 6)
+    this.pty.write(wrapped)
   }
 
   interrupt(): void {

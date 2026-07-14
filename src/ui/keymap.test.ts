@@ -25,6 +25,7 @@ import {
   KEYMAP_HINT,
   matchApprovalCommand,
   matchClarificationCommand,
+  matchClipboardCommand,
   matchCommand,
   matchHandoffCommand,
   matchMenuCommand,
@@ -110,6 +111,27 @@ describe("matchCommand", () => {
     ]) {
       expect(matchCommand(event, "kittyConfirmed")).toBeNull()
     }
+  })
+})
+
+describe("matchClipboardCommand", () => {
+  it("uses Command+C and Command+V on macOS", () => {
+    expect(matchClipboardCommand(key("c", { super: true }), "darwin")).toBe("copy")
+    expect(matchClipboardCommand(key("v", { super: true }), "darwin")).toBe("paste")
+    expect(matchClipboardCommand(key("c", { ctrl: true, shift: true }), "darwin")).toBeNull()
+  })
+
+  it("uses Ctrl+Shift+C and Ctrl+Shift+V on Windows and Linux", () => {
+    expect(matchClipboardCommand(key("c", { ctrl: true, shift: true }), "windows-linux")).toBe("copy")
+    expect(matchClipboardCommand(key("v", { ctrl: true, shift: true }), "windows-linux")).toBe("paste")
+    expect(matchClipboardCommand(key("v", { super: true }), "windows-linux")).toBeNull()
+  })
+
+  it("preserves terminal control keys and rejects Alt/Option lookalikes", () => {
+    expect(matchClipboardCommand(key("c", { ctrl: true }), "windows-linux")).toBeNull()
+    expect(matchClipboardCommand(key("v", { ctrl: true }), "windows-linux")).toBeNull()
+    expect(matchClipboardCommand(key("c", { meta: true, super: true }), "darwin")).toBeNull()
+    expect(matchClipboardCommand(key("v", { ctrl: true, shift: true, meta: true }), "windows-linux")).toBeNull()
   })
 })
 

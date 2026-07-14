@@ -34,8 +34,15 @@ export interface CockpitKey {
   readonly ctrl: boolean
   readonly shift: boolean
   readonly meta: boolean
+  readonly super?: boolean
   readonly source?: "raw" | "kitty"
 }
+
+/** Clipboard intents intercepted before shell key encoding. */
+export type ClipboardCommand = "copy" | "paste"
+
+/** Platform families with distinct conventional terminal clipboard chords. */
+export type ClipboardPlatform = "darwin" | "windows-linux"
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
 export type CockpitCommand =
@@ -164,6 +171,21 @@ function kittyCtrl(name: string): (key: CockpitKey) => boolean {
 /** Match when any one of the supplied predicates claims the key. */
 function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: CockpitKey) => boolean {
   return (key) => predicates.some((predicate) => predicate(key))
+}
+
+/**
+ * Match the host clipboard chord without stealing Ctrl+C from the integrated PTY.
+ * OpenTUI reports Command as `super`; `meta` is Alt/Option and must not be treated
+ * as the macOS Command key.
+ */
+export function matchClipboardCommand(key: CockpitKey, platform: ClipboardPlatform): ClipboardCommand | null {
+  const conventionalModifiers = platform === "darwin"
+    ? key.super === true && !key.ctrl && !key.shift && !key.meta
+    : key.ctrl && key.shift && !key.meta && key.super !== true
+  if (!conventionalModifiers) return null
+  if (key.name.toLowerCase() === "c") return "copy"
+  if (key.name.toLowerCase() === "v") return "paste"
+  return null
 }
 
 /**

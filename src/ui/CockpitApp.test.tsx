@@ -69,13 +69,14 @@ function expectNoOverflow(frame: string, width: number, height: number): void {
   expect(frame).not.toContain("਀")
 }
 
-function keyEvent(name: string, options: { ctrl?: boolean; shift?: boolean; meta?: boolean; source?: "raw" | "kitty" } = {}): KeyEvent {
+function keyEvent(name: string, options: { ctrl?: boolean; shift?: boolean; meta?: boolean; super?: boolean; source?: "raw" | "kitty" } = {}): KeyEvent {
   return new KeyEvent({
     name,
     ctrl: options.ctrl ?? false,
     shift: options.shift ?? false,
     meta: options.meta ?? false,
     option: false,
+    super: options.super ?? false,
     sequence: "",
     number: false,
     raw: options.source === "kitty" ? `kitty:${name}` : name,
@@ -684,6 +685,57 @@ describe("CockpitApp keymap", () => {
 
       expect(shell.writes.flatMap((bytes) => [...bytes])).toEqual([0x03])
       expect(setup.renderer.isDestroyed).toBe(false)
+    } finally {
+      await destroyMounted(setup.renderer)
+      await runtime.dispose()
+    }
+  })
+
+  it("copies the current selection with the platform clipboard chord", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+    const selection = spyOn(setup.renderer, "getSelection").mockReturnValue({
+      getSelectedText: () => "selected transcript",
+    } as ReturnType<typeof setup.renderer.getSelection>)
+    const copy = spyOn(setup.renderer, "copyToClipboardOSC52").mockReturnValue(true)
+
+    try {
+      await actAsync(() => {
+        setup.renderer.keyInput.emit(
+          "keypress",
+          keyEvent("c", process.platform === "darwin"
+            ? { super: true, source: "kitty" }
+            : { ctrl: true, shift: true, source: "kitty" }),
+        )
+      })
+
+      expect(copy).toHaveBeenCalledTimes(1)
+      expect(copy).toHaveBeenCalledWith("selected transcript")
+    } finally {
+      copy.mockRestore()
+      selection.mockRestore()
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("routes bracketed paste payloads to the shell without forwarding the shortcut as input", async () => {
+    const { controller, runtime, shell } = shellReadyController()
+    const setup = await renderCockpitApp(controller)
+
+    try {
+      await runSlashCommand(setup, "shell")
+      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
+
+      await actAsync(() => {
+        setup.mockInput.pressKey("v", process.platform === "darwin"
+          ? { super: true }
+          : { ctrl: true, shift: true })
+      })
+      await actAsync(async () => {
+        await setup.mockInput.pasteBracketedText("echo pasted")
+      })
+
+      expect(new TextDecoder().decode(Uint8Array.from(shell.writes.flatMap((bytes) => [...bytes])))).toBe("echo pasted")
     } finally {
       await destroyMounted(setup.renderer)
       await runtime.dispose()

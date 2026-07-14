@@ -24,8 +24,8 @@
  * outside the new viewport.
  */
 
-import type { KeyEvent } from "@opentui/core"
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
+import type { KeyEvent, PasteEvent } from "@opentui/core"
+import { useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
@@ -60,7 +60,7 @@ import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { StatuslineOverlay } from "./StatuslineOverlay.tsx"
 import { TabDialog } from "./TabDialog.tsx"
-import { helpEntries, matchCommand, type CockpitCommand } from "./keymap.ts"
+import { helpEntries, matchClipboardCommand, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
@@ -251,6 +251,25 @@ function CockpitFrame({
 
   const onKey = useCallback(
     (key: KeyEvent) => {
+      const clipboardCommand = matchClipboardCommand(key, process.platform === "darwin" ? "darwin" : "windows-linux")
+      if (clipboardCommand === "copy") {
+        const selectedText = renderer.getSelection()?.getSelectedText() ?? ""
+        if (selectedText.length === 0) return
+        try {
+          if (!renderer.copyToClipboardOSC52(selectedText)) return
+        } catch {
+          return
+        }
+        key.preventDefault()
+        return
+      }
+      if (clipboardCommand === "paste") {
+        // The actual clipboard payload follows as a bracketed PasteEvent. Consume
+        // the chord so shell focus cannot encode it as Ctrl+C/Ctrl+V bytes.
+        key.preventDefault()
+        return
+      }
+
       if (overlayOpen) return
 
       const command = matchCommand(key, keyboardCapability)
@@ -283,9 +302,21 @@ function CockpitFrame({
         runCockpitCommand(command)
       }
     },
-    [controller, helpOpen, keyboardCapability, overlayOpen, runCockpitCommand],
+    [controller, helpOpen, keyboardCapability, overlayOpen, renderer, runCockpitCommand],
   )
   useKeyboard(onKey)
+
+  const onPaste = useCallback(
+    (event: PasteEvent) => {
+      if (overlayOpen || controller.store.getState().focusedPane.kind !== "shell") return
+      event.preventDefault()
+      setExternalRunNotice(null)
+      if (!controller.shell.ready) return
+      controller.shell.runtime.paste(event.bytes)
+    },
+    [controller, overlayOpen],
+  )
+  usePaste(onPaste)
 
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
   useEffect(() => {
@@ -302,7 +333,7 @@ function CockpitFrame({
   )
   const focusedAvailability = useAppSelector(focusedAvailabilitySelector)
   const focused = focusedSessionId ? controller.runtime(focusedSessionId) : undefined
-  // ConversationView keeps workspace navigation fixed above the transcript;
+  // ConversationView owns workspace navigation inside the transcript scroll surface;
   // only the transient shell mode needs a fixed pane title here.
   const paneTitle = isShellFocused ? "Shell · focused" : undefined
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"

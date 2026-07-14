@@ -43,6 +43,7 @@ export const RESTORATION_UNAVAILABLE_LABEL = "history unavailable"
 export const RESTORATION_FRESH_LABEL = "Previous history was unavailable — started a fresh session"
 export const RESTORATION_CONTEXT_LABEL = "Persisted hand-off context"
 export const START_FRESH_LABEL = "start fresh from this context"
+export const CONVERSATION_SCROLLBOX_ID = "conversation-scrollbox"
 
 /**
  * Hide the horizontal scrollbar outright rather than relying on `scrollX: false`.
@@ -79,7 +80,7 @@ export function ConversationView({
   const restoration = useAppSelector(restorationSelector)
   const bundle = useAppSelector(selectRestorationBundle)
   if (focusedSessionId === null) return null
-  const chrome = workspaceChrome ? <TabWorkspace /> : null
+  const leadingContent = workspaceChrome ? <TabWorkspace /> : null
 
   let content: ReactNode
   if (restoration === "unavailable") {
@@ -94,12 +95,20 @@ export function ConversationView({
         turns,
         welcomeBannerVariant,
         <FreshRestorationBadge />,
+        leadingContent,
       )
     } else {
-      content = <UnavailableRestoration bundle={bundle} />
+      content = <UnavailableRestoration bundle={bundle} leadingContent={leadingContent} />
     }
   } else if (restoration === null) {
-    content = renderConversationContent(controller, focusedSessionId, turns, welcomeBannerVariant, null)
+    content = renderConversationContent(
+      controller,
+      focusedSessionId,
+      turns,
+      welcomeBannerVariant,
+      null,
+      leadingContent,
+    )
   } else {
     content = renderConversationContent(
       controller,
@@ -107,16 +116,10 @@ export function ConversationView({
       turns,
       welcomeBannerVariant,
       <LiveRestorationBadge />,
+      leadingContent,
     )
   }
-
-  if (chrome === null) return content
-  return (
-    <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
-      {chrome}
-      {content}
-    </box>
-  )
+  return content
 }
 
 function renderConversationContent(
@@ -125,11 +128,15 @@ function renderConversationContent(
   turns: Turn[],
   welcomeBannerVariant: BannerVariant,
   notice: ReactNode,
+  leadingContent: ReactNode = null,
 ): ReactNode {
   if (turns.length === 0) {
     if (welcomeBannerVariant === "none") {
-      return notice ? (
-        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>{notice}</box>
+      return leadingContent !== null || notice !== null ? (
+        <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
+          {leadingContent}
+          {notice}
+        </box>
       ) : null
     }
 
@@ -141,6 +148,7 @@ function renderConversationContent(
 
     return (
       <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
+        {leadingContent}
         {notice}
         <WelcomeBanner
           variant={welcomeBannerVariant}
@@ -153,12 +161,14 @@ function renderConversationContent(
 
   return (
     <scrollbox
+      id={CONVERSATION_SCROLLBOX_ID}
       style={{ flexGrow: 1, flexShrink: 1 }}
       stickyScroll
       stickyStart="bottom"
       scrollX={false}
-    horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
-  >
+      horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
+    >
+      {leadingContent}
       {notice}
       {turns.map((turn, index) => (
         <TurnView key={keyFor(turn, index)} turn={turn} />
@@ -186,14 +196,21 @@ function FreshRestorationBadge(): ReactNode {
   )
 }
 
-function UnavailableRestoration({ bundle }: { bundle: HandoffBundle | null }): ReactNode {
+function UnavailableRestoration({
+  bundle,
+  leadingContent,
+}: {
+  bundle: HandoffBundle | null
+  leadingContent: ReactNode
+}): ReactNode {
   const palette = usePalette()
   return (
     <scrollbox
       style={{ flexGrow: 1, flexShrink: 1 }}
       scrollX={false}
       horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
-  >
+    >
+      {leadingContent}
       <text style={{ marginTop: 1 }} fg={palette.status.error}>
         {RESTORATION_UNAVAILABLE_LABEL}
       </text>

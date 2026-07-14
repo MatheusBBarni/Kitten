@@ -69,6 +69,8 @@ class StubShellRuntime implements ShellRuntime {
 
   write(): void {}
 
+  paste(): void {}
+
   interrupt(): void {}
 
   resize(cols: number, rows: number): void {

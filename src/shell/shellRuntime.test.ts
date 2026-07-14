@@ -311,4 +311,18 @@ describe("ShellRuntime in-memory factory", () => {
     expect(harness.writes.map((bytes) => [...bytes])).toEqual([[1, 2]])
     expect(runtime.view()).toEqual([])
   })
+
+  test("paste preserves raw input unless the foreground app enables bracketed paste", async () => {
+    const { runtime, harness } = setup()
+    runtime.paste(new TextEncoder().encode("first"))
+
+    await harness.scriptOutput("\u001b[?2004h")
+    runtime.paste(new TextEncoder().encode("second\nline"))
+
+    expect(harness.writes.map((bytes) => new TextDecoder().decode(bytes))).toEqual([
+      "first",
+      "\u001b[200~second\nline\u001b[201~",
+    ])
+    await runtime.dispose()
+  })
 })

@@ -303,6 +303,46 @@ describe("Markdown", () => {
     await destroyMarkdown(setup)
   })
 
+  it("wraps an unbroken token within the viewport instead of clipping its tail", async () => {
+    const tail = "WRAP_TAIL_SENTINEL"
+    const content = `Long token: ${"abcdefghij".repeat(8)} ${tail}`
+    const setup = await renderMarkdown(content, NARROW_WIDTH, HEIGHT)
+    const frame = await setup.waitForFrame(
+      (candidate) => candidate.includes("WRAP_TAIL") && candidate.includes("SENTINEL"),
+    )
+
+    expect(frame).toContain("WRAP_TAIL")
+    expect(frame).toContain("SENTINEL")
+    expect(frame.split("\n").filter((row) => row.trim().length > 0).length).toBeGreaterThan(2)
+
+    await destroyMarkdown(setup)
+  })
+
+  it("wraps every long table cell so the final content remains visible", async () => {
+    const tail = "TABLE_END"
+    const label = "Contract-change PRs with version classification and visible golden diff"
+    const target = `${"abcdefghij".repeat(8)} ${tail}`
+    const content = [
+      "| KPI | Target |",
+      "| --- | --- |",
+      `| ${label} | ${target} |`,
+    ].join("\n")
+    const setup = await renderMarkdown(content, NARROW_WIDTH, 32)
+    const visibleTail = tail.slice(3)
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(visibleTail))
+
+    expectAlignedTable(frame)
+    expect(frame).toContain(visibleTail)
+    expect(frame).not.toContain("…")
+    const dataRows = frame.split("\n").filter((row) => row.includes("│")).slice(1)
+    const renderedCell = (column: number) =>
+      dataRows.map((row) => row.split("│")[column] ?? "").join("").replace(/\s/g, "")
+    expect(renderedCell(1)).toBe(label.replace(/\s/g, ""))
+    expect(renderedCell(2)).toBe(target.replace(/\s/g, ""))
+
+    await destroyMarkdown(setup)
+  })
+
   it("renders an unbalanced fence as legible code without leaking fence markers", async () => {
     const setup = await renderMarkdown("```ts\nconst unfinished = true")
     const frame = await setup.waitForFrame((candidate) => candidate.includes("const unfinished = true"))
