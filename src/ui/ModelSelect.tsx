@@ -39,6 +39,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   EFFORT_CATEGORY,
   MODEL_CATEGORY,
+  PROVIDER_METADATA,
   visibleConfigOptions,
   type ConfigOption,
   type SessionId,
@@ -325,13 +326,13 @@ interface ModelSelectTab {
 
 /**
  * Build compact tab labels while preserving the session distinction when a fleet has
- * repeated providers. The ordinary two-pane cockpit simply reads "Claude" and
- * "Codex"; repeated provider sessions gain their configured title.
+ * repeated providers. A single session reads its provider's compact metadata label;
+ * repeated provider sessions gain their configured title.
  */
 function modelSelectTabs(
   sessions: readonly SessionListItem[],
 ): ModelSelectTab[] {
-  const baseLabels = sessions.map((session) => session.providerKind === "claude-code" ? "Claude" : "Codex")
+  const baseLabels = sessions.map((session) => PROVIDER_METADATA[session.providerKind].compactLabel)
   const counts = new Map<string, number>()
   for (const label of baseLabels) counts.set(label, (counts.get(label) ?? 0) + 1)
 

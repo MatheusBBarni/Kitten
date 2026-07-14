@@ -79,7 +79,7 @@ describe("session status integration (end_turn -> finished)", () => {
       height: 20,
       kittyKeyboard: true,
     })
-    await waitForFrame((frame) => frame.includes("codex:—"))
+    await waitForFrame((frame) => frame.includes("Codex:—"))
 
     await actAsync(async () => {
       await controller.actions.sendPrompt("do the thing")
@@ -90,10 +90,10 @@ describe("session status integration (end_turn -> finished)", () => {
 
     // The selected tab owns execution state; the footer remains provider-only.
     const frame = await waitForFrame((f) => f.includes("Codex · finished"))
-    expect(frame).toContain("codex:—")
-    expect(frame).not.toContain("claude:—")
+    expect(frame).toContain("Codex:—")
+    expect(frame).not.toContain("Claude:—")
     expect(frame).not.toContain("Claude Code:")
-    expect(frame).not.toContain("Codex:")
+    expect(frame).not.toContain("Codex: finished")
 
     await destroyMounted(renderer)
     await controller.dispose()

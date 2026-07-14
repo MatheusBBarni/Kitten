@@ -234,8 +234,8 @@ describe("CockpitApp layout", () => {
 
     // The strip keeps selected-provider context only; live work is transcript-local.
     const strip = rows.at(-1) ?? ""
-    expect(strip).toContain("claude:—")
-    expect(strip).not.toContain("codex:")
+    expect(strip).toContain("Claude:—")
+    expect(strip).not.toContain("Codex:")
     expect(strip).toContain(KEYMAP_HINT)
 
     await destroyMounted(renderer)
@@ -259,25 +259,25 @@ describe("CockpitApp layout", () => {
     controller.store.applyEvent("codex", { kind: "config_options", options: configOptions("gpt-5.1-codex-max", "medium") })
     const { renderer, waitForFrame } = await renderCockpitApp(controller)
 
-    const initial = await waitForFrame((f) => f.includes("claude:claude-fable-5[1m]"))
+    const initial = await waitForFrame((f) => f.includes("Claude:claude-fable-5[1m]"))
     expectNoOverflow(initial, 80, 24)
-    expect(initial).toContain("claude:claude-fable-5[1m]")
+    expect(initial).toContain("Claude:claude-fable-5[1m]")
     expect(initial).not.toContain("/high")
-    expect(initial).not.toContain("codex:gpt-5.1-codex-max")
+    expect(initial).not.toContain("Codex:gpt-5.1-codex-max")
 
     await actAsync(() => {
       controller.store.applyEvent("claude-code", { kind: "config_options", options: configOptions("sonnet", "low") })
     })
 
-    const updated = await waitForFrame((f) => f.includes("claude:sonnet"))
+    const updated = await waitForFrame((f) => f.includes("Claude:sonnet"))
     expectNoOverflow(updated, 80, 24)
-    expect(updated).toContain("claude:sonnet")
+    expect(updated).toContain("Claude:sonnet")
     expect(updated).not.toContain("/low")
-    expect(updated).not.toContain("codex:gpt-5.1-codex-max")
+    expect(updated).not.toContain("Codex:gpt-5.1-codex-max")
 
     await actAsync(() => controller.actions.switchFocus("codex"))
-    const codex = await waitForFrame((f) => f.includes("codex:gpt-5.1-codex-max"))
-    expect(codex).not.toContain("claude:sonnet")
+    const codex = await waitForFrame((f) => f.includes("Codex:gpt-5.1-codex-max"))
+    expect(codex).not.toContain("Claude:sonnet")
 
     await destroyMounted(renderer)
   })
@@ -340,7 +340,7 @@ describe("CockpitApp resize", () => {
 
     expectNoOverflow(shrunk, 64, 12)
     // The strip survives the shrink and stays pinned to the bottom row.
-    expect(lines(shrunk).at(-1)).toContain("claude:—")
+    expect(lines(shrunk).at(-1)).toContain("Claude:—")
 
     await actAsync(() => {
       resize(120, 40)
@@ -348,7 +348,7 @@ describe("CockpitApp resize", () => {
     const grown = await waitForFrame((f) => lines(f).length === 40 && f.includes(WELCOME_GREETING))
 
     expectNoOverflow(grown, 120, 40)
-    expect(lines(grown).at(-1)).toContain("claude:—")
+    expect(lines(grown).at(-1)).toContain("Claude:—")
 
     await destroyMounted(renderer)
   })

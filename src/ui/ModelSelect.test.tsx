@@ -3,15 +3,16 @@ import { describe, expect, it } from "bun:test"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
-import { createFakeController, type FakeController } from "../../test/fakeController.ts"
+import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { startMockAgent } from "../../test/mockAgent.ts"
 import { createAgentConnection, type AgentConnection } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
-import { createSessionController } from "../app/controller.ts"
+import { createSessionController, type AgentRuntimeState } from "../app/controller.ts"
 import {
   EFFORT_CATEGORY,
   MODEL_CATEGORY,
+  PROVIDER_METADATA,
   type AgentConfig,
   type AppConfig,
   type ConfigOption,
@@ -104,6 +105,45 @@ function codexConfigOptions(currentModel = "gpt-5.6-terra", currentEffort = "ult
       ],
     },
   ]
+}
+
+/** Cursor advertises opaque option identifiers and values like every other provider. */
+function cursorConfigOptions(currentModel = "cursor:composer", currentEffort = "cursor:high"): ConfigOption[] {
+  return [
+    {
+      id: "cursor/model-profile",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: currentModel,
+      options: [
+        { value: "cursor:composer", name: "Composer" },
+        { value: "cursor:agent-fast", name: "Agent Fast" },
+      ],
+    },
+    {
+      id: "cursor/effort-profile",
+      category: EFFORT_CATEGORY,
+      label: "Reasoning effort",
+      currentValue: currentEffort,
+      options: [
+        { value: "cursor:high", name: "High" },
+        { value: "cursor:low", name: "Low" },
+      ],
+    },
+  ]
+}
+
+function cursorRuntime(sessionId = "cursor", title = "Cursor"): AgentRuntimeState {
+  return {
+    sessionId,
+    providerKind: "cursor",
+    displayName: title,
+    title,
+    cwd: process.cwd(),
+    ready: true,
+    acpSessionId: `${sessionId}-acp`,
+    mcp: { loaded: [], skipped: [] },
+  }
 }
 
 /** Seed a session's advertised config options through the reducer. */
@@ -329,6 +369,82 @@ describe("ModelSelect visibility and content", () => {
     expect(controller.calls.setSessionConfigOption).toEqual([
       { configId: "model", value: "gpt-5.6-luna", sessionId: "codex" },
     ])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("filters, closes, reopens, wraps, and applies only Cursor's opaque option in a three-session selector", async () => {
+    const controller = createFakeController({ runtimes: [...readyRuntimes(), cursorRuntime()] })
+    seedOptions(controller, "claude-code", configOptions())
+    seedOptions(controller, "codex", codexConfigOptions())
+    seedOptions(controller, "cursor", cursorConfigOptions())
+    seedTurn(controller, "cursor")
+    controller.actions.backgroundConversation("cursor")
+    const setup = await renderWithSelector(controller)
+
+    const filtered = setup.captureCharFrame()
+    expect(filtered).toContain(PROVIDER_METADATA["claude-code"].compactLabel)
+    expect(filtered).toContain(PROVIDER_METADATA.codex.compactLabel)
+    expect(filtered).not.toContain(PROVIDER_METADATA.cursor.compactLabel)
+
+    await actAsync(() => setup.mockInput.pressEscape())
+    await setup.waitForFrame((frame) => !frame.includes(MODEL_SELECT_HINT))
+    await actAsync(() => controller.actions.reopenConversation("cursor"))
+    const reopened = await openSelector(setup, controller)
+    const tabsRow = reopened.split("\n").find((row) =>
+      row.includes(`${TAB_MARKER} ${PROVIDER_METADATA.cursor.compactLabel}`),
+    )!
+    const claudeIndex = tabsRow.indexOf(PROVIDER_METADATA["claude-code"].compactLabel)
+    const codexIndex = tabsRow.indexOf(PROVIDER_METADATA.codex.compactLabel)
+    const cursorIndex = tabsRow.indexOf(PROVIDER_METADATA.cursor.compactLabel)
+    expect(claudeIndex).toBeGreaterThanOrEqual(0)
+    expect(codexIndex).toBeGreaterThan(claudeIndex)
+    expect(cursorIndex).toBeGreaterThan(codexIndex)
+    expect(reopened).toContain(modelSelectTitleFor(PROVIDER_METADATA.cursor.compactLabel))
+
+    // Cursor is last: Tab wraps to Claude, and Shift+Tab wraps back to Cursor.
+    await actAsync(() => setup.mockInput.pressTab())
+    await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor(PROVIDER_METADATA["claude-code"].compactLabel)))
+    await actAsync(() => setup.mockInput.pressTab({ shift: true }))
+    await setup.waitForFrame((frame) => frame.includes(modelSelectTitleFor(PROVIDER_METADATA.cursor.compactLabel)))
+
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await setup.waitForFrame((frame) => frame.includes(`${ROW_MARKER} ${OTHER_MARK} Agent Fast`))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_CONFIRM_HINT))
+    expect(controller.calls.setSessionConfigOption).toEqual([])
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes(MODEL_SELECT_HINT) && !frame.includes(MODEL_SELECT_CONFIRM_HINT))
+
+    expect(controller.calls.backgroundConversation).toEqual(["cursor"])
+    expect(controller.calls.reopenConversation).toEqual(["cursor"])
+    expect(controller.calls.selectConversation.slice(-2)).toEqual(["claude-code", "cursor"])
+    expect(controller.calls.setSessionConfigOption).toEqual([
+      { configId: "cursor/model-profile", value: "cursor:agent-fast", sessionId: "cursor" },
+    ])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("disambiguates duplicate Cursor tabs with each conversation title", async () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.addSession({
+      id: "cursor-review",
+      providerKind: "cursor",
+      title: "Review lane",
+      cwd: process.cwd(),
+    }, { availability: { kind: "ready" } })
+    store.selectConversation("claude-code")
+    const controller = createFakeController({
+      store,
+      runtimes: [...readyRuntimes(), cursorRuntime(), cursorRuntime("cursor-review", "Review lane")],
+    })
+    seedOptions(controller, "claude-code", configOptions())
+    const setup = await renderWithSelector(controller)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Cursor: Cursor")
+    expect(frame).toContain("Cursor: Review lane")
 
     await destroyMounted(setup.renderer)
   })

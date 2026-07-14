@@ -9,7 +9,7 @@
 import { useMemo, type ReactNode } from "react"
 
 import type { AgentRuntimeState } from "../app/controller.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, PROVIDER_METADATA, type ConfigOption } from "../core/types.ts"
 import type { Selector } from "../store/appStore.ts"
 import {
   selectAgentConfigOptions,
@@ -153,7 +153,7 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
   const selectedHeadroom = useAppSelector(headroomSelector)
   const displayModel = displayModelName(configOptions, model)
   const displayEffort = displayEffortName(configOptions, effort)
-  const provider = runtime.providerKind === "claude-code" ? "claude" : "codex"
+  const provider = PROVIDER_METADATA[runtime.providerKind].compactLabel
   const headroom = formatHeadroom(selectedHeadroom, STATUS_STRIP_HEADROOM_CELLS)
 
   return (

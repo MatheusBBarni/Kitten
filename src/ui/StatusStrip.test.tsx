@@ -7,6 +7,7 @@ import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes } from "../../test/fakeController.ts"
+import type { AgentRuntimeState } from "../app/controller.ts"
 import type { ConfigOption, SessionId } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -65,12 +66,12 @@ describe("StatusStrip", () => {
     const controller = createFakeController()
     const setup = await renderStrip(controller)
 
-    expect(setup.captureCharFrame()).toContain("claude:—")
-    expect(setup.captureCharFrame()).not.toContain("codex:")
+    expect(setup.captureCharFrame()).toContain("Claude:—")
+    expect(setup.captureCharFrame()).not.toContain("Codex:")
 
     await actAsync(() => controller.actions.selectConversation("codex"))
-    const codex = await setup.waitForFrame((frame) => frame.includes("codex:—"))
-    expect(codex).not.toContain("claude:")
+    const codex = await setup.waitForFrame((frame) => frame.includes("Codex:—"))
+    expect(codex).not.toContain("Claude:")
 
     await destroyMounted(setup.renderer)
   })
@@ -85,9 +86,9 @@ describe("StatusStrip", () => {
     }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("claude:opus:high 38% █░░")
+    expect(frame).toContain("Claude:opus:high 38% █░░")
     expect(frame).not.toContain("working")
-    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain("Codex:")
     expect(frame).toContain(KEYMAP_HINT)
     expectNoOverflow(frame, 80)
 
@@ -107,7 +108,7 @@ describe("StatusStrip", () => {
     const setup = await renderStrip(controller, 80, slotSelectors({ model: { "claude-code": "opus[1m]" } }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("claude:Opus")
+    expect(frame).toContain("Claude:Opus")
     expect(frame).not.toContain("opus[1m]")
 
     await destroyMounted(setup.renderer)
@@ -124,7 +125,7 @@ describe("StatusStrip", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(EMPTY_WORKSPACE_STATUS_LABEL)
     expect(frame).toContain(`${BACKGROUND_STATUS_LABEL}: 1`)
-    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain("Codex:")
 
     await destroyMounted(setup.renderer)
   })
@@ -136,7 +137,55 @@ describe("StatusStrip", () => {
 
     const frame = setup.captureCharFrame()
     expect(frame).toContain(`${MCP_STATUS_LABEL} +github`)
-    expect(frame).not.toContain("codex:")
+    expect(frame).not.toContain("Codex:")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders a ready Cursor runtime through shared metadata within 80 columns", async () => {
+    const cursor = {
+      sessionId: "cursor",
+      providerKind: "cursor",
+      displayName: "Cursor",
+      title: "Cursor",
+      cwd: process.cwd(),
+      ready: true,
+      acpSessionId: "session-cursor",
+      mcp: { loaded: ["github"], skipped: [] },
+    } satisfies AgentRuntimeState
+    const store = createAppStore({ selectedVisibleId: "cursor" })
+    store.applyEvent("cursor", {
+      kind: "config_options",
+      options: [
+        {
+          id: "cursor/model-profile",
+          category: "model",
+          label: "Model",
+          currentValue: "cursor:composer",
+          options: [{ value: "cursor:composer", name: "Composer" }],
+        },
+        {
+          id: "cursor/effort-profile",
+          category: "thought_level",
+          label: "Reasoning effort",
+          currentValue: "cursor:high",
+          options: [{ value: "cursor:high", name: "High" }],
+        },
+      ],
+    })
+    store.applyEvent("cursor", { kind: "usage", used: 50_000, size: 200_000 })
+    const controller = createFakeController({ store, runtimes: [...readyRuntimes(), cursor] })
+    const setup = await renderStrip(controller, 80, slotSelectors({
+      model: { cursor: "cursor:composer" },
+      effort: { cursor: "cursor:high" },
+    }))
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Cursor:Composer:High 75% ██░")
+    expect(frame).toContain(`${MCP_STATUS_LABEL} +github`)
+    expect(frame).not.toContain("Claude:")
+    expect(frame).not.toContain("Codex:")
+    expectNoOverflow(frame, 80)
 
     await destroyMounted(setup.renderer)
   })
