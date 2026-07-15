@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Build the Explicit Delegation Launch Dialog"
 type: frontend
 complexity: medium

@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test"
 import type { ElicitationSchema, SessionUpdate, ToolCall, ToolCallUpdate as AcpToolCallUpdate } from "@agentclientprotocol/sdk"
 
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
-import type { ClarificationPayload, DomainSessionEvent, McpServerConfig } from "../core/types.ts"
+import type { ClarificationAnswer, ClarificationPayload, DomainSessionEvent, McpServerConfig } from "../core/types.ts"
 import {
   toAcpElicitationOutcome,
   toAcpMcpServers,
@@ -57,6 +57,7 @@ describe("elicitation form translation", () => {
           label: "Strategy",
           required: true,
           mode: "single",
+          allowsCustom: false,
           options: [
             { id: "safe", label: "Safe", description: "Smallest change" },
             { id: "fast", label: "Fast" },
@@ -67,6 +68,7 @@ describe("elicitation form translation", () => {
           label: "Targets",
           required: true,
           mode: "multi",
+          allowsCustom: false,
           options: [
             { id: "tests", label: "Tests" },
             { id: "docs", label: "Docs", description: "Update guidance" },
@@ -77,6 +79,7 @@ describe("elicitation form translation", () => {
           label: "optional",
           required: false,
           mode: "single",
+          allowsCustom: false,
           options: [
             { id: "alpha", label: "alpha" },
             { id: "beta", label: "beta" },
@@ -101,6 +104,7 @@ describe("elicitation form translation", () => {
           label: "choices",
           required: false,
           mode: "multi",
+          allowsCustom: false,
           options: [
             { id: "one", label: "one" },
             { id: "two", label: "two" },
@@ -121,6 +125,17 @@ describe("elicitation form translation", () => {
     ["constrained text", "Ask", { properties: { note: { type: "string", minLength: 1 } } }],
     ["non-string array", "Ask", { properties: { choice: { type: "array", items: { type: "number" } } } }],
     ["unbounded array", "Ask", { properties: { choice: { type: "array", items: { type: "string", enum: ["x"] }, maxItems: 1 } } }],
+    [
+      "too many fields",
+      "Ask",
+      { properties: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`field-${index}`, { type: "string" }])) },
+    ],
+    [
+      "too many options",
+      "Ask",
+      { properties: { choice: { type: "string", enum: Array.from({ length: 21 }, (_, index) => `option-${index}`) } } },
+    ],
+    ["oversized prompt", "x".repeat(4_097), { properties: { note: { type: "string" } } }],
   ])("rejects malformed or unsupported schema: %s", (_label, message, rawSchema) => {
     expect(translateElicitationForm(message, rawSchema as ElicitationSchema)).toBeNull()
   })
@@ -135,6 +150,7 @@ describe("elicitation outcome translation", () => {
         label: "Strategy",
         required: true,
         mode: "single",
+        allowsCustom: false,
         options: [
           { id: "safe", label: "Safe" },
           { id: "fast", label: "Fast" },
@@ -145,6 +161,7 @@ describe("elicitation outcome translation", () => {
         label: "Targets",
         required: true,
         mode: "multi",
+        allowsCustom: false,
         options: [
           { id: "tests", label: "Tests" },
           { id: "docs", label: "Docs" },
@@ -154,11 +171,15 @@ describe("elicitation outcome translation", () => {
     ],
   }
 
-  it("maps one valid answered outcome to ACP accept content", () => {
+  it("maps one valid submitted outcome to ACP accept content", () => {
     expect(
       toAcpElicitationOutcome(payload, {
-        kind: "answered",
-        values: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it small" },
+        kind: "submitted",
+        answers: {
+          strategy: { selectedOptionIds: ["safe"] },
+          targets: { selectedOptionIds: ["tests", "docs"] },
+          notes: { selectedOptionIds: [], customText: "Keep it small" },
+        },
       }),
     ).toEqual({
       action: "accept",
@@ -166,25 +187,120 @@ describe("elicitation outcome translation", () => {
     })
   })
 
-  it("maps cancellation directly to ACP cancel", () => {
-    expect(toAcpElicitationOutcome(payload, { kind: "cancelled" })).toEqual({ action: "cancel" })
+  it.each(["skipped", "timed_out", "cancelled"] as const)("maps %s directly to ACP cancel", (kind) => {
+    expect(toAcpElicitationOutcome(payload, { kind })).toEqual({ action: "cancel" })
   })
 
   it.each([
-    ["missing required", { strategy: "safe" }],
-    ["unknown field", { strategy: "safe", targets: ["tests"], extra: "no" }],
-    ["wrong single type", { strategy: ["safe"], targets: ["tests"] }],
-    ["unknown single option", { strategy: "other", targets: ["tests"] }],
-    ["wrong multi type", { strategy: "safe", targets: "tests" }],
-    ["unknown multi option", { strategy: "safe", targets: ["other"] }],
-    ["duplicate multi option", { strategy: "safe", targets: ["tests", "tests"] }],
-    ["empty required multi", { strategy: "safe", targets: [] }],
-    ["undefined optional value", { strategy: "safe", targets: ["tests"], notes: undefined }],
-  ])("terminally cancels invalid submitted values: %s", (_label, values) => {
+    ["missing required", { strategy: { selectedOptionIds: ["safe"] } }],
+    [
+      "unknown field",
+      {
+        strategy: { selectedOptionIds: ["safe"] },
+        targets: { selectedOptionIds: ["tests"] },
+        extra: { selectedOptionIds: [] },
+      },
+    ],
+    [
+      "unknown single option",
+      { strategy: { selectedOptionIds: ["other"] }, targets: { selectedOptionIds: ["tests"] } },
+    ],
+    [
+      "multiple single selections",
+      { strategy: { selectedOptionIds: ["safe", "fast"] }, targets: { selectedOptionIds: ["tests"] } },
+    ],
+    [
+      "unknown multi option",
+      { strategy: { selectedOptionIds: ["safe"] }, targets: { selectedOptionIds: ["other"] } },
+    ],
+    [
+      "duplicate multi option",
+      { strategy: { selectedOptionIds: ["safe"] }, targets: { selectedOptionIds: ["tests", "tests"] } },
+    ],
+    [
+      "empty required multi",
+      { strategy: { selectedOptionIds: ["safe"] }, targets: { selectedOptionIds: [] } },
+    ],
+    [
+      "custom choice",
+      {
+        strategy: { selectedOptionIds: [], customText: "other" },
+        targets: { selectedOptionIds: ["tests"] },
+      },
+    ],
+    [
+      "selection on text field",
+      {
+        strategy: { selectedOptionIds: ["safe"] },
+        targets: { selectedOptionIds: ["tests"] },
+        notes: { selectedOptionIds: ["safe"], customText: "text" },
+      },
+    ],
+  ])("terminally cancels invalid submitted answers: %s", (_label, answers) => {
     expect(
       toAcpElicitationOutcome(payload, {
-        kind: "answered",
-        values: values as Record<string, string | string[]>,
+        kind: "submitted",
+        answers: answers as Record<string, ClarificationAnswer>,
+      }),
+    ).toEqual({ action: "cancel" })
+  })
+
+  it("cancels a choice field that advertises custom answers", () => {
+    const customPayload: ClarificationPayload = {
+      ...payload,
+      fields: payload.fields.map((field) =>
+        field.id === "strategy" && field.mode === "single"
+          ? { ...field, allowsCustom: true }
+          : field,
+      ),
+    }
+    expect(
+      toAcpElicitationOutcome(customPayload, {
+        kind: "submitted",
+        answers: {
+          strategy: { selectedOptionIds: ["safe"] },
+          targets: { selectedOptionIds: ["tests"] },
+        },
+      }),
+    ).toEqual({ action: "cancel" })
+  })
+
+  it("cancels a payload with duplicate field IDs", () => {
+    expect(
+      toAcpElicitationOutcome(
+        { ...payload, fields: [...payload.fields, payload.fields[0]!] },
+        {
+          kind: "submitted",
+          answers: {
+            strategy: { selectedOptionIds: ["safe"] },
+            targets: { selectedOptionIds: ["tests"] },
+          },
+        },
+      ),
+    ).toEqual({ action: "cancel" })
+  })
+
+  it("cancels form metadata and answer properties that ACP cannot represent faithfully", () => {
+    expect(
+      toAcpElicitationOutcome(
+        { ...payload, title: "Richer bridge title" },
+        {
+          kind: "submitted",
+          answers: {
+            strategy: { selectedOptionIds: ["safe"] },
+            targets: { selectedOptionIds: ["tests"] },
+          },
+        },
+      ),
+    ).toEqual({ action: "cancel" })
+
+    expect(
+      toAcpElicitationOutcome(payload, {
+        kind: "submitted",
+        answers: {
+          strategy: { selectedOptionIds: ["safe"], unsupported: true } as ClarificationAnswer,
+          targets: { selectedOptionIds: ["tests"] },
+        },
       }),
     ).toEqual({ action: "cancel" })
   })

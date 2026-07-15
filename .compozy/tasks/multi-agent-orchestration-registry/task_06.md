@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Surface Delegated Children in Workspace Views"
 type: frontend
 complexity: high

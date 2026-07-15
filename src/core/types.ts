@@ -27,6 +27,102 @@ export type ProviderKind = "claude-code" | "codex" | "cursor"
  */
 export type SessionId = string
 
+/** Closed, protocol-free lifecycle for one host-owned delegated child. */
+export type DelegatedChildStatus =
+  | "starting"
+  | "running"
+  | "needs_input"
+  | "finished"
+  | "failed"
+  | "cancelled"
+
+/** The statuses that permanently settle delegated child work. */
+export type DelegatedChildTerminalStatus = Extract<
+  DelegatedChildStatus,
+  "finished" | "failed" | "cancelled"
+>
+
+/** Immutable exactly-once terminal result metadata supplied by the controller. */
+export interface DelegatedChildTerminalSnapshot {
+  readonly status: DelegatedChildTerminalStatus
+  readonly at: number
+}
+
+/** Protocol-free projection of one child owned by exactly one parent generation. */
+export interface DelegatedChildSnapshot {
+  readonly childId: SessionId
+  readonly parentId: SessionId
+  readonly parentGeneration: number
+  readonly childGeneration: number
+  readonly status: DelegatedChildStatus
+  readonly task: string
+  readonly desiredOutcome: string
+  readonly terminal?: DelegatedChildTerminalSnapshot
+}
+
+/** Parent close intent is state, while cancellation and teardown stay controller-owned. */
+export type DelegationParentCloseState = "open" | "closing"
+
+/** Ordered ownership metadata for one flat delegation group. */
+export interface DelegationParent {
+  readonly parentId: SessionId
+  readonly parentGeneration: number
+  readonly childIds: readonly SessionId[]
+  readonly closeState: DelegationParentCloseState
+}
+
+/** Ephemeral normalized delegation projection; never persisted in V1. */
+export interface DelegationState {
+  readonly parents: Readonly<Record<SessionId, DelegationParent>>
+  readonly children: Readonly<Record<SessionId, DelegatedChildSnapshot>>
+}
+
+/** Parent-group presentation derived entirely from immutable child snapshots. */
+export type DelegationAggregateStatus = "active" | "needs_input" | "settled"
+
+type DelegatedChildActiveStatus = Exclude<DelegatedChildStatus, DelegatedChildTerminalStatus>
+
+/** Pure state transitions; runtime ownership and timestamp creation stay outside core. */
+export type DelegationEvent =
+  | {
+      readonly kind: "register_child"
+      readonly parentId: SessionId
+      readonly childId: SessionId
+      readonly parentGeneration: number
+      readonly childGeneration: number
+      readonly task: string
+      readonly desiredOutcome: string
+    }
+  | {
+      readonly kind: "publish_child_status"
+      readonly parentId: SessionId
+      readonly childId: SessionId
+      readonly parentGeneration: number
+      readonly childGeneration: number
+      readonly status: DelegatedChildActiveStatus
+    }
+  | {
+      readonly kind: "publish_child_status"
+      readonly parentId: SessionId
+      readonly childId: SessionId
+      readonly parentGeneration: number
+      readonly childGeneration: number
+      readonly status: DelegatedChildTerminalStatus
+      readonly at: number
+    }
+  | {
+      readonly kind: "mark_parent_closing"
+      readonly parentId: SessionId
+      readonly parentGeneration: number
+    }
+  | {
+      readonly kind: "remove_child"
+      readonly parentId: SessionId
+      readonly childId: SessionId
+      readonly parentGeneration: number
+      readonly childGeneration: number
+    }
+
 /** Every provider kind Kitten understands, kept stable for config validation. */
 export const PROVIDER_KINDS: readonly ProviderKind[] = ["claude-code", "codex", "cursor"]
 
@@ -88,8 +184,14 @@ export const needsAttention = (status: SessionStatus): boolean =>
   status === "finished"
 
 /** One protocol-free choice presented by a structured clarification field. */
+export const CLARIFICATION_LIMITS = {
+  maxFields: 10,
+  maxOptionsPerField: 20,
+  maxTextLength: 4_096,
+} as const
+
 export interface ClarificationOption {
-  /** Stable adapter-normalized identifier returned in an answered outcome. */
+  /** Stable adapter-normalized identifier returned in a submitted outcome. */
   id: string
   label: string
   description?: string
@@ -107,12 +209,16 @@ interface ClarificationFieldBase {
 export interface ClarificationSingleField extends ClarificationFieldBase {
   mode: "single"
   options: ClarificationOption[]
+  /** Whether the operator may answer outside the normalized option set. */
+  allowsCustom: boolean
 }
 
 /** A field whose answer may reference several normalized option identifiers. */
 export interface ClarificationMultiField extends ClarificationFieldBase {
   mode: "multi"
   options: ClarificationOption[]
+  /** Whether the operator may combine normalized selections with custom text. */
+  allowsCustom: boolean
 }
 
 /** A field answered with protocol-free text rather than a choice identifier. */
@@ -129,13 +235,23 @@ export type ClarificationField =
 
 /** Adapter-normalized clarification content with no request or connection lifecycle data. */
 export interface ClarificationPayload {
+  title?: string
+  context?: string
   prompt: string
   fields: ClarificationField[]
 }
 
-/** The only terminal user outcomes exposed beyond the adapter/controller boundary. */
+/** One structured answer, preserving option identity separately from custom text. */
+export interface ClarificationAnswer {
+  selectedOptionIds: string[]
+  customText?: string
+}
+
+/** The closed terminal vocabulary shared by every clarification transport. */
 export type ClarificationOutcome =
-  | { kind: "answered"; values: Record<string, string | string[]> }
+  | { kind: "submitted"; answers: Record<string, ClarificationAnswer> }
+  | { kind: "skipped" }
+  | { kind: "timed_out" }
   | { kind: "cancelled" }
 
 /** User-owned lifecycle for one conversation in the workspace. */
@@ -188,6 +304,31 @@ export interface WorkspaceState {
 
 /** Ephemeral workspace feedback; never persisted or sent to telemetry. */
 export type WorkspaceNotice = { code: "no-provider-available" }
+
+/**
+ * The complete UI projection for an unsafe fresh-conversation start.
+ *
+ * Every field is a closed Kitten-owned enum. In particular, this shape has no
+ * room for harness text, user task text, profile/version data, paths, raw errors,
+ * ACP identifiers, or provider payloads.
+ */
+export const HARNESS_DELIVERY_FAILED_NOTICE = {
+  state: "failed",
+  reason: "safe_start_unavailable",
+  recoveryAction: "start_fresh",
+} as const
+
+export type HarnessDeliveryNotice = typeof HARNESS_DELIVERY_FAILED_NOTICE
+
+/** Reject any expanded or content-bearing object at an untyped boundary. */
+export function isHarnessDeliveryNotice(value: unknown): value is HarnessDeliveryNotice {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return Object.keys(record).length === 3 &&
+    record.state === HARNESS_DELIVERY_FAILED_NOTICE.state &&
+    record.reason === HARNESS_DELIVERY_FAILED_NOTICE.reason &&
+    record.recoveryAction === HARNESS_DELIVERY_FAILED_NOTICE.recoveryAction
+}
 
 /** Seed accepted by the pure workspace factory for boot and restore. */
 export interface WorkspaceConversationSeed {
@@ -633,6 +774,8 @@ export interface AppConfig {
   sessions: SessionDescriptor[]
   mcpServers: McpServerConfig[]
   shell: ShellConfig
+  /** Kitten-owned whole-form clarification timeout; callers cannot override it per request. */
+  clarificationTimeoutSeconds: number
   persistenceEnabled: boolean
   telemetryEnabled: boolean
   theme: ThemePreference

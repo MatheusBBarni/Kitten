@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Harden Delegated Lifecycle and Parent Teardown"
 type: backend
 complexity: high

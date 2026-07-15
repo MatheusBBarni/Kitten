@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Certified Runtime Profiles and Adapter Envelope"
 type: refactor
 complexity: high

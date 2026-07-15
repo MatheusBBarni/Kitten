@@ -9,9 +9,10 @@
 
 import type { KeyEvent } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useRef, useState, type ReactNode } from "react"
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type {
+  ClarificationAnswer,
   ClarificationField,
   ClarificationOutcome,
   ClarificationPayload,
@@ -46,14 +47,22 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
   const palette = usePalette()
   const { height } = useTerminalDimensions()
   const fields = overlay.payload.fields
-  const [activeFieldIndex, setActiveFieldIndex] = useState(0)
+  const focusTargets = useMemo(() => fields.flatMap((field, fieldIndex) => {
+    if (field.mode === "text") return [{ fieldIndex, kind: "text" as const }]
+    return field.allowsCustom
+      ? [{ fieldIndex, kind: "choice" as const }, { fieldIndex, kind: "text" as const }]
+      : [{ fieldIndex, kind: "choice" as const }]
+  }), [fields])
+  const [activeTargetIndex, setActiveTargetIndex] = useState(0)
   const [optionIndices, setOptionIndices] = useState<Record<string, number>>({})
   const [multiValues, setMultiValues] = useState<Record<string, string[]>>({})
   const [textValues, setTextValues] = useState<Record<string, string>>({})
   const [validationError, setValidationError] = useState(false)
   const settled = useRef(false)
 
-  const activeField = fields[Math.min(activeFieldIndex, Math.max(fields.length - 1, 0))]
+  const activeTarget = focusTargets[Math.min(activeTargetIndex, Math.max(focusTargets.length - 1, 0))]
+  const activeField = activeTarget ? fields[activeTarget.fieldIndex] : undefined
+  const editingText = activeTarget?.kind === "text"
 
   const answer = useCallback(
     (outcome: ClarificationOutcome): void => {
@@ -70,22 +79,22 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
   )
 
   const submit = useCallback((): void => {
-    const values = clarificationValues(overlay.payload, optionIndices, multiValues, textValues)
-    if (values === null) {
+    const answers = clarificationAnswers(overlay.payload, optionIndices, multiValues, textValues)
+    if (answers === null) {
       setValidationError(true)
       return
     }
-    answer({ kind: "answered", values })
+    answer({ kind: "submitted", answers })
   }, [answer, multiValues, optionIndices, overlay.payload, textValues])
 
-  const moveField = useCallback((delta: -1 | 1): void => {
-    if (fields.length === 0) return
+  const moveFocus = useCallback((delta: -1 | 1): void => {
+    if (focusTargets.length === 0) return
     setValidationError(false)
-    setActiveFieldIndex((index) => (index + delta + fields.length) % fields.length)
-  }, [fields.length])
+    setActiveTargetIndex((index) => (index + delta + focusTargets.length) % focusTargets.length)
+  }, [focusTargets.length])
 
   const moveOption = useCallback((delta: -1 | 1): void => {
-    if (!activeField || activeField.mode === "text") return
+    if (!activeField || activeField.mode === "text" || editingText) return
     setValidationError(false)
     setOptionIndices((current) => {
       const index = current[activeField.id] ?? 0
@@ -94,16 +103,16 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
         [activeField.id]: Math.max(0, Math.min(index + delta, activeField.options.length - 1)),
       }
     })
-  }, [activeField])
+  }, [activeField, editingText])
 
   const chooseDigit = useCallback((index: number): void => {
-    if (!activeField || activeField.mode === "text" || !activeField.options[index]) return
+    if (!activeField || activeField.mode === "text" || editingText || !activeField.options[index]) return
     setValidationError(false)
     setOptionIndices((current) => ({ ...current, [activeField.id]: index }))
-  }, [activeField])
+  }, [activeField, editingText])
 
   const toggleMulti = useCallback((): void => {
-    if (!activeField || activeField.mode !== "multi") return
+    if (!activeField || activeField.mode !== "multi" || editingText) return
     const option = activeField.options[optionIndices[activeField.id] ?? 0]
     if (!option) return
     setValidationError(false)
@@ -116,20 +125,21 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
           : [...selected, option.id],
       }
     })
-  }, [activeField, optionIndices])
+  }, [activeField, editingText, optionIndices])
 
   const onKey = useCallback((key: KeyEvent): void => {
     const digit = clarificationOptionIndex(key)
-    if (digit !== null && activeField?.mode !== "text") {
+    if (digit !== null && activeField?.mode !== "text" && !editingText) {
       key.preventDefault()
       chooseDigit(digit)
       return
     }
 
     const command = matchClarificationCommand(key)
-    if (activeField?.mode === "text") {
+    if (editingText) {
       if (command === "toggle-option") return
       if (command === null && isTextInputKey(key)) return
+      if (command === "prev-option" || command === "next-option") return
     }
 
     key.preventDefault()
@@ -141,10 +151,10 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
         moveOption(1)
         return
       case "prev-field":
-        moveField(-1)
+        moveFocus(-1)
         return
       case "next-field":
-        moveField(1)
+        moveFocus(1)
         return
       case "toggle-option":
         toggleMulti()
@@ -152,13 +162,16 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
       case "confirm":
         submit()
         return
+      case "skip":
+        answer({ kind: "skipped" })
+        return
       case "cancel":
         answer({ kind: "cancelled" })
         return
       default:
         return
     }
-  }, [activeField, answer, chooseDigit, moveField, moveOption, submit, toggleMulti])
+  }, [activeField, answer, chooseDigit, editingText, moveFocus, moveOption, submit, toggleMulti])
   useKeyboard(onKey)
 
   const displayName = controller.runtime(overlay.sessionId)?.displayName ?? overlay.sessionId
@@ -186,6 +199,12 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
         <span fg={palette.text}>{overlay.title}</span>
         <span fg={palette.muted}>{`  ${overlay.cwd}`}</span>
       </text>
+      {overlay.payload.title ? (
+        <text style={{ flexShrink: 0 }} fg={palette.text}>{overlay.payload.title}</text>
+      ) : null}
+      {overlay.payload.context ? (
+        <text style={{ flexShrink: 0 }} fg={palette.muted}>{overlay.payload.context}</text>
+      ) : null}
       <text style={{ flexShrink: 0 }} fg={palette.text}>{overlay.payload.prompt}</text>
 
       <box style={{ flexDirection: "column", flexShrink: 1, overflow: "hidden", marginTop: 1 }}>
@@ -193,7 +212,7 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
           <ClarificationFieldView
             key={field.id}
             field={field}
-            active={fieldIndex === activeFieldIndex}
+            activeTarget={activeTarget?.fieldIndex === fieldIndex ? activeTarget.kind : null}
             optionIndex={optionIndices[field.id] ?? 0}
             selected={multiValues[field.id] ?? []}
             text={textValues[field.id] ?? ""}
@@ -216,7 +235,7 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
 
 function ClarificationFieldView({
   field,
-  active,
+  activeTarget,
   optionIndex,
   selected,
   text,
@@ -224,7 +243,7 @@ function ClarificationFieldView({
   onSubmit,
 }: {
   field: ClarificationField
-  active: boolean
+  activeTarget: "choice" | "text" | null
   optionIndex: number
   selected: readonly string[]
   text: string
@@ -233,6 +252,8 @@ function ClarificationFieldView({
 }): ReactNode {
   const palette = usePalette()
   const fieldLabel = `${field.label}${field.required ? " *" : ""}`
+  const active = activeTarget !== null
+  const showTextInput = field.mode === "text" || field.allowsCustom
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
@@ -244,20 +265,9 @@ function ClarificationFieldView({
       </text>
       {field.description ? <text fg={palette.muted}>{`  ${field.description}`}</text> : null}
 
-      {field.mode === "text" ? (
-        <box style={{ flexDirection: "row", paddingLeft: 2 }}>
-          <text fg={palette.muted}>Response: </text>
-          <input
-            focused={active}
-            value={text}
-            onInput={onText}
-            onSubmit={onSubmit}
-            style={{ flexGrow: 1, textColor: palette.text, cursorColor: palette.status.awaiting_clarification }}
-          />
-        </box>
-      ) : (
+      {field.mode !== "text" ? (
         field.options.map((option, index) => {
-          const highlighted = active && index === optionIndex
+          const highlighted = activeTarget === "choice" && index === optionIndex
           const checked = field.mode === "multi" && selected.includes(option.id)
           return (
             <box key={option.id} style={{ flexDirection: "column", paddingLeft: 2 }}>
@@ -272,39 +282,63 @@ function ClarificationFieldView({
             </box>
           )
         })
-      )}
+      ) : null}
+      {showTextInput ? (
+        <box style={{ flexDirection: "row", paddingLeft: 2 }}>
+          <text fg={activeTarget === "text" ? palette.text : palette.muted}>
+            {field.mode === "text" ? "Response: " : "Custom answer: "}
+          </text>
+          <input
+            focused={activeTarget === "text"}
+            value={text}
+            onInput={onText}
+            onSubmit={onSubmit}
+            style={{ flexGrow: 1, textColor: palette.text, cursorColor: palette.status.awaiting_clarification }}
+          />
+        </box>
+      ) : null}
     </box>
   )
 }
 
-function clarificationValues(
+function clarificationAnswers(
   payload: ClarificationPayload,
   optionIndices: Readonly<Record<string, number>>,
   multiValues: Readonly<Record<string, readonly string[]>>,
   textValues: Readonly<Record<string, string>>,
-): Record<string, string | string[]> | null {
-  const values: Record<string, string | string[]> = {}
+): Record<string, ClarificationAnswer> | null {
+  const answers: Record<string, ClarificationAnswer> = {}
   for (const field of payload.fields) {
     if (field.mode === "single") {
       const option = field.options[optionIndices[field.id] ?? 0]
-      if (!option) {
+      const customText = field.allowsCustom ? textValues[field.id] ?? "" : ""
+      if (!option && customText.length === 0) {
         if (field.required) return null
         continue
       }
-      values[field.id] = option.id
+      answers[field.id] = {
+        selectedOptionIds: option ? [option.id] : [],
+        ...(customText.length === 0 ? {} : { customText }),
+      }
       continue
     }
     if (field.mode === "multi") {
       const selected = multiValues[field.id] ?? []
-      if (field.required && selected.length === 0) return null
-      if (selected.length > 0) values[field.id] = [...selected]
+      const customText = field.allowsCustom ? textValues[field.id] ?? "" : ""
+      if (field.required && selected.length === 0 && customText.length === 0) return null
+      if (selected.length > 0 || customText.length > 0) {
+        answers[field.id] = {
+          selectedOptionIds: [...selected],
+          ...(customText.length === 0 ? {} : { customText }),
+        }
+      }
       continue
     }
     const text = textValues[field.id] ?? ""
     if (field.required && text.length === 0) return null
-    if (text.length > 0) values[field.id] = text
+    if (text.length > 0) answers[field.id] = { selectedOptionIds: [], customText: text }
   }
-  return values
+  return answers
 }
 
 /** Keys the focused OpenTUI input may consume without escaping the modal. */

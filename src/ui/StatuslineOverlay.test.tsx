@@ -307,7 +307,7 @@ describe("StatuslineOverlay keyboard and width behavior", () => {
       cwd: process.cwd(),
       payload: {
         prompt: "Choose one",
-        fields: [{ id: "one", label: "One", mode: "single", required: true, options: [{ id: "a", label: "A" }] }],
+        fields: [{ id: "one", label: "One", mode: "single", required: true, allowsCustom: false, options: [{ id: "a", label: "A" }] }],
       },
     }))
     await setup.waitForFrame((frame) => frame.includes("Choose one"))

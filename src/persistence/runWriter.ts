@@ -2,7 +2,7 @@ import type { HandoffBundle, Turn } from "../core/types.ts"
 import type { AppState, AppStore, Unsubscribe } from "../store/appStore.ts"
 import type {
   PersistedConversationV2,
-  PersistedRunRecordV2,
+  PersistedRunRecordV3,
   PersistedWorkspaceConversationV2,
 } from "./runRecord.ts"
 import type { RunStore } from "./runStore.ts"
@@ -140,9 +140,10 @@ class ActiveRunWriter implements RunWriter {
     }
   }
 
-  private snapshot(state: AppState): PersistedRunRecordV2 {
+  private snapshot(state: AppState): PersistedRunRecordV3 {
     const conversations: Record<string, PersistedConversationV2> = {}
     const workspaceConversations: Record<string, PersistedWorkspaceConversationV2> = {}
+    const harnessDeliveries: PersistedRunRecordV3["harnessDeliveries"] = {}
     const order: string[] = []
     for (const sessionId of state.workspace.order) {
       const session = state.sessions[sessionId]
@@ -169,13 +170,28 @@ class ActiveRunWriter implements RunWriter {
           sequence: workspaceConversation.attention.sequence,
         },
       }
+      const delivery = state.harnessDeliveries[sessionId]
+      if (delivery) {
+        harnessDeliveries[sessionId] = delivery.state === "failed"
+          ? {
+              version: delivery.version,
+              generation: delivery.generation,
+              state: "failed",
+              failureCategory: delivery.failureCategory!,
+            }
+          : {
+              version: delivery.version,
+              generation: delivery.generation,
+              state: delivery.state,
+            }
+      }
     }
 
     const selectedVisibleId = state.workspace.selectedVisibleId
     const selected = selectedVisibleId === null ? undefined : state.sessions[selectedVisibleId]
 
     return {
-      version: 2,
+      version: 3,
       runId: this.runId,
       // A run belongs to the launch project even when focus moves between sessions
       // configured with different working directories. Boot and the picker use this
@@ -191,6 +207,7 @@ class ActiveRunWriter implements RunWriter {
         selectedVisibleId,
       },
       handoffBundle: this.lastHandoffBundle,
+      harnessDeliveries,
     }
   }
 

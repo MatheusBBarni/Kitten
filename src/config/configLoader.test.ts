@@ -11,9 +11,11 @@ import {
   CODEX_YOLO_MODE,
   CONFIG_PATH_ENV_VAR,
   ConfigError,
+  DEFAULT_CLARIFICATION_TIMEOUT_SECONDS,
   DEFAULT_SESSION_PERSISTENCE_ENABLED,
   DEFAULT_SHELL_SCROLLBACK,
   MAX_SHELL_SCROLLBACK,
+  MAX_CLARIFICATION_TIMEOUT_SECONDS,
   defaultAppConfig,
   findAgentConfig,
   loadAppConfig,
@@ -644,6 +646,38 @@ describe("telemetry opt-in", () => {
 
   it("Should honor an explicit telemetry opt-out", () => {
     expect(parseAppConfig(JSON.stringify({ telemetryEnabled: false })).telemetryEnabled).toBe(false)
+  })
+})
+
+describe("clarification timeout", () => {
+  it("Should use the fixed five-minute default when configuration is absent or omitted", async () => {
+    const missing = join(await makeTempDir(), "missing.json")
+
+    expect(DEFAULT_CLARIFICATION_TIMEOUT_SECONDS).toBe(300)
+    expect(defaultAppConfig().clarificationTimeoutSeconds).toBe(300)
+    expect(parseAppConfig("{}").clarificationTimeoutSeconds).toBe(300)
+    expect((await loadAppConfig({ path: missing })).clarificationTimeoutSeconds).toBe(300)
+  })
+
+  it.each([1, 45, 300, MAX_CLARIFICATION_TIMEOUT_SECONDS])(
+    "Should accept the bounded integer timeout %i",
+    (clarificationTimeoutSeconds) => {
+      expect(parseAppConfig(JSON.stringify({ clarificationTimeoutSeconds })).clarificationTimeoutSeconds)
+        .toBe(clarificationTimeoutSeconds)
+    },
+  )
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["non-numeric", "300"],
+    ["above the maximum", MAX_CLARIFICATION_TIMEOUT_SECONDS + 1],
+  ])("Should reject a %s clarification timeout", (_label, clarificationTimeoutSeconds) => {
+    const parse = () => parseAppConfig(JSON.stringify({ clarificationTimeoutSeconds }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/clarificationTimeoutSeconds/)
   })
 })
 

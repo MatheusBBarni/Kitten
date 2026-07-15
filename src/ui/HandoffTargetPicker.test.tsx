@@ -109,6 +109,7 @@ async function openClarification(controller: FakeController, requestId: string):
           id: "boundary",
           label: "Boundary",
           mode: "single",
+          allowsCustom: false,
           required: true,
           options: [
             { id: "controller", label: "Controller" },

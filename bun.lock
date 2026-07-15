@@ -6,6 +6,7 @@
       "name": "@matheusbbarni/kitten",
       "dependencies": {
         "@agentclientprotocol/sdk": "1.2.1",
+        "@modelcontextprotocol/sdk": "1.29.0",
         "@opentui/core": "0.4.3",
         "@opentui/react": "0.4.3",
         "@xterm/headless": "6.0.0",
@@ -23,10 +24,10 @@
         "typescript": "6.0.3",
       },
       "optionalDependencies": {
-        "@matheusbbarni/kitten-darwin-arm64": "0.0.0",
-        "@matheusbbarni/kitten-darwin-x64": "0.0.0",
-        "@matheusbbarni/kitten-linux-arm64": "0.0.0",
-        "@matheusbbarni/kitten-linux-x64": "0.0.0",
+        "@matheusbbarni/kitten-darwin-arm64": "0.3.0",
+        "@matheusbbarni/kitten-darwin-x64": "0.3.0",
+        "@matheusbbarni/kitten-linux-arm64": "0.3.0",
+        "@matheusbbarni/kitten-linux-x64": "0.3.0",
       },
     },
   },

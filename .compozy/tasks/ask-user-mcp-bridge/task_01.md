@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Normalize clarification forms, outcomes, and ACP translation
 type: backend
 complexity: high

@@ -11,6 +11,11 @@ import { createAgentConnection, type AgentConnection, type PromptBlock } from ".
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import { createSessionController } from "../app/controller.ts"
 import { FILES_HEADING as BLOCK_FILES_HEADING, HANDOFF_INSTRUCTION, pendingDiffHeading } from "../app/handoff.ts"
+import {
+  HARNESS_CONTRACT_SDK_VERSION,
+  type CertifiedHarnessProfile,
+  type HarnessCapability,
+} from "../config/harnessCapability.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY } from "../core/types.ts"
 import type { AgentConfig, AppConfig, ConfigOption, ProviderKind, SessionId } from "../core/types.ts"
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
@@ -203,6 +208,7 @@ async function openClarification(controller: FakeController, requestId: string):
           id: "boundary",
           label: "Boundary",
           mode: "single",
+          allowsCustom: false,
           required: true,
           options: [
             { id: "controller", label: "Controller" },
@@ -1002,11 +1008,33 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
+}
+const TEST_HARNESS_CAPABILITY: HarnessCapability = {
+  status: "supported",
+  profileId: "handoff-preview-integration-profile",
+  encoder: "codex-prompt-meta-v1",
+}
+
+function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
+  return {
+    profileId: "handoff-preview-integration-profile",
+    encoder: "codex-prompt-meta-v1",
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: {
+      providerKind: config.id,
+      command: config.command,
+      args: [...config.args],
+      env: { ...config.env },
+      adapterPackage: "handoff-preview-test-adapter",
+      adapterVersion: "1.0.0",
+    },
+  }
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
@@ -1015,6 +1043,7 @@ function connectionToMockAgent(config: AgentConfig, onPrompt?: MockPromptScript,
   const agent = startMockAgent(pair.agent, { sessionId: `${config.id}-session`, onPrompt, configOptions })
   const connection = createAgentConnection({
     config,
+    harnessProfiles: [testHarnessProfile(config)],
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler: { schedule: (flush) => flush(), dispose: () => {} },
   })
@@ -1053,6 +1082,7 @@ describe("integration - hand-off across two mock agents", () => {
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       createConnection: (config) => connections[config.id],
     })
 

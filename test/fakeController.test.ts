@@ -55,6 +55,34 @@ describe("createFakeController", () => {
     expect(controller.calls.closeConversation).toEqual([{ sessionId: created!, choice: "close" }])
   })
 
+  it("models delegated launch, steer, and idempotent cancellation for UI tests", async () => {
+    const controller = createFakeController({
+      sendPrompt: async () => ({ stopReason: "end_turn" }),
+    })
+    const childId = await controller.actions.startDelegatedChild({
+      parentId: "claude-code",
+      task: "Inspect the fake boundary",
+      desiredOutcome: "A deterministic child snapshot",
+    })
+
+    expect(childId).toBe("fake-delegated-1")
+    expect(controller.runtime(childId!)).toMatchObject({ ready: true, cwd: process.cwd() })
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(controller.store.getState().delegation.children[childId!]?.status).toBe("running")
+    expect(await controller.actions.steerDelegatedChild(childId!, "Continue")).toEqual({ stopReason: "end_turn" })
+
+    await controller.actions.cancelDelegatedChild(childId!)
+    await controller.actions.cancelDelegatedChild(childId!)
+    expect(controller.store.getState().delegation.children[childId!]?.status).toBe("cancelled")
+    expect(await controller.actions.steerDelegatedChild(childId!, "Too late")).toBeNull()
+    expect(controller.calls.startDelegatedChild).toHaveLength(1)
+    expect(controller.calls.steerDelegatedChild).toEqual([
+      { childId: childId!, text: "Continue" },
+      { childId: childId!, text: "Too late" },
+    ])
+    expect(controller.calls.cancelDelegatedChild).toEqual([childId!, childId!])
+  })
+
   it("records statusline acknowledgement and confirmation without an ACP connection", async () => {
     const controller = createFakeController({ runtimes: [] })
     const layout = { separator: " | ", line: ["FOLDER", "MODEL"] } as const

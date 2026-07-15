@@ -10,11 +10,14 @@ import { join } from "node:path"
 import {
   createAgentConnection,
   type AgentConnection,
+  type AgentPromptInput,
   type PermissionOutcome,
   type PermissionRequest,
   type PromptBlock,
   type ReadyState,
 } from "../agent/agentConnection.ts"
+import { defaultAppConfig } from "../config/configLoader.ts"
+import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
   AgentConfig,
@@ -25,10 +28,17 @@ import type {
   DomainSessionEvent,
   McpServerConfig,
   ProviderKind,
+  ResolvedAgentConfig,
   SessionId,
   ShellEvent,
 } from "../core/types.ts"
-import type { PersistedRunRecordV1, PersistedRunRecordV2 } from "../persistence/runRecord.ts"
+import { selectDelegationAggregateStatus } from "../core/orchestration.ts"
+import type {
+  HarnessDeliveryCheckpoint,
+  PersistedRunRecordV1,
+  PersistedRunRecordV2,
+  PersistedRunRecordV3,
+} from "../persistence/runRecord.ts"
 import {
   createInMemoryShellRuntimeFactory,
   type ShellRuntime,
@@ -52,6 +62,13 @@ import {
   type SessionController,
 } from "./controller.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
+import { createHandoffEdits, createHandoffFlow } from "./handoff.ts"
+import {
+  ASK_USER_MCP_SERVER_NAME,
+  type AskUserBridge,
+  type AskUserBridgeOptions,
+  type BridgeRegistration,
+} from "./askUserBridge.ts"
 
 /**
  * The controller is verified two ways.
@@ -80,6 +97,7 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
@@ -101,6 +119,30 @@ const CURSOR_APP_CONFIG: AppConfig = {
 }
 const CWD = "/workspace/kitten"
 
+const TEST_HARNESS_CAPABILITY: HarnessCapability = {
+  status: "supported",
+  profileId: "controller-test-profile",
+  encoder: "codex-prompt-meta-v1",
+}
+
+function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
+  return {
+    profileId: TEST_HARNESS_CAPABILITY.status === "supported"
+      ? TEST_HARNESS_CAPABILITY.profileId
+      : "controller-test-profile",
+    encoder: "codex-prompt-meta-v1",
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: {
+      providerKind: config.id,
+      command: config.command,
+      args: [...config.args],
+      env: { ...config.env },
+      adapterPackage: "controller-test-adapter",
+      adapterVersion: "1.0.0",
+    },
+  }
+}
+
 const PERMISSION_REQUEST: PermissionRequest = {
   sessionId: "claude-code-session",
   toolCall: { toolCallId: "call-1", kind: "edit", title: "Edit src/index.ts" },
@@ -117,6 +159,7 @@ const CLARIFICATION_PAYLOAD: ClarificationPayload = {
       id: "boundary",
       label: "Boundary",
       mode: "single",
+      allowsCustom: false,
       required: true,
       options: [
         { id: "controller", label: "Controller" },
@@ -188,11 +231,11 @@ describe("interaction coordinator", () => {
     expect(permissionSettled).toBe(false)
 
     const answer: ClarificationOutcome = {
-      kind: "answered",
-      values: { boundary: "controller" },
+      kind: "submitted",
+      answers: { boundary: { selectedOptionIds: ["controller"] } },
     }
     expect(coordinator.resolveActive("request-2", 3, answer)).toBe(true)
-    expect(await clarification).toEqual(answer)
+    expect(await clarification.outcome).toEqual(answer)
     expect(active.at(-1)).toEqual(originalPermission)
 
     expect(coordinator.resolveActive("request-1", 7, { outcome: "cancelled" })).toBe(true)
@@ -202,7 +245,10 @@ describe("interaction coordinator", () => {
   it("rejects wrong request IDs, old generations, wrong outcome kinds, and duplicate answers", async () => {
     const { coordinator, active } = setupCoordinator()
     const clarification = coordinator.enqueueClarification("alpha", 4, CLARIFICATION_PAYLOAD)
-    const answer: ClarificationOutcome = { kind: "answered", values: { boundary: "controller" } }
+    const answer: ClarificationOutcome = {
+      kind: "submitted",
+      answers: { boundary: { selectedOptionIds: ["controller"] } },
+    }
 
     expect(coordinator.resolveActive("missing", 4, answer)).toBe(false)
     expect(coordinator.resolveActive("request-1", 3, answer)).toBe(false)
@@ -210,7 +256,7 @@ describe("interaction coordinator", () => {
     expect(active.at(-1)?.requestId).toBe("request-1")
 
     expect(coordinator.resolveActive("request-1", 4, answer)).toBe(true)
-    expect(await clarification).toEqual(answer)
+    expect(await clarification.outcome).toEqual(answer)
     expect(coordinator.resolveActive("request-1", 4, { kind: "cancelled" })).toBe(false)
   })
 
@@ -229,7 +275,7 @@ describe("interaction coordinator", () => {
     const settlementCounts = { suspended: 0, queued: 0, clarification: 0, sibling: 0 }
     void suspended.then(() => settlementCounts.suspended += 1)
     void queued.then(() => settlementCounts.queued += 1)
-    void clarification.then(() => settlementCounts.clarification += 1)
+    void clarification.outcome.then(() => settlementCounts.clarification += 1)
     void sibling.then(() => settlementCounts.sibling += 1)
 
     coordinator.cancelSession("alpha", 8)
@@ -240,7 +286,7 @@ describe("interaction coordinator", () => {
 
     expect(await suspended).toEqual({ outcome: "cancelled" })
     expect(await queued).toEqual({ outcome: "cancelled" })
-    expect(await clarification).toEqual({ kind: "cancelled" })
+    expect(await clarification.outcome).toEqual({ kind: "cancelled" })
     expect(settlementCounts).toEqual({ suspended: 1, queued: 1, clarification: 1, sibling: 0 })
     expect(active.at(-1)).toMatchObject({ kind: "permission", sessionId: "beta", generation: 2 })
 
@@ -251,8 +297,47 @@ describe("interaction coordinator", () => {
     const afterDispose = coordinator.enqueueClarification("beta", 2, CLARIFICATION_PAYLOAD)
     coordinator.dispose()
     coordinator.dispose()
-    expect(await afterDispose).toEqual({ kind: "cancelled" })
+    expect(await afterDispose.outcome).toEqual({ kind: "cancelled" })
     expect(await coordinator.enqueuePermission("beta", 2, PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+  })
+
+  it("settles submission and timeout races exactly once in either order", async () => {
+    const { coordinator } = setupCoordinator()
+    const submitted = { kind: "submitted", answers: {} } as const
+
+    const timeoutWins = coordinator.enqueueClarification("alpha", 1, CLARIFICATION_PAYLOAD)
+    expect(timeoutWins.requestId).toBe("request-1")
+    expect(timeoutWins.timeout()).toBe(true)
+    expect(coordinator.resolveActive(timeoutWins.requestId, 1, submitted)).toBe(false)
+    expect(timeoutWins.timeout()).toBe(false)
+    expect(await timeoutWins.outcome).toEqual({ kind: "timed_out" })
+
+    const submissionWins = coordinator.enqueueClarification("alpha", 1, CLARIFICATION_PAYLOAD)
+    expect(coordinator.resolveActive(submissionWins.requestId, 1, submitted)).toBe(true)
+    expect(submissionWins.timeout()).toBe(false)
+    expect(await submissionWins.outcome).toEqual(submitted)
+  })
+
+  it("times out a suspended clarification without reviving it before the prior permission", async () => {
+    const { coordinator, active } = setupCoordinator()
+    const permission = coordinator.enqueuePermission("alpha", 1, PERMISSION_REQUEST)
+    const first = coordinator.enqueueClarification("alpha", 1, CLARIFICATION_PAYLOAD)
+    const second = coordinator.enqueueClarification("beta", 2, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Choose the test boundary",
+    })
+
+    expect(active.at(-1)?.requestId).toBe(second.requestId)
+    expect(first.timeout()).toBe(true)
+    expect(await first.outcome).toEqual({ kind: "timed_out" })
+    expect(active.at(-1)?.requestId).toBe(second.requestId)
+
+    expect(coordinator.resolveActive(second.requestId, 2, { kind: "skipped" })).toBe(true)
+    expect(await second.outcome).toEqual({ kind: "skipped" })
+    expect(active.at(-1)).toMatchObject({ kind: "permission", requestId: "request-1" })
+
+    expect(coordinator.resolveActive("request-1", 1, { outcome: "cancelled" })).toBe(true)
+    expect(await permission).toEqual({ outcome: "cancelled" })
   })
 })
 
@@ -289,10 +374,12 @@ interface StubConnection extends AgentConnection {
   /** Raise a normalized clarification through the handler the controller registered. */
   clarify(payload: ClarificationPayload): Promise<ClarificationOutcome>
   readonly prompts: Array<{ sessionId: string; blocks: PromptBlock[] }>
+  readonly promptInputs: Array<{ sessionId: string; input: AgentPromptInput }>
   readonly cancels: string[]
   readonly newSessionCwds: string[]
   readonly newSessionMcpServers: McpServerConfig[][]
   readonly loadSessionCalls: Array<{ sessionId: string; cwd: string }>
+  readonly loadSessionMcpServers: McpServerConfig[][]
   /** Every `setSessionConfigOption` call the controller made, in order. */
   readonly configCalls: Array<{ sessionId: string; configId: string; value: string }>
   readonly isDisposed: () => boolean
@@ -376,10 +463,12 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
+  const promptInputs: Array<{ sessionId: string; input: AgentPromptInput }> = []
   const cancels: string[] = []
   const newSessionCwds: string[] = []
   const newSessionMcpServers: McpServerConfig[][] = []
   const loadSessionCalls: Array<{ sessionId: string; cwd: string }> = []
+  const loadSessionMcpServers: McpServerConfig[][] = []
   const configCalls: Array<{ sessionId: string; configId: string; value: string }> = []
   let permissionHandler: ((request: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   let clarificationHandler: ((payload: ClarificationPayload) => Promise<ClarificationOutcome>) | null = null
@@ -393,10 +482,12 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
   return {
     id,
     prompts,
+    promptInputs,
     cancels,
     newSessionCwds,
     newSessionMcpServers,
     loadSessionCalls,
+    loadSessionMcpServers,
     configCalls,
     isDisposed: () => disposed,
     disposeCalls: () => disposals,
@@ -415,14 +506,16 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
       if (options.newSessionConfig !== undefined) emit({ kind: "config_options", options: options.newSessionConfig })
       return options.sessionId ?? `${id}-session`
     },
-    async loadSession(sessionId, cwd) {
+    async loadSession(sessionId, cwd, mcpServers = []) {
       loadSessionCalls.push({ sessionId, cwd })
+      loadSessionMcpServers.push(mcpServers)
       for (const event of options.loadSessionEvents ?? []) emit(event)
       await options.loadSessionWait
       if (options.loadSessionThrows !== undefined) throw options.loadSessionThrows
     },
-    async prompt(sessionId, blocks) {
-      prompts.push({ sessionId, blocks })
+    async prompt(sessionId, input) {
+      promptInputs.push({ sessionId, input })
+      prompts.push({ sessionId, blocks: Array.isArray(input) ? input : [...input.userBlocks] })
       await options.promptWait
       if (options.promptThrows !== undefined) throw options.promptThrows
       return { stopReason: "end_turn" }
@@ -471,6 +564,76 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
   }
 }
 
+interface RecordingBridge {
+  readonly factory: (options: AskUserBridgeOptions) => AskUserBridge
+  readonly registrations: BridgeRegistration[]
+  readonly cancellations: Array<BridgeRegistration & { reason: string }>
+  readonly declarations: McpServerConfig[]
+  request(sessionId: SessionId, generation: number, payload: ClarificationPayload): Promise<ClarificationOutcome>
+  disposeCalls(): number
+}
+
+function createRecordingBridge(): RecordingBridge {
+  const registrations: BridgeRegistration[] = []
+  const cancellations: Array<BridgeRegistration & { reason: string }> = []
+  const declarations: McpServerConfig[] = []
+  const live = new Map<SessionId, BridgeRegistration>()
+  let callbacks: AskUserBridgeOptions | null = null
+  let disposals = 0
+
+  return {
+    registrations,
+    cancellations,
+    declarations,
+    factory(options) {
+      callbacks = options
+      return {
+        register(input) {
+          const previous = live.get(input.sessionId)
+          if (previous) {
+            cancellations.push({ ...previous, reason: "session_replaced" })
+            options.cancelClarifications(previous.sessionId, previous.generation, "session_replaced")
+          }
+          const registration = { ...input }
+          registrations.push(registration)
+          live.set(input.sessionId, registration)
+          const declaration: McpServerConfig = {
+            name: ASK_USER_MCP_SERVER_NAME,
+            command: `/bridge/${input.sessionId}`,
+            args: [`generation-${input.generation}`],
+            env: { KITTEN_TEST_BRIDGE: `${input.sessionId}:${input.generation}` },
+          }
+          declarations.push(declaration)
+          return declaration
+        },
+        async ask() {
+          return { kind: "cancelled" }
+        },
+        cancelSession(sessionId, generation, reason) {
+          const route = live.get(sessionId)
+          if (!route || route.generation !== generation) return
+          live.delete(sessionId)
+          cancellations.push({ ...route, reason })
+          options.cancelClarifications(sessionId, generation, reason)
+        },
+        async dispose() {
+          disposals += 1
+          for (const route of [...live.values()]) {
+            live.delete(route.sessionId)
+            cancellations.push({ ...route, reason: "controller_disposed" })
+            options.cancelClarifications(route.sessionId, route.generation, "controller_disposed")
+          }
+        },
+      }
+    },
+    request(sessionId, generation, payload) {
+      if (!callbacks) throw new Error("bridge not created")
+      return callbacks.requestClarification(sessionId, generation, payload).outcome
+    },
+    disposeCalls: () => disposals,
+  }
+}
+
 /** Build a controller over one stub connection per configured agent. */
 async function controllerWithStubs(
   stubs: Partial<Record<ProviderKind, StubOptions>> = {},
@@ -485,13 +648,18 @@ async function controllerWithStubs(
     newInteractionId?: () => string
     /** Exercise the controller's real default-store construction. */
     useProductionStore?: boolean
+    resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
+    scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
+    bridge?: RecordingBridge
+    newSessionId?: () => SessionId
   } = {},
-): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection> }> {
+): Promise<{ controller: SessionController; connections: Record<ProviderKind, StubConnection>; bridge: RecordingBridge }> {
   const connections = {
     "claude-code": createStubConnection("claude-code", stubs["claude-code"]),
     codex: createStubConnection("codex", stubs.codex),
   } as Record<ProviderKind, StubConnection>
 
+  const bridge = overrides.bridge ?? createRecordingBridge()
   const controller = await createSessionController({
     config: overrides.config ?? APP_CONFIG,
     cwd: CWD,
@@ -504,8 +672,12 @@ async function controllerWithStubs(
     usageSeenSink: overrides.usageSeenSink,
     readBranch: overrides.readBranch ?? (async () => null),
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
+    resolveHarnessCapability: overrides.resolveHarnessCapability ?? (() => TEST_HARNESS_CAPABILITY),
+    scheduleClarificationTimeout: overrides.scheduleClarificationTimeout,
+    createAskUserBridge: bridge.factory,
+    newSessionId: overrides.newSessionId,
   })
-  return { controller, connections }
+  return { controller, connections, bridge }
 }
 
 /**
@@ -529,6 +701,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   ],
   mcpServers: [],
   shell: APP_CONFIG.shell,
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
@@ -549,9 +722,12 @@ async function controllerOverFleet(
     repositoryFileSource?: RepositoryFileSource
     createShellRuntime?: ShellRuntimeFactory
     sendInitialTasks?: boolean
+    resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
+    bridge?: RecordingBridge
   } = {},
-): Promise<{ controller: SessionController; created: StubConnection[] }> {
+): Promise<{ controller: SessionController; created: StubConnection[]; bridge: RecordingBridge }> {
   const created: StubConnection[] = []
+  const bridge = overrides.bridge ?? createRecordingBridge()
   const controller = await createSessionController({
     config,
     cwd: process.cwd(),
@@ -565,8 +741,10 @@ async function controllerOverFleet(
     repositoryFileSource: overrides.repositoryFileSource,
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
     sendInitialTasks: overrides.sendInitialTasks,
+    resolveHarnessCapability: overrides.resolveHarnessCapability ?? (() => TEST_HARNESS_CAPABILITY),
+    createAskUserBridge: bridge.factory,
   })
-  return { controller, created }
+  return { controller, created, bridge }
 }
 
 function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecordV1 {
@@ -593,6 +771,64 @@ function persistedRun(focusedAgentId: SessionId = "codex"): PersistedRunRecordV1
       },
     },
     handoffBundle: null,
+  }
+}
+
+function persistedRunV3(
+  harnessDeliveries: Record<string, HarnessDeliveryCheckpoint>,
+): PersistedRunRecordV3 {
+  const conversations = {
+    "claude-code": {
+      sessionId: "claude-code",
+      providerKind: "claude-code" as const,
+      cwd: CWD,
+      initialTitle: "Claude Code",
+      acpSessionId: "claude-stored",
+      lastPrompt: "continue claude",
+      messageCount: 1,
+      status: "finished" as const,
+    },
+    codex: {
+      sessionId: "codex",
+      providerKind: "codex" as const,
+      cwd: CWD,
+      initialTitle: "Codex",
+      acpSessionId: "codex-stored",
+      lastPrompt: "continue codex",
+      messageCount: 1,
+      status: "idle" as const,
+    },
+  }
+  return {
+    version: 3,
+    runId: "run-v3",
+    cwd: CWD,
+    gitBranch: "feat/harness-restore",
+    createdAt: 1_000,
+    updatedAt: 2_000,
+    conversations,
+    workspace: {
+      conversations: {
+        "claude-code": {
+          sessionId: "claude-code",
+          displayName: "Claude Code",
+          lifecycle: "visible",
+          createdOrdinal: 0,
+          attention: { seen: true, sequence: 0 },
+        },
+        codex: {
+          sessionId: "codex",
+          displayName: "Codex",
+          lifecycle: "visible",
+          createdOrdinal: 1,
+          attention: { seen: true, sequence: 0 },
+        },
+      },
+      order: ["claude-code", "codex"],
+      selectedVisibleId: "codex",
+    },
+    handoffBundle: null,
+    harnessDeliveries,
   }
 }
 
@@ -654,10 +890,12 @@ async function controllerForRestore(
   restoreOptions: Partial<Record<ProviderKind, StubOptions>> = {},
   onError?: (sessionId: SessionId, error: unknown) => void,
   recorder?: TelemetryRecorder,
+  config: AppConfig = APP_CONFIG,
 ): Promise<{
   controller: SessionController
   startup: Record<ProviderKind, StubConnection>
   restored: Record<ProviderKind, StubConnection>
+  bridge: RecordingBridge
 }> {
   const startup = {
     "claude-code": createStubConnection("claude-code"),
@@ -672,8 +910,9 @@ async function controllerForRestore(
     codex: [startup.codex, restored.codex],
   } as Record<ProviderKind, StubConnection[]>
 
+  const bridge = createRecordingBridge()
   const controller = await createSessionController({
-    config: APP_CONFIG,
+    config,
     cwd: CWD,
     store: createAppStore({ selectedVisibleId: "claude-code" }),
     createConnection: (config) => queues[config.id].shift()!,
@@ -681,8 +920,10 @@ async function controllerForRestore(
     recorder,
     readBranch: async () => null,
     createShellRuntime: createTestShellFactory(),
+    resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    createAskUserBridge: bridge.factory,
   })
-  return { controller, startup, restored }
+  return { controller, startup, restored, bridge }
 }
 
 /** Poll until `predicate` holds, so a test can await an async round-trip. */
@@ -716,6 +957,108 @@ describe("nextSessionId", () => {
 })
 
 describe("createSessionController - startup", () => {
+  it.each([
+    ["claude-code", "claude-code-acp-0.57.0"],
+    ["codex", "codex-acp-1.1.2"],
+  ] as const)("dispatches a fresh default %s session through its production harness profile", async (provider, profileId) => {
+    const config = defaultAppConfig()
+    config.sessions = [{ provider, cwd: process.cwd() }]
+    const connection = createStubConnection(provider)
+    const controller = await createSessionController({
+      config,
+      cwd: CWD,
+      createConnection: () => connection,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+
+    expect(await controller.actions.sendPrompt("default production task", provider)).toEqual({
+      stopReason: "end_turn",
+    })
+    const input = connection.promptInputs[0]!.input
+    expect(Array.isArray(input)).toBe(false)
+    if (!Array.isArray(input)) {
+      expect(input).toMatchObject({
+        userBlocks: [{ type: "text", text: "default production task" }],
+        profileId,
+        harness: { version: "v1" },
+      })
+    }
+
+    await controller.dispose()
+  })
+
+  it("fails closed before recording a fresh first task when no harness profile is certified", async () => {
+    const { controller, connections } = await controllerWithStubs({}, {
+      resolveHarnessCapability: () => ({ status: "unsupported", reason: "unknown_recipe" }),
+    })
+
+    expect(await controller.actions.sendPrompt("must stay recoverable", "claude-code")).toBeNull()
+    expect(connections["claude-code"].prompts).toHaveLength(0)
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toHaveLength(0)
+
+    await controller.dispose()
+  })
+
+  it("sends one harness envelope for a fresh first task and original blocks for follow-ups", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    const firstBlocks: PromptBlock[] = [
+      { type: "text", text: "first visible block" },
+      { type: "text", text: "second visible block" },
+    ]
+
+    expect(await controller.actions.sendPrompt(firstBlocks, "claude-code")).toEqual({ stopReason: "end_turn" })
+    const firstInput = connections["claude-code"].promptInputs[0]!.input
+    expect(Array.isArray(firstInput)).toBe(false)
+    if (!Array.isArray(firstInput)) {
+      expect(firstInput.userBlocks).toEqual(firstBlocks)
+      expect(firstInput.profileId).toBe("controller-test-profile")
+      expect(firstInput.harness).toMatchObject({ version: "v1" })
+      expect(firstInput.harness?.text).toContain("<kitten_harness version=\"v1\">")
+    }
+    expect(controller.store.getState().sessions["claude-code"]!.turns).toEqual([
+      { kind: "user", messageId: "msg-1", text: "first visible block\nsecond visible block" },
+    ])
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toEqual({
+      version: "v1",
+      generation: 1,
+      state: "delivered",
+    })
+
+    expect(await controller.actions.sendPrompt("follow-up", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(connections["claude-code"].promptInputs[1]!.input).toEqual([
+      { type: "text", text: "follow-up" },
+    ])
+    expect(JSON.stringify(controller.store.getState().sessions["claude-code"]!.turns)).not.toContain("kitten_harness")
+
+    await controller.dispose()
+  })
+
+  it("routes fresh-context recovery through a new harness delivery generation", async () => {
+    const { controller, connections } = await controllerWithStubs()
+
+    expect(await controller.actions.startFreshFromContext("saved visible context", "codex")).toEqual({
+      stopReason: "end_turn",
+    })
+    const input = connections.codex.promptInputs[0]!.input
+    expect(Array.isArray(input)).toBe(false)
+    if (!Array.isArray(input)) {
+      expect(input.userBlocks).toEqual([{ type: "text", text: "saved visible context" }])
+      expect(input.harness).toMatchObject({ version: "v1" })
+    }
+    expect(controller.store.getState().harnessDeliveries.codex).toEqual({
+      version: "v1",
+      generation: 2,
+      state: "delivered",
+    })
+    expect(controller.store.getState().sessions.codex!.turns).toEqual([
+      { kind: "user", messageId: "msg-1", text: "saved visible context" },
+    ])
+
+    await controller.dispose()
+  })
+
   it("Should log one content-free usage record with the emitting provider before store dispatch", async () => {
     const records: UsageSeenRecord[] = []
     const { controller, connections } = await controllerWithStubs({}, {
@@ -786,7 +1129,7 @@ describe("createSessionController - startup", () => {
     await controller.dispose()
   })
 
-  it("provisions the shared resolved MCP list into every configured session", async () => {
+  it("appends a distinct generated bridge after ordered user MCP servers for every fresh session", async () => {
     const mcp: McpServerConfig = {
       name: "fixture",
       command: process.execPath,
@@ -797,9 +1140,13 @@ describe("createSessionController - startup", () => {
       config: { ...APP_CONFIG, mcpServers: [mcp] },
     })
 
-    const expected = [{ ...mcp, command: process.execPath }]
-    expect(connections["claude-code"].newSessionMcpServers).toEqual([expected])
-    expect(connections.codex.newSessionMcpServers).toEqual([expected])
+    const claudeServers = connections["claude-code"].newSessionMcpServers[0]!
+    const codexServers = connections.codex.newSessionMcpServers[0]!
+    expect(claudeServers.slice(0, -1)).toEqual([{ ...mcp, command: process.execPath }])
+    expect(codexServers.slice(0, -1)).toEqual([{ ...mcp, command: process.execPath }])
+    expect(claudeServers.at(-1)).toMatchObject({ name: ASK_USER_MCP_SERVER_NAME })
+    expect(codexServers.at(-1)).toMatchObject({ name: ASK_USER_MCP_SERVER_NAME })
+    expect(claudeServers.at(-1)).not.toEqual(codexServers.at(-1))
     expect(controller.runtime("claude-code")?.mcp).toEqual({ loaded: ["fixture"], skipped: [] })
     expect(controller.runtime("codex")?.mcp).toEqual({ loaded: ["fixture"], skipped: [] })
     await controller.dispose()
@@ -820,10 +1167,119 @@ describe("createSessionController - startup", () => {
       loaded: [],
       skipped: [{ name: "unavailable", reason: 'command not found: "/definitely/not/a/kitten-mcp-server"' }],
     }
-    expect(connections["claude-code"].newSessionMcpServers).toEqual([[]])
-    expect(connections.codex.newSessionMcpServers).toEqual([[]])
+    expect(connections["claude-code"].newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+      ASK_USER_MCP_SERVER_NAME,
+    ])
+    expect(connections.codex.newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+      ASK_USER_MCP_SERVER_NAME,
+    ])
     expect(controller.runtime("claude-code")?.mcp).toEqual(expected)
     expect(controller.runtime("codex")?.mcp).toEqual(expected)
+    await controller.dispose()
+  })
+
+  it("provisions a distinct generated bridge for a dynamically created conversation", async () => {
+    const userServers: McpServerConfig[] = [
+      { name: "first", command: process.execPath, args: ["one"], env: {} },
+      { name: "second", command: process.execPath, args: ["two"], env: {} },
+    ]
+    const { controller, connections, bridge } = await controllerWithStubs({}, {
+      config: { ...APP_CONFIG, mcpServers: userServers },
+      newSessionId: () => "dynamic-codex",
+    })
+
+    controller.store.setFocus("codex")
+    expect(await controller.actions.createConversation()).toBe("dynamic-codex")
+    const dynamicServers = connections.codex.newSessionMcpServers[1]!
+    expect(dynamicServers.map((server) => server.name)).toEqual([
+      "first",
+      "second",
+      ASK_USER_MCP_SERVER_NAME,
+    ])
+    expect(bridge.registrations).toContainEqual({ sessionId: "dynamic-codex", generation: 1 })
+    expect(dynamicServers.at(-1)).not.toEqual(connections.codex.newSessionMcpServers[0]!.at(-1))
+
+    await controller.dispose()
+  })
+
+  it("degrades only the session whose bridge registration fails before ACP session creation", async () => {
+    const recording = createRecordingBridge()
+    const bridge: RecordingBridge = {
+      ...recording,
+      factory(options) {
+        const delegate = recording.factory(options)
+        return {
+          ...delegate,
+          register(input) {
+            if (input.sessionId === "claude-code") throw new Error("bridge registration unavailable")
+            return delegate.register(input)
+          },
+        }
+      },
+    }
+    const errors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const { controller, connections } = await controllerWithStubs({}, {
+      bridge,
+      onError: (sessionId, error) => errors.push({ sessionId, error }),
+    })
+
+    expect(controller.isReady("claude-code")).toBe(false)
+    expect(controller.isReady("codex")).toBe(true)
+    expect(connections["claude-code"].newSessionCwds).toEqual([])
+    expect(connections.codex.newSessionMcpServers[0]?.at(-1)?.name).toBe(ASK_USER_MCP_SERVER_NAME)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.sessionId).toBe("claude-code")
+
+    await controller.dispose()
+  })
+
+  it("invalidates replacement, close, provider-failure, and disposal routes without cross-session settlement", async () => {
+    const { controller, connections, bridge } = await controllerWithStubs()
+    const failedSettlements: ClarificationOutcome[] = []
+    const disposedSettlements: ClarificationOutcome[] = []
+    const failed = bridge.request("claude-code", 1, CLARIFICATION_PAYLOAD).then((outcome) => {
+      failedSettlements.push(outcome)
+      return outcome
+    })
+
+    connections["claude-code"].emit({ kind: "status", status: "error" })
+    expect(await failed).toEqual({ kind: "cancelled" })
+    expect(failedSettlements).toHaveLength(1)
+    expect(bridge.cancellations.filter((entry) => entry.sessionId === "claude-code")).toEqual([
+      { sessionId: "claude-code", generation: 1, reason: "connection_error" },
+    ])
+    expect(bridge.cancellations.some((entry) => entry.sessionId === "codex")).toBe(false)
+
+    await controller.actions.startFreshFromContext("saved context", "codex")
+    expect(bridge.cancellations).toContainEqual({
+      sessionId: "codex",
+      generation: 1,
+      reason: "session_replaced",
+    })
+    expect(bridge.registrations).toContainEqual({ sessionId: "codex", generation: 2 })
+
+    expect(await controller.closeConversation("codex", "close")).toEqual({ outcome: "closed" })
+    expect(bridge.cancellations).toContainEqual({
+      sessionId: "codex",
+      generation: 2,
+      reason: "conversation_closed",
+    })
+
+    const { controller: disposalController, bridge: disposalBridge } = await controllerWithStubs()
+    const pending = disposalBridge.request("codex", 1, CLARIFICATION_PAYLOAD).then((outcome) => {
+      disposedSettlements.push(outcome)
+      return outcome
+    })
+    await disposalController.dispose()
+    expect(await pending).toEqual({ kind: "cancelled" })
+    expect(disposedSettlements).toHaveLength(1)
+    expect(disposalBridge.disposeCalls()).toBe(1)
+    expect(disposalBridge.cancellations).toContainEqual({
+      sessionId: "codex",
+      generation: 1,
+      reason: "controller_disposed",
+    })
+
     await controller.dispose()
   })
 
@@ -914,7 +1370,298 @@ describe("createSessionController - startup", () => {
   })
 })
 
+describe("createSessionController - harness delivery lifecycle", () => {
+  it("keeps handoff preview confirm-only and sends curated blocks in one fresh envelope", async () => {
+    const { controller, connections } = await controllerWithStubs()
+    controller.store.setFocus("claude-code")
+    controller.store.applyEvent("claude-code", {
+      kind: "user_message",
+      messageId: "source-user",
+      text: "review the controller",
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "source-agent",
+      textDelta: "I found the delivery seam.",
+    })
+    const flow = createHandoffFlow({ controller })
+
+    expect(flow.begin()).toEqual({ ok: true })
+    const preview = controller.store.getState().overlays.handoffPreview
+    expect(preview?.targetSessionId).toBe("codex")
+    expect(connections.codex.promptInputs).toHaveLength(0)
+
+    const result = await flow.confirm(createHandoffEdits(preview!.bundle))
+    expect(result).toEqual({ stopReason: "end_turn" })
+    expect(connections.codex.promptInputs).toHaveLength(1)
+    const input = connections.codex.promptInputs[0]!.input
+    expect(Array.isArray(input)).toBe(false)
+    if (!Array.isArray(input)) {
+      expect(input.harness).toMatchObject({ version: "v1" })
+      expect(input.userBlocks.every((block) => !block.text.includes("kitten_harness"))).toBe(true)
+    }
+    expect(JSON.stringify(controller.store.getState().sessions.codex!.turns)).not.toContain("kitten_harness")
+
+    await controller.dispose()
+  })
+
+  it("ignores an old-generation completion after replacement and grants the new generation one opportunity", async () => {
+    const oldTurn = deferred()
+    const byProvider: Record<ProviderKind, StubConnection[]> = {
+      "claude-code": [],
+      codex: [],
+      cursor: [],
+    }
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const prior = byProvider[config.id].length
+        const connection = createStubConnection(config.id, prior === 0 && config.id === "claude-code"
+          ? { promptWait: oldTurn.promise }
+          : {})
+        byProvider[config.id].push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+
+    const oldPrompt = controller.actions.sendPrompt("old generation", "claude-code")
+    await Bun.sleep(0)
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("in_flight")
+
+    await controller.actions.startNewRun()
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toMatchObject({
+      generation: 2,
+      state: "pending",
+    })
+
+    oldTurn.resolve()
+    await oldPrompt
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toMatchObject({
+      generation: 2,
+      state: "pending",
+    })
+
+    expect(await controller.actions.sendPrompt("new generation", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(byProvider["claude-code"][0]!.promptInputs).toHaveLength(1)
+    expect(byProvider["claude-code"][1]!.promptInputs).toHaveLength(1)
+    expect(Array.isArray(byProvider["claude-code"][1]!.promptInputs[0]!.input)).toBe(false)
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toMatchObject({
+      generation: 2,
+      state: "delivered",
+    })
+
+    await controller.dispose()
+  })
+
+  it("terminalizes a partial first turn that throws and never resubmits it", async () => {
+    const turn = deferred()
+    const { controller, connections } = await controllerWithStubs({
+      "claude-code": { promptWait: turn.promise, promptThrows: new Error("transport lost") },
+    })
+
+    const prompt = controller.actions.sendPrompt("possibly sent once", "claude-code")
+    await Bun.sleep(0)
+    connections["claude-code"].emit({ kind: "agent_message", messageId: "partial", textDelta: "partial" })
+    turn.resolve()
+    expect(await prompt).toBeNull()
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toEqual({
+      version: "v1",
+      generation: 1,
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+    })
+    expect(await controller.actions.sendPrompt("possibly sent once", "claude-code")).toBeNull()
+    expect(connections["claude-code"].promptInputs).toHaveLength(1)
+
+    await controller.dispose()
+  })
+
+  it("terminalizes cancellation and close while a fresh first dispatch is in flight", async () => {
+    const cancelTurn = deferred()
+    const { controller, connections } = await controllerWithStubs({
+      "claude-code": { promptWait: cancelTurn.promise },
+    })
+    const seenStates: string[] = []
+    const unsubscribe = controller.store.subscribe((state) => {
+      const delivery = state.harnessDeliveries["claude-code"]
+      if (delivery) seenStates.push(delivery.state)
+    })
+
+    const prompt = controller.actions.sendPrompt("cancel once", "claude-code")
+    await Bun.sleep(0)
+    await controller.actions.cancel("claude-code")
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("failed")
+    cancelTurn.resolve()
+    await prompt
+    expect(connections["claude-code"].promptInputs).toHaveLength(1)
+    expect(await controller.actions.sendPrompt("cancel once", "claude-code")).toBeNull()
+
+    const closeTurn = deferred()
+    const fresh = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id, config.id === "claude-code"
+        ? { promptWait: closeTurn.promise }
+        : {}),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const closeStates: string[] = []
+    fresh.store.subscribe((state) => {
+      const delivery = state.harnessDeliveries["claude-code"]
+      if (delivery) closeStates.push(delivery.state)
+    })
+    const closingPrompt = fresh.actions.sendPrompt("close once", "claude-code")
+    await Bun.sleep(0)
+    fresh.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    expect(await fresh.closeConversation("claude-code", "cancel")).toEqual({ outcome: "closed" })
+    expect(closeStates).toContain("failed")
+    closeTurn.resolve()
+    await closingPrompt
+
+    unsubscribe()
+    await controller.dispose()
+    await fresh.dispose()
+    expect(seenStates).toContain("failed")
+  })
+
+  it("keeps disposal terminal after a late first-prompt completion", async () => {
+    const turn = deferred()
+    const { controller, connections } = await controllerWithStubs({
+      codex: { promptWait: turn.promise },
+    })
+    const prompt = controller.actions.sendPrompt("dispose once", "codex")
+    await Bun.sleep(0)
+
+    await controller.dispose()
+    expect(controller.store.getState().harnessDeliveries.codex).toEqual({
+      version: "v1",
+      generation: 1,
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+    })
+    turn.resolve()
+    await prompt
+    expect(connections.codex.promptInputs).toHaveLength(1)
+    expect(controller.store.getState().harnessDeliveries.codex?.state).toBe("failed")
+  })
+})
+
 describe("createSessionController - persisted restore", () => {
+  it("appends a fresh per-generation bridge after ordered user servers on session/load", async () => {
+    const userServers: McpServerConfig[] = [
+      { name: "alpha-user", command: process.execPath, args: ["alpha"], env: {} },
+      { name: "beta-user", command: process.execPath, args: ["beta"], env: {} },
+    ]
+    const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
+    const { controller, startup, restored, bridge } = await controllerForRestore(
+      { "claude-code": { ready: readyToLoad }, codex: { ready: readyToLoad } },
+      undefined,
+      undefined,
+      { ...APP_CONFIG, mcpServers: userServers },
+    )
+
+    await controller.restore(persistedRun())
+    for (const provider of ["claude-code", "codex"] as const) {
+      expect(restored[provider].loadSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+        "alpha-user",
+        "beta-user",
+        ASK_USER_MCP_SERVER_NAME,
+      ])
+      expect(restored[provider].loadSessionMcpServers[0]!.at(-1)).not.toEqual(
+        startup[provider].newSessionMcpServers[0]!.at(-1),
+      )
+    }
+    const restoredRegistrations = bridge.registrations.filter((entry) => entry.generation === 2)
+    expect(restoredRegistrations).toHaveLength(2)
+    expect(restoredRegistrations).toEqual(expect.arrayContaining([
+      { sessionId: "claude-code", generation: 2 },
+      { sessionId: "codex", generation: 2 },
+    ]))
+
+    await controller.dispose()
+  })
+
+  it("keeps a successfully loaded session harness-free on its first post-load prompt", async () => {
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+      codex: { ready: { ready: true, protocolVersion: 1, canLoadSession: true } },
+    })
+
+    await controller.restore(persistedRun())
+    expect(controller.store.getState().harnessDeliveries.codex).toMatchObject({
+      state: "not_required",
+      version: "v1",
+    })
+    expect(await controller.actions.sendPrompt("continue loaded work", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(restored.codex.promptInputs[0]!.input).toEqual([
+      { type: "text", text: "continue loaded work" },
+    ])
+
+    await controller.dispose()
+  })
+
+  it("restores unresolved V3 delivery as recovery-required without replay while a loaded sibling stays live", async () => {
+    const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": { ready: readyToLoad },
+      codex: { ready: readyToLoad },
+    })
+    await controller.restore(persistedRunV3({
+      "claude-code": { version: "v1", generation: 8, state: "in_flight" },
+      codex: { version: "v1", generation: 5, state: "delivered" },
+    }))
+
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toEqual({
+      version: "v1",
+      generation: 2,
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+    })
+    expect(await controller.actions.sendPrompt("must not replay", "claude-code")).toBeNull()
+    expect(restored["claude-code"].promptInputs).toHaveLength(0)
+
+    expect(controller.store.getState().harnessDeliveries.codex).toEqual({
+      version: "v1",
+      generation: 2,
+      state: "not_required",
+    })
+    expect(await controller.actions.sendPrompt("continue sibling", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(restored.codex.promptInputs[0]!.input).toEqual([{ type: "text", text: "continue sibling" }])
+    await controller.dispose()
+  })
+
+  it("preserves an explicit V3 failure category and never retries its first task", async () => {
+    const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
+    const { controller, restored } = await controllerForRestore({
+      "claude-code": { ready: readyToLoad },
+      codex: { ready: readyToLoad },
+    })
+    await controller.restore(persistedRunV3({
+      "claude-code": {
+        version: "v1",
+        generation: 3,
+        state: "failed",
+        failureCategory: "harness_render_failed",
+      },
+    }))
+
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toMatchObject({
+      state: "failed",
+      failureCategory: "harness_render_failed",
+    })
+    expect(await controller.actions.sendPrompt("original task", "claude-code")).toBeNull()
+    expect(restored["claude-code"].promptInputs).toHaveLength(0)
+    await controller.dispose()
+  })
+
   it("binds clarification callbacks on a loaded replacement generation", async () => {
     const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
     const { controller, restored } = await controllerForRestore({
@@ -1041,6 +1788,7 @@ describe("createSessionController - persisted restore", () => {
       },
       readBranch: async () => null,
       createShellRuntime: createTestShellFactory(),
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     await controller.restore(dynamicPersistedRun())
@@ -1343,6 +2091,13 @@ describe("createSessionController - persisted restore", () => {
     expect(controller.store.getState().restoration.codex).toBe("unavailable")
     expect(controller.isReady("codex")).toBe(true)
     expect(errors).toEqual([])
+    expect(await controller.actions.sendPrompt("recover fallback", "codex")).toEqual({ stopReason: "end_turn" })
+    const fallbackInput = restored.codex.promptInputs[0]!.input
+    expect(Array.isArray(fallbackInput)).toBe(false)
+    if (!Array.isArray(fallbackInput)) {
+      expect(fallbackInput.userBlocks).toEqual([{ type: "text", text: "recover fallback" }])
+      expect(fallbackInput.harness).toMatchObject({ version: "v1" })
+    }
     await controller.dispose()
   })
 
@@ -1461,6 +2216,7 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       createShellRuntime: createTestShellFactory(),
       readBranch: async () => null,
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     const cursorEvents = events.filter(({ config }) => (config as { id: ProviderKind }).id === "cursor")
@@ -1508,6 +2264,7 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       createShellRuntime: createTestShellFactory(),
       readBranch: async () => null,
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     expect(created).not.toContain("cursor")
@@ -1544,6 +2301,7 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       createShellRuntime: createTestShellFactory(),
       readBranch: async () => null,
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     expect(controller.runtime("cursor")).toMatchObject({
@@ -1585,6 +2343,7 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       readBranch: async () => null,
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     expect(await controller.actions.createConversation()).toBe("cursor-dynamic")
@@ -1824,6 +2583,7 @@ describe("createSessionController - multi-session fleet", () => {
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       mcpServers: [],
       shell: APP_CONFIG.shell,
+      clarificationTimeoutSeconds: 300,
       persistenceEnabled: true,
       telemetryEnabled: false,
       theme: "auto",
@@ -1834,6 +2594,12 @@ describe("createSessionController - multi-session fleet", () => {
 
     await waitFor(() => created[0]!.prompts.length === 1, "the opening task prompt to be sent")
     expect(created[0]!.prompts[0]!.blocks).toEqual([{ type: "text", text: "start the build" }])
+    const openingInput = created[0]!.promptInputs[0]!.input
+    expect(Array.isArray(openingInput)).toBe(false)
+    if (!Array.isArray(openingInput)) {
+      expect(openingInput.userBlocks).toEqual([{ type: "text", text: "start the build" }])
+      expect(openingInput.harness).toMatchObject({ version: "v1" })
+    }
     // The opening prompt is recorded as the session's first user turn.
     expect(controller.store.getState().sessions.codex!.turns).toEqual([
       { kind: "user", messageId: "msg-1", text: "start the build" },
@@ -1850,6 +2616,7 @@ describe("createSessionController - multi-session fleet", () => {
       sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
       mcpServers: [],
       shell: APP_CONFIG.shell,
+      clarificationTimeoutSeconds: 300,
       persistenceEnabled: true,
       telemetryEnabled: false,
       theme: "auto",
@@ -1930,6 +2697,7 @@ describe("actions - sendPrompt", () => {
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         mcpServers: [],
         shell: APP_CONFIG.shell,
+        clarificationTimeoutSeconds: 300,
         persistenceEnabled: true,
         telemetryEnabled: false,
         theme: "auto",
@@ -2574,8 +3342,8 @@ describe("actions - respondClarification", () => {
     expect(controller.store.getState().sessions.codex?.status).toBe("awaiting_clarification")
 
     const answer: ClarificationOutcome = {
-      kind: "answered",
-      values: { boundary: "controller" },
+      kind: "submitted",
+      answers: { boundary: { selectedOptionIds: ["controller"] } },
     }
     controller.actions.respondClarification(projected!.requestId, projected!.generation, answer)
 
@@ -2588,6 +3356,108 @@ describe("actions - respondClarification", () => {
     controller.actions.respondPermission({ outcome: "cancelled" })
     expect(await permission).toEqual({ outcome: "cancelled" })
     await controller.dispose()
+  })
+
+  it("starts the fixed timeout at acceptance and isolates a suspended request from its active sibling", async () => {
+    const scheduled: Array<{ callback: () => void; timeoutMs: number; cancelled: boolean }> = []
+    const { controller, connections } = await controllerWithStubs({}, {
+      newInteractionId: (() => {
+        const ids = ["permission-1", "clarification-1", "clarification-2"]
+        return () => ids.shift()!
+      })(),
+      scheduleClarificationTimeout(callback, timeoutMs) {
+        const timeout = { callback, timeoutMs, cancelled: false }
+        scheduled.push(timeout)
+        return () => {
+          timeout.cancelled = true
+        }
+      },
+    })
+    const permission = connections["claude-code"].ask(PERMISSION_REQUEST)
+    const first = connections["claude-code"].clarify(CLARIFICATION_PAYLOAD)
+    const second = connections.codex.clarify({
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Choose the test boundary",
+    })
+
+    expect(scheduled.map((timeout) => timeout.timeoutMs)).toEqual([300_000, 300_000])
+    expect(controller.store.getState().overlays.clarification?.requestId).toBe("clarification-2")
+
+    scheduled[0]!.callback()
+    expect(await first).toEqual({ kind: "timed_out" })
+    expect(scheduled[0]!.cancelled).toBe(true)
+    expect(controller.store.getState().overlays.clarification?.requestId).toBe("clarification-2")
+
+    const active = controller.store.getState().overlays.clarification!
+    controller.actions.respondClarification(active.requestId, active.generation, { kind: "skipped" })
+    expect(await second).toEqual({ kind: "skipped" })
+    expect(scheduled[1]!.cancelled).toBe(true)
+    expect(controller.store.getState().overlays.approval?.sessionId).toBe("claude-code")
+
+    controller.actions.respondPermission({ outcome: "cancelled" })
+    expect(await permission).toEqual({ outcome: "cancelled" })
+    await controller.dispose()
+  })
+
+  it("cancels clarifications once on replacement, close, provider error, and disposal", async () => {
+    const lifecycleCases: Array<{
+      name: string
+      end: (controller: SessionController, connection: StubConnection) => Promise<void> | void
+    }> = [
+      {
+        name: "session replacement",
+        end: async (controller) => {
+          await controller.restore(persistedRun())
+        },
+      },
+      {
+        name: "conversation close",
+        end: async (controller) => {
+          expect(await controller.closeConversation("claude-code", "cancel")).toEqual({ outcome: "closed" })
+        },
+      },
+      {
+        name: "provider error",
+        end: (_controller, connection) => {
+          connection.emit({ kind: "status", status: "error" })
+        },
+      },
+      {
+        name: "controller disposal",
+        end: async (controller) => {
+          await controller.dispose()
+        },
+      },
+    ]
+
+    for (const lifecycle of lifecycleCases) {
+      let timeoutCallback: (() => void) | undefined
+      let timeoutCancellations = 0
+      let settlements = 0
+      const { controller, connections } = await controllerWithStubs({}, {
+        newInteractionId: () => `clarification-${lifecycle.name}`,
+        scheduleClarificationTimeout(callback) {
+          timeoutCallback = callback
+          return () => {
+            timeoutCancellations += 1
+          }
+        },
+      })
+      const pending = connections["claude-code"].clarify(CLARIFICATION_PAYLOAD).then((outcome) => {
+        settlements += 1
+        return outcome
+      })
+
+      await lifecycle.end(controller, connections["claude-code"])
+      expect(await pending).toEqual({ kind: "cancelled" })
+      expect(settlements).toBe(1)
+      expect(timeoutCancellations).toBe(1)
+
+      timeoutCallback?.()
+      await Bun.sleep(0)
+      expect(settlements).toBe(1)
+      await controller.dispose()
+    }
   })
 
   it("ignores wrong and duplicate responses without settling the resumed request", async () => {
@@ -2604,8 +3474,8 @@ describe("actions - respondClarification", () => {
     const second = connections.codex.clarify(secondPayload)
     const active = controller.store.getState().overlays.clarification!
     const secondAnswer: ClarificationOutcome = {
-      kind: "answered",
-      values: { boundary: "store" },
+      kind: "submitted",
+      answers: { boundary: { selectedOptionIds: ["store"] } },
     }
 
     controller.actions.respondClarification("missing", active.generation, secondAnswer)
@@ -2666,6 +3536,7 @@ describe("actions - respondClarification", () => {
           id: "compatible",
           label: "secret options",
           mode: "multi",
+          allowsCustom: false,
           required: false,
           options: [{ id: "yes", label: "secret selected value" }],
         },
@@ -2682,13 +3553,21 @@ describe("actions - respondClarification", () => {
     const overlay = controller.store.getState().overlays.clarification!
     now += 8_000
     controller.actions.respondClarification(overlay.requestId, overlay.generation, {
-      kind: "answered",
-      values: { boundary: "controller", compatible: ["yes"], details: "private text" },
+      kind: "submitted",
+      answers: {
+        boundary: { selectedOptionIds: ["controller"] },
+        compatible: { selectedOptionIds: ["yes"] },
+        details: { selectedOptionIds: [], customText: "private text" },
+      },
     })
 
     expect(await clarification).toEqual({
-      kind: "answered",
-      values: { boundary: "controller", compatible: ["yes"], details: "private text" },
+      kind: "submitted",
+      answers: {
+        boundary: { selectedOptionIds: ["controller"] },
+        compatible: { selectedOptionIds: ["yes"] },
+        details: { selectedOptionIds: [], customText: "private text" },
+      },
     })
     const lifecycle = records.filter((record) => record.type.startsWith("clarification_"))
     expect(lifecycle.map((record) => record.type)).toEqual([
@@ -2704,11 +3583,7 @@ describe("actions - respondClarification", () => {
       focused: false,
     })
     expect(lifecycle.find((record) => record.type === "clarification_settled")).toMatchObject({
-      terminalKind: "answered",
-      hasSingle: true,
-      hasMulti: true,
-      hasText: true,
-      fieldCountBucket: "two_to_three",
+      terminalKind: "submitted",
       durationBucket: "5_to_30s",
     })
     const serialized = JSON.stringify(lifecycle)
@@ -2941,6 +3816,519 @@ describe("createSessionController - per-conversation close", () => {
 })
 
 describe("createSessionController - dynamic conversation actions", () => {
+  it("emits delegated lifecycle telemetry only for accepted transitions and deduplicates callbacks", async () => {
+    const records: TelemetryRecord[] = []
+    let telemetryNow = 100
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => telemetryNow++,
+      sessionRef: "delegation-run",
+    })
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "telemetry-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      recorder,
+      now: () => 900,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    telemetryNow = 110
+    const childId = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "TASK_SENTINEL must never serialize",
+      desiredOutcome: "OUTCOME_SENTINEL must never serialize",
+    })
+    telemetryNow = 125
+    created[2]!.emit({ kind: "status", status: "finished" })
+    created[2]!.emit({ kind: "status", status: "error" })
+    const firstClose = controller.closeConversation(parentId, "cancel")
+    const duplicateClose = controller.closeConversation(parentId, "cancel")
+
+    expect(childId).toBe("telemetry-child")
+    expect(duplicateClose).toBe(firstClose)
+    expect(await firstClose).toEqual({ outcome: "closed" })
+    const delegatedRecords = records.filter((record) => record.type.startsWith("delegated_"))
+    expect(delegatedRecords.map((record) => record.type)).toEqual([
+      "delegated_launch_requested",
+      "delegated_launch_succeeded",
+      "delegated_visible_running_ms",
+      "delegated_child_terminal",
+      "delegated_cascade_requested",
+      "delegated_cascade_completed",
+    ])
+    expect(delegatedRecords.find((record) => record.type === "delegated_visible_running_ms")?.durationMs).toBeGreaterThan(0)
+    expect(delegatedRecords.find((record) => record.type === "delegated_child_terminal")?.delegatedStatus).toBe("finished")
+    const serialized = JSON.stringify(delegatedRecords)
+    expect(serialized).not.toContain("TASK_SENTINEL")
+    expect(serialized).not.toContain("OUTCOME_SENTINEL")
+    expect(serialized).not.toContain("telemetry-child")
+    expect(serialized).not.toContain('"agent"')
+    await controller.dispose()
+  })
+
+  it("launches a delegated child in the parent provider and cwd without moving focus", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `${config.id}-${created.length + 1}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "delegated-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const parent = controller.store.getState().sessions[parentId]!
+
+    const childId = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Inspect the controller boundary",
+      desiredOutcome: "Report the exact lifecycle invariants",
+    })
+
+    expect(childId).toBe("delegated-child")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
+    expect(controller.store.getState().workspace.conversations[childId!]?.lifecycle).toBe("background")
+    expect(controller.store.getState().sessions[childId!]).toMatchObject({
+      providerKind: parent.providerKind,
+      cwd: parent.cwd,
+    })
+    expect(created.at(-1)?.newSessionCwds).toEqual([parent.cwd])
+    expect(created.at(-1)?.prompts.at(-1)?.blocks).toEqual([
+      {
+        type: "text",
+        text: "Task:\nInspect the controller boundary\n\nDesired outcome:\nReport the exact lifecycle invariants",
+      },
+    ])
+    expect(controller.store.getState().delegation.children[childId!]?.status).toBe("running")
+  })
+
+  it("creates distinct background runtimes for two delegated children", async () => {
+    const created: StubConnection[] = []
+    const ids = ["delegated-one", "delegated-two"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const initialConnectionCount = created.length
+
+    const first = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Research the lifecycle",
+      desiredOutcome: "List the races",
+    })
+    const second = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Verify the boundary",
+      desiredOutcome: "Produce passing evidence",
+    })
+
+    expect([first, second]).toEqual(["delegated-one", "delegated-two"])
+    expect(created).toHaveLength(initialConnectionCount + 2)
+    expect(created.at(-2)).not.toBe(created.at(-1))
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
+    expect(controller.store.getState().delegation.parents[parentId]?.childIds).toEqual([
+      "delegated-one",
+      "delegated-two",
+    ])
+  })
+
+  it("settles one finished and one failed child exactly once before the group settles", async () => {
+    const created: StubConnection[] = []
+    const ids = ["finished-child", "failed-child"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      now: () => 77,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
+    await controller.actions.startDelegatedChild({ parentId, task: "Fail", desiredOutcome: "Visible error" })
+
+    created[2]!.emit({ kind: "status", status: "finished" })
+    expect(selectDelegationAggregateStatus(controller.store.getState().delegation, parentId)).toBe("active")
+    created[2]!.emit({ kind: "status", status: "error" })
+    created[3]!.emit({ kind: "status", status: "error" })
+    created[3]!.emit({ kind: "status", status: "finished" })
+
+    const delegation = controller.store.getState().delegation
+    expect(selectDelegationAggregateStatus(delegation, parentId)).toBe("settled")
+    expect(delegation.children["finished-child"]?.terminal).toEqual({ status: "finished", at: 77 })
+    expect(delegation.children["failed-child"]?.terminal).toEqual({ status: "failed", at: 77 })
+    await controller.dispose()
+  })
+
+  it("shares one parent close operation and tears down every owned child once", async () => {
+    const childDisposal = deferred()
+    const created: StubConnection[] = []
+    const ids = ["close-child-one", "close-child-two"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, {
+          sessionId: `acp-${created.length}`,
+          ...(created.length >= 2 ? { disposeWait: childDisposal.promise } : {}),
+        })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    await controller.actions.startDelegatedChild({ parentId, task: "One", desiredOutcome: "Stopped" })
+    await controller.actions.startDelegatedChild({ parentId, task: "Two", desiredOutcome: "Stopped" })
+
+    const first = controller.closeConversation(parentId, "cancel")
+    const second = controller.closeConversation(parentId, "cancel")
+    expect(second).toBe(first)
+    expect(controller.store.getState().delegation.parents[parentId]?.closeState).toBe("closing")
+    await waitFor(
+      () => created[2]!.disposeCalls() === 1 && created[3]!.disposeCalls() === 1,
+      "both delegated disposals to begin",
+    )
+    expect(created[2]!.cancels).toHaveLength(1)
+    expect(created[3]!.cancels).toHaveLength(1)
+
+    childDisposal.resolve()
+    expect(await first).toEqual({ outcome: "closed" })
+    expect(created[2]!.disposeCalls()).toBe(1)
+    expect(created[3]!.disposeCalls()).toBe(1)
+    expect(controller.store.getState().sessions[parentId]).toBeUndefined()
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    const afterClose = controller.store.getState()
+    created[2]!.emit({ kind: "status", status: "finished" })
+    created[2]!.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(await created[2]!.ask(PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+    expect(await created[2]!.clarify(CLARIFICATION_PAYLOAD)).toEqual({ kind: "cancelled" })
+    expect(controller.store.getState()).toBe(afterClose)
+    await controller.dispose()
+  })
+
+  it("preserves a finished terminal snapshot during a racing parent close", async () => {
+    const created: StubConnection[] = []
+    const observedTerminals: string[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "terminal-race-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      now: () => 44,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Stable" })
+    controller.store.subscribe((state) => {
+      const terminal = state.delegation.children["terminal-race-child"]?.terminal
+      if (terminal) observedTerminals.push(`${terminal.status}:${terminal.at}`)
+    })
+
+    created[2]!.emit({ kind: "status", status: "finished" })
+    expect(await controller.closeConversation(parentId, "cancel")).toEqual({ outcome: "closed" })
+
+    expect(created[2]!.cancels).toEqual([])
+    expect(new Set(observedTerminals)).toEqual(new Set(["finished:44"]))
+    expect(controller.store.getState().sessions[parentId]).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it.each([
+    ["cancellation", { cancelThrows: new Error("child cancel failed") }, 0],
+    ["disposal", { disposeThrows: new Error("child dispose failed") }, 1],
+  ] as const)("retains visible delegated failure after throwing %s and ignores every late callback", async (_kind, failure, disposalCalls) => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, {
+          sessionId: `acp-${created.length}`,
+          ...(created.length === 2 ? failure : {}),
+        })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "failing-close-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      now: () => 77,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    await controller.actions.startDelegatedChild({ parentId, task: "Fail teardown", desiredOutcome: "Visible" })
+    const child = created[2]!
+    const pendingPermission = child.ask(PERMISSION_REQUEST)
+
+    expect(await controller.closeConversation(parentId, "cancel")).toEqual({ outcome: "teardown-failed" })
+    expect(await pendingPermission).toEqual({ outcome: "cancelled" })
+    const retained = controller.store.getState()
+    expect(retained.delegation.children["failing-close-child"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed", at: 77 },
+    })
+    expect(retained.workspace.conversations["failing-close-child"]).toMatchObject({
+      availability: { kind: "unavailable", reasonCode: "teardown-failed", retryable: true },
+    })
+    expect(child.disposeCalls()).toBe(disposalCalls)
+    const childSession = retained.sessions["failing-close-child"]
+
+    child.emit({ kind: "status", status: "finished" })
+    child.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(await child.ask(PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+    expect(await child.clarify(CLARIFICATION_PAYLOAD)).toEqual({ kind: "cancelled" })
+    expect(controller.store.getState().sessions["failing-close-child"]).toBe(childSession)
+    expect(await controller.actions.sendPrompt("ordinary sibling stays usable", "codex")).toEqual({ stopReason: "end_turn" })
+    await controller.dispose()
+  })
+
+  it("retains failed delegated startup and prompt snapshots without breaking parent or sibling work", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const ids = ["startup-failure", "prompt-failure", "healthy-child"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const dynamicIndex = Math.max(0, created.length - 2)
+        const options = created.length === 2
+          ? { newSessionThrows: new Error("child startup failed") }
+          : created.length === 3
+            ? { promptThrows: new Error("child prompt failed") }
+            : {}
+        const connection = createStubConnection(config.id, { sessionId: `acp-dynamic-${dynamicIndex}`, ...options })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      now: () => 1234,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "delegation-failure-run",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Fail during startup",
+      desiredOutcome: "Inspectable startup failure",
+    })).toBe("startup-failure")
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Fail during prompt",
+      desiredOutcome: "Inspectable prompt failure",
+    })).toBe("prompt-failure")
+    await Bun.sleep(0)
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Stay healthy",
+      desiredOutcome: "Accept follow-up direction",
+    })).toBe("healthy-child")
+
+    expect(controller.store.getState().delegation.children["startup-failure"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed", at: 1234 },
+    })
+    expect(controller.store.getState().delegation.children["prompt-failure"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed", at: 1234 },
+    })
+    expect(records.filter((record) => record.type === "delegated_launch_failed")).toHaveLength(1)
+    expect(records.filter((record) => record.type === "delegated_child_terminal")).toEqual([
+      expect.objectContaining({ delegatedStatus: "failed" }),
+      expect.objectContaining({ delegatedStatus: "failed" }),
+    ])
+    expect(await controller.actions.steerDelegatedChild("healthy-child", "Check one more invariant")).toEqual({
+      stopReason: "end_turn",
+    })
+    expect(await controller.actions.sendPrompt("Parent remains usable", parentId)).toEqual({ stopReason: "end_turn" })
+  })
+
+  it("treats unknown, ordinary, terminal, and stale delegated controls as fail-soft no-ops", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "controlled-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      now: () => 55,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const childId = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Exercise controls",
+      desiredOutcome: "No leaked failures",
+    })
+    const childConnection = created.at(-1)!
+
+    expect(await controller.actions.steerDelegatedChild("missing", "direction")).toBeNull()
+    expect(await controller.actions.steerDelegatedChild(parentId, "direction")).toBeNull()
+    await controller.actions.cancelDelegatedChild("missing")
+    await controller.actions.cancelDelegatedChild(parentId)
+    expect(childConnection.cancels).toEqual([])
+
+    await controller.actions.cancelDelegatedChild(childId!)
+    await controller.actions.cancelDelegatedChild(childId!)
+    expect(childConnection.cancels).toEqual([childConnection.prompts[0]!.sessionId])
+    expect(controller.store.getState().delegation.children[childId!]?.status).toBe("cancelled")
+    expect(await controller.actions.steerDelegatedChild(childId!, "late direction")).toBeNull()
+
+    const promptsBeforeReplacement = childConnection.prompts.length
+    await controller.actions.startFreshFromContext(undefined, childId!)
+    expect(await controller.actions.steerDelegatedChild(childId!, "stale direction")).toBeNull()
+    await controller.actions.cancelDelegatedChild(childId!)
+    expect(childConnection.prompts).toHaveLength(promptsBeforeReplacement)
+  })
+
+  it("cascades parent replacement and ignores every old child callback", async () => {
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "generation-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      createAskUserBridge: bridge.factory,
+      now: () => 99,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const childId = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Watch generations",
+      desiredOutcome: "Ignore stale terminal events",
+    })
+    expect(controller.store.getState().delegation.children[childId!]?.status).toBe("running")
+    const oldChild = created[2]!
+    const clarification = oldChild.clarify(CLARIFICATION_PAYLOAD)
+
+    await controller.actions.startFreshFromContext(undefined, parentId)
+    expect(await clarification).toEqual({ kind: "cancelled" })
+    oldChild.emit({ kind: "status", status: "finished" })
+    oldChild.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(controller.store.getState().delegation.children[childId!]).toBeUndefined()
+    expect(controller.store.getState().sessions[childId!]).toBeUndefined()
+    expect(oldChild.cancels).toHaveLength(1)
+    expect(oldChild.disposeCalls()).toBe(1)
+    expect(bridge.cancellations.filter(({ sessionId }) => sessionId === childId)).toHaveLength(1)
+    expect(await controller.actions.steerDelegatedChild(childId!, "stale steer")).toBeNull()
+    await controller.actions.cancelDelegatedChild(childId!)
+    expect(controller.isReady(parentId)).toBe(true)
+  })
+
+  it("fences old and replacement child generations from a captured delegation identity", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "generation-child-only",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "stale-delegation-run",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const childId = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Watch child generations",
+      desiredOutcome: "Ignore replacements",
+    })
+    const oldChild = created[2]!
+
+    await controller.actions.startFreshFromContext(undefined, childId!)
+    const replacement = created.at(-1)!
+    oldChild.emit({ kind: "status", status: "finished" })
+    replacement.emit({ kind: "status", status: "error" })
+    expect(controller.store.getState().delegation.children[childId!]?.status).toBe("running")
+    expect(records.filter((record) => record.type === "delegated_child_terminal")).toEqual([])
+    expect(await controller.actions.steerDelegatedChild(childId!, "stale steer")).toBeNull()
+    await controller.actions.cancelDelegatedChild(childId!)
+    expect(replacement.prompts).toEqual([])
+    expect(replacement.cancels).toEqual([])
+    await controller.dispose()
+  })
+
   it("inherits the selected provider and cwd into an independent runtime", async () => {
     const created: StubConnection[] = []
     const controller = await createSessionController({
@@ -3034,6 +4422,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       readBranch: async () => null,
       newSessionId: () => "failed-conversation",
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     const sibling = controller.store.getState().workspace.selectedVisibleId!
 
@@ -3063,6 +4452,54 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(connections["claude-code"].cancels).toEqual([])
     expect(connections["claude-code"].disposeCalls()).toBe(0)
     expect(connections["claude-code"].subscriberCount()).toBe(1)
+  })
+})
+
+describe("delegated action facade", () => {
+  it("forwards narrow delegated commands and converts dependency failures to fail-soft outcomes", async () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const calls: string[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      startDelegatedChild: async (input) => {
+        calls.push(`start:${input.parentId}:${input.task}:${input.desiredOutcome}`)
+        return "child"
+      },
+      steerDelegatedChild: async (childId, text) => {
+        calls.push(`steer:${childId}:${text}`)
+        return { stopReason: "end_turn" }
+      },
+      cancelDelegatedChild: async (childId) => {
+        calls.push(`cancel:${childId}`)
+      },
+    })
+
+    expect(await actions.startDelegatedChild({
+      parentId: "parent",
+      task: "task",
+      desiredOutcome: "outcome",
+    })).toBe("child")
+    expect(await actions.steerDelegatedChild("child", "direction")).toEqual({ stopReason: "end_turn" })
+    await actions.cancelDelegatedChild("child")
+    expect(calls).toEqual([
+      "start:parent:task:outcome",
+      "steer:child:direction",
+      "cancel:child",
+    ])
+
+    const failing = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      startDelegatedChild: async () => { throw new Error("start failed") },
+      steerDelegatedChild: async () => { throw new Error("steer failed") },
+      cancelDelegatedChild: async () => { throw new Error("cancel failed") },
+    })
+    expect(await failing.startDelegatedChild({ parentId: "parent", task: "task", desiredOutcome: "outcome" })).toBeNull()
+    expect(await failing.steerDelegatedChild("child", "direction")).toBeNull()
+    expect(await failing.cancelDelegatedChild("child")).toBeUndefined()
   })
 })
 
@@ -3117,6 +4554,7 @@ describe("createSessionController - dispose", () => {
         sessions: [{ provider: "claude-code", cwd: process.cwd() }],
         mcpServers: [],
         shell: APP_CONFIG.shell,
+        clarificationTimeoutSeconds: 300,
         persistenceEnabled: true,
         telemetryEnabled: false,
         theme: "auto",
@@ -3420,6 +4858,56 @@ describe("createControllerActions", () => {
     expect(connection.prompts).toEqual([{ sessionId: "fresh-codex", blocks }])
   })
 
+  it("retains a definitely-unsent failed first task and dispatches it only after explicit fresh recovery", async () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const dispatched: PromptBlock[][] = []
+    const starts: SessionId[] = []
+    let replacementReady = false
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      preparePromptDispatch: (sessionId, blocks) => {
+        if (!replacementReady) {
+          store.setHarnessDelivery(sessionId, {
+            version: "v1",
+            generation: 1,
+            state: "failed",
+            failureCategory: "unsupported_profile",
+          })
+          return null
+        }
+        return {
+          async invoke() {
+            dispatched.push(blocks)
+            return { stopReason: "end_turn" }
+          },
+        }
+      },
+      startFreshSession: async (sessionId) => {
+        starts.push(sessionId)
+        replacementReady = true
+        store.setHarnessDelivery(sessionId, { version: "v1", generation: 2, state: "pending" })
+        return true
+      },
+    })
+    const task = "original rejected task"
+
+    actions.recordPromptHistory(task, "claude-code")
+    expect(await actions.sendPrompt(task, "claude-code")).toBeNull()
+    expect(dispatched).toEqual([])
+    expect(store.getState().sessions["claude-code"]?.turns).toEqual([])
+
+    expect(await actions.startFreshFromContext(undefined, "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(starts).toEqual(["claude-code"])
+    expect(dispatched).toEqual([[{ type: "text", text: task }]])
+    expect(store.getState().sessions["claude-code"]?.turns).toEqual([
+      expect.objectContaining({ kind: "user", text: task }),
+    ])
+    expect(store.getState().sessions["claude-code"]?.promptHistory.entries).toEqual([task])
+    expect(store.getState().harnessDeliveryNotices["claude-code"]).toBeUndefined()
+  })
+
   it("Should not send persisted context when a fresh session cannot start", async () => {
     const store = createAppStore()
     const connection = createStubConnection("codex")
@@ -3432,6 +4920,32 @@ describe("createControllerActions", () => {
 
     expect(await actions.startFreshFromContext("saved context", "codex")).toBeNull()
     expect(connection.prompts).toHaveLength(0)
+  })
+
+  it("replaces a restored failed generation even when content-free persistence retained no task", async () => {
+    const store = createAppStore({ selectedVisibleId: "codex" })
+    store.setHarnessDelivery("codex", {
+      version: "v1",
+      generation: 4,
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+    })
+    const starts: SessionId[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission: () => {},
+      startFreshSession: async (sessionId) => {
+        starts.push(sessionId)
+        store.setHarnessDelivery(sessionId, { version: "v1", generation: 5, state: "pending" })
+        return true
+      },
+    })
+
+    expect(await actions.startFreshFromContext(undefined, "codex")).toBeNull()
+    expect(starts).toEqual(["codex"])
+    expect(store.getState().harnessDeliveryNotices.codex).toBeUndefined()
+    expect(store.getState().sessions.codex?.turns).toEqual([])
   })
 
   it("Should default the message id to a fresh uuid per user turn", async () => {
@@ -3569,6 +5083,7 @@ function connectionToMockAgent(
     // Flush streamed deltas immediately: coalescing timing is task_03's contract,
     // not this test's subject.
     scheduler: { schedule: (flush) => flush(), dispose: () => {} },
+    harnessProfiles: [testHarnessProfile(config)],
   })
   return { connection, agent }
 }
@@ -3619,6 +5134,7 @@ describe("integration - two mock ACP agents", () => {
       createConnection: () => claude.connection,
       createShellRuntime: createTestShellFactory(),
       newInteractionId: () => "clarification-integration",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     const prompt = controller.actions.sendPrompt("ask me", "claude-code")
@@ -3635,8 +5151,8 @@ describe("integration - two mock ACP agents", () => {
     })
 
     controller.actions.respondClarification(overlay.requestId, overlay.generation, {
-      kind: "answered",
-      values: { boundary: "controller" },
+      kind: "submitted",
+      answers: { boundary: { selectedOptionIds: ["controller"] } },
     })
     await prompt
 
@@ -3668,6 +5184,7 @@ describe("integration - two mock ACP agents", () => {
       cwd: CWD,
       createConnection: (config) => connections[config.id],
       createShellRuntime: createTestShellFactory(),
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     const result = await controller.actions.sendPrompt("do the thing", "claude-code")
@@ -3713,6 +5230,7 @@ describe("integration - two mock ACP agents", () => {
       cwd: CWD,
       createConnection: (config) => connections[config.id],
       createShellRuntime: createTestShellFactory(),
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     const prompt = controller.actions.sendPrompt("edit the readme", "claude-code")
@@ -3755,6 +5273,7 @@ describe("integration - two mock ACP agents", () => {
       cwd: CWD,
       createConnection: (config) => connections[config.id],
       createShellRuntime: createTestShellFactory(),
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     const blockedPrompt = controller.actions.sendPrompt("edit then stream", "claude-code")
@@ -3820,6 +5339,7 @@ describe("integration - two mock ACP agents", () => {
       cwd: CWD,
       createConnection: (config) => connections[config.id],
       createShellRuntime: createTestShellFactory(),
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
     const claudeRuntime = controller.runtime("claude-code")!

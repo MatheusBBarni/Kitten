@@ -14,6 +14,7 @@ import {
 } from "./agentConnection.ts"
 import { createInMemoryTransportPair } from "./transport.ts"
 import { KITTEN_VERSION } from "../version.ts"
+import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../config/harnessCapability.ts"
 
 /**
  * Integration tests that drive the `AgentConnection` adapter against the in-process
@@ -99,6 +100,7 @@ function setup(
   mockOptions: MockAgentOptions = {},
   scheduler?: FrameScheduler,
   config: AgentConfig | ResolvedAgentConfig = CONFIG,
+  harnessProfiles?: readonly CertifiedHarnessProfile[],
 ) {
   const pair = createInMemoryTransportPair()
   const mock = startMockAgent(pair.agent, mockOptions)
@@ -107,9 +109,32 @@ function setup(
     config,
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler,
+    harnessProfiles,
   })
   conn.onUpdate((event) => events.push(event))
   return { conn, mock, events }
+}
+
+const HARNESS_PROFILES: readonly CertifiedHarnessProfile[] = [
+  harnessProfile("claude-profile", "claude-code", "npx", ["-y", "claude@1.0.0"], {}, "claude-code-prompt-meta-v1"),
+  harnessProfile("codex-profile", "codex", "npx", ["-y", "codex@1.0.0"], {}, "codex-prompt-meta-v1"),
+  harnessProfile("cursor-profile", "cursor", "agent", ["acp"], {}, "cursor-prompt-meta-v1"),
+]
+
+function harnessProfile(
+  profileId: string,
+  providerKind: string,
+  command: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+  encoder: CertifiedHarnessProfile["encoder"],
+): CertifiedHarnessProfile {
+  return {
+    profileId,
+    encoder,
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: { providerKind, command, args, env, adapterPackage: `${providerKind}-adapter`, adapterVersion: "1.0.0" },
+  }
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -366,6 +391,81 @@ describe("connect / session lifecycle", () => {
   it("throws when prompting before connect", async () => {
     const { conn } = setup()
     await expect(conn.prompt("s", [{ type: "text", text: "hi" }])).rejects.toThrow(/not connected/)
+  })
+})
+
+describe("harness prompt envelope", () => {
+  it("preserves ordinary ACP prompt mapping for an envelope without a harness", async () => {
+    const { conn, mock } = setup()
+    await conn.connect()
+    const userBlocks = [
+      { type: "text" as const, text: "first\nline" },
+      { type: "text" as const, text: "second" },
+    ]
+
+    await conn.prompt("mock-session-1", { userBlocks })
+
+    expect(mock.prompts).toEqual([{ sessionId: "mock-session-1", prompt: userBlocks }])
+    await conn.dispose()
+  })
+
+  it.each([
+    ["claude-code", "claude-profile", "claudeCode"],
+    ["codex", "codex-profile", "codex"],
+    ["cursor", "cursor-profile", "cursor"],
+  ] as const)("selects only the certified %s encoder", async (providerKind, profileId, metaKey) => {
+    const profile = HARNESS_PROFILES.find((candidate) => candidate.profileId === profileId)!
+    const config: AgentConfig = {
+      id: providerKind,
+      displayName: providerKind,
+      command: profile.recipe.command,
+      args: [...profile.recipe.args],
+      env: { ...profile.recipe.env },
+    }
+    const { conn, mock } = setup({}, undefined, config, HARNESS_PROFILES)
+    await conn.connect()
+
+    await conn.prompt("mock-session-1", {
+      userBlocks: [{ type: "text", text: "SYNTHETIC_USER_BLOCK" }],
+      harness: { version: "v1", text: "SYNTHETIC_HARNESS_BLOCK" },
+      profileId,
+    })
+
+    expect(mock.prompts).toEqual([
+      {
+        sessionId: "mock-session-1",
+        prompt: [{ type: "text", text: "SYNTHETIC_USER_BLOCK" }],
+        _meta: { [metaKey]: { kittenHarness: { version: "v1", text: "SYNTHETIC_HARNESS_BLOCK" } } },
+      },
+    ])
+    expect(JSON.stringify(mock.prompts[0]!.prompt)).not.toContain("SYNTHETIC_HARNESS_BLOCK")
+    expect(mock.prompts[0]).not.toHaveProperty("_meta.kitten")
+    await conn.dispose()
+  })
+
+  it.each([
+    ["missing profile", undefined, CONFIG],
+    ["unknown profile", "not-certified", CONFIG],
+    [
+      "mismatched recipe",
+      "claude-profile",
+      { ...CONFIG, command: "/opt/bin/npx", args: ["-y", "claude@1.0.0"] },
+    ],
+  ] as const)("rejects %s before ACP prompt", async (_case, profileId, config) => {
+    const { conn, mock, events } = setup({}, undefined, config as AgentConfig, HARNESS_PROFILES)
+    await conn.connect()
+
+    await expect(
+      conn.prompt("mock-session-1", {
+        userBlocks: [{ type: "text", text: "SYNTHETIC_USER_BLOCK" }],
+        harness: { version: "v1", text: "SYNTHETIC_HARNESS_BLOCK" },
+        ...(profileId === undefined ? {} : { profileId }),
+      }),
+    ).rejects.toThrow("unsupported for this runtime profile")
+
+    expect(mock.prompts).toEqual([])
+    expect(events).toEqual([])
+    await conn.dispose()
   })
 })
 
@@ -643,8 +743,12 @@ describe("verified clarification elicitation", () => {
       calls += 1
       seen = payload
       return {
-        kind: "answered",
-        values: { strategy: "safe", targets: ["tests", "docs"], notes: "Keep it focused" },
+        kind: "submitted",
+        answers: {
+          strategy: { selectedOptionIds: ["safe"] },
+          targets: { selectedOptionIds: ["tests", "docs"] },
+          notes: { selectedOptionIds: [], customText: "Keep it focused" },
+        },
       }
     })
 
@@ -660,6 +764,7 @@ describe("verified clarification elicitation", () => {
           label: "Strategy",
           required: true,
           mode: "single",
+          allowsCustom: false,
           options: [
             { id: "safe", label: "Safe" },
             { id: "fast", label: "Fast" },
@@ -670,6 +775,7 @@ describe("verified clarification elicitation", () => {
           label: "Targets",
           required: true,
           mode: "multi",
+          allowsCustom: false,
           options: [
             { id: "tests", label: "tests" },
             { id: "docs", label: "docs" },
@@ -817,8 +923,11 @@ describe("verified clarification elicitation", () => {
       SUPPORTED_CONFIG,
     )
     conn.onClarification(async () => ({
-      kind: "answered",
-      values: { strategy: "unknown", targets: ["tests"] },
+      kind: "submitted",
+      answers: {
+        strategy: { selectedOptionIds: ["unknown"] },
+        targets: { selectedOptionIds: ["tests"] },
+      },
     }))
     const sessionId = await conn.newSession("/tmp")
     await conn.prompt(sessionId, [{ type: "text", text: "ask" }])

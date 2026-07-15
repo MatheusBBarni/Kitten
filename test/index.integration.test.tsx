@@ -10,6 +10,7 @@ import { CockpitApp } from "../src/ui/CockpitApp.tsx"
 import type { AgentConnection, PromptBlock } from "../src/agent/agentConnection.ts"
 import { createSessionController } from "../src/app/controller.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
+import type { HarnessCapability } from "../src/config/harnessCapability.ts"
 import type { StatuslineLayout } from "../src/core/statusline.ts"
 import type { DomainSessionEvent, ProviderKind } from "../src/core/types.ts"
 import { createCockpitRenderer, createCockpitSession, main, renderCockpit, wireKeyboardCapability } from "../src/index.ts"
@@ -22,6 +23,12 @@ import { KEYMAP_HINT } from "../src/ui/keymap.ts"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "../src/ui/WelcomeBanner.tsx"
 import { createFakeController, type FakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted } from "./reactTui.ts"
+
+const TEST_HARNESS_CAPABILITY: HarnessCapability = {
+  status: "supported",
+  profileId: "index-integration-profile",
+  encoder: "codex-prompt-meta-v1",
+}
 
 function resumableFakeConnection(
   id: ProviderKind,
@@ -45,8 +52,8 @@ function resumableFakeConnection(
       }
       for (const subscriber of subscribers) subscriber(event)
     },
-    async prompt(sessionId, blocks) {
-      prompts.push({ id, sessionId, blocks })
+    async prompt(sessionId, input) {
+      prompts.push({ id, sessionId, blocks: Array.isArray(input) ? input : [...input.userBlocks] })
       return { stopReason: "end_turn" }
     },
     cancel: async () => {},
@@ -248,6 +255,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
         createRunStore: () => runStore,
         buildController: (options) => createSessionController({
           ...options,
+          resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
           createConnection: (agentConfig) => resumableFakeConnection(
             agentConfig.id,
             generations[agentConfig.id]++,

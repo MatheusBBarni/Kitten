@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Route First Prompts Through Controller-Owned Delivery"
 type: refactor
 complexity: high

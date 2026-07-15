@@ -8,8 +8,10 @@ import type { CloseChoice } from "../app/actions.ts"
 import type { SessionId, SessionStatus } from "../core/types.ts"
 import type { TabDialogOverlay } from "../store/appStore.ts"
 import {
+  selectDelegatedParentCloseSummary,
   selectIsApprovalOpen,
   selectTabDialogOverlay,
+  type DelegatedParentCloseSummary,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import {
@@ -26,6 +28,8 @@ export const IDLE_CLOSE_LABEL = "Close conversation"
 export const BACKGROUND_LABEL = "Background"
 export const CANCEL_DELIBERATELY_LABEL = "Cancel deliberately"
 export const KEEP_OPEN_LABEL = "Keep open"
+export const KEEP_WORKING_LABEL = "Keep working"
+export const DELEGATED_CLOSE_PROMPT = "Closing this parent will cancel its active delegated work."
 
 interface CloseOption {
   label: string
@@ -65,6 +69,11 @@ function TabDialogBody({ overlay }: { overlay: TabDialogOverlay }): ReactNode {
   )
   const conversation = useAppSelector(conversationSelector)
   const status = useAppSelector(statusSelector)
+  const delegatedCloseSummarySelector = useMemo(
+    () => selectDelegatedParentCloseSummary(overlay.sessionId),
+    [overlay.sessionId],
+  )
+  const delegatedCloseSummary = useAppSelector(delegatedCloseSummarySelector)
   const [draft, setDraft] = useState(conversation?.displayName ?? "")
   const [renameError, setRenameError] = useState(false)
   const [selected, setSelected] = useState(0)
@@ -91,8 +100,10 @@ function TabDialogBody({ overlay }: { overlay: TabDialogOverlay }): ReactNode {
   }, [controller, draft, overlay.sessionId, stillOwnsSlot])
 
   const closeOptions = useMemo(
-    () => status === "idle" ? IDLE_CLOSE_OPTIONS : activeCloseOptions(status),
-    [status],
+    () => delegatedCloseSummary
+      ? delegatedParentCloseOptions(delegatedCloseSummary.activeChildCount)
+      : status === "idle" ? IDLE_CLOSE_OPTIONS : activeCloseOptions(status),
+    [delegatedCloseSummary, status],
   )
   const clampedSelected = Math.min(selected, closeOptions.length - 1)
   const chooseClose = useCallback((): void => {
@@ -188,7 +199,21 @@ function TabDialogBody({ overlay }: { overlay: TabDialogOverlay }): ReactNode {
         </>
       ) : (
         <>
-          <text fg={palette.text}>{closePrompt(status)}</text>
+          <text fg={palette.text}>
+            {delegatedCloseSummary ? DELEGATED_CLOSE_PROMPT : closePrompt(status)}
+          </text>
+          {delegatedCloseSummary ? (
+            <>
+              <text fg={palette.text}>
+                {`${delegatedCloseSummary.activeChildCount} active ${delegatedCloseSummary.activeChildCount === 1 ? "child task" : "child tasks"} affected:`}
+              </text>
+              <text fg={palette.muted}>
+                {delegatedCloseSummary.statuses
+                  .map(({ label, count }) => `${label} (${count})`)
+                  .join(" · ")}
+              </text>
+            </>
+          ) : null}
           <box style={{ flexDirection: "column", marginTop: 1 }}>
             {closeOptions.map((option, index) => (
               <text key={option.choice}>
@@ -231,6 +256,22 @@ function activeCloseOptions(status: SessionStatus | null): readonly CloseOption[
     {
       label: KEEP_OPEN_LABEL,
       consequence: "Leave the conversation visible and its lifecycle unchanged.",
+      choice: "keep-open",
+    },
+  ]
+}
+
+function delegatedParentCloseOptions(activeChildCount: number): readonly CloseOption[] {
+  const childTasks = activeChildCount === 1 ? "child task" : "child tasks"
+  return [
+    {
+      label: `Cancel ${activeChildCount} ${childTasks} and close`,
+      consequence: "Cancel the affected delegated work, then close this parent conversation.",
+      choice: "cancel",
+    },
+    {
+      label: KEEP_WORKING_LABEL,
+      consequence: "Leave the parent and all delegated work unchanged.",
       choice: "keep-open",
     },
   ]

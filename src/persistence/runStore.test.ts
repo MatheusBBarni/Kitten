@@ -14,10 +14,12 @@ import { join, resolve } from "node:path"
 import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
 import type { ResolvedSession } from "../core/types.ts"
 import {
+  PERSISTED_RUN_RECORD_SCHEMA,
   migratePersistedRunV1,
   type PersistedRunRecord,
   type PersistedRunRecordV1,
   type PersistedRunRecordV2,
+  type PersistedRunRecordV3,
 } from "./runRecord.ts"
 import {
   SESSIONS_PATH_ENV_VAR,
@@ -125,6 +127,25 @@ function makeV2Record(cwd: string, overrides: Partial<PersistedRunRecordV2> = {}
   }
 }
 
+function makeV3Record(cwd: string, overrides: Partial<PersistedRunRecordV3> = {}): PersistedRunRecordV3 {
+  const { version: _version, ...v2 } = makeV2Record(cwd)
+  return {
+    version: 3,
+    ...v2,
+    runId: "run-v3",
+    harnessDeliveries: {
+      visible: { version: "v1", generation: 4, state: "delivered" },
+      background: {
+        version: "v1",
+        generation: 2,
+        state: "failed",
+        failureCategory: "dispatch_indeterminate",
+      },
+    },
+    ...overrides,
+  }
+}
+
 function resolvedSession(id: string, providerKind: "claude-code" | "codex", cwd: string): ResolvedSession {
   return {
     seed: { id, providerKind, cwd, title: `${id} configured` },
@@ -191,6 +212,85 @@ describe("createRunStore", () => {
           messageCount: 3,
         },
       ])
+    })
+  })
+
+  it("round-trips every fixed V3 checkpoint state", () => {
+    const states = ["not_required", "pending", "in_flight", "delivered"] as const
+    for (const state of states) {
+      withTempStore((base) => {
+        const cwd = join(base, state)
+        const record = makeV3Record(cwd, {
+          runId: `run-${state}`,
+          harnessDeliveries: { visible: { version: "v1", generation: 0, state } },
+        })
+        const store = createRunStore({ enabled: true, path: base })
+        store.save(record)
+        expect(store.load(cwd, record.runId)).toMatchObject({
+          version: 3,
+          harnessDeliveries: { visible: { version: "v1", generation: 0, state } },
+        })
+      })
+    }
+
+    withTempStore((base) => {
+      const cwd = join(base, "failed")
+      const record = makeV3Record(cwd, {
+        harnessDeliveries: {
+          visible: {
+            version: "v1",
+            generation: 9,
+            state: "failed",
+            failureCategory: "unsupported_profile",
+          },
+        },
+      })
+      const store = createRunStore({ enabled: true, path: base })
+      store.save(record)
+      expect(store.load(cwd, record.runId)).toMatchObject({ harnessDeliveries: record.harnessDeliveries })
+    })
+  })
+
+  it("strictly rejects invalid V3 checkpoint values, shapes, generations, and membership", () => {
+    const cwd = "/work/project"
+    const invalidCheckpoints: unknown[] = [
+      { version: "v2", generation: 1, state: "pending" },
+      { version: "v1", generation: -1, state: "pending" },
+      { version: "v1", generation: 1.5, state: "pending" },
+      { version: "v1", generation: 1, state: "unknown" },
+      { version: "v1", generation: 1, state: "failed", failureCategory: "raw failure" },
+      { version: "v1", generation: 1, state: "failed" },
+      { version: "v1", generation: 1, state: "delivered", failureCategory: "dispatch_indeterminate" },
+      { version: "v1", generation: 1, state: "pending", prompt: "private" },
+    ]
+    for (const checkpoint of invalidCheckpoints) {
+      const record = makeV3Record(cwd, {
+        harnessDeliveries: { visible: checkpoint } as never,
+      })
+      expect(PERSISTED_RUN_RECORD_SCHEMA.safeParse(record).success).toBe(false)
+    }
+    expect(PERSISTED_RUN_RECORD_SCHEMA.safeParse(makeV3Record(cwd, {
+      harnessDeliveries: { missing: { version: "v1", generation: 1, state: "pending" } },
+    })).success).toBe(false)
+  })
+
+  it("rejects nested transcript or prompt injection under a V3 checkpoint before sanitizing", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "project")
+      const record = makeV3Record(cwd, {
+        harnessDeliveries: {
+          visible: {
+            version: "v1",
+            generation: 1,
+            state: "in_flight",
+            transcript: [{ text: "private transcript" }],
+            prompt: { text: "private prompt" },
+          } as never,
+        },
+      })
+      const store = createRunStore({ enabled: true, path: base })
+      expect(() => store.save(record)).toThrow("Invalid harness delivery checkpoint")
+      expect(readdirSync(base, { recursive: true }).map(String).join("\n")).not.toContain("run-v3.json")
     })
   })
 
@@ -570,6 +670,8 @@ describe("migratePersistedRunV1", () => {
     })
     expect(migrated.gitBranch).toBeNull()
     expect(legacy.agents["dynamic-unmatched"]).toBeDefined()
+    expect(migrated).not.toHaveProperty("harnessDeliveries")
+    expect(PERSISTED_RUN_RECORD_SCHEMA.parse(makeV2Record(cwd))).not.toHaveProperty("harnessDeliveries")
   })
 })
 

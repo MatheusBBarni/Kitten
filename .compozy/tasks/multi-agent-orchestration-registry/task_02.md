@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Integrate Delegation State into AppStore"
 type: backend
 complexity: medium

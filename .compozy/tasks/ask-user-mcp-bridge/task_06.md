@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Provision the bridge per session and prove end-to-end lifecycle behavior
 type: backend
 complexity: critical

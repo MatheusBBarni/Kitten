@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import type { HandoffBundle } from "../core/types.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
-import type { PersistedRunRecordV2 } from "./runRecord.ts"
+import type { PersistedRunRecordV3 } from "./runRecord.ts"
 import { createRunWriter } from "./runWriter.ts"
 import type { RunStore } from "./runStore.ts"
 
@@ -38,15 +38,15 @@ function controlledTimer(): {
 }
 
 function recordingRunStore(): RunStore & {
-  records: PersistedRunRecordV2[]
+  records: PersistedRunRecordV3[]
   flushCalls: number
 } {
-  const records: PersistedRunRecordV2[] = []
+  const records: PersistedRunRecordV3[] = []
   return {
     records,
     flushCalls: 0,
     save(record) {
-      if (record.version !== 2) throw new Error("RunWriter must write V2 records")
+      if (record.version !== 3) throw new Error("RunWriter must write V3 records")
       records.push(record)
     },
     list() {
@@ -151,7 +151,7 @@ describe("createRunWriter", () => {
 
     expect(runStore.records).toHaveLength(1)
     expect(runStore.records[0]).toEqual({
-      version: 2,
+      version: 3,
       runId: "run-03",
       cwd: "/work/kitten",
       gitBranch: "feat/parser",
@@ -200,8 +200,52 @@ describe("createRunWriter", () => {
         selectedVisibleId: "claude",
       },
       handoffBundle: null,
+      harnessDeliveries: {},
     })
     expect(JSON.stringify(runStore.records[0])).not.toContain('"turns"')
+    writer.dispose()
+  })
+
+  it("writes only fixed harness checkpoint primitives and omits delivery payload lookalikes", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    store.setHarnessDelivery("claude", {
+      version: "v1",
+      generation: 7,
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+      harnessText: "synthetic harness must not persist",
+      firstTask: "private first task must not persist",
+      acpSessionId: "private-acp-id",
+      profile: { command: "private-adapter", env: { TOKEN: "private-env" } },
+      path: "/private/worktree",
+      rawError: "private raw error",
+      digest: "reversible-private-digest",
+    } as never)
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    expect(record.harnessDeliveries).toEqual({
+      claude: {
+        version: "v1",
+        generation: 7,
+        state: "failed",
+        failureCategory: "dispatch_indeterminate",
+      },
+    })
+    const serialized = JSON.stringify(record)
+    for (const forbidden of [
+      "synthetic harness",
+      "private first task",
+      "private-acp-id",
+      "private-adapter",
+      "private-env",
+      "/private/worktree",
+      "private raw error",
+      "reversible-private-digest",
+    ]) {
+      expect(serialized).not.toContain(forbidden)
+    }
     writer.dispose()
   })
 
@@ -281,7 +325,76 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
-  it("writes a valid empty V2 workspace with null selection and branch and omits closed state", () => {
+  it("persists delegated children only as ordinary conversations and omits all delegation ownership", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    store.addDelegatedSession({
+      seed: { id: "running-child", providerKind: "claude-code", title: "Running child", cwd: "/work/kitten" },
+      parentId: "claude",
+      parentGeneration: 7,
+      childGeneration: 8,
+      task: "TASK_SENTINEL must remain ephemeral",
+      desiredOutcome: "OUTCOME_SENTINEL must remain ephemeral",
+      displayName: "Ordinary running conversation",
+    })
+    store.startSession("running-child", "running-child-acp")
+    store.publishDelegatedChildState({
+      parentId: "claude",
+      childId: "running-child",
+      parentGeneration: 7,
+      childGeneration: 8,
+      status: "running",
+      sessionStatus: "working",
+    })
+    store.addDelegatedSession({
+      seed: { id: "terminal-child", providerKind: "claude-code", title: "Terminal child", cwd: "/work/kitten" },
+      parentId: "claude",
+      parentGeneration: 7,
+      childGeneration: 9,
+      task: "SECOND_TASK_SENTINEL",
+      desiredOutcome: "SECOND_OUTCOME_SENTINEL",
+      displayName: "Ordinary terminal conversation",
+    })
+    store.startSession("terminal-child", "terminal-child-acp")
+    store.publishDelegatedChildState({
+      parentId: "claude",
+      childId: "terminal-child",
+      parentGeneration: 7,
+      childGeneration: 9,
+      status: "failed",
+      sessionStatus: "error",
+      at: 999,
+    })
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    expect(record.workspace.order).toEqual(["claude", "codex", "running-child", "terminal-child"])
+    expect(record.conversations["running-child"]).toMatchObject({
+      sessionId: "running-child",
+      acpSessionId: "running-child-acp",
+      status: "working",
+    })
+    expect(record.conversations["terminal-child"]).toMatchObject({
+      sessionId: "terminal-child",
+      acpSessionId: "terminal-child-acp",
+      status: "error",
+    })
+    const serialized = JSON.stringify(record)
+    for (const forbidden of [
+      '"delegation"',
+      "TASK_SENTINEL",
+      "OUTCOME_SENTINEL",
+      '"parentGeneration"',
+      '"childGeneration"',
+      '"closeState"',
+      '"terminal"',
+    ]) {
+      expect(serialized).not.toContain(forbidden)
+    }
+    writer.dispose()
+  })
+
+  it("writes a valid empty V3 workspace with null selection and branch and omits closed state", () => {
     const { store, runStore, timer, writer } = writerHarness()
     store.removeSession("claude")
     store.removeSession("codex")
@@ -289,7 +402,7 @@ describe("createRunWriter", () => {
     timer.flush()
 
     expect(runStore.records.at(-1)).toEqual({
-      version: 2,
+      version: 3,
       runId: "run-03",
       cwd: "/work/kitten",
       gitBranch: null,
@@ -298,6 +411,7 @@ describe("createRunWriter", () => {
       conversations: {},
       workspace: { conversations: {}, order: [], selectedVisibleId: null },
       handoffBundle: null,
+      harnessDeliveries: {},
     })
     writer.dispose()
   })

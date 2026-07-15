@@ -111,6 +111,12 @@ export const DEFAULT_SHELL_SCROLLBACK = 1_000
 /** Bound retained terminal history so a config typo cannot consume unbounded memory. */
 export const MAX_SHELL_SCROLLBACK = 100_000
 
+/** Five minutes keeps operator waiting behavior predictable across every provider. */
+export const DEFAULT_CLARIFICATION_TIMEOUT_SECONDS = 300
+
+/** V1 never permits a clarification to block an agent for longer than one hour. */
+export const MAX_CLARIFICATION_TIMEOUT_SECONDS = 3_600
+
 const THEME_PREFERENCES = ["auto", "light", "dark", "catppuccin-mocha", "catppuccin-latte"] as const satisfies readonly ThemePreference[]
 const WELCOME_BANNER_PREFERENCES = ["auto", "always", "off"] as const satisfies readonly WelcomeBannerPreference[]
 
@@ -251,6 +257,7 @@ const STATUSLINE_CONFIG_SCHEMA = z
  */
 export const USER_CONFIG_SCHEMA = z
   .object({
+    clarificationTimeoutSeconds: z.number().int().positive().max(MAX_CLARIFICATION_TIMEOUT_SECONDS).optional(),
     persistenceEnabled: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
     theme: z.enum(THEME_PREFERENCES).optional(),
@@ -292,6 +299,7 @@ export function defaultAppConfig(): AppConfig {
       command: process.env.SHELL || "/bin/sh",
       scrollback: DEFAULT_SHELL_SCROLLBACK,
     },
+    clarificationTimeoutSeconds: DEFAULT_CLARIFICATION_TIMEOUT_SECONDS,
     persistenceEnabled: DEFAULT_SESSION_PERSISTENCE_ENABLED,
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
     theme: DEFAULT_THEME,
@@ -335,6 +343,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
       command: user.shell?.command ?? config.shell.command,
       scrollback: user.shell?.scrollback ?? config.shell.scrollback,
     },
+    clarificationTimeoutSeconds: user.clarificationTimeoutSeconds ?? config.clarificationTimeoutSeconds,
     persistenceEnabled: user.persistenceEnabled ?? config.persistenceEnabled,
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     theme: user.theme ?? config.theme,

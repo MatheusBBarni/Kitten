@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Implement the same-binary stdio MCP child and bounded ask_user schema
 type: backend
 complexity: high

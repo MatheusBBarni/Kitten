@@ -4,6 +4,7 @@ import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState } from "../core/shellReducer.ts"
 import type { StatuslineLayout, StatuslinePreference } from "../core/statusline.ts"
+import { HARNESS_DELIVERY_FAILED_NOTICE, isHarnessDeliveryNotice } from "../core/types.ts"
 import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import {
   createAppStore,
@@ -16,9 +17,16 @@ import {
   selectApprovalOverlay,
   selectActiveModal,
   selectClarificationCapability,
+  selectDelegatedChild,
+  selectDelegatedChildIds,
+  selectDelegationGroupStatus,
+  selectDelegationParent,
+  selectDelegationOverlay,
   selectClarificationOverlay,
   selectHandoffPreview,
   selectFocusedPane,
+  selectFocusedHarnessDeliveryNotice,
+  selectHarnessDeliveryNotice,
   selectHasOpenOverlay,
   selectIsFocused,
   selectKeyboardCapability,
@@ -88,6 +96,7 @@ const CLARIFICATION_PAYLOAD: ClarificationPayload = {
     id: "boundary",
     label: "Boundary",
     mode: "single",
+    allowsCustom: false,
     required: true,
     options: [{ id: "controller", label: "Controller" }],
   }],
@@ -98,6 +107,29 @@ const message = (messageId: string, textDelta: string): DomainSessionEvent => ({
   messageId,
   textDelta,
 })
+
+const delegatedChildSeed: SessionSeed = {
+  id: "delegated-child",
+  providerKind: "codex",
+  title: "Delegated child",
+  cwd: "/work/child",
+}
+
+const delegatedRegistration = () => ({
+  seed: delegatedChildSeed,
+  parentId: "claude-code",
+  parentGeneration: 4,
+  childGeneration: 1,
+  task: "Inspect the parser",
+  desiredOutcome: "Report concrete failure modes",
+})
+
+const delegatedIdentity = {
+  parentId: "claude-code",
+  childId: "delegated-child",
+  parentGeneration: 4,
+  childGeneration: 1,
+} as const
 
 /** Record every value a narrow subscription is notified with. */
 function trackSelector<T>(store: AppStore, selector: (state: AppState) => T): T[] {
@@ -112,6 +144,7 @@ describe("createAppStore", () => {
     expect(state.sessions["claude-code"]).toEqual(createSessionState(seed("claude-code")))
     expect(state.sessions.codex).toEqual(createSessionState(seed("codex")))
     expect(state.sessions.cursor).toEqual(createSessionState(seed("cursor")))
+    expect(state.delegation).toEqual({ parents: {}, children: {} })
     expect(state.workspace.order).toEqual(["claude-code", "codex", "cursor"])
     expect(state.workspace.selectedVisibleId).toBe("claude-code")
     expect(state.focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
@@ -120,6 +153,7 @@ describe("createAppStore", () => {
     expect(state.overlays).toEqual({
       approval: null,
       clarification: null,
+      delegation: null,
       handoffPreview: null,
       handoffTarget: null,
       modelSelect: null,
@@ -479,6 +513,33 @@ describe("setFocusedPane", () => {
 })
 
 describe("overlay slots", () => {
+  it("captures only the focused parent for delegation and suppresses focus changes", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const before = store.getState()
+
+    store.openDelegation({ parentId: "claude-code" })
+    const opened = store.getState()
+    expect(selectDelegationOverlay(opened)).toEqual({ parentId: "claude-code" })
+    expect(Object.keys(opened.overlays.delegation!)).toEqual(["parentId"])
+    expect(opened.workspace).toBe(before.workspace)
+    expect(opened.focusedPane).toBe(before.focusedPane)
+
+    store.setFocus("codex")
+    expect(store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    store.closeDelegation()
+    expect(selectDelegationOverlay(store.getState())).toBeNull()
+  })
+
+  it("refuses delegation without a focused parent or while another modal is open", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.openDelegation({ parentId: "codex" })
+    expect(store.getState().overlays.delegation).toBeNull()
+
+    store.openSettings()
+    store.openDelegation({ parentId: "claude-code" })
+    expect(store.getState().overlays.delegation).toBeNull()
+  })
+
   it("projects clarification independently and preserves every unrelated reference on open and close", () => {
     const store = createAppStore()
     store.openApproval({ sessionId: "codex", title: "Codex", cwd: "/workspace/kitten", request: APPROVAL_REQUEST })
@@ -730,6 +791,75 @@ describe("clarification capability state", () => {
 
     store.setClarificationCapability("codex", capability)
     expect(store.getState()).toBe(after)
+  })
+})
+
+describe("harness delivery recovery notice", () => {
+  it("projects one failed session without replacing sibling or unrelated state", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const before = store.getState()
+    const codexSession = before.sessions.codex
+
+    store.setHarnessDelivery("claude-code", {
+      version: "v1",
+      generation: 3,
+      state: "failed",
+      failureCategory: "unsupported_profile",
+    })
+
+    const after = store.getState()
+    expect(selectHarnessDeliveryNotice("claude-code")(after)).toBe(HARNESS_DELIVERY_FAILED_NOTICE)
+    expect(selectFocusedHarnessDeliveryNotice(after)).toBe(HARNESS_DELIVERY_FAILED_NOTICE)
+    expect(selectHarnessDeliveryNotice("codex")(after)).toBeNull()
+    expect(after.sessions.codex).toBe(codexSession)
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.workspace).toBe(before.workspace)
+    expect(after.overlays).toBe(before.overlays)
+    expect(after.preferences).toBe(before.preferences)
+
+    store.setHarnessDelivery("claude-code", {
+      version: "v1",
+      generation: 3,
+      state: "failed",
+      failureCategory: "unsupported_profile",
+    })
+    expect(store.getState()).toBe(after)
+  })
+
+  it("clears the failed notice when a successful replacement publishes a healthy state", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.setHarnessDelivery("claude-code", {
+      version: "v1",
+      generation: 1,
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+    })
+    expect(selectFocusedHarnessDeliveryNotice(store.getState())).not.toBeNull()
+
+    for (const state of ["pending", "delivered", "not_required"] as const) {
+      store.setHarnessDelivery("claude-code", { version: "v1", generation: 2, state })
+      expect(selectFocusedHarnessDeliveryNotice(store.getState())).toBeNull()
+    }
+  })
+
+  it("accepts only the exact fixed notice fields", () => {
+    expect(isHarnessDeliveryNotice(HARNESS_DELIVERY_FAILED_NOTICE)).toBe(true)
+    for (const extra of [
+      { harnessText: "synthetic harness" },
+      { taskText: "private task" },
+      { profileId: "claude-certified" },
+      { version: "v1" },
+      { path: "/private/repo" },
+      { rawError: "adapter exploded" },
+      { acpSessionId: "provider-session" },
+    ]) {
+      expect(isHarnessDeliveryNotice({ ...HARNESS_DELIVERY_FAILED_NOTICE, ...extra })).toBe(false)
+    }
+    expect(Object.keys(HARNESS_DELIVERY_FAILED_NOTICE).sort()).toEqual([
+      "reason",
+      "recoveryAction",
+      "state",
+    ])
   })
 })
 
@@ -1431,5 +1561,216 @@ describe("workspace lifecycle integration", () => {
     const closed = store.getState()
     expect(closed.overlays.tabDialog).toBeNull()
     expect(selectHasOpenOverlay(closed)).toBe(false)
+  })
+})
+
+describe("delegated session store integration", () => {
+  it("notifies once with the child session, background workspace entry, and ownership together", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    store.addDelegatedSession(delegatedRegistration())
+
+    expect(observed).toHaveLength(1)
+    const inserted = observed[0]!
+    expect(inserted.sessions[delegatedChildSeed.id]).toEqual(createSessionState(delegatedChildSeed))
+    expect(inserted.workspace.conversations[delegatedChildSeed.id]).toMatchObject({
+      lifecycle: "background",
+      availability: { kind: "starting" },
+    })
+    expect(selectDelegatedChild(delegatedChildSeed.id)(inserted)).toMatchObject({
+      childId: delegatedChildSeed.id,
+      parentId: "claude-code",
+      status: "starting",
+    })
+  })
+
+  it("retains parent focus and unrelated structural references during registration", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const before = store.getState()
+
+    store.addDelegatedSession(delegatedRegistration())
+
+    const after = store.getState()
+    expect(after.workspace.selectedVisibleId).toBe("claude-code")
+    expect(after.focusedPane).toBe(before.focusedPane)
+    expect(after.sessions["claude-code"]).toBe(before.sessions["claude-code"])
+    expect(after.sessions.codex).toBe(before.sessions.codex)
+    expect(after.workspace.conversations["claude-code"]).toBe(
+      before.workspace.conversations["claude-code"],
+    )
+    expect(after.workspace.conversations.codex).toBe(before.workspace.conversations.codex)
+    expect(after.overlays).toBe(before.overlays)
+    expect(after.preferences).toBe(before.preferences)
+    const parent = selectDelegationParent("claude-code")(after)
+    expect(parent?.childIds).toEqual(["delegated-child"])
+    expect(selectDelegatedChildIds("claude-code")(after)).toBe(parent!.childIds)
+  })
+
+  it("routes accepted child status through the session reducer and normal attention projection", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.addDelegatedSession(delegatedRegistration())
+    const parentSession = store.getState().sessions["claude-code"]
+    const parentConversation = store.getState().workspace.conversations["claude-code"]
+
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "needs_input",
+      sessionStatus: "awaiting_approval",
+    })
+
+    const needsInput = store.getState()
+    expect(needsInput.sessions["delegated-child"]?.status).toBe("awaiting_approval")
+    expect(needsInput.workspace.conversations["delegated-child"]?.attention).toEqual({
+      status: "awaiting_approval",
+      seen: false,
+      sequence: 1,
+    })
+    expect(selectDelegationGroupStatus("claude-code")(needsInput)).toBe("needs_input")
+    expect(needsInput.sessions["claude-code"]).toBe(parentSession)
+    expect(needsInput.workspace.conversations["claude-code"]).toBe(parentConversation)
+    expect(needsInput.workspace.selectedVisibleId).toBe("claude-code")
+    expect(needsInput.focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
+
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    expect(store.getState().sessions["delegated-child"]?.status).toBe("working")
+    expect(store.getState().workspace.conversations["delegated-child"]?.attention).toEqual({
+      status: "working",
+      seen: true,
+      sequence: 1,
+    })
+    expect(selectDelegationGroupStatus("claude-code")(store.getState())).toBe("active")
+  })
+
+  it("preserves the complete state reference for invalid registration and no-op publication", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const initial = store.getState()
+
+    store.addDelegatedSession({ ...delegatedRegistration(), parentId: "missing-parent" })
+    expect(store.getState()).toBe(initial)
+    store.addDelegatedSession({
+      ...delegatedRegistration(),
+      seed: { ...delegatedChildSeed, id: "" },
+    })
+    expect(store.getState()).toBe(initial)
+    store.addDelegatedSession({ ...delegatedRegistration(), displayName: "   " })
+    expect(store.getState()).toBe(initial)
+
+    store.addDelegatedSession(delegatedRegistration())
+    const inserted = store.getState()
+    store.addDelegatedSession(delegatedRegistration())
+    expect(store.getState()).toBe(inserted)
+    store.removeDelegationChild(delegatedIdentity)
+    expect(store.getState()).toBe(inserted)
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      childGeneration: 99,
+      status: "running",
+      sessionStatus: "working",
+    })
+    expect(store.getState()).toBe(inserted)
+
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    const running = store.getState()
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    expect(store.getState()).toBe(running)
+  })
+
+  it("marks matching parent close intent once and rejects later child registration", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.addDelegatedSession(delegatedRegistration())
+
+    store.markDelegationParentClosing("claude-code", 4)
+    const closing = store.getState()
+    expect(closing.delegation.parents["claude-code"]?.closeState).toBe("closing")
+
+    store.markDelegationParentClosing("claude-code", 4)
+    store.markDelegationParentClosing("claude-code", 99)
+    store.addDelegatedSession({
+      ...delegatedRegistration(),
+      seed: { ...delegatedChildSeed, id: "late-child" },
+      childGeneration: 2,
+    })
+    expect(store.getState()).toBe(closing)
+    expect(store.getState().delegation.children["late-child"]).toBeUndefined()
+  })
+
+  it("removes only a terminal child's session, workspace entry, and delegation entry", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.addDelegatedSession(delegatedRegistration())
+    const siblingChild: SessionSeed = {
+      ...delegatedChildSeed,
+      id: "delegated-sibling",
+      title: "Delegated sibling",
+    }
+    store.addDelegatedSession({
+      ...delegatedRegistration(),
+      seed: siblingChild,
+      childGeneration: 2,
+      task: "Inspect the renderer",
+    })
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "failed",
+      sessionStatus: "error",
+      at: 123,
+    })
+    const beforeRemoval = store.getState()
+    const parentSession = beforeRemoval.sessions["claude-code"]
+    const siblingSession = beforeRemoval.sessions.codex
+    const parentConversation = beforeRemoval.workspace.conversations["claude-code"]
+    const siblingConversation = beforeRemoval.workspace.conversations.codex
+    const delegatedSiblingSession = beforeRemoval.sessions["delegated-sibling"]
+    const delegatedSiblingConversation = beforeRemoval.workspace.conversations["delegated-sibling"]
+
+    store.removeDelegationChild(delegatedIdentity)
+
+    const removed = store.getState()
+    expect(removed.sessions["delegated-child"]).toBeUndefined()
+    expect(removed.workspace.conversations["delegated-child"]).toBeUndefined()
+    expect(selectDelegatedChild("delegated-child")(removed)).toBeNull()
+    expect(selectDelegationParent("claude-code")(removed)?.childIds).toEqual([
+      "delegated-sibling",
+    ])
+    expect(selectDelegatedChild("delegated-sibling")(removed)).not.toBeNull()
+    expect(removed.sessions["delegated-sibling"]).toBe(delegatedSiblingSession)
+    expect(removed.workspace.conversations["delegated-sibling"]).toBe(
+      delegatedSiblingConversation,
+    )
+    expect(removed.sessions["claude-code"]).toBe(parentSession)
+    expect(removed.sessions.codex).toBe(siblingSession)
+    expect(removed.workspace.conversations["claude-code"]).toBe(parentConversation)
+    expect(removed.workspace.conversations.codex).toBe(siblingConversation)
+    expect(removed.workspace.selectedVisibleId).toBe("claude-code")
+  })
+
+  it("resets ephemeral delegation ownership when ordinary sessions are replaced", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.addDelegatedSession(delegatedRegistration())
+    expect(selectDelegatedChild("delegated-child")(store.getState())).not.toBeNull()
+
+    const restored = seed("codex", "restored-acp")
+    store.replaceSessions(
+      [{ seed: restored, workspace: { sessionId: restored.id, displayName: "Restored" } }],
+      restored.id,
+    )
+
+    const state = store.getState()
+    expect(state.sessions.codex).toEqual(createSessionState(restored))
+    expect(state.delegation).toEqual({ parents: {}, children: {} })
+    expect(selectDelegatedChild("delegated-child")(state)).toBeNull()
   })
 })

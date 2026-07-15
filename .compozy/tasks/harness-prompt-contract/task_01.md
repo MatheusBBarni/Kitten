@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add deterministic V1 harness prompt renderer"
 type: backend
 complexity: medium

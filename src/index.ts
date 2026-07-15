@@ -16,6 +16,7 @@
 import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { join } from "node:path"
 
+import { ASK_USER_MCP_MODE_FLAG, runAskUserMcp } from "./agent/askUserMcp.ts"
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
 import {
   formatMcpSelfCheckLine,
@@ -616,6 +617,11 @@ export function wantsSelfCheck(argv: readonly string[]): boolean {
   return argv.includes("--self-check")
 }
 
+/** Whether this executable is the provider-facing stdio MCP child. */
+export function wantsAskUserMcp(argv: readonly string[]): boolean {
+  return argv.includes(ASK_USER_MCP_MODE_FLAG)
+}
+
 /** Whether the CLI was asked to print Kitten's release version. */
 export function wantsVersion(argv: readonly string[]): boolean {
   return argv.includes("--version")
@@ -679,27 +685,36 @@ export function wantsReloadProbe(argv: readonly string[]): boolean {
 }
 
 if (import.meta.main) {
-  const cliFlagHandled = dispatchCliFlags(process.argv)
-  if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
+  if (wantsAskUserMcp(process.argv)) {
     try {
-      const { frame, reloadProbe, mcp } = await runSelfCheck({
-        reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
-        missingEvidenceKey: process.env[SELF_CHECK_MISSING_EVIDENCE_ENV],
-      })
-      const probeLines = reloadProbe.map(formatReloadProbeLine)
-      const mcpLines = mcp.map(formatMcpSelfCheckLine)
-      process.stdout.write(`${frame}\n${mcpLines.concat(probeLines).map((line) => `${line}\n`).join("")}`)
-      if (!reloadProbePassed(reloadProbe)) {
-        process.stderr.write("SELF-CHECK FAILED: reload confirmation probe reported one or more failures\n")
-        process.exit(1)
-      }
-      process.stdout.write("SELF-CHECK OK\n")
-      process.exit(0)
-    } catch (error) {
-      process.stderr.write(`SELF-CHECK FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
+      await runAskUserMcp(process.env)
+    } catch {
+      process.stderr.write("ASK_USER MCP FAILED: unavailable\n")
       process.exit(1)
     }
-  } else if (!cliFlagHandled) {
-    await main()
+  } else {
+    const cliFlagHandled = dispatchCliFlags(process.argv)
+    if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
+      try {
+        const { frame, reloadProbe, mcp } = await runSelfCheck({
+          reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
+          missingEvidenceKey: process.env[SELF_CHECK_MISSING_EVIDENCE_ENV],
+        })
+        const probeLines = reloadProbe.map(formatReloadProbeLine)
+        const mcpLines = mcp.map(formatMcpSelfCheckLine)
+        process.stdout.write(`${frame}\n${mcpLines.concat(probeLines).map((line) => `${line}\n`).join("")}`)
+        if (!reloadProbePassed(reloadProbe)) {
+          process.stderr.write("SELF-CHECK FAILED: reload confirmation probe reported one or more failures\n")
+          process.exit(1)
+        }
+        process.stdout.write("SELF-CHECK OK\n")
+        process.exit(0)
+      } catch (error) {
+        process.stderr.write(`SELF-CHECK FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
+        process.exit(1)
+      }
+    } else if (!cliFlagHandled) {
+      await main()
+    }
   }
 }

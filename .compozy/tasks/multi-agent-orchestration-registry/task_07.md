@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Delegated Parent Close Confirmation"
 type: frontend
 complexity: medium

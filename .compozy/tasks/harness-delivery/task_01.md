@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Define Generation-Scoped Harness Delivery State"
 type: refactor
 complexity: medium

@@ -104,11 +104,53 @@ export const PERSISTED_RUN_RECORD_V2_SCHEMA = z.strictObject({
   handoffBundle: HANDOFF_BUNDLE_SCHEMA.nullable(),
 })
 
-/** The complete decoded on-disk contract, including cross-collection V2 invariants. */
+export const HARNESS_DELIVERY_CHECKPOINT_SCHEMA = z.discriminatedUnion("state", [
+  z.strictObject({
+    version: z.literal("v1"),
+    generation: z.number().int().nonnegative(),
+    state: z.literal("not_required"),
+  }),
+  z.strictObject({
+    version: z.literal("v1"),
+    generation: z.number().int().nonnegative(),
+    state: z.literal("pending"),
+  }),
+  z.strictObject({
+    version: z.literal("v1"),
+    generation: z.number().int().nonnegative(),
+    state: z.literal("in_flight"),
+  }),
+  z.strictObject({
+    version: z.literal("v1"),
+    generation: z.number().int().nonnegative(),
+    state: z.literal("delivered"),
+  }),
+  z.strictObject({
+    version: z.literal("v1"),
+    generation: z.number().int().nonnegative(),
+    state: z.literal("failed"),
+    failureCategory: z.enum([
+      "unsupported_profile",
+      "harness_render_failed",
+      "dispatch_indeterminate",
+    ]),
+  }),
+])
+
+export const PERSISTED_RUN_RECORD_V3_SCHEMA = PERSISTED_RUN_RECORD_V2_SCHEMA.extend({
+  version: z.literal(3),
+  harnessDeliveries: z.record(z.string(), HARNESS_DELIVERY_CHECKPOINT_SCHEMA),
+})
+
+/** The complete decoded on-disk contract, including cross-collection V2/V3 invariants. */
 export const PERSISTED_RUN_RECORD_SCHEMA = z
-  .discriminatedUnion("version", [PERSISTED_RUN_RECORD_V1_SCHEMA, PERSISTED_RUN_RECORD_V2_SCHEMA])
+  .discriminatedUnion("version", [
+    PERSISTED_RUN_RECORD_V1_SCHEMA,
+    PERSISTED_RUN_RECORD_V2_SCHEMA,
+    PERSISTED_RUN_RECORD_V3_SCHEMA,
+  ])
   .superRefine((record, context) => {
-    if (record.version !== 2) return
+    if (record.version === 1) return
 
     const orderIds = new Set<string>()
     record.workspace.order.forEach((sessionId, index) => {
@@ -163,6 +205,18 @@ export const PERSISTED_RUN_RECORD_SCHEMA = z
       }
     }
 
+    if (record.version === 3) {
+      for (const sessionId of Object.keys(record.harnessDeliveries)) {
+        if (!orderIds.has(sessionId) || !(sessionId in record.conversations)) {
+          context.addIssue({
+            code: "custom",
+            message: `Harness delivery checkpoint is absent from execution membership: ${sessionId}`,
+            path: ["harnessDeliveries", sessionId],
+          })
+        }
+      }
+    }
+
     const selected = record.workspace.selectedVisibleId
     if (selected === null) {
       const visibleId = record.workspace.order.find(
@@ -203,6 +257,8 @@ export type PersistedWorkspaceConversationV2 = z.infer<
 >
 export type PersistedWorkspaceV2 = z.infer<typeof PERSISTED_WORKSPACE_V2_SCHEMA>
 export type PersistedRunRecordV2 = z.infer<typeof PERSISTED_RUN_RECORD_V2_SCHEMA>
+export type HarnessDeliveryCheckpoint = z.infer<typeof HARNESS_DELIVERY_CHECKPOINT_SCHEMA>
+export type PersistedRunRecordV3 = z.infer<typeof PERSISTED_RUN_RECORD_V3_SCHEMA>
 export type PersistedRunRecord = z.infer<typeof PERSISTED_RUN_RECORD_SCHEMA>
 
 /** The project-picker projection of either persisted record version. */

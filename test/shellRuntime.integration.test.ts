@@ -32,6 +32,7 @@ const CONTROLLER_CONFIG: AppConfig = {
   sessions: [{ provider: "claude-code", cwd: process.cwd() }],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 2_500 },
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",

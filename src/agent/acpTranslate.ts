@@ -31,6 +31,7 @@ import type {
 
 import type {
   AvailableCommand,
+  ClarificationAnswer,
   ClarificationField,
   ClarificationOption,
   ClarificationOutcome,
@@ -44,6 +45,7 @@ import type {
   ToolCallKind,
   ToolCallUpdate,
 } from "../core/types.ts"
+import { CLARIFICATION_LIMITS } from "../core/types.ts"
 
 /**
  * Normalize the narrow ACP form subset Kitten can faithfully present in V1.
@@ -54,17 +56,19 @@ import type {
  * unsupported construct can never leak into the protocol-free domain model.
  */
 export function translateElicitationForm(message: string, schema: unknown): ClarificationPayload | null {
-  if (message.length === 0 || !isRecord(schema)) return null
+  if (!isBoundedNonEmptyString(message) || !isRecord(schema)) return null
 
   const properties = schema.properties
-  if (!isRecord(properties) || Object.keys(properties).length === 0) return null
+  if (!isRecord(properties)) return null
+  const propertyIds = Object.keys(properties)
+  if (propertyIds.length === 0 || propertyIds.length > CLARIFICATION_LIMITS.maxFields) return null
 
   const required = normalizeRequired(schema.required, properties)
   if (required === null) return null
 
   const fields: ClarificationField[] = []
   for (const [id, property] of Object.entries(properties)) {
-    if (id.length === 0 || !isRecord(property)) return null
+    if (!isBoundedNonEmptyString(id) || !isRecord(property)) return null
     const field = normalizeElicitationField(id, property, required.has(id))
     if (field === null) return null
     fields.push(field)
@@ -82,24 +86,25 @@ export function toAcpElicitationOutcome(
   payload: ClarificationPayload,
   outcome: ClarificationOutcome,
 ): CreateElicitationResponse {
-  if (outcome.kind === "cancelled") return { action: "cancel" }
-  if (!isRecord(outcome.values)) return { action: "cancel" }
+  if (outcome.kind !== "submitted" || !isRecord(outcome.answers)) return { action: "cancel" }
+  if (payload.title !== undefined || payload.context !== undefined) return { action: "cancel" }
 
   const fields = new Map(payload.fields.map((field) => [field.id, field]))
-  for (const key of Object.keys(outcome.values)) {
+  if (fields.size !== payload.fields.length) return { action: "cancel" }
+  for (const key of Object.keys(outcome.answers)) {
     if (!fields.has(key)) return { action: "cancel" }
   }
 
   const content: Record<string, string | string[]> = {}
   for (const field of payload.fields) {
-    const present = Object.hasOwn(outcome.values, field.id)
+    const present = Object.hasOwn(outcome.answers, field.id)
     if (!present) {
       if (field.required) return { action: "cancel" }
       continue
     }
-    const value = outcome.values[field.id]
-    if (!isValidClarificationValue(field, value)) return { action: "cancel" }
-    content[field.id] = Array.isArray(value) ? [...value] : value
+    const value = toAcpClarificationValue(field, outcome.answers[field.id])
+    if (value === null) return { action: "cancel" }
+    content[field.id] = value
   }
 
   return { action: "accept", content }
@@ -122,7 +127,9 @@ function normalizeElicitationField(
 ): ClarificationField | null {
   const label = optionalString(property.title)
   const description = optionalString(property.description)
-  if (label === null || description === null) return null
+  if (label === null || description === null || !isBoundedOptionalString(label) || !isBoundedOptionalString(description)) {
+    return null
+  }
   const base = {
     id,
     label: label ?? id,
@@ -134,13 +141,15 @@ function normalizeElicitationField(
     if (hasNonNull(property, "minLength", "maxLength", "pattern", "format", "default")) return null
     const options = normalizeStringOptions(property)
     if (options === null) return null
-    return options === undefined ? { ...base, mode: "text" } : { ...base, mode: "single", options }
+    return options === undefined
+      ? { ...base, mode: "text" }
+      : { ...base, mode: "single", options, allowsCustom: false }
   }
 
   if (property.type === "array") {
     if (hasNonNull(property, "minItems", "maxItems", "default") || !isRecord(property.items)) return null
     const options = normalizeMultiOptions(property.items)
-    return options === null ? null : { ...base, mode: "multi", options }
+    return options === null ? null : { ...base, mode: "multi", options, allowsCustom: false }
   }
 
   return null
@@ -167,7 +176,12 @@ function normalizeMultiOptions(items: Record<string, unknown>): ClarificationOpt
 }
 
 function optionsFromEnum(raw: unknown): ClarificationOption[] | null {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.some((value) => typeof value !== "string" || value.length === 0)) {
+  if (
+    !Array.isArray(raw) ||
+    raw.length === 0 ||
+    raw.length > CLARIFICATION_LIMITS.maxOptionsPerField ||
+    raw.some((value) => !isBoundedNonEmptyString(value))
+  ) {
     return null
   }
   const values = raw as string[]
@@ -176,13 +190,13 @@ function optionsFromEnum(raw: unknown): ClarificationOption[] | null {
 }
 
 function optionsFromTitled(raw: unknown): ClarificationOption[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > CLARIFICATION_LIMITS.maxOptionsPerField) return null
   const options: ClarificationOption[] = []
   for (const entry of raw) {
-    if (!isRecord(entry) || typeof entry.const !== "string" || entry.const.length === 0) return null
-    if (typeof entry.title !== "string" || entry.title.length === 0) return null
+    if (!isRecord(entry) || !isBoundedNonEmptyString(entry.const)) return null
+    if (!isBoundedNonEmptyString(entry.title)) return null
     const description = optionalString(entry.description)
-    if (description === null) return null
+    if (description === null || !isBoundedOptionalString(description)) return null
     options.push({
       id: entry.const,
       label: entry.title,
@@ -192,17 +206,42 @@ function optionsFromTitled(raw: unknown): ClarificationOption[] | null {
   return new Set(options.map((option) => option.id)).size === options.length ? options : null
 }
 
-function isValidClarificationValue(field: ClarificationField, value: unknown): value is string | string[] {
-  if (field.mode === "text") return typeof value === "string" && (!field.required || value.length > 0)
-
+function toAcpClarificationValue(
+  field: ClarificationField,
+  answer: ClarificationAnswer | undefined,
+): string | string[] | null {
+  if (!isRecord(answer) || !Array.isArray(answer.selectedOptionIds)) return null
+  if (Object.keys(answer).some((key) => key !== "selectedOptionIds" && key !== "customText")) return null
+  if (answer.selectedOptionIds.some((id) => typeof id !== "string")) return null
+  if (new Set(answer.selectedOptionIds).size !== answer.selectedOptionIds.length) return null
+  const hasCustomText = Object.hasOwn(answer, "customText")
+  if (hasCustomText && (typeof answer.customText !== "string" || answer.customText.length > CLARIFICATION_LIMITS.maxTextLength)) {
+    return null
+  }
+  if (field.mode === "text") {
+    if (answer.selectedOptionIds.length !== 0 || !hasCustomText) return null
+    return field.required && answer.customText!.length === 0 ? null : answer.customText!
+  }
+  if (field.allowsCustom || hasCustomText) return null
   const optionIds = new Set(field.options.map((option) => option.id))
-  if (field.mode === "single") return typeof value === "string" && optionIds.has(value)
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !optionIds.has(item))) return false
-  return new Set(value).size === value.length && (!field.required || value.length > 0)
+  if (answer.selectedOptionIds.some((id) => !optionIds.has(id))) return null
+  if (field.mode === "single") {
+    return answer.selectedOptionIds.length === 1 ? answer.selectedOptionIds[0]! : null
+  }
+  if (field.required && answer.selectedOptionIds.length === 0) return null
+  return [...answer.selectedOptionIds]
 }
 
 function optionalString(value: unknown): string | undefined | null {
   return value == null ? undefined : typeof value === "string" ? value : null
+}
+
+function isBoundedNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= CLARIFICATION_LIMITS.maxTextLength
+}
+
+function isBoundedOptionalString(value: string | undefined): boolean {
+  return value === undefined || value.length <= CLARIFICATION_LIMITS.maxTextLength
 }
 
 function hasNonNull(value: Record<string, unknown>, ...keys: string[]): boolean {

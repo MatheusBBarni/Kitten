@@ -34,6 +34,8 @@ import {
   selectApprovalOverlay,
   selectClarificationCapability,
   selectClarificationOverlay,
+  selectDelegationOverlay,
+  selectDelegatedParentCloseSummary,
   selectFocusedPane,
   selectFocusedSessionId,
   selectFocusedSession,
@@ -91,6 +93,7 @@ const CLARIFICATION_PAYLOAD: ClarificationPayload = {
     id: "boundary",
     label: "Boundary",
     mode: "single",
+    allowsCustom: false,
     required: true,
     options: [{ id: "controller", label: "Controller" }],
   }],
@@ -448,6 +451,37 @@ function fleetStore(): AppStore {
   })
 }
 
+function registerDelegatedChild(store: AppStore, childId = "child", title = "Child"): void {
+  store.addDelegatedSession({
+    seed: { id: childId, providerKind: "codex", title, cwd: `/w/${childId}` },
+    parentId: "a",
+    parentGeneration: 1,
+    childGeneration: 1,
+    task: "Inspect the selector seam",
+    desiredOutcome: "Return a concise result",
+  })
+}
+
+function publishDelegatedStatus(
+  store: AppStore,
+  childId: string,
+  status: "running" | "needs_input" | "finished" | "failed" | "cancelled",
+): void {
+  const identity = { parentId: "a", childId, parentGeneration: 1, childGeneration: 1 }
+  if (status === "running") {
+    store.publishDelegatedChildState({ ...identity, status, sessionStatus: "working" })
+  } else if (status === "needs_input") {
+    store.publishDelegatedChildState({ ...identity, status, sessionStatus: "awaiting_clarification" })
+  } else if (status === "finished") {
+    store.publishDelegatedChildState({ ...identity, status: "running", sessionStatus: "working" })
+    store.publishDelegatedChildState({ ...identity, status, sessionStatus: "finished", at: 1 })
+  } else if (status === "failed") {
+    store.publishDelegatedChildState({ ...identity, status, sessionStatus: "error", at: 1 })
+  } else {
+    store.publishDelegatedChildState({ ...identity, status, sessionStatus: "idle", at: 1 })
+  }
+}
+
 describe("needsAttention (ADR-006)", () => {
   it("is true for the states the developer must act on", () => {
     expect(needsAttention("awaiting_clarification")).toBe(true)
@@ -463,6 +497,31 @@ describe("needsAttention (ADR-006)", () => {
 })
 
 describe("selectSessionList", () => {
+  it.each([
+    ["running", "Running", false],
+    ["needs_input", "Needs input", false],
+    ["finished", "Finished", true],
+    ["failed", "Failed", true],
+    ["cancelled", "Cancelled", true],
+  ] as const)("projects stable delegated %s presentation", (status, statusLabel, terminal) => {
+    const store = fleetStore()
+    registerDelegatedChild(store)
+    publishDelegatedStatus(store, "child", status)
+
+    const first = selectSessionList(store.getState())
+    const child = first.find((item) => item.id === "child")
+    expect(child?.delegation).toEqual({
+      kind: "child",
+      parentId: "a",
+      parentLabel: "A",
+      lineageLabel: "Child of A",
+      status,
+      statusLabel,
+      terminalTranscriptAvailable: terminal,
+    })
+    expect(selectSessionList(store.getState())).toBe(first)
+  })
+
   it("lists every session with its status and attention flag, in order", () => {
     const store = fleetStore()
     store.applyEvent("b", { kind: "status", status: "finished" })
@@ -480,6 +539,17 @@ describe("selectSessionList", () => {
       selected: true,
       attentionSeen: true,
     })
+  })
+
+  it("rebuilds the cached list when session status changes", () => {
+    const store = fleetStore()
+    const before = selectSessionList(store.getState())
+
+    store.applyEvent("b", { kind: "status", status: "working" })
+    const after = selectSessionList(store.getState())
+
+    expect(after).not.toBe(before)
+    expect(after.find((item) => item.id === "b")?.status).toBe("working")
   })
 
   it("exposes background lifecycle and duplicate labels in workspace order", () => {
@@ -510,6 +580,45 @@ describe("selectSessionList", () => {
       ],
     })
     expect(selectSessionList(store.getState()).map((item) => item.cwd)).toEqual(["/work/frontend", "/work/backend"])
+  })
+})
+
+describe("delegated parent close summary", () => {
+  it("projects only active children with explicit status labels and stable identity", () => {
+    const store = fleetStore()
+    registerDelegatedChild(store, "running-child")
+    publishDelegatedStatus(store, "running-child", "running")
+    registerDelegatedChild(store, "input-child")
+    publishDelegatedStatus(store, "input-child", "needs_input")
+    registerDelegatedChild(store, "finished-child")
+    publishDelegatedStatus(store, "finished-child", "finished")
+    const selectSummary = selectDelegatedParentCloseSummary("a")
+
+    const first = selectSummary(store.getState())
+    expect(first).toEqual({
+      activeChildCount: 2,
+      statuses: [
+        { status: "running", label: "Running", count: 1 },
+        { status: "needs_input", label: "Needs input", count: 1 },
+      ],
+    })
+    expect(selectSummary(store.getState())).toBe(first)
+
+    store.applyEvent("b", { kind: "status", status: "working" })
+    expect(selectSummary(store.getState())).toBe(first)
+  })
+
+  it("returns null when a parent has no children or only terminal children", () => {
+    const store = fleetStore()
+    const selectSummary = selectDelegatedParentCloseSummary("a")
+    expect(selectSummary(store.getState())).toBeNull()
+
+    registerDelegatedChild(store, "failed-child")
+    publishDelegatedStatus(store, "failed-child", "failed")
+    registerDelegatedChild(store, "cancelled-child")
+    publishDelegatedStatus(store, "cancelled-child", "cancelled")
+
+    expect(selectSummary(store.getState())).toBeNull()
   })
 })
 
@@ -633,6 +742,37 @@ describe("overlay selectors", () => {
     })
     expect(selectApprovalOverlay(state)?.sessionId).toBe("codex")
     expect(selectSettingsOverlay(state)).toEqual({ tab: "theme" })
+  })
+
+  it("places delegation below approval and clarification while retaining its captured parent", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.openDelegation({ parentId: "claude-code" })
+    expect(selectDelegationOverlay(store.getState())).toEqual({ parentId: "claude-code" })
+    expect(selectActiveModal(store.getState())).toEqual({ kind: "delegation", sessionId: "claude-code" })
+
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/workspace/kitten",
+      request: { sessionId: "s1", toolCall: { toolCallId: "c1" }, options: [] },
+    })
+    expect(selectActiveModal(store.getState())).toEqual({ kind: "approval", sessionId: "codex" })
+    expect(selectDelegationOverlay(store.getState())).toEqual({ parentId: "claude-code" })
+
+    store.openClarification({
+      requestId: "clarification-delegation",
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude Code",
+      cwd: "/workspace/kitten",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    expect(selectActiveModal(store.getState())).toEqual({
+      kind: "clarification",
+      sessionId: "claude-code",
+      requestId: "clarification-delegation",
+    })
+    expect(selectDelegationOverlay(store.getState())).toEqual({ parentId: "claude-code" })
   })
 
   it("report an open sessions overview as an open, modal overlay", () => {
@@ -933,6 +1073,47 @@ describe("workspace view selectors", () => {
     expect(finished[0]).toBe(streamed[0])
     expect(finished[1]).not.toBe(streamed[1])
     expect(finished[2]).toBe(streamed[2])
+  })
+
+  it("keeps parent group presentation active until every child is terminal", () => {
+    const store = workspaceStore()
+    registerDelegatedChild(store, "child-1", "Research")
+    publishDelegatedStatus(store, "child-1", "needs_input")
+    registerDelegatedChild(store, "child-2", "Verify")
+    publishDelegatedStatus(store, "child-2", "finished")
+
+    const active = selectVisibleTabs(store.getState()).find((item) => item.id === "a")
+    expect(active?.delegation).toEqual({
+      kind: "parent",
+      childCount: 2,
+      groupStatus: "active",
+      groupLabel: "Group active",
+    })
+
+    publishDelegatedStatus(store, "child-1", "running")
+    publishDelegatedStatus(store, "child-1", "finished")
+    const settled = selectVisibleTabs(store.getState()).find((item) => item.id === "a")
+    expect(settled?.delegation).toEqual({
+      kind: "parent",
+      childCount: 2,
+      groupStatus: "settled",
+      groupLabel: "Group settled",
+    })
+  })
+
+  it("does not notify visible tabs when only a background child's active lifecycle changes", () => {
+    const store = workspaceStore()
+    registerDelegatedChild(store)
+    const before = selectVisibleTabs(store.getState())
+    let notifications = 0
+    const stop = store.subscribeSelector(selectVisibleTabs, () => notifications++)
+
+    publishDelegatedStatus(store, "child", "running")
+    publishDelegatedStatus(store, "child", "needs_input")
+
+    expect(selectVisibleTabs(store.getState())).toBe(before)
+    expect(notifications).toBe(0)
+    stop()
   })
 
   it("reports approval above a captured tab dialog", () => {

@@ -18,9 +18,15 @@
  * `session/new` marks that one agent not-ready and leaves the other fully usable.
  */
 
-import type { AgentConnection, PermissionOutcome, PermissionRequest } from "../agent/agentConnection.ts"
+import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRequest, PromptBlock } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
+import {
+  HARNESS_CONTRACT_SDK_VERSION,
+  resolveHarnessCapability,
+  type HarnessCapability,
+  type HarnessRuntimeEvidence,
+} from "../config/harnessCapability.ts"
 import {
   connectionReadinessFailure,
   preflightAgentReadiness,
@@ -30,19 +36,22 @@ import {
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import {
+  type HarnessDeliveryCheckpoint,
   migratePersistedRunV1,
   type PersistedAgent,
   type PersistedConversationV2,
   type PersistedRunRecord,
   type PersistedRunRecordV2,
+  type PersistedRunRecordV3,
 } from "../persistence/runRecord.ts"
 import {
   createShellRuntime as createRealShellRuntime,
   type ShellRuntime,
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
-import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type Unsubscribe } from "../store/appStore.ts"
+import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type DelegatedChildIdentity, type DelegatedChildStatePublication, type Unsubscribe } from "../store/appStore.ts"
 import {
   createUsageSeenJsonlFileSink,
   logUsageSeen,
@@ -63,11 +72,26 @@ import {
   type CloseChoice,
   type CloseConversationResult,
   type ControllerActions,
+  type StartDelegatedChildInput,
 } from "./actions.ts"
+import {
+  beginDispatch,
+  beginFresh,
+  completeDispatch,
+  failBeforeDispatch,
+  failIndeterminate,
+  restoreHarnessDelivery,
+  type HarnessDelivery,
+} from "./harnessDelivery.ts"
 import {
   repositoryFileSource as productionRepositoryFileSource,
   type RepositoryFileSource,
 } from "./fileDiscovery.ts"
+import {
+  createAskUserBridge as createRealAskUserBridge,
+  type AskUserBridge,
+  type AskUserBridgeOptions,
+} from "./askUserBridge.ts"
 
 export type { CloseChoice, CloseConversationResult } from "./actions.ts"
 
@@ -93,13 +117,26 @@ export interface ControllerTelemetry extends ActionTelemetry {
     hasText: boolean
     fieldCount: number
   }): void
-  clarificationSettled?(requestId: string, terminalKind: "answered" | "cancelled"): void
+  clarificationSettled?(
+    requestId: string,
+    terminalKind: "submitted" | "skipped" | "timed_out" | "cancelled",
+  ): void
   clarificationPreempted?(sessionId: SessionId, interactionKind: "permission" | "clarification"): void
   clarificationResumed?(sessionId: SessionId, interactionKind: "permission" | "clarification"): void
   clarificationCancelledOnSessionLoss?(
     sessionId: SessionId,
     lossReason: ClarificationSessionLossReason,
   ): void
+  delegatedLaunchRequested?(lifecycleKey: string): void
+  delegatedLaunchSucceeded?(lifecycleKey: string): void
+  delegatedLaunchFailed?(lifecycleKey: string): void
+  delegatedChildTerminal?(
+    lifecycleKey: string,
+    status: "finished" | "failed" | "cancelled",
+  ): void
+  delegatedCascadeRequested?(lifecycleKey: string): void
+  delegatedCascadeCompleted?(lifecycleKey: string): void
+  delegatedTeardownFailed?(lifecycleKey: string): void
 }
 
 /**
@@ -167,6 +204,8 @@ export interface SessionControllerOptions {
   newSessionId?: () => SessionId
   /** Stable ids for controller-owned permission and clarification lifecycles. */
   newInteractionId?: () => string
+  /** Controller-owned lifecycle clock; injectable for deterministic tests. */
+  now?: () => number
   /** Where a connection failure is reported. Defaults to swallowing the failure. */
   onError?: (sessionId: SessionId, error: unknown) => void
   /** Off-render-path git branch reader. Defaults to the fail-soft production reader. */
@@ -179,6 +218,14 @@ export interface SessionControllerOptions {
   usageSeenSink?: UsageSeenSink
   /** Whether configured first tasks should be sent after startup. Defaults to true. */
   sendInitialTasks?: boolean
+  /** Exact profile decision; injectable for deterministic credential-free tests. */
+  resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
+  /** Schedule one accepted clarification timeout and return its cancellation hook. */
+  scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
+  /** Controller-owned bridge factory; injectable for lifecycle and composition tests. */
+  createAskUserBridge?: (options: AskUserBridgeOptions) => AskUserBridge
+  /** Executable and optional entrypoint arguments used by generated bridge declarations. */
+  askUserMcpExecutable?: { readonly command: string; readonly args?: readonly string[] }
 }
 
 /** The orchestrator the UI is handed at boot. */
@@ -225,6 +272,14 @@ export type ActiveAgentInteraction =
 /** Outcomes remain semantically distinct even though one coordinator validates both. */
 export type AgentInteractionOutcome = PermissionOutcome | ClarificationOutcome
 
+/** Captured clarification identity with no access to mutable coordinator state. */
+export interface ClarificationRequestHandle {
+  readonly requestId: string
+  readonly outcome: Promise<ClarificationOutcome>
+  /** Settle this exact request as timed out; late or duplicate attempts are inert. */
+  timeout(): boolean
+}
+
 /** Opaque lifecycle operations; pending resolvers and collections never escape the controller. */
 export interface InteractionCoordinator {
   enqueuePermission(
@@ -236,7 +291,7 @@ export interface InteractionCoordinator {
     sessionId: SessionId,
     generation: number,
     payload: ClarificationPayload,
-  ): Promise<ClarificationOutcome>
+  ): ClarificationRequestHandle
   resolveActive(requestId: string, generation: number, outcome: AgentInteractionOutcome): boolean
   cancelSession(
     sessionId: SessionId,
@@ -347,14 +402,56 @@ export function createInteractionCoordinator(
     entry: PendingInteraction,
     lossReason: ClarificationSessionLossReason,
   ): void {
-    if (entry.lifecycle === "terminal") return
-    entry.lifecycle = "terminal"
-    if (entry.kind === "permission") entry.resolve({ outcome: "cancelled" })
-    else {
-      const outcome = { kind: "cancelled" } as const
-      onClarificationSettled(projection(entry) as Extract<ActiveAgentInteraction, { kind: "clarification" }>, outcome, lossReason)
+    terminalize(
+      entry,
+      entry.kind === "permission" ? { outcome: "cancelled" } : { kind: "cancelled" },
+      lossReason,
+    )
+  }
+
+  function terminalize(
+    entry: PendingInteraction,
+    outcome: AgentInteractionOutcome,
+    lossReason?: ClarificationSessionLossReason,
+  ): boolean {
+    if (entry.lifecycle === "terminal") return false
+    if (entry.kind === "permission") {
+      if (!("outcome" in outcome)) return false
+      entry.lifecycle = "terminal"
       entry.resolve(outcome)
+      return true
     }
+    if (!("kind" in outcome)) return false
+    entry.lifecycle = "terminal"
+    onClarificationSettled(
+      projection(entry) as Extract<ActiveAgentInteraction, { kind: "clarification" }>,
+      outcome,
+      lossReason,
+    )
+    entry.resolve(outcome)
+    return true
+  }
+
+  function removeExact(entries: PendingInteraction[], target: PendingInteraction): boolean {
+    const index = entries.indexOf(target)
+    if (index < 0) return false
+    entries.splice(index, 1)
+    return true
+  }
+
+  function settleExact(
+    entry: PendingInteraction,
+    outcome: AgentInteractionOutcome,
+  ): boolean {
+    if (entry.lifecycle === "terminal") return false
+    if ((entry.kind === "permission") !== ("outcome" in outcome)) return false
+    const wasActive = active === entry
+    if (wasActive) active = null
+    else if (!removeExact(queued, entry) && !removeExact(suspended, entry)) return false
+
+    if (!terminalize(entry, outcome)) return false
+    if (wasActive) advance()
+    return true
   }
 
   function removeMatching(
@@ -420,25 +517,40 @@ export function createInteractionCoordinator(
     },
 
     enqueueClarification(sessionId, generation, payload) {
-      if (disposed) return Promise.resolve({ kind: "cancelled" })
-      return new Promise<ClarificationOutcome>((resolve) => {
-        const entry: PendingInteraction = {
-          kind: "clarification",
-          requestId: newRequestId(),
-          sessionId,
-          generation,
-          lifecycle: "active",
-          payload,
-          resolve,
+      const requestId = newRequestId()
+      if (disposed) {
+        return {
+          requestId,
+          outcome: Promise.resolve({ kind: "cancelled" }),
+          timeout: () => false,
         }
-        if (active) {
-          active.lifecycle = "suspended"
-          suspended.push(active)
-          onPreempted(projection(active))
-        }
-        activate(entry)
-        publishActive()
+      }
+
+      let resolveOutcome!: (outcome: ClarificationOutcome) => void
+      const outcome = new Promise<ClarificationOutcome>((resolve) => {
+        resolveOutcome = resolve
       })
+      const entry: Extract<PendingInteraction, { kind: "clarification" }> = {
+        kind: "clarification",
+        requestId,
+        sessionId,
+        generation,
+        lifecycle: "active",
+        payload,
+        resolve: resolveOutcome,
+      }
+      if (active) {
+        active.lifecycle = "suspended"
+        suspended.push(active)
+        onPreempted(projection(active))
+      }
+      activate(entry)
+      publishActive()
+      return {
+        requestId,
+        outcome,
+        timeout: () => settleExact(entry, { kind: "timed_out" }),
+      }
     },
 
     resolveActive(requestId, generation, outcome) {
@@ -452,16 +564,7 @@ export function createInteractionCoordinator(
         return false
       }
 
-      active = null
-      current.lifecycle = "terminal"
-      if (current.kind === "permission" && "outcome" in outcome) current.resolve(outcome)
-      else if (current.kind === "clarification" && "kind" in outcome) {
-        onClarificationSettled(projection(current) as Extract<ActiveAgentInteraction, { kind: "clarification" }>, outcome)
-        current.resolve(outcome)
-      }
-      else return false
-      advance()
-      return true
+      return settleExact(current, outcome)
     },
 
     cancelSession(sessionId, generation, lossReason = "connection_error") {
@@ -494,6 +597,11 @@ interface AgentRuntime {
   cancelCompleted: boolean
   /** Monotonic identity of the connection currently owned by this runtime. */
   generation: number
+  /** Delivery truth for the live ACP generation; never stores harness or user content. */
+  harnessDelivery: HarnessDelivery | null
+  /** Generated declaration owned by this exact live connection generation. */
+  bridgeMcpServer: import("../core/types.ts").McpServerConfig | null
+  bridgeGeneration: number | null
 }
 
 /**
@@ -517,7 +625,10 @@ export async function createSessionController(options: SessionControllerOptions)
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
   const repositoryFileSource = options.repositoryFileSource ?? productionRepositoryFileSource
+  const resolveDeliveryCapability = options.resolveHarnessCapability ?? defaultResolveHarnessCapability
+  const scheduleClarificationTimeout = options.scheduleClarificationTimeout ?? defaultScheduleClarificationTimeout
   const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
+  const now = options.now ?? Date.now
   let providerDefaults = cloneProviderDefaults(options.config.providerDefaults ?? {})
   const usageSeenSink = options.config.telemetryEnabled
     ? options.usageSeenSink ?? createUsageSeenJsonlFileSink(resolveTelemetryPath())
@@ -587,6 +698,21 @@ export async function createSessionController(options: SessionControllerOptions)
       options.recorder?.clarificationSettled?.(interaction.requestId, outcome.kind)
     },
   })
+  const askUserExecutable = options.askUserMcpExecutable ?? defaultAskUserMcpExecutable()
+  const askUserBridge = (options.createAskUserBridge ?? createRealAskUserBridge)({
+    executablePath: askUserExecutable.command,
+    executableArgs: askUserExecutable.args,
+    requestClarification(sessionId, generation, form) {
+      const runtime = runtimes.get(sessionId)
+      if (!runtime || runtime.generation !== generation || !acceptsRuntimeEvents(runtime)) {
+        return cancelledClarificationHandle(options.newInteractionId?.() ?? crypto.randomUUID())
+      }
+      return enqueueClarificationHandle(runtime, form)
+    },
+    cancelClarifications(sessionId, generation, reason) {
+      interactionCoordinator.cancelSession(sessionId, generation, reason)
+    },
+  })
   let disposed = false
   let ownedShell: ShellRuntime | null = null
   let unsubscribeShell: Unsubscribe | null = null
@@ -646,9 +772,44 @@ export async function createSessionController(options: SessionControllerOptions)
     return !disposed && runtimes.get(runtime.seed.id) === runtime && runtime.acceptEvents && !runtime.closing
   }
 
+  function isCurrentGeneration(runtime: AgentRuntime, generation: number): boolean {
+    return !disposed && runtimes.get(runtime.seed.id) === runtime && runtime.generation === generation
+  }
+
+  function publishHarnessDelivery(runtime: AgentRuntime, delivery: HarnessDelivery): void {
+    runtime.harnessDelivery = delivery
+    if (isCurrentGeneration(runtime, delivery.generation)) {
+      store.setHarnessDelivery(runtime.seed.id, delivery)
+    }
+  }
+
+  function beginFreshHarnessDelivery(runtime: AgentRuntime, generation: number): void {
+    if (!isCurrentGeneration(runtime, generation)) return
+    publishHarnessDelivery(runtime, beginFresh("v1", generation))
+  }
+
+  function restorePersistedHarnessDelivery(
+    runtime: AgentRuntime,
+    generation: number,
+    checkpoint: HarnessDeliveryCheckpoint | undefined,
+    lifecycle: "fresh" | "loaded",
+  ): void {
+    if (!isCurrentGeneration(runtime, generation)) return
+    publishHarnessDelivery(runtime, restoreHarnessDelivery(checkpoint, "v1", generation, lifecycle))
+  }
+
+  function terminalizeHarnessDelivery(runtime: AgentRuntime, generation = runtime.generation): void {
+    if (!isCurrentGeneration(runtime, generation)) return
+    const delivery = runtime.harnessDelivery
+    if (!delivery) return
+    publishHarnessDelivery(runtime, failIndeterminate(delivery, generation))
+  }
+
   function applyRuntimeEvent(runtime: AgentRuntime, event: DomainSessionEvent): void {
     if (!acceptsRuntimeEvents(runtime)) return
     if (event.kind === "status" && event.status === "error") {
+      terminalizeHarnessDelivery(runtime)
+      invalidateBridge(runtime, runtime.generation, "connection_error")
       interactionCoordinator.cancelSession(
         runtime.seed.id,
         runtime.generation,
@@ -663,29 +824,99 @@ export async function createSessionController(options: SessionControllerOptions)
       )
     }
     store.applyEvent(runtime.seed.id, event)
+    if (event.kind === "status") publishDelegatedRuntimeStatus(runtime, event.status)
+  }
+
+  function delegatedIdentity(childId: SessionId): DelegatedChildIdentity | null {
+    const child = store.getState().delegation.children[childId]
+    if (!child) return null
+    return {
+      parentId: child.parentId,
+      childId: child.childId,
+      parentGeneration: child.parentGeneration,
+      childGeneration: child.childGeneration,
+    }
+  }
+
+  function ownsDelegatedIdentity(identity: DelegatedChildIdentity): boolean {
+    const parent = runtimes.get(identity.parentId)
+    const child = runtimes.get(identity.childId)
+    return !disposed &&
+      parent?.generation === identity.parentGeneration &&
+      child?.generation === identity.childGeneration
+  }
+
+  function delegatedTelemetryKey(identity: DelegatedChildIdentity): string {
+    return `${identity.parentId}:${identity.parentGeneration}:${identity.childId}:${identity.childGeneration}`
+  }
+
+  function delegatedCascadeTelemetryKey(parentId: SessionId, parentGeneration: number): string {
+    return `${parentId}:${parentGeneration}`
+  }
+
+  function publishDelegatedState(publication: DelegatedChildStatePublication): boolean {
+    if (!ownsDelegatedIdentity(publication)) return false
+    const before = store.getState().delegation.children[publication.childId]
+    store.publishDelegatedChildState(publication)
+    const after = store.getState().delegation.children[publication.childId]
+    if (!before || !after || after === before) return false
+
+    const lifecycleKey = delegatedTelemetryKey(publication)
+    if (before.status === "starting" && after.status === "running") {
+      options.recorder?.delegatedLaunchSucceeded?.(lifecycleKey)
+    }
+    if (after.terminal) {
+      if (before.status === "starting" && after.terminal.status === "failed") {
+        options.recorder?.delegatedLaunchFailed?.(lifecycleKey)
+      }
+      options.recorder?.delegatedChildTerminal?.(lifecycleKey, after.terminal.status)
+    }
+    return true
+  }
+
+  function publishDelegatedRuntimeStatus(runtime: AgentRuntime, status: SessionStatus): void {
+    const identity = delegatedIdentity(runtime.seed.id)
+    if (!identity || runtimes.get(runtime.seed.id) !== runtime) return
+    if (status === "working") {
+      publishDelegatedState({ ...identity, status: "running", sessionStatus: "working" })
+    } else if (status === "awaiting_approval" || status === "awaiting_clarification") {
+      publishDelegatedState({ ...identity, status: "needs_input", sessionStatus: status })
+    } else if (status === "finished") {
+      publishDelegatedState({ ...identity, status: "finished", sessionStatus: "finished", at: now() })
+    } else if (status === "error") {
+      publishDelegatedState({ ...identity, status: "failed", sessionStatus: "error", at: now() })
+    }
   }
 
   function enqueuePermission(runtime: AgentRuntime, request: PermissionRequest): Promise<PermissionOutcome> {
     if (!acceptsRuntimeEvents(runtime)) return Promise.resolve({ outcome: "cancelled" })
+    publishDelegatedRuntimeStatus(runtime, "awaiting_approval")
     return interactionCoordinator.enqueuePermission(runtime.seed.id, runtime.generation, request)
   }
 
-  async function enqueueClarification(
+  function enqueueClarificationHandle(
     runtime: AgentRuntime,
     payload: ClarificationPayload,
-  ): Promise<ClarificationOutcome> {
-    if (!acceptsRuntimeEvents(runtime)) return { kind: "cancelled" }
+  ): ClarificationRequestHandle {
+    if (!acceptsRuntimeEvents(runtime)) {
+      return cancelledClarificationHandle(options.newInteractionId?.() ?? crypto.randomUUID())
+    }
     const generation = runtime.generation
     const key = clarificationCountKey(runtime.seed.id, generation)
     pendingClarificationCounts.set(key, (pendingClarificationCounts.get(key) ?? 0) + 1)
     store.applyEvent(runtime.seed.id, { kind: "status", status: "awaiting_clarification" })
-    try {
-      return await interactionCoordinator.enqueueClarification(
-        runtime.seed.id,
-        generation,
-        payload,
-      )
-    } finally {
+    publishDelegatedRuntimeStatus(runtime, "awaiting_clarification")
+    const handle = interactionCoordinator.enqueueClarification(
+      runtime.seed.id,
+      generation,
+      payload,
+    )
+    const cancelTimeout = scheduleClarificationTimeout(
+      () => handle.timeout(),
+      options.config.clarificationTimeoutSeconds * 1_000,
+    )
+    const outcome = handle.outcome.finally(() => {
+      cancelTimeout()
       const remaining = (pendingClarificationCounts.get(key) ?? 1) - 1
       if (remaining > 0) pendingClarificationCounts.set(key, remaining)
       else pendingClarificationCounts.delete(key)
@@ -696,7 +927,38 @@ export async function createSessionController(options: SessionControllerOptions)
         store.getState().sessions[runtime.seed.id]?.status === "awaiting_clarification"
       ) {
         store.applyEvent(runtime.seed.id, { kind: "status", status: "working" })
+        publishDelegatedRuntimeStatus(runtime, "working")
       }
+    })
+    return { requestId: handle.requestId, outcome, timeout: handle.timeout }
+  }
+
+  async function enqueueClarification(
+    runtime: AgentRuntime,
+    payload: ClarificationPayload,
+  ): Promise<ClarificationOutcome> {
+    return enqueueClarificationHandle(runtime, payload).outcome
+  }
+
+  function mcpServersFor(runtime: AgentRuntime, generation: number) {
+    if (runtime.bridgeGeneration === generation && runtime.bridgeMcpServer) {
+      return [...mcpServers, runtime.bridgeMcpServer]
+    }
+    const generated = askUserBridge.register({ sessionId: runtime.seed.id, generation })
+    runtime.bridgeGeneration = generation
+    runtime.bridgeMcpServer = generated
+    return [...mcpServers, generated]
+  }
+
+  function invalidateBridge(
+    runtime: AgentRuntime,
+    generation: number,
+    reason: ClarificationSessionLossReason,
+  ): void {
+    askUserBridge.cancelSession(runtime.seed.id, generation, reason)
+    if (runtime.bridgeGeneration === generation) {
+      runtime.bridgeGeneration = null
+      runtime.bridgeMcpServer = null
     }
   }
 
@@ -776,6 +1038,9 @@ export async function createSessionController(options: SessionControllerOptions)
       acceptEvents: true,
       cancelCompleted: false,
       generation: 0,
+      harnessDelivery: null,
+      bridgeMcpServer: null,
+      bridgeGeneration: null,
     }
     runtimes.set(seed.id, runtime)
     const capability = clarificationCapabilityFor(config)
@@ -789,15 +1054,21 @@ export async function createSessionController(options: SessionControllerOptions)
   }
 
   /** Bring one session up, or record precisely why it did not come up. */
-  async function startSession(seed: SessionSeed, config: ResolvedAgentConfig): Promise<void> {
+  async function startSession(
+    seed: SessionSeed,
+    config: ResolvedAgentConfig,
+    registeredGeneration?: number,
+  ): Promise<void> {
     let connection: AgentConnection | undefined
     let readinessRecorded = false
     const runtime = runtimes.get(seed.id) ?? registerRuntime(seed, config)
-    runtime.generation = nextConnectionGeneration(seed.id, connectionGenerations)
+    runtime.generation = registeredGeneration ?? nextConnectionGeneration(seed.id, connectionGenerations)
+    const generation = runtime.generation
     runtime.config = config
     store.setConversationAvailability(seed.id, { kind: "starting" })
     try {
       const preflightResult = await preflightCursor(config, preflight)
+      if (!isCurrentGeneration(runtime, generation)) return
       if (!preflightResult.ready) {
         options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
         readinessRecorded = true
@@ -807,6 +1078,10 @@ export async function createSessionController(options: SessionControllerOptions)
       connection = create(config)
       runtime.connection = connection
       const ready = await connection.connect()
+      if (!isCurrentGeneration(runtime, generation)) {
+        await disposeQuietly(connection)
+        return
+      }
       if (!ready.ready) {
         const failure = longLivedReadinessFailure(config, ready)
         options.recorder?.providerReadiness?.(config.id, failure.reason)
@@ -825,8 +1100,17 @@ export async function createSessionController(options: SessionControllerOptions)
       const captureSeed = connection.onUpdate((event) => {
         if (event.kind === "config_options") seededConfig = event
       })
-      const acpSessionId = await connection.newSession(seed.cwd, mcpServers)
-      captureSeed()
+      let acpSessionId: string
+      try {
+        acpSessionId = await connection.newSession(seed.cwd, mcpServersFor(runtime, generation))
+      } finally {
+        captureSeed()
+      }
+      if (!isCurrentGeneration(runtime, generation)) {
+        await disposeQuietly(connection)
+        return
+      }
+      beginFreshHarnessDelivery(runtime, generation)
       // Bind the slice before subscribing: `startSession` resets the transcript, so
       // an event that arrived first would be thrown away.
       store.startSession(seed.id, acpSessionId)
@@ -849,6 +1133,10 @@ export async function createSessionController(options: SessionControllerOptions)
       runtime.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
     } catch (error) {
+      if (!isCurrentGeneration(runtime, generation)) {
+        await disposeQuietly(connection)
+        return
+      }
       if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
       onError(seed.id, error)
       await failSession(runtime, connection, errorMessage(error), "connection-failed")
@@ -862,6 +1150,8 @@ export async function createSessionController(options: SessionControllerOptions)
     error: string,
     reasonCode: "connection-failed" | "restore-unavailable" | "provider-unavailable",
   ): Promise<void> {
+    terminalizeHarnessDelivery(runtime)
+    invalidateBridge(runtime, runtime.generation, "connection_error")
     interactionCoordinator.cancelSession(
       runtime.seed.id,
       runtime.generation,
@@ -899,15 +1189,19 @@ export async function createSessionController(options: SessionControllerOptions)
     seed: SessionSeed,
     runtime: AgentRuntime,
   ): Promise<{ acpSessionId: string; unsubscribe: Unsubscribe }> {
+    const generation = runtime.generation
     let seededConfig: DomainSessionEvent | null = null
     const captureSeed = connection.onUpdate((event) => {
       if (event.kind === "config_options") seededConfig = event
     })
     let acpSessionId: string
     try {
-      acpSessionId = await connection.newSession(seed.cwd, mcpServers)
+      acpSessionId = await connection.newSession(seed.cwd, mcpServersFor(runtime, generation))
     } finally {
       captureSeed()
+    }
+    if (!isCurrentGeneration(runtime, generation)) {
+      throw new Error("Stale session generation")
     }
     store.startSession(seed.id, acpSessionId!)
     if (seededConfig) store.applyEvent(seed.id, seededConfig)
@@ -923,8 +1217,20 @@ export async function createSessionController(options: SessionControllerOptions)
    * replay emitted synchronously by the adapter cannot arrive before its owner is
    * bound (ADR-004).
    */
-  async function restoreSession(seed: SessionSeed, config: ResolvedAgentConfig, stored: PersistedAgent | undefined): Promise<void> {
+  async function restoreSession(
+    seed: SessionSeed,
+    config: ResolvedAgentConfig,
+    stored: PersistedAgent | undefined,
+    checkpoint: HarnessDeliveryCheckpoint | undefined,
+  ): Promise<boolean> {
     const previous = runtimes.get(seed.id) ?? registerRuntime(seed, config)
+    if (store.getState().delegation.parents[seed.id]) {
+      const cascade = await teardownDelegatedChildren(previous)
+      if (cascade.outcome !== "closed") return false
+    }
+    const replacedGeneration = previous.generation
+    terminalizeHarnessDelivery(previous, replacedGeneration)
+    invalidateBridge(previous, replacedGeneration, "session_replaced")
     interactionCoordinator.cancelSession(
       seed.id,
       previous.generation,
@@ -938,8 +1244,13 @@ export async function createSessionController(options: SessionControllerOptions)
     previous.connection = null
     previous.acpSessionId = null
     await disposeQuietly(previousConnection ?? undefined)
+    if (disposed || runtimes.get(seed.id) !== previous || previous.generation !== replacedGeneration) return false
     previous.config = config
     previous.generation = nextConnectionGeneration(seed.id, connectionGenerations)
+    const generation = previous.generation
+    previous.harnessDelivery = null
+    previous.bridgeMcpServer = null
+    previous.bridgeGeneration = null
     previous.closing = false
     previous.acceptEvents = true
     previous.cancelCompleted = false
@@ -950,23 +1261,28 @@ export async function createSessionController(options: SessionControllerOptions)
     let readinessRecorded = false
     try {
       const preflightResult = await preflightCursor(config, preflight)
+      if (!isCurrentGeneration(previous, generation)) return false
       if (!preflightResult.ready) {
         options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
         readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
         await failSession(previous, undefined, preflightResult.message, "restore-unavailable")
-        return
+        return false
       }
       connection = create(config)
       previous.connection = connection
       const ready = await connection.connect()
+      if (!isCurrentGeneration(previous, generation)) {
+        await disposeQuietly(connection)
+        return false
+      }
       if (!ready.ready) {
         const failure = longLivedReadinessFailure(config, ready)
         options.recorder?.providerReadiness?.(config.id, failure.reason)
         readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
         await failSession(previous, connection, failure.message, "restore-unavailable")
-        return
+        return false
       }
       options.recorder?.providerReadiness?.(config.id, "ready")
       readinessRecorded = true
@@ -983,7 +1299,13 @@ export async function createSessionController(options: SessionControllerOptions)
         connection.onPermission((request) => enqueuePermission(previous, request))
         connection.onClarification((payload) => enqueueClarification(previous, payload))
         try {
-          await connection.loadSession(acpSessionId, seed.cwd, mcpServers)
+          await connection.loadSession(acpSessionId, seed.cwd, mcpServersFor(previous, generation))
+          if (!isCurrentGeneration(previous, generation)) {
+            unsubscribe()
+            await disposeQuietly(connection)
+            return false
+          }
+          restorePersistedHarnessDelivery(previous, generation, checkpoint, "loaded")
           store.setRestoration(seed.id, "live")
         } catch (error) {
           unsubscribe()
@@ -994,14 +1316,26 @@ export async function createSessionController(options: SessionControllerOptions)
           // nested "no rollout found" detail. The agent remains healthy, so recover
           // into a fresh live session rather than turning the whole pane into error.
           const fresh = await startFreshRestoredSession(connection, seed, previous)
+          if (!isCurrentGeneration(previous, generation)) {
+            fresh.unsubscribe()
+            await disposeQuietly(connection)
+            return false
+          }
           acpSessionId = fresh.acpSessionId
           unsubscribe = fresh.unsubscribe
+          restorePersistedHarnessDelivery(previous, generation, checkpoint, "fresh")
           store.setRestoration(seed.id, "unavailable")
         }
       } else {
         const fresh = await startFreshRestoredSession(connection, seed, previous)
+        if (!isCurrentGeneration(previous, generation)) {
+          fresh.unsubscribe()
+          await disposeQuietly(connection)
+          return false
+        }
         acpSessionId = fresh.acpSessionId
         unsubscribe = fresh.unsubscribe
+        restorePersistedHarnessDelivery(previous, generation, checkpoint, "fresh")
         store.setRestoration(seed.id, "unavailable")
       }
 
@@ -1019,12 +1353,19 @@ export async function createSessionController(options: SessionControllerOptions)
       previous.acpSessionId = acpSessionId
       previous.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
+      return true
     } catch (error) {
+      if (!isCurrentGeneration(previous, generation)) {
+        unsubscribe?.()
+        await disposeQuietly(connection)
+        return false
+      }
       if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
       unsubscribe?.()
       store.setRestoration(seed.id, "unavailable")
       onError(seed.id, error)
       await failSession(previous, connection, errorMessage(error), "restore-unavailable")
+      return false
     }
   }
 
@@ -1063,6 +1404,23 @@ export async function createSessionController(options: SessionControllerOptions)
       return Promise.resolve({ outcome: "ignored" })
     }
 
+    const delegatedParent = state.delegation.parents[sessionId]
+    if (delegatedParent) {
+      if (choice === "keep-open") return Promise.resolve({ outcome: "kept-open" })
+      if (choice === "background") {
+        store.backgroundConversation(sessionId)
+        return Promise.resolve({ outcome: "backgrounded" })
+      }
+      if (choice !== "cancel") return Promise.resolve({ outcome: "ignored" })
+
+      const promise = teardownDelegatedParent(runtime, session.status)
+      closePromises.set(sessionId, promise)
+      void promise.finally(() => {
+        if (closePromises.get(sessionId) === promise) closePromises.delete(sessionId)
+      })
+      return promise
+    }
+
     const active = session.status !== "idle"
     if (choice === "keep-open") {
       return Promise.resolve(active ? { outcome: "kept-open" } : { outcome: "ignored" })
@@ -1092,8 +1450,12 @@ export async function createSessionController(options: SessionControllerOptions)
   async function teardownConversation(
     runtime: AgentRuntime,
     status: SessionStatus,
+    delegatedIdentity?: DelegatedChildIdentity,
   ): Promise<CloseConversationResult> {
     const sessionId = runtime.seed.id
+    const generation = runtime.generation
+    terminalizeHarnessDelivery(runtime, generation)
+    invalidateBridge(runtime, generation, "conversation_closed")
     runtime.closing = true
     runtime.acceptEvents = false
     store.setConversationTeardown(sessionId, "closing")
@@ -1112,20 +1474,42 @@ export async function createSessionController(options: SessionControllerOptions)
           throw new Error("Targeted cancellation is unavailable")
         }
         await runtime.connection.cancel(runtime.acpSessionId)
+        if (!isCurrentGeneration(runtime, generation)) return { outcome: "ignored" }
         runtime.cancelCompleted = true
       }
 
       runtime.unsubscribe?.()
       runtime.unsubscribe = null
       if (runtime.connection) await runtime.connection.dispose()
+      if (!isCurrentGeneration(runtime, generation)) return { outcome: "ignored" }
       runtime.connection = null
       runtime.acpSessionId = null
+      if (delegatedIdentity) {
+        publishDelegatedState({
+          ...delegatedIdentity,
+          status: "cancelled",
+          sessionStatus: "idle",
+          at: now(),
+        })
+      }
       runtimes.delete(sessionId)
       branchReadGenerations.delete(sessionId)
-      store.removeSession(sessionId)
+      if (delegatedIdentity) store.removeDelegationChild(delegatedIdentity)
+      else store.removeSession(sessionId)
       return { outcome: "closed" }
     } catch (error) {
       onError(sessionId, error)
+      if (delegatedIdentity) {
+        const accepted = publishDelegatedState({
+          ...delegatedIdentity,
+          status: "failed",
+          sessionStatus: "error",
+          at: now(),
+        })
+        if (accepted) {
+          options.recorder?.delegatedTeardownFailed?.(delegatedTelemetryKey(delegatedIdentity))
+        }
+      }
       runtime.closing = false
       runtime.acceptEvents = false
       runtime.state = {
@@ -1146,6 +1530,50 @@ export async function createSessionController(options: SessionControllerOptions)
       })
       return { outcome: "teardown-failed" }
     }
+  }
+
+  async function teardownDelegatedChildren(
+    parentRuntime: AgentRuntime,
+  ): Promise<CloseConversationResult> {
+    const parent = store.getState().delegation.parents[parentRuntime.seed.id]
+    if (!parent || parent.parentGeneration !== parentRuntime.generation) {
+      return { outcome: "closed" }
+    }
+
+    const cascadeKey = delegatedCascadeTelemetryKey(parent.parentId, parent.parentGeneration)
+    const beforeClose = parent
+    store.markDelegationParentClosing(parent.parentId, parent.parentGeneration)
+    const afterClose = store.getState().delegation.parents[parent.parentId]
+    if (afterClose !== beforeClose && afterClose?.closeState === "closing") {
+      options.recorder?.delegatedCascadeRequested?.(cascadeKey)
+    }
+    const results = await Promise.all(parent.childIds.map(async (childId) => {
+      const identity = delegatedIdentity(childId)
+      const childRuntime = runtimes.get(childId)
+      const status = store.getState().sessions[childId]?.status
+      if (!identity || !childRuntime || status === undefined || !ownsDelegatedIdentity(identity)) {
+        onError(childId, new Error("Delegated child teardown ownership is unavailable"))
+        options.recorder?.delegatedTeardownFailed?.(`${cascadeKey}:${childId}`)
+        return { outcome: "teardown-failed" } as const
+      }
+      return teardownConversation(childRuntime, status, identity)
+    }))
+    if (results.every((result) => result.outcome === "closed")) {
+      options.recorder?.delegatedCascadeCompleted?.(cascadeKey)
+      return { outcome: "closed" }
+    }
+    return { outcome: "teardown-failed" }
+  }
+
+  async function teardownDelegatedParent(
+    runtime: AgentRuntime,
+    status: SessionStatus,
+  ): Promise<CloseConversationResult> {
+    const generation = runtime.generation
+    const cascade = await teardownDelegatedChildren(runtime)
+    if (cascade.outcome !== "closed") return cascade
+    if (!isCurrentGeneration(runtime, generation)) return { outcome: "ignored" }
+    return teardownConversation(runtime, status)
   }
 
   async function createConversation(): Promise<SessionId | null> {
@@ -1181,9 +1609,239 @@ export async function createSessionController(options: SessionControllerOptions)
     return sessionId
   }
 
+  async function startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null> {
+    if (disposed) return null
+    const task = input.task.trim()
+    const desiredOutcome = input.desiredOutcome.trim()
+    if (!task || !desiredOutcome) return null
+
+    const state = store.getState()
+    const parentSession = state.sessions[input.parentId]
+    const parentRuntime = runtimes.get(input.parentId)
+    const parentDelegation = state.delegation.parents[input.parentId]
+    if (
+      state.workspace.selectedVisibleId !== input.parentId ||
+      !parentSession ||
+      state.delegation.children[input.parentId] ||
+      parentDelegation?.closeState === "closing" ||
+      !parentRuntime?.config ||
+      !parentRuntime.state.ready ||
+      !acceptsRuntimeEvents(parentRuntime)
+    ) {
+      return null
+    }
+
+    const childId = newSessionId()
+    if (state.workspace.conversations[childId] || runtimes.has(childId)) {
+      onError(childId, new Error(`Conversation id already exists: ${childId}`))
+      return null
+    }
+
+    const parentGeneration = parentRuntime.generation
+    const childGeneration = nextConnectionGeneration(childId, connectionGenerations)
+    const identity: DelegatedChildIdentity = {
+      parentId: input.parentId,
+      childId,
+      parentGeneration,
+      childGeneration,
+    }
+    const seed: SessionSeed = {
+      id: childId,
+      providerKind: parentSession.providerKind,
+      title: `${parentRuntime.config.displayName} child`,
+      cwd: parentSession.cwd,
+    }
+    store.addDelegatedSession({
+      seed,
+      parentId: input.parentId,
+      parentGeneration,
+      childGeneration,
+      task,
+      desiredOutcome,
+      displayName: seed.title,
+    })
+    if (!store.getState().delegation.children[childId]) return null
+    options.recorder?.delegatedLaunchRequested?.(delegatedTelemetryKey(identity))
+
+    const childRuntime = registerRuntime(seed, parentRuntime.config)
+    childRuntime.generation = childGeneration
+    await startSession(seed, parentRuntime.config, childGeneration)
+    refreshBranch(childId)
+
+    if (!ownsDelegatedIdentity(identity)) return childId
+    if (!childRuntime.state.ready) {
+      publishDelegatedState({
+        ...identity,
+        status: "failed",
+        sessionStatus: "error",
+        at: now(),
+      })
+      return childId
+    }
+
+    publishDelegatedState({ ...identity, status: "running", sessionStatus: "working" })
+    const prompt = `Task:\n${task}\n\nDesired outcome:\n${desiredOutcome}`
+    void actions.sendPrompt(prompt, childId).then((result) => {
+      if (result === null) {
+        publishDelegatedState({
+          ...identity,
+          status: "failed",
+          sessionStatus: "error",
+          at: now(),
+        })
+      }
+    })
+    return childId
+  }
+
+  async function steerDelegatedChild(childId: SessionId, text: string) {
+    const direction = text.trim()
+    const identity = delegatedIdentity(childId)
+    const snapshot = store.getState().delegation.children[childId]
+    if (
+      !direction ||
+      !identity ||
+      !snapshot ||
+      snapshot.terminal ||
+      store.getState().delegation.parents[snapshot.parentId]?.closeState !== "open" ||
+      !ownsDelegatedIdentity(identity) ||
+      !getSession(childId)
+    ) {
+      return null
+    }
+    const result = await actions.sendPrompt(direction, childId)
+    if (result && store.getState().delegation.children[childId]?.status === "needs_input") {
+      publishDelegatedState({ ...identity, status: "running", sessionStatus: "working" })
+    }
+    return result
+  }
+
+  async function cancelDelegatedChild(childId: SessionId): Promise<void> {
+    const identity = delegatedIdentity(childId)
+    const snapshot = store.getState().delegation.children[childId]
+    const runtime = runtimes.get(childId)
+    if (
+      !identity ||
+      !snapshot ||
+      snapshot.terminal ||
+      !runtime?.connection ||
+      runtime.acpSessionId === null ||
+      !ownsDelegatedIdentity(identity)
+    ) {
+      return
+    }
+    try {
+      terminalizeHarnessDelivery(runtime, identity.childGeneration)
+      await runtime.connection.cancel(runtime.acpSessionId)
+      if (!ownsDelegatedIdentity(identity)) return
+      runtime.cancelCompleted = true
+      publishDelegatedState({
+        ...identity,
+        status: "cancelled",
+        sessionStatus: "idle",
+        at: now(),
+      })
+    } catch (error) {
+      onError(childId, error)
+      publishDelegatedState({
+        ...identity,
+        status: "failed",
+        sessionStatus: "error",
+        at: now(),
+      })
+    }
+  }
+
+  function preparePromptDispatch(sessionId: SessionId, blocks: PromptBlock[]) {
+    const runtime = runtimes.get(sessionId)
+    if (
+      !runtime?.state.ready ||
+      !runtime.config ||
+      !runtime.connection ||
+      runtime.acpSessionId === null ||
+      !acceptsRuntimeEvents(runtime)
+    ) return null
+
+    const generation = runtime.generation
+    const delivery = runtime.harnessDelivery
+    if (!delivery || delivery.state === "in_flight" || delivery.state === "failed") return null
+
+    let input: AgentPromptInput = blocks
+    let settlesHarnessDelivery = false
+    if (delivery.state === "pending") {
+      let capability: HarnessCapability
+      try {
+        capability = resolveDeliveryCapability(runtime.config)
+      } catch {
+        capability = { status: "unsupported", reason: "incomplete_evidence" }
+      }
+      if (capability.status !== "supported") {
+        publishHarnessDelivery(runtime, failBeforeDispatch(delivery, generation, {
+          retrySafe: false,
+          category: "unsupported_profile",
+        }))
+        return null
+      }
+
+      let rendered: ReturnType<typeof renderHarnessPrompt>
+      try {
+        rendered = renderHarnessPrompt(delivery.version)
+      } catch {
+        publishHarnessDelivery(runtime, failBeforeDispatch(delivery, generation, {
+          retrySafe: false,
+          category: "harness_render_failed",
+        }))
+        return null
+      }
+      if (rendered.kind !== "rendered") {
+        publishHarnessDelivery(runtime, failBeforeDispatch(delivery, generation, {
+          retrySafe: false,
+          category: "harness_render_failed",
+        }))
+        return null
+      }
+
+      const claimed = beginDispatch(delivery, generation)
+      if (claimed.state !== "in_flight") return null
+      publishHarnessDelivery(runtime, claimed)
+      input = {
+        userBlocks: blocks,
+        harness: { version: rendered.version, text: rendered.text },
+        profileId: capability.profileId,
+      }
+      settlesHarnessDelivery = true
+    }
+
+    const connection = runtime.connection
+    const acpSessionId = runtime.acpSessionId
+    return {
+      async invoke() {
+        try {
+          const result = await connection.prompt(acpSessionId, input)
+          if (settlesHarnessDelivery && isCurrentGeneration(runtime, generation)) {
+            const current = runtime.harnessDelivery
+            if (current) publishHarnessDelivery(runtime, completeDispatch(current, generation))
+          }
+          return result
+        } catch (error) {
+          if (settlesHarnessDelivery && isCurrentGeneration(runtime, generation)) {
+            const current = runtime.harnessDelivery
+            if (current) publishHarnessDelivery(runtime, failIndeterminate(current, generation))
+          }
+          throw error
+        }
+      },
+    }
+  }
+
   const actions = createControllerActions({
     store,
     getSession,
+    preparePromptDispatch,
+    terminalizePromptDispatch: (sessionId) => {
+      const runtime = runtimes.get(sessionId)
+      if (runtime) terminalizeHarnessDelivery(runtime)
+    },
     getProviderDefault: (sessionId) => {
       const provider = runtimes.get(sessionId)?.seed.providerKind
       return provider ? providerDefaults[provider] : undefined
@@ -1196,14 +1854,18 @@ export async function createSessionController(options: SessionControllerOptions)
     recorder: options.recorder,
     repositoryFileSource,
     createConversation,
+    startDelegatedChild,
+    steerDelegatedChild,
+    cancelDelegatedChild,
     closeConversation,
     startNewRun: async () => {
       if (disposed) return
       store.setRestorationBundle(null)
       const entries = orderedRuntimes(store, runtimes).filter(
-        (runtime): runtime is AgentRuntime & { config: ResolvedAgentConfig } => runtime.config !== null,
+        (runtime): runtime is AgentRuntime & { config: ResolvedAgentConfig } =>
+          runtime.config !== null && !store.getState().delegation.children[runtime.seed.id],
       )
-      await Promise.all(entries.map((entry) => restoreSession(entry.seed, entry.config, undefined)))
+      await Promise.all(entries.map((entry) => restoreSession(entry.seed, entry.config, undefined, undefined)))
       for (const entry of entries) {
         store.setRestoration(entry.seed.id, null)
         refreshBranch(entry.seed.id)
@@ -1214,8 +1876,8 @@ export async function createSessionController(options: SessionControllerOptions)
       if (disposed) return false
       const entry = runtimes.get(sessionId)
       if (!entry?.config) return false
-      await restoreSession(entry.seed, entry.config, undefined)
-      const ready = getSession(sessionId) !== undefined
+      const restored = await restoreSession(entry.seed, entry.config, undefined, undefined)
+      const ready = restored && getSession(sessionId) !== undefined
       if (ready) {
         store.setRestoration(sessionId, null)
         refreshBranch(sessionId)
@@ -1257,6 +1919,10 @@ export async function createSessionController(options: SessionControllerOptions)
         ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
         : record
       interactionCoordinator.cancelAll()
+      for (const runtime of runtimes.values()) {
+        terminalizeHarnessDelivery(runtime)
+        invalidateBridge(runtime, runtime.generation, "session_replaced")
+      }
       await disposeAgentRuntimes(runtimes)
       runtimes.clear()
       branchReadGenerations.clear()
@@ -1279,7 +1945,7 @@ export async function createSessionController(options: SessionControllerOptions)
         entries.map(async (entry) => {
           const runtime = runtimes.get(entry.seed.id)!
           if (!runtime.config) return
-          await restoreSession(entry.seed, runtime.config, entry.stored)
+          await restoreSession(entry.seed, runtime.config, entry.stored, entry.checkpoint)
         }),
       )
       for (const entry of entries) refreshBranch(entry.seed.id)
@@ -1306,7 +1972,9 @@ export async function createSessionController(options: SessionControllerOptions)
       options.recorder?.tabRestore?.({ visibleCount, backgroundCount, unavailableCount })
     },
     async dispose(): Promise<void> {
+      for (const runtime of runtimes.values()) terminalizeHarnessDelivery(runtime)
       disposed = true
+      await askUserBridge.dispose()
       interactionCoordinator.dispose()
       pendingClarificationCounts.clear()
       unsubscribeShell?.()
@@ -1330,6 +1998,33 @@ function cloneProviderDefaults(
   return Object.fromEntries(
     Object.entries(defaults).map(([provider, value]) => [provider, { ...value }]),
   ) as Partial<Record<ProviderKind, ProviderModelDefault>>
+}
+
+function defaultResolveHarnessCapability(config: ResolvedAgentConfig): HarnessCapability {
+  return resolveHarnessCapability(config, harnessRuntimeEvidence(config))
+}
+
+/** Derive only exact, already-resolved runtime release facts; registry evidence still grants support. */
+function harnessRuntimeEvidence(config: ResolvedAgentConfig): HarnessRuntimeEvidence | undefined {
+  if (config.id === "cursor" && config.runtimeProfile.kind === "cursor-certified") {
+    return {
+      sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+      adapterPackage: "cursor-agent",
+      adapterVersion: config.runtimeProfile.certifiedVersion,
+    }
+  }
+
+  const packageSpec = config.command === "npx" && config.args[0] === "-y" && config.args.length === 2
+    ? config.args[1]
+    : undefined
+  if (!packageSpec) return undefined
+  const separator = packageSpec.lastIndexOf("@")
+  if (separator <= 0 || separator === packageSpec.length - 1) return undefined
+  return {
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    adapterPackage: packageSpec.slice(0, separator),
+    adapterVersion: packageSpec.slice(separator + 1),
+  }
 }
 
 /** Non-Cursor providers retain their established one-connection lifecycle. */
@@ -1369,6 +2064,33 @@ function clarificationCountKey(sessionId: SessionId, generation: number): string
   return `${sessionId}\u0000${generation}`
 }
 
+function defaultScheduleClarificationTimeout(callback: () => void, timeoutMs: number): () => void {
+  const timer = setTimeout(callback, timeoutMs)
+  return () => clearTimeout(timer)
+}
+
+function cancelledClarificationHandle(requestId: string): ClarificationRequestHandle {
+  return {
+    requestId,
+    outcome: Promise.resolve({ kind: "cancelled" }),
+    timeout: () => false,
+  }
+}
+
+/**
+ * A compiled Kitten executable can run child mode directly. During `bun src/index.ts`
+ * development, preserve the source entrypoint before appending the reserved mode flag.
+ */
+function defaultAskUserMcpExecutable(): { command: string; args: readonly string[] } {
+  const entrypoint = process.argv[1]
+  return {
+    command: process.execPath,
+    args: entrypoint?.endsWith("/src/index.ts") || entrypoint?.endsWith("\\src\\index.ts")
+      ? [entrypoint]
+      : [],
+  }
+}
+
 function clarificationCapabilityFor(config: AgentConfig | null): ClarificationCapability {
   return isResolvedAgentConfig(config)
     ? config.clarificationCapability
@@ -1401,9 +2123,10 @@ interface RestoreEntry {
   seed: SessionSeed
   workspace: WorkspaceConversationSeed
   stored: PersistedAgent
+  checkpoint: HarnessDeliveryCheckpoint | undefined
 }
 
-function restoreEntries(record: PersistedRunRecordV2): RestoreEntry[] {
+function restoreEntries(record: PersistedRunRecordV2 | PersistedRunRecordV3): RestoreEntry[] {
   const entries: RestoreEntry[] = []
   for (const sessionId of record.workspace.order) {
     const descriptor: PersistedConversationV2 | undefined = record.conversations[sessionId]
@@ -1436,6 +2159,7 @@ function restoreEntries(record: PersistedRunRecordV2): RestoreEntry[] {
         messageCount: descriptor.messageCount,
         status: descriptor.status,
       },
+      checkpoint: record.version === 3 ? record.harnessDeliveries[sessionId] : undefined,
     })
   }
   return entries
