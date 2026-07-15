@@ -13,6 +13,7 @@ import {
   type PermissionRequest,
 } from "./agentConnection.ts"
 import { createInMemoryTransportPair } from "./transport.ts"
+import { ASK_USER_MCP_HOST_GUIDANCE, ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
 import { KITTEN_VERSION } from "../version.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../config/harnessCapability.ts"
 
@@ -28,6 +29,12 @@ const CODEX_CONFIG: AgentConfig = { id: "codex", displayName: "Codex", command: 
 const MCP_SERVERS: McpServerConfig[] = [
   { name: "github", command: "/opt/bin/github-mcp", args: ["--stdio"], env: { TOKEN: "secret" } },
 ]
+const ASK_USER_MCP_SERVER: McpServerConfig = {
+  name: ASK_USER_MCP_SERVER_NAME,
+  command: "/opt/bin/kitten",
+  args: ["--ask-user-mcp"],
+  env: {},
+}
 const SUPPORTED_CONFIG: ResolvedAgentConfig = {
   ...CONFIG,
   clarificationCapability: {
@@ -350,6 +357,61 @@ describe("connect / session lifecycle", () => {
     ]
     expect(mock.newSessionRequests).toEqual([{ cwd: "/repo", mcpServers: expectedServers }])
     expect(mock.loadSessionRequests).toEqual([{ sessionId: "sess-7", cwd: "/repo", mcpServers: expectedServers }])
+    await conn.dispose()
+  })
+
+  it("adds hidden ask_user guidance only to prompts from a session with Kitten's bridge", async () => {
+    let receivedPrompt: unknown = []
+    const { conn } = await connected({
+      onPrompt: (request) => {
+        receivedPrompt = request.prompt
+        return "end_turn"
+      },
+    })
+
+    const sessionId = await conn.newSession("/repo", [ASK_USER_MCP_SERVER])
+    await conn.prompt(sessionId, [{ type: "text", text: "Refine the feature idea." }])
+
+    expect(receivedPrompt).toEqual([
+      { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
+      { type: "text", text: "Refine the feature idea." },
+    ])
+    await conn.dispose()
+  })
+
+  it("adds hidden ask_user guidance after restoring a session with Kitten's bridge", async () => {
+    let receivedPrompt: unknown = []
+    const { conn } = await connected({
+      canLoadSession: true,
+      onPrompt: (request) => {
+        receivedPrompt = request.prompt
+        return "end_turn"
+      },
+    })
+
+    await conn.loadSession("sess-7", "/repo", [ASK_USER_MCP_SERVER])
+    await conn.prompt("sess-7", [{ type: "text", text: "Continue the feature idea." }])
+
+    expect(receivedPrompt).toEqual([
+      { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
+      { type: "text", text: "Continue the feature idea." },
+    ])
+    await conn.dispose()
+  })
+
+  it("does not add ask_user guidance when the bridge is absent", async () => {
+    let receivedPrompt: unknown = []
+    const { conn } = await connected({
+      onPrompt: (request) => {
+        receivedPrompt = request.prompt
+        return "end_turn"
+      },
+    })
+
+    const sessionId = await conn.newSession("/repo", MCP_SERVERS)
+    await conn.prompt(sessionId, [{ type: "text", text: "Refine the feature idea." }])
+
+    expect(receivedPrompt).toEqual([{ type: "text", text: "Refine the feature idea." }])
     await conn.dispose()
   })
 

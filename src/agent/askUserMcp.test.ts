@@ -7,6 +7,7 @@ import type { ClarificationOutcome, ClarificationPayload } from "../core/types.t
 import {
   ASK_USER_MCP_CAPABILITY_ENV,
   ASK_USER_MCP_ENDPOINT_ENV,
+  ASK_USER_MCP_INSTRUCTIONS,
   ASK_USER_MCP_TOOL_NAME,
   askUserInputSchema,
   createAskUserMcpServer,
@@ -109,6 +110,7 @@ describe("ask_user MCP server and serialization", () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])
     try {
+      expect(client.getInstructions()).toBe(ASK_USER_MCP_INSTRUCTIONS)
       const tools = await client.listTools()
       expect(tools.tools.map((tool) => tool.name)).toEqual([ASK_USER_MCP_TOOL_NAME])
       expect(tools.tools[0]?.description).toContain("instead of writing a plain-text question")

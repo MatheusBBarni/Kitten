@@ -9,6 +9,7 @@ import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createAgentConnection, type AgentConnection } from "../src/agent/agentConnection.ts"
+import { ASK_USER_MCP_HOST_GUIDANCE } from "../src/agent/askUserMcp.ts"
 import { createInMemoryTransportPair } from "../src/agent/transport.ts"
 import { createSessionController, type SessionController } from "../src/app/controller.ts"
 import { HARNESS_CONTRACT_SDK_VERSION } from "../src/config/harnessCapability.ts"
@@ -653,7 +654,10 @@ describe("clarification lifecycle integration", () => {
       await actAsync(() => lifecycle!.setup.mockInput.pressEnter())
       await lifecycle.setup.waitFor(() => claude.agent.prompts.length === 1)
 
-      expect(claude.agent.prompts[0]?.prompt).toEqual([{ type: "text", text: "plain turn" }])
+      expect(claude.agent.prompts[0]?.prompt).toEqual([
+        { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
+        { type: "text", text: "plain turn" },
+      ])
       expect(claude.agent.elicitationRequests).toEqual([])
       expect(claude.agent.elicitationOutcomes).toEqual([])
       expect(controller.store.getState().overlays.clarification).toBeNull()

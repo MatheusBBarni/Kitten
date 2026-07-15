@@ -7,6 +7,7 @@ import {
   ASK_USER_MCP_CAPABILITY_ENV,
   ASK_USER_MCP_ENDPOINT_ENV,
   ASK_USER_MCP_MODE_FLAG,
+  ASK_USER_MCP_SERVER_NAME,
   MAX_ASK_USER_FIELDS,
   MAX_ASK_USER_FRAME_BYTES,
   MAX_ASK_USER_OPTIONS,
@@ -24,7 +25,6 @@ import type {
 } from "./controller.ts"
 import type { ClarificationSessionLossReason } from "../telemetry/recorder.ts"
 
-export const ASK_USER_MCP_SERVER_NAME = "kitten-ask-user"
 export const MAX_ASK_USER_CALL_ID_BYTES = 128
 export const MAX_ASK_USER_CONCURRENT_CALLS = 4
 export const MAX_ASK_USER_CALLS_PER_ROUTE = 256
@@ -33,6 +33,7 @@ export {
   ASK_USER_MCP_CAPABILITY_ENV,
   ASK_USER_MCP_ENDPOINT_ENV,
   ASK_USER_MCP_MODE_FLAG,
+  ASK_USER_MCP_SERVER_NAME,
   MAX_ASK_USER_FIELDS,
   MAX_ASK_USER_FRAME_BYTES,
   MAX_ASK_USER_OPTIONS,
