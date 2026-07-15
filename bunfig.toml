@@ -39,7 +39,9 @@ minimumReleaseAgeExcludes = [
 
 [test]
 # `bun test` discovers *.test.ts / *.test.tsx files under src/ and test/.
-# Coverage is opt-in via `bun test --coverage` (the `test:coverage` script);
+# Coverage is opt-in via `bun test --coverage --isolate` (the `test:coverage`
+# script). Isolation keeps OpenTUI's process-global native renderer state from
+# leaking across coverage test files.
 # the threshold below is enforced whenever coverage runs.
 coverageThreshold = 0.8
 coverageReporter = ["text"]
