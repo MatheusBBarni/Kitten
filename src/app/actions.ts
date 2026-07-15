@@ -30,6 +30,7 @@ import {
   type SessionId,
 } from "../core/types.ts"
 import type { StatuslineLayout } from "../core/statusline.ts"
+import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
@@ -49,6 +50,16 @@ export interface StartDelegatedChildInput {
   readonly task: string
   readonly desiredOutcome: string
 }
+
+export type ExploreLaunchRequest = StartDelegatedChildInput
+
+export type ExploreLaunchResult =
+  | { readonly kind: "started"; readonly childId: SessionId }
+  | { readonly kind: "denied"; readonly reason: ExploreDenialReason; readonly scope?: "per-parent" | "global" }
+
+export type ExploreAvailabilityResult =
+  | { readonly kind: "available" }
+  | { readonly kind: "denied"; readonly reason: ExploreDenialReason }
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
@@ -207,6 +218,10 @@ export interface ActionDeps {
   createConversation?: () => Promise<SessionId | null>
   /** Create, register, and dispatch one controller-owned delegated child. */
   startDelegatedChild?: (input: StartDelegatedChildInput) => Promise<SessionId | null>
+  /** Authoritative fail-closed explore launch. */
+  startExploreChild?: (input: ExploreLaunchRequest) => Promise<ExploreLaunchResult>
+  /** Advisory only; launch always re-attests. */
+  exploreAvailability?: (parentId: SessionId) => ExploreAvailabilityResult
   /** Send additional direction to one live, owned delegated child. */
   steerDelegatedChild?: (childId: SessionId, text: string) => Promise<PromptResult | null>
   /** Cancel one live, owned delegated child without exposing its runtime. */
@@ -225,6 +240,10 @@ export interface ControllerActions {
   createConversation(): Promise<SessionId | null>
   /** Start explicit child work in the background while retaining parent focus. */
   startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null>
+  /** Start only an exactly attested explore child, with a typed closed outcome. */
+  startExploreChild(input: ExploreLaunchRequest): Promise<ExploreLaunchResult>
+  /** Read current advisory eligibility without reserving or starting anything. */
+  exploreAvailability(parentId: SessionId): ExploreAvailabilityResult
   /** Send non-empty additional direction to one current, non-terminal owned child. */
   steerDelegatedChild(childId: SessionId, text: string): Promise<PromptResult | null>
   /** Idempotently cancel one current, non-terminal owned child. */
@@ -340,6 +359,8 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
   const startDelegatedChild = deps.startDelegatedChild ?? (async () => null)
+  const startExploreChild = deps.startExploreChild ?? (async () => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
+  const exploreAvailability = deps.exploreAvailability ?? (() => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
   const steerDelegatedChild = deps.steerDelegatedChild ?? (async () => null)
   const cancelDelegatedChild = deps.cancelDelegatedChild ?? (async () => {})
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
@@ -607,6 +628,23 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       } catch (error) {
         onError(input.parentId, error)
         return null
+      }
+    },
+
+    async startExploreChild(input): Promise<ExploreLaunchResult> {
+      try {
+        return await startExploreChild(input)
+      } catch (error) {
+        onError(input.parentId, error)
+        return { kind: "denied", reason: "startup-failed" }
+      }
+    },
+
+    exploreAvailability(parentId): ExploreAvailabilityResult {
+      try {
+        return exploreAvailability(parentId)
+      } catch {
+        return { kind: "denied", reason: "missing-attestation" }
       }
     },
 

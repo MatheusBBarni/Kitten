@@ -59,6 +59,7 @@ export const EXPLORE_DENIAL_REASONS = Object.freeze([
   "parent-ineligible",
   "parent-closing",
   "capacity-exhausted",
+  "bridge-unavailable",
   "startup-failed",
 ] as const)
 

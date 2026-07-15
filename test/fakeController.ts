@@ -291,6 +291,20 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         })
         return sessionId
       },
+      async startExploreChild(input) {
+        calls.startDelegatedChild.push(input)
+        const childId = options.startDelegatedChild
+          ? await options.startDelegatedChild(input, store)
+          : null
+        return childId
+          ? { kind: "started" as const, childId }
+          : { kind: "denied" as const, reason: "missing-attestation" as const }
+      },
+      exploreAvailability() {
+        return options.startDelegatedChild
+          ? { kind: "available" as const }
+          : { kind: "denied" as const, reason: "missing-attestation" as const }
+      },
       async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
         calls.steerDelegatedChild.push({ childId, text })
         const child = store.getState().delegation.children[childId]

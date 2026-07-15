@@ -765,6 +765,13 @@ describe("invalid config", () => {
     expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(/telemetry/)
   })
 
+  it.each(["role", "exploreSafety", "attestation", "eligibleProvider"])(
+    "rejects user-authored explore authority field %s",
+    (field) => {
+      expect(() => parseAppConfig(JSON.stringify({ [field]: true }))).toThrow(ConfigError)
+    },
+  )
+
   it("Should reject an invalid theme preference naming the offending field", () => {
     expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(ConfigError)
     expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(/theme/)

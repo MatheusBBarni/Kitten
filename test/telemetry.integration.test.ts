@@ -11,6 +11,10 @@ import {
   type SessionController,
 } from "../src/app/controller.ts"
 import { createHandoffEdits, createHandoffFlow } from "../src/app/handoff.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+} from "../src/core/explorePolicy.ts"
 import { REEXPLANATION_CHAR_THRESHOLD } from "../src/core/telemetryHeuristics.ts"
 import type {
   AppConfig,
@@ -784,6 +788,21 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
           profileId: "telemetry-integration-profile",
           encoder: "codex-prompt-meta-v1",
         }),
+        resolveExploreCapability: (provider) => {
+          const decision = evaluateExplorePolicy({
+            role: "explore",
+            restrictions: EXPLORE_RESTRICTIONS,
+            limits: { perParent: 1, global: 1 },
+            attestationVersion: "telemetry-integration-v1",
+            confirmed: { provider: provider.id, model: "test-model", effort: "low" },
+          })
+          if (decision.kind !== "eligible") return { status: "unsupported", reason: decision.reason }
+          return {
+            status: "supported",
+            policy: decision.policy,
+            recipe: { ...provider, args: [...provider.args], env: { ...provider.env } },
+          }
+        },
       })
       const parentId = controller.store.getState().workspace.selectedVisibleId!
       await controller.actions.startDelegatedChild({

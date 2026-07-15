@@ -18,6 +18,8 @@ import {
 } from "../agent/agentConnection.ts"
 import { defaultAppConfig } from "../config/configLoader.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
+import type { ExploreCapability } from "../config/exploreCapability.ts"
+import { evaluateExplorePolicy } from "../core/explorePolicy.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
   AgentConfig,
@@ -123,6 +125,29 @@ const TEST_HARNESS_CAPABILITY: HarnessCapability = {
   status: "supported",
   profileId: "controller-test-profile",
   encoder: "codex-prompt-meta-v1",
+}
+
+function testExploreCapability(config: ResolvedAgentConfig, limits = { perParent: 8, global: 16 }): ExploreCapability {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: {
+      filesystem: "read-only",
+      shell: false,
+      externalMcp: false,
+      agentControl: false,
+      askUser: true,
+      maxDepth: 0,
+    },
+    limits,
+    attestationVersion: "controller-test-v1",
+    confirmed: { provider: config.id, model: "test-model", effort: "low" },
+  })
+  if (decision.kind !== "eligible") throw new Error("invalid test explore policy")
+  return {
+    status: "supported",
+    policy: decision.policy,
+    recipe: { ...config, args: [...config.args], env: { ...config.env } },
+  }
 }
 
 function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
@@ -392,6 +417,7 @@ interface StubOptions {
   sessionId?: string
   connectThrows?: unknown
   newSessionThrows?: unknown
+  newSessionWait?: Promise<void>
   loadSessionThrows?: unknown
   loadSessionEvents?: DomainSessionEvent[]
   loadSessionWait?: Promise<void>
@@ -499,6 +525,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     async newSession(cwd, mcpServers = []) {
       newSessionCwds.push(cwd)
       newSessionMcpServers.push(mcpServers)
+      await options.newSessionWait
       if (options.newSessionThrows !== undefined) throw options.newSessionThrows
       // Mirror the adapter: an agent that advertises config at session start emits it
       // as a `config_options` event during `newSession`, before the controller binds
@@ -1428,6 +1455,7 @@ describe("createSessionController - harness delivery lifecycle", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
     })
 
     const oldPrompt = controller.actions.sendPrompt("old generation", "claude-code")
@@ -3817,6 +3845,225 @@ describe("createSessionController - per-conversation close", () => {
 })
 
 describe("createSessionController - dynamic conversation actions", () => {
+  it("denies production explore before allocating connection, bridge, ACP, store, reservation, or prompt state", async () => {
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    let childIdsRequested = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createAskUserBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => {
+        childIdsRequested += 1
+        return "must-not-exist"
+      },
+      sendInitialTasks: false,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const beforeConnections = created.length
+    const beforeRegistrations = bridge.registrations.length
+
+    expect(controller.actions.exploreAvailability(parentId)).toEqual({
+      kind: "denied",
+      reason: "missing-attestation",
+    })
+    expect(await controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })).toEqual({
+      kind: "denied",
+      reason: "missing-attestation",
+    })
+    expect(childIdsRequested).toBe(0)
+    expect(created).toHaveLength(beforeConnections)
+    expect(bridge.registrations).toHaveLength(beforeRegistrations)
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    expect(Object.keys(controller.store.getState().sessions)).not.toContain("must-not-exist")
+    expect(created.flatMap((connection) => connection.prompts)).toEqual([])
+    await controller.dispose()
+  })
+
+  it("starts an injected attested recipe with only its scoped ask-user bridge", async () => {
+    const external: McpServerConfig = {
+      name: "external-fixture",
+      command: process.execPath,
+      args: ["external"],
+      env: {},
+    }
+    const created: Array<{ config: ResolvedAgentConfig; connection: StubConnection }> = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: { ...APP_CONFIG, mcpServers: [external] },
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push({ config, connection })
+        return connection
+      },
+      createAskUserBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "attested-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => {
+        const accepted = testExploreCapability(config)
+        if (accepted.status !== "supported") return accepted
+        return {
+          ...accepted,
+          recipe: {
+            ...accepted.recipe,
+            command: "reviewed-restricted-child",
+            args: ["--read-only"],
+            env: { KITTEN_RESTRICTED: "1" },
+          },
+        }
+      },
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    expect(controller.actions.exploreAvailability(parentId)).toEqual({ kind: "available" })
+    expect(await controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })).toEqual({
+      kind: "started",
+      childId: "attested-child",
+    })
+
+    const child = created.at(-1)!
+    expect(child.config).toMatchObject({
+      command: "reviewed-restricted-child",
+      args: ["--read-only"],
+      env: { KITTEN_RESTRICTED: "1" },
+    })
+    expect(child.connection.newSessionMcpServers).toHaveLength(1)
+    expect(child.connection.newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+      ASK_USER_MCP_SERVER_NAME,
+    ])
+    expect(child.connection.newSessionMcpServers[0]?.[0]).toBe(bridge.declarations.at(-1))
+    expect(created[0]?.connection.newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+      "external-fixture",
+      ASK_USER_MCP_SERVER_NAME,
+    ])
+    expect(controller.store.getState().delegation.children["attested-child"]?.policy?.role).toBe("explore")
+    await controller.dispose()
+  })
+
+  it("cleans an admitted reservation when scoped bridge provisioning fails", async () => {
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createAskUserBridge: (options) => {
+        const live = bridge.factory(options)
+        return {
+          ...live,
+          register(input) {
+            if (input.sessionId === "bridge-failure-child") throw new Error("bridge unavailable")
+            return live.register(input)
+          },
+        }
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "bridge-failure-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: (config) => testExploreCapability(config),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const initialConnections = created.length
+
+    expect(await controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })).toEqual({
+      kind: "denied",
+      reason: "bridge-unavailable",
+    })
+    expect(created).toHaveLength(initialConnections)
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    expect(controller.store.getState().sessions["bridge-failure-child"]).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it("denies capacity synchronously before a second bridge or connection is created", async () => {
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const ids = ["capacity-one", "capacity-two"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createAskUserBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config, { perParent: 1, global: 1 }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    expect((await controller.actions.startExploreChild({ parentId, task: "One", desiredOutcome: "One" })).kind).toBe("started")
+    const connectionCount = created.length
+    const bridgeCount = bridge.registrations.length
+    expect(await controller.actions.startExploreChild({ parentId, task: "Two", desiredOutcome: "Two" })).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "per-parent",
+    })
+    expect(created).toHaveLength(connectionCount)
+    expect(bridge.registrations).toHaveLength(bridgeCount)
+    expect(controller.store.getState().sessions["capacity-two"]).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it("prevents a stale child startup generation from becoming runnable", async () => {
+    const childStartup = deferred()
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length === 2
+          ? { newSessionWait: childStartup.promise }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createAskUserBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "stale-start-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const launch = controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })
+    await waitFor(() => created.length === 3, "child connection creation")
+
+    await controller.actions.startFreshFromContext(undefined, parentId)
+    childStartup.resolve()
+
+    expect(await launch).toEqual({ kind: "denied", reason: "parent-closing" })
+    expect(controller.store.getState().sessions["stale-start-child"]).toBeUndefined()
+    expect(controller.store.getState().delegation.children["stale-start-child"]).toBeUndefined()
+    expect(created[2]?.prompts).toEqual([])
+    expect(created[2]?.disposeCalls()).toBe(1)
+    await controller.dispose()
+  })
+
   it("emits delegated lifecycle telemetry only for accepted transitions and deduplicates callbacks", async () => {
     const records: TelemetryRecord[] = []
     let telemetryNow = 100
@@ -3840,6 +4087,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "telemetry-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       recorder,
       now: () => 900,
     })
@@ -3894,6 +4142,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "delegated-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const parent = controller.store.getState().sessions[parentId]!
@@ -3937,6 +4186,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const initialConnectionCount = created.length
@@ -3978,6 +4228,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       now: () => 77,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4012,6 +4263,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "settled-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
@@ -4040,6 +4292,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "terminal-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
@@ -4074,6 +4327,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "One", desiredOutcome: "Stopped" })
@@ -4121,6 +4375,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "terminal-race-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       now: () => 44,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4160,6 +4415,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "failing-close-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       now: () => 77,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4189,7 +4445,7 @@ describe("createSessionController - dynamic conversation actions", () => {
     await controller.dispose()
   })
 
-  it("retains failed delegated startup and prompt snapshots without breaking parent or sibling work", async () => {
+  it("cleans failed explore startup and prompt reservations without breaking parent or sibling work", async () => {
     const created: StubConnection[] = []
     const records: TelemetryRecord[] = []
     const ids = ["startup-failure", "prompt-failure", "healthy-child"]
@@ -4212,6 +4468,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       now: () => 1234,
       recorder: createTelemetryRecorder({
         enabled: true,
@@ -4221,36 +4478,28 @@ describe("createSessionController - dynamic conversation actions", () => {
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
 
-    expect(await controller.actions.startDelegatedChild({
+    expect(await controller.actions.startExploreChild({
       parentId,
       task: "Fail during startup",
       desiredOutcome: "Inspectable startup failure",
-    })).toBe("startup-failure")
-    expect(await controller.actions.startDelegatedChild({
+    })).toEqual({ kind: "denied", reason: "startup-failed" })
+    expect(await controller.actions.startExploreChild({
       parentId,
       task: "Fail during prompt",
       desiredOutcome: "Inspectable prompt failure",
-    })).toBe("prompt-failure")
-    await Bun.sleep(0)
-    expect(await controller.actions.startDelegatedChild({
+    })).toEqual({ kind: "denied", reason: "startup-failed" })
+    expect(await controller.actions.startExploreChild({
       parentId,
       task: "Stay healthy",
       desiredOutcome: "Accept follow-up direction",
-    })).toBe("healthy-child")
+    })).toEqual({ kind: "started", childId: "healthy-child" })
 
-    expect(controller.store.getState().delegation.children["startup-failure"]).toMatchObject({
-      status: "failed",
-      terminal: { status: "failed", at: 1234 },
-    })
-    expect(controller.store.getState().delegation.children["prompt-failure"]).toMatchObject({
-      status: "failed",
-      terminal: { status: "failed", at: 1234 },
-    })
-    expect(records.filter((record) => record.type === "delegated_launch_failed")).toHaveLength(1)
-    expect(records.filter((record) => record.type === "delegated_child_terminal")).toEqual([
-      expect.objectContaining({ delegatedStatus: "failed" }),
-      expect.objectContaining({ delegatedStatus: "failed" }),
-    ])
+    expect(controller.store.getState().delegation.children["startup-failure"]).toBeUndefined()
+    expect(controller.store.getState().delegation.children["prompt-failure"]).toBeUndefined()
+    expect(controller.store.getState().sessions["startup-failure"]).toBeUndefined()
+    expect(controller.store.getState().sessions["prompt-failure"]).toBeUndefined()
+    expect(JSON.stringify(records)).not.toContain("Fail during startup")
+    expect(JSON.stringify(records)).not.toContain("Fail during prompt")
     expect(await controller.actions.steerDelegatedChild("healthy-child", "Check one more invariant")).toEqual({
       stopReason: "end_turn",
     })
@@ -4272,6 +4521,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "controlled-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       now: () => 55,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4317,6 +4567,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "generation-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       createAskUserBridge: bridge.factory,
       now: () => 99,
     })
@@ -4360,6 +4611,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "generation-child-only",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config),
       recorder: createTelemetryRecorder({
         enabled: true,
         sink: { write: (record) => records.push(record) },

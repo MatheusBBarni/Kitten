@@ -75,11 +75,12 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
     setPending(true)
     let childId: SessionId | null = null
     try {
-      childId = await controller.actions.startDelegatedChild({
+      const result = await controller.actions.startExploreChild({
         parentId: overlay.parentId,
         task: normalizedTask,
         desiredOutcome: normalizedOutcome,
       })
+      childId = result.kind === "started" ? result.childId : null
     } catch {
       childId = null
     }

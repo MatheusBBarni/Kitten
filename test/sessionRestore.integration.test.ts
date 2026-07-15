@@ -16,6 +16,10 @@ import {
   createHandoffEdits,
 } from "../src/app/handoff.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+} from "../src/core/explorePolicy.ts"
 import type {
   ClarificationOutcome,
   ClarificationPayload,
@@ -287,6 +291,21 @@ describe("writer-produced run restore", () => {
         profileId: "restore-lifecycle-test",
         encoder: "codex-prompt-meta-v1",
       }),
+      resolveExploreCapability: (provider) => {
+        const decision = evaluateExplorePolicy({
+          role: "explore",
+          restrictions: EXPLORE_RESTRICTIONS,
+          limits: { perParent: 1, global: 1 },
+          attestationVersion: "restore-lifecycle-test-v1",
+          confirmed: { provider: provider.id, model: "test-model", effort: "low" },
+        })
+        if (decision.kind !== "eligible") return { status: "unsupported", reason: decision.reason }
+        return {
+          status: "supported",
+          policy: decision.policy,
+          recipe: { ...provider, args: [...provider.args], env: { ...provider.env } },
+        }
+      },
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const childId = await controller.actions.startDelegatedChild({

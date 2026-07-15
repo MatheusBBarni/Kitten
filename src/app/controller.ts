@@ -22,6 +22,10 @@ import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRe
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import {
+  resolveExploreCapability,
+  type ExploreCapability,
+} from "../config/exploreCapability.ts"
+import {
   HARNESS_CONTRACT_SDK_VERSION,
   resolveHarnessCapability,
   type HarnessCapability,
@@ -73,6 +77,8 @@ import {
   type CloseChoice,
   type CloseConversationResult,
   type ControllerActions,
+  type ExploreAvailabilityResult,
+  type ExploreLaunchResult,
   type StartDelegatedChildInput,
 } from "./actions.ts"
 import {
@@ -223,6 +229,8 @@ export interface SessionControllerOptions {
   sendInitialTasks?: boolean
   /** Exact profile decision; injectable for deterministic credential-free tests. */
   resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
+  /** Closed explore attestation decision; injectable with reviewed fake evidence in tests. */
+  resolveExploreCapability?: (config: ResolvedAgentConfig) => ExploreCapability
   /** Schedule one accepted clarification timeout and return its cancellation hook. */
   scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Controller-owned bridge factory; injectable for lifecycle and composition tests. */
@@ -605,6 +613,8 @@ interface AgentRuntime {
   /** Generated declaration owned by this exact live connection generation. */
   bridgeMcpServer: import("../core/types.ts").McpServerConfig | null
   bridgeGeneration: number | null
+  /** Explore children receive no globally configured MCP declarations. */
+  mcpScope: "ordinary" | "explore"
 }
 
 /**
@@ -616,6 +626,8 @@ export async function createSessionController(options: SessionControllerOptions)
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
   const preflight = options.preflightAgentReadiness ?? preflightAgentReadiness
+  const attestExplore = options.resolveExploreCapability ?? ((config: ResolvedAgentConfig) =>
+    resolveExploreCapability(config, undefined))
   // Resolve once per cockpit boot so every fresh, restored, and dynamically added
   // session receives the same validated stdio server list.
   const mcpResolution = resolveMcpServers(options.config.mcpServers)
@@ -625,6 +637,12 @@ export async function createSessionController(options: SessionControllerOptions)
     skipped: mcpResolution.skipped.map((server) => ({ ...server })),
     askUser,
   })
+  const runtimeMcpReadout = (
+    runtime: Pick<AgentRuntime, "mcpScope">,
+    askUser: "loading" | "attached" | "unavailable",
+  ): McpRuntimeReadout => runtime.mcpScope === "explore"
+    ? { loaded: [], skipped: [], askUser }
+    : mcpReadout(askUser)
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
@@ -946,12 +964,14 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function mcpServersFor(runtime: AgentRuntime, generation: number) {
     if (runtime.bridgeGeneration === generation && runtime.bridgeMcpServer) {
-      return [...mcpServers, runtime.bridgeMcpServer]
+      return runtime.mcpScope === "explore"
+        ? [runtime.bridgeMcpServer]
+        : [...mcpServers, runtime.bridgeMcpServer]
     }
     const generated = askUserBridge.register({ sessionId: runtime.seed.id, generation })
     runtime.bridgeGeneration = generation
     runtime.bridgeMcpServer = generated
-    return [...mcpServers, generated]
+    return runtime.mcpScope === "explore" ? [generated] : [...mcpServers, generated]
   }
 
   function invalidateBridge(
@@ -959,10 +979,15 @@ export async function createSessionController(options: SessionControllerOptions)
     generation: number,
     reason: ClarificationSessionLossReason,
   ): void {
-    askUserBridge.cancelSession(runtime.seed.id, generation, reason)
-    if (runtime.bridgeGeneration === generation) {
-      runtime.bridgeGeneration = null
-      runtime.bridgeMcpServer = null
+    try {
+      askUserBridge.cancelSession(runtime.seed.id, generation, reason)
+    } catch (error) {
+      onError(runtime.seed.id, error)
+    } finally {
+      if (runtime.bridgeGeneration === generation) {
+        runtime.bridgeGeneration = null
+        runtime.bridgeMcpServer = null
+      }
     }
   }
 
@@ -1021,7 +1046,11 @@ export async function createSessionController(options: SessionControllerOptions)
     return { sessionId, acpSessionId: runtime.acpSessionId, connection: runtime.connection }
   }
 
-  function registerRuntime(seed: SessionSeed, config: ResolvedAgentConfig | null): AgentRuntime {
+  function registerRuntime(
+    seed: SessionSeed,
+    config: ResolvedAgentConfig | null,
+    mcpScope: "ordinary" | "explore" = "ordinary",
+  ): AgentRuntime {
     const runtime: AgentRuntime = {
       seed,
       config,
@@ -1045,6 +1074,7 @@ export async function createSessionController(options: SessionControllerOptions)
       harnessDelivery: null,
       bridgeMcpServer: null,
       bridgeGeneration: null,
+      mcpScope,
     }
     runtimes.set(seed.id, runtime)
     const capability = clarificationCapabilityFor(config)
@@ -1083,7 +1113,7 @@ export async function createSessionController(options: SessionControllerOptions)
       runtime.connection = connection
       const ready = await connection.connect()
       if (!isCurrentGeneration(runtime, generation)) {
-        await disposeQuietly(connection)
+        if (runtime.connection === connection) await disposeQuietly(connection)
         return
       }
       if (!ready.ready) {
@@ -1111,7 +1141,7 @@ export async function createSessionController(options: SessionControllerOptions)
         captureSeed()
       }
       if (!isCurrentGeneration(runtime, generation)) {
-        await disposeQuietly(connection)
+        if (runtime.connection === connection) await disposeQuietly(connection)
         return
       }
       beginFreshHarnessDelivery(runtime, generation)
@@ -1130,7 +1160,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: true,
         acpSessionId,
-        mcp: mcpReadout("attached"),
+        mcp: runtimeMcpReadout(runtime, "attached"),
       }
       runtime.connection = connection
       runtime.acpSessionId = acpSessionId
@@ -1138,7 +1168,7 @@ export async function createSessionController(options: SessionControllerOptions)
       store.setConversationAvailability(seed.id, { kind: "ready" })
     } catch (error) {
       if (!isCurrentGeneration(runtime, generation)) {
-        await disposeQuietly(connection)
+        if (runtime.connection === connection) await disposeQuietly(connection)
         return
       }
       if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
@@ -1169,7 +1199,7 @@ export async function createSessionController(options: SessionControllerOptions)
       cwd: runtime.seed.cwd,
       ready: false,
       error,
-      mcp: mcpReadout("unavailable"),
+      mcp: runtimeMcpReadout(runtime, "unavailable"),
     }
     runtime.connection = null
     runtime.acpSessionId = null
@@ -1635,11 +1665,37 @@ export async function createSessionController(options: SessionControllerOptions)
     return sessionId
   }
 
-  async function startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null> {
-    if (disposed) return null
+  function exploreAvailability(parentId: SessionId): ExploreAvailabilityResult {
+    if (disposed) return { kind: "denied", reason: "parent-ineligible" }
+    const state = store.getState()
+    const parentRuntime = runtimes.get(parentId)
+    if (
+      state.workspace.selectedVisibleId !== parentId ||
+      !state.sessions[parentId] ||
+      state.delegation.children[parentId] ||
+      state.delegation.parents[parentId]?.closeState === "closing" ||
+      !parentRuntime?.config ||
+      !parentRuntime.state.ready ||
+      !acceptsRuntimeEvents(parentRuntime)
+    ) {
+      return {
+        kind: "denied",
+        reason: state.delegation.parents[parentId]?.closeState === "closing"
+          ? "parent-closing"
+          : "parent-ineligible",
+      }
+    }
+    const capability = attestExplore(parentRuntime.config)
+    return capability.status === "supported"
+      ? { kind: "available" }
+      : { kind: "denied", reason: capability.reason }
+  }
+
+  async function startExploreChild(input: StartDelegatedChildInput): Promise<ExploreLaunchResult> {
+    if (disposed) return { kind: "denied", reason: "parent-ineligible" }
     const task = input.task.trim()
     const desiredOutcome = input.desiredOutcome.trim()
-    if (!task || !desiredOutcome) return null
+    if (!task || !desiredOutcome) return { kind: "denied", reason: "parent-ineligible" }
 
     const state = store.getState()
     const parentSession = state.sessions[input.parentId]
@@ -1654,13 +1710,23 @@ export async function createSessionController(options: SessionControllerOptions)
       !parentRuntime.state.ready ||
       !acceptsRuntimeEvents(parentRuntime)
     ) {
-      return null
+      return {
+        kind: "denied",
+        reason: parentDelegation?.closeState === "closing" ? "parent-closing" : "parent-ineligible",
+      }
+    }
+
+    // Authoritative re-attestation happens before allocating any child identity or
+    // touching connection, bridge, ACP, store, reservation, or prompt state.
+    const capability = attestExplore(parentRuntime.config)
+    if (capability.status === "unsupported") {
+      return { kind: "denied", reason: capability.reason }
     }
 
     const childId = newSessionId()
     if (state.workspace.conversations[childId] || runtimes.has(childId)) {
       onError(childId, new Error(`Conversation id already exists: ${childId}`))
-      return null
+      return { kind: "denied", reason: "startup-failed" }
     }
 
     const parentGeneration = parentRuntime.generation
@@ -1674,50 +1740,87 @@ export async function createSessionController(options: SessionControllerOptions)
     const seed: SessionSeed = {
       id: childId,
       providerKind: parentSession.providerKind,
-      title: `${parentRuntime.config.displayName} child`,
+      title: `${capability.recipe.displayName} child`,
       cwd: parentSession.cwd,
     }
-    store.addDelegatedSession({
+    const admission = store.addDelegatedSession({
       seed,
       parentId: input.parentId,
       parentGeneration,
       childGeneration,
       task,
       desiredOutcome,
+      policy: capability.policy,
       displayName: seed.title,
     })
-    if (!store.getState().delegation.children[childId]) return null
+    if (admission.kind === "denied") {
+      return { kind: "denied", reason: admission.reason, scope: admission.scope }
+    }
+    if (admission.kind !== "accepted") return { kind: "denied", reason: "parent-ineligible" }
     options.recorder?.delegatedLaunchRequested?.(delegatedTelemetryKey(identity))
 
-    const childRuntime = registerRuntime(seed, parentRuntime.config)
-    childRuntime.generation = childGeneration
-    await startSession(seed, parentRuntime.config, childGeneration)
-    refreshBranch(childId)
-
-    if (!ownsDelegatedIdentity(identity)) return childId
-    if (!childRuntime.state.ready) {
-      publishDelegatedState({
+    const releaseAdmission = (): void => {
+      store.publishDelegatedChildState({
         ...identity,
         status: "failed",
         sessionStatus: "error",
         at: now(),
       })
-      return childId
+      store.removeDelegationChild(identity)
+    }
+
+    let bridgeServer: import("../core/types.ts").McpServerConfig
+    try {
+      bridgeServer = askUserBridge.register({ sessionId: childId, generation: childGeneration })
+    } catch (error) {
+      onError(childId, error)
+      try {
+        askUserBridge.cancelSession(childId, childGeneration, "connection_error")
+      } catch (cleanupError) {
+        onError(childId, cleanupError)
+      } finally {
+        releaseAdmission()
+      }
+      return { kind: "denied", reason: "bridge-unavailable" }
+    }
+
+    const childRuntime = registerRuntime(seed, capability.recipe, "explore")
+    childRuntime.generation = childGeneration
+    childRuntime.bridgeGeneration = childGeneration
+    childRuntime.bridgeMcpServer = bridgeServer
+    await startSession(seed, capability.recipe, childGeneration)
+    refreshBranch(childId)
+
+    if (!ownsDelegatedIdentity(identity)) return { kind: "denied", reason: "parent-closing" }
+    if (!childRuntime.state.ready) {
+      runtimes.delete(childId)
+      releaseAdmission()
+      return { kind: "denied", reason: "startup-failed" }
     }
 
     publishDelegatedState({ ...identity, status: "running", sessionStatus: "working" })
     const prompt = `Task:\n${task}\n\nDesired outcome:\n${desiredOutcome}`
-    void actions.sendPrompt(prompt, childId).then((result) => {
-      if (result === null) {
-        publishDelegatedState({
-          ...identity,
-          status: "failed",
-          sessionStatus: "error",
-          at: now(),
-        })
-      }
-    })
-    return childId
+    const result = await actions.sendPrompt(prompt, childId)
+    if (result === null || !ownsDelegatedIdentity(identity)) {
+      terminalizeHarnessDelivery(childRuntime, childGeneration)
+      invalidateBridge(childRuntime, childGeneration, "connection_error")
+      interactionCoordinator.cancelSession(childId, childGeneration, "connection_error")
+      childRuntime.acceptEvents = false
+      childRuntime.unsubscribe?.()
+      childRuntime.unsubscribe = null
+      await disposeQuietly(childRuntime.connection ?? undefined)
+      childRuntime.connection = null
+      childRuntime.acpSessionId = null
+      runtimes.delete(childId)
+      releaseAdmission()
+      return { kind: "denied", reason: "startup-failed" }
+    }
+    return { kind: "started", childId }
+  }
+
+  async function startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null> {
+    const result = await startExploreChild(input)
+    return result.kind === "started" ? result.childId : null
   }
 
   async function steerDelegatedChild(childId: SessionId, text: string) {
@@ -1881,6 +1984,8 @@ export async function createSessionController(options: SessionControllerOptions)
     repositoryFileSource,
     createConversation,
     startDelegatedChild,
+    startExploreChild,
+    exploreAvailability,
     steerDelegatedChild,
     cancelDelegatedChild,
     closeConversation,

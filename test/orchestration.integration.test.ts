@@ -254,6 +254,21 @@ describe("delegation pure consumer integration", () => {
         profileId: "integration-profile",
         encoder: "codex-prompt-meta-v1",
       }),
+      resolveExploreCapability: (provider) => {
+        const decision = evaluateExplorePolicy({
+          role: "explore",
+          restrictions: EXPLORE_RESTRICTIONS,
+          limits: { perParent: 1, global: 1 },
+          attestationVersion: "integration-launch-v1",
+          confirmed: { provider: provider.id, model: "test-model", effort: "low" },
+        })
+        if (decision.kind !== "eligible") return { status: "unsupported", reason: decision.reason }
+        return {
+          status: "supported",
+          policy: decision.policy,
+          recipe: { ...provider, args: [...provider.args], env: { ...provider.env } },
+        }
+      },
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const childId = await controller.actions.startDelegatedChild({
