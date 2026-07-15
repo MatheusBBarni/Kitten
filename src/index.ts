@@ -21,6 +21,7 @@ import {
   ASK_USER_MCP_MODE_FLAG,
   createAskUserMcpRegistrar,
 } from "./agent/askUserMcp.ts"
+import { createAgentRunMcpRegistrar } from "./agent/agentRunMcp.ts"
 import { runKittenMcp } from "./agent/kittenMcp.ts"
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
 import {
@@ -693,7 +694,10 @@ export async function dispatchReservedChildMode(
   if (!wantsAskUserMcp(argv)) return false
   const run = options.run ?? (() => runKittenMcp({
     instructions: ASK_USER_MCP_INSTRUCTIONS,
-    registrars: [createAskUserMcpRegistrar(env)],
+    registrars: [
+      createAskUserMcpRegistrar(env),
+      createAgentRunMcpRegistrar(env),
+    ],
   }))
   try {
     await run()

@@ -15,6 +15,7 @@ import {
   ASK_USER_MCP_MODE_FLAG,
   ASK_USER_MCP_TOOL_NAME,
 } from "../src/agent/askUserMcp.ts"
+import { AGENT_RUN_MCP_TOOL_NAME } from "../src/agent/agentRunMcp.ts"
 import { createAgentConnection, type AgentConnection } from "../src/agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../src/agent/transport.ts"
 import { createSessionController } from "../src/app/controller.ts"
@@ -101,7 +102,10 @@ describe("ask_user same-binary child", () => {
     await client.connect(transport)
     try {
       const tools = await client.listTools()
-      expect(tools.tools.map((tool) => tool.name)).toEqual([ASK_USER_MCP_TOOL_NAME])
+      expect(tools.tools.map((tool) => tool.name)).toEqual([
+        ASK_USER_MCP_TOOL_NAME,
+        AGENT_RUN_MCP_TOOL_NAME,
+      ])
       const response = await client.callTool({
         name: ASK_USER_MCP_TOOL_NAME,
         arguments: {

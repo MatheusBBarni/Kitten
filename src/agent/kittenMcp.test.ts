@@ -8,13 +8,27 @@ import {
   ASK_USER_MCP_TOOL_NAME,
   createAskUserMcpRegistrar,
 } from "./askUserMcp.ts"
+import {
+  AGENT_RUN_MCP_TOOL_NAME,
+  createAgentRunMcpRegistrar,
+} from "./agentRunMcp.ts"
 import { createKittenMcpServer, runKittenMcp } from "./kittenMcp.ts"
 
 describe("bundled Kitten MCP server", () => {
-  it("composes the unchanged ask_user registrar in memory", async () => {
+  it("composes agent_run beside the unchanged ask_user registrar in memory", async () => {
     const server = createKittenMcpServer({
       instructions: ASK_USER_MCP_INSTRUCTIONS,
-      registrars: [createAskUserMcpRegistrar({}, { forward: async () => ({ kind: "skipped" }) })],
+      registrars: [
+        createAskUserMcpRegistrar({}, { forward: async () => ({ kind: "skipped" }) }),
+        createAgentRunMcpRegistrar({}, {
+          forward: async (request) => ({
+            operation: request.operation,
+            children: request.operation === "start"
+              ? request.tasks.map((_, index) => ({ child_id: `child-${index}`, status: "starting" }))
+              : request.child_ids.map((childId) => ({ child_id: childId, status: "running" })),
+          }),
+        }),
+      ],
     })
     const client = new Client({ name: "kitten-mcp-test", version: "1.0.0" })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -22,8 +36,12 @@ describe("bundled Kitten MCP server", () => {
     try {
       expect(client.getInstructions()).toBe(ASK_USER_MCP_INSTRUCTIONS)
       const tools = await client.listTools()
-      expect(tools.tools.map((tool) => tool.name)).toEqual([ASK_USER_MCP_TOOL_NAME])
-      expect(tools.tools[0]!.inputSchema).toMatchObject({
+      expect(tools.tools.map((tool) => tool.name)).toEqual([
+        ASK_USER_MCP_TOOL_NAME,
+        AGENT_RUN_MCP_TOOL_NAME,
+      ])
+      const askUser = tools.tools.find((tool) => tool.name === ASK_USER_MCP_TOOL_NAME)
+      expect(askUser!.inputSchema).toMatchObject({
         type: "object",
         required: ["fields"],
         additionalProperties: false,
