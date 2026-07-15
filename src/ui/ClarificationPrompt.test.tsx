@@ -4,7 +4,7 @@
 // Boundary OUT: ACP response mapping and controller coordinator lifecycle, owned by agentConnection/controller suites
 
 import { describe, expect, it } from "bun:test"
-import { RGBA } from "@opentui/core"
+import { RGBA, type Renderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -19,6 +19,7 @@ import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
 import {
   CLARIFICATION_REQUIRED_ERROR,
+  CLARIFICATION_DIALOG_ID,
   CLARIFICATION_SELECTION_MARKER,
   clarificationTitleFor,
 } from "./ClarificationPrompt.tsx"
@@ -161,6 +162,17 @@ async function renderWithClarification(
 }
 
 describe("ClarificationPrompt contents and priority", () => {
+  it("keeps a short clarification content-sized instead of filling the terminal", async () => {
+    const controller = createFakeController()
+    const setup = await renderWithClarification(controller, SINGLE_PAYLOAD)
+    const dialog = setup.renderer.root.findDescendantById(CLARIFICATION_DIALOG_ID) as Renderable | undefined
+
+    expect(dialog).toBeDefined()
+    expect(dialog?.height).toBeLessThan(HEIGHT - 2)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders the requesting session, cwd, prompt, field labels, descriptions, cancellation, and non-color marker above another overlay", async () => {
     const controller = createFakeController()
     controller.store.openApproval({
@@ -188,7 +200,7 @@ describe("ClarificationPrompt contents and priority", () => {
     expect(frame).toContain("↑↓ move  Tab/Shift+Tab field/text")
     expect(frame).toContain("Esc cancel request")
     expect(frame).not.toContain(APPROVAL_TITLE)
-    expect(frame).not.toContain(PROMPT_PLACEHOLDER)
+    expect(frame).toContain(PROMPT_PLACEHOLDER)
     expect(frame.toLocaleLowerCase()).not.toContain("permission")
 
     await destroyMounted(renderer)

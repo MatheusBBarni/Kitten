@@ -39,7 +39,7 @@ import {
   type FirstRunGuidanceOptions,
   type FirstRunReport,
 } from "./config/firstRun.ts"
-import type { AppConfig, ThemePreference } from "./core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type AppConfig, type ProviderKind, type ProviderModelDefault, type SessionId, type ThemePreference } from "./core/types.ts"
 import type { StatuslineLayout } from "./core/statusline.ts"
 import { createOsNotificationChannel } from "./notify/channel.ts"
 import { createRendererFocusSource } from "./notify/focus.ts"
@@ -149,6 +149,8 @@ export interface CockpitSessionDeps {
   persistConfig?: (patch: { theme: ThemePreference }) => Promise<void>
   /** How to persist explicit statusline acknowledgement and confirmation writes. */
   persistStatuslineConfig?: (patch: NonNullable<UserConfig["statusline"]>) => Promise<void>
+  /** How to persist one provider's confirmed model/reasoning defaults. */
+  persistProviderDefaultsConfig?: (patch: Partial<Record<ProviderKind, ProviderModelDefault>>) => Promise<void>
   /** How to observe reloaded user config; defaults to the filesystem config watcher. */
   watchConfig?: (onConfig: (config: AppConfig) => void) => ConfigWatcher
   /** Quiet period before the latest preference is persisted. */
@@ -199,6 +201,8 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   const persistConfig = deps.persistConfig ?? ((patch) => persistUserConfig(patch))
   const persistStatuslineConfig = deps.persistStatuslineConfig ??
     ((statusline) => persistUserConfig({ statusline }))
+  const persistProviderDefaultsConfig = deps.persistProviderDefaultsConfig ??
+    ((providerDefaults) => persistUserConfig({ providerDefaults }))
   const setTimer = deps.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs))
   const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer))
   const persistDebounceMs = deps.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS
@@ -206,6 +210,34 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let pendingTheme: ThemePreference | undefined
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let writeChain = Promise.resolve()
+  let providerDefaults = cloneProviderDefaults(config.providerDefaults)
+
+  function persistConfirmedProviderDefault(sessionId: SessionId, configId: string): void {
+    const runtime = baseController.runtime(sessionId)
+    const option = baseController.store.getState().sessions[sessionId]?.configOptions.find((candidate) => candidate.id === configId)
+    if (!runtime || !option) return
+
+    const field = option.category === MODEL_CATEGORY ? "model" : option.category === EFFORT_CATEGORY ? "effort" : undefined
+    if (!field) return
+
+    const current = providerDefaults[runtime.providerKind]
+    if (current?.[field] === option.currentValue) return
+
+    const nextProviderDefault = { ...current, [field]: option.currentValue }
+    providerDefaults = { ...providerDefaults, [runtime.providerKind]: nextProviderDefault }
+    baseController.updateProviderDefaults(providerDefaults)
+
+    // The writer re-reads and atomically merges this small provider patch, so a
+    // concurrent edit to another provider's defaults is retained.
+    writeChain = writeChain.then(async () => {
+      try {
+        await persistProviderDefaultsConfig({ [runtime.providerKind]: nextProviderDefault })
+        recorder.configWrite("modal")
+      } catch {
+        recorder.configWriteError("modal")
+      }
+    })
+  }
 
   function queueStatuslineWrite(
     patch: () => NonNullable<UserConfig["statusline"]>,
@@ -278,7 +310,8 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
       if (disposed) return
       baseController.store.setThemePreference(nextConfig.theme)
       baseController.store.setStatuslinePreference(nextConfig.statusline)
-      baseController.updateProviderDefaults(nextConfig.providerDefaults)
+      providerDefaults = cloneProviderDefaults(nextConfig.providerDefaults)
+      baseController.updateProviderDefaults(providerDefaults)
     })
   } catch (error) {
     stopPreference()
@@ -295,6 +328,14 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     store: baseController.store,
     actions: {
       ...baseController.actions,
+      async setSessionConfigOption(configId, value, sessionId): Promise<boolean> {
+        // Resolve before awaiting the agent so a later focus change cannot persist a
+        // confirmed setting under the wrong provider.
+        const targetSessionId = sessionId ?? baseController.store.getState().workspace.selectedVisibleId
+        const changed = await baseController.actions.setSessionConfigOption(configId, value, sessionId)
+        if (changed && targetSessionId && !disposed) persistConfirmedProviderDefault(targetSessionId, configId)
+        return changed
+      },
       acknowledgeStatuslineDisclosure,
       confirmStatusline,
     },
@@ -341,6 +382,14 @@ export function exitProcess(): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function cloneProviderDefaults(
+  defaults: AppConfig["providerDefaults"],
+): Partial<Record<ProviderKind, ProviderModelDefault>> {
+  return Object.fromEntries(
+    Object.entries(defaults).map(([provider, preference]) => [provider, { ...preference }]),
+  ) as Partial<Record<ProviderKind, ProviderModelDefault>>
 }
 
 /**

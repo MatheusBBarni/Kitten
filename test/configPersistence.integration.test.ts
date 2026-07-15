@@ -12,19 +12,20 @@ import { selectStatuslinePreference, selectThemePreference } from "../src/store/
 import { createControllerActions } from "../src/app/actions.ts"
 import type { SessionController } from "../src/app/controller.ts"
 import type { AgentConnection } from "../src/agent/agentConnection.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../src/core/types.ts"
 import { readyRuntimes } from "./fakeController.ts"
 
 const tempDirs: string[] = []
 const CONNECTION_STUB = { prompt: async () => ({ stopReason: "end_turn" as const }), cancel: async () => {} } as unknown as AgentConnection
 
-function controllerOver(store: ReturnType<typeof createAppStore>): SessionController {
+function controllerOver(store: ReturnType<typeof createAppStore>, connection = CONNECTION_STUB): SessionController {
   const runtimes = readyRuntimes()
   return {
     store,
     shell: { ready: false, error: "shell outside config-persistence test boundary" },
     actions: createControllerActions({
       store,
-      getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection: CONNECTION_STUB }),
+      getSession: (sessionId) => ({ sessionId, acpSessionId: `s-${sessionId}`, connection }),
       resolvePermission: () => {},
     }),
     runtimes: () => runtimes,
@@ -34,6 +35,32 @@ function controllerOver(store: ReturnType<typeof createAppStore>): SessionContro
     closeConversation: async () => ({ outcome: "ignored" }),
     restore: async () => {},
     dispose: async () => {},
+  }
+}
+
+function modelOption(currentValue: string): ConfigOption {
+  return {
+    id: "model",
+    category: MODEL_CATEGORY,
+    label: "Model",
+    currentValue,
+    options: [
+      { value: "gpt-5.6-terra", name: "Terra" },
+      { value: "gpt-5.6-luna", name: "Luna" },
+    ],
+  }
+}
+
+function effortOption(currentValue: string): ConfigOption {
+  return {
+    id: "thought_level",
+    category: EFFORT_CATEGORY,
+    label: "Reasoning effort",
+    currentValue,
+    options: [
+      { value: "high", name: "High" },
+      { value: "ultra", name: "Ultra" },
+    ],
   }
 }
 
@@ -50,6 +77,58 @@ afterAll(async () => {
 })
 
 describe("boot config persistence integration", () => {
+  it("saves confirmed model and reasoning per provider for a subsequent cockpit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kitten-provider-defaults-config-"))
+    tempDirs.push(dir)
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      theme: "light",
+      providerDefaults: { "claude-code": { model: "claude-opus-4-1", effort: "high" } },
+    }))
+
+    let model = "gpt-5.6-terra"
+    let effort = "high"
+    const connection = {
+      ...CONNECTION_STUB,
+      async setSessionConfigOption(_sessionId: string, configId: string, value: string): Promise<ConfigOption[]> {
+        if (configId === "model") model = value
+        if (configId === "thought_level") effort = value
+        return [modelOption(model), effortOption(effort)]
+      },
+    } as AgentConnection
+    const first = await createCockpitSession({
+      loadConfig: () => loadAppConfig({ path }),
+      buildController: async (options) => controllerOver(options.store!, connection),
+      persistProviderDefaultsConfig: (patch) => persistUserConfig({ providerDefaults: patch }, { path }),
+      watchConfig: () => ({ close() {} }),
+    })
+
+    expect(await first.controller.actions.setSessionConfigOption("model", "gpt-5.6-luna", "codex")).toBe(true)
+    expect(await first.controller.actions.setSessionConfigOption("thought_level", "ultra", "codex")).toBe(true)
+    await first.controller.dispose()
+
+    const persisted = JSON.parse(await readFile(path, "utf8"))
+    expect(persisted.providerDefaults).toEqual({
+      "claude-code": { model: "claude-opus-4-1", effort: "high" },
+      codex: { model: "gpt-5.6-luna", effort: "ultra" },
+    })
+
+    let loadedDefaults: unknown
+    const second = await createCockpitSession({
+      loadConfig: () => loadAppConfig({ path }),
+      buildController: async (options) => {
+        loadedDefaults = options.config.providerDefaults
+        return controllerOver(options.store!)
+      },
+      watchConfig: () => ({ close() {} }),
+    })
+    try {
+      expect(loadedDefaults).toEqual(persisted.providerDefaults)
+    } finally {
+      await second.controller.dispose()
+    }
+  })
+
   it("round-trips a confirmed statusline into a fresh cockpit while preserving unrelated settings", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-statusline-config-"))
     tempDirs.push(dir)

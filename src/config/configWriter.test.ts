@@ -44,6 +44,26 @@ describe("persistUserConfig", () => {
     expect(written).toEqual({ ...existing, theme: "dark" })
   })
 
+  it("merges one provider's model or reasoning patch without replacing other saved defaults", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      providerDefaults: {
+        "claude-code": { model: "opus", effort: "high" },
+        codex: { model: "gpt-5.6-terra" },
+      },
+    }))
+
+    await persistUserConfig({ providerDefaults: { codex: { effort: "ultra" } } }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      providerDefaults: {
+        "claude-code": { model: "opus", effort: "high" },
+        codex: { model: "gpt-5.6-terra", effort: "ultra" },
+      },
+    })
+  })
+
   it("writes bytes that re-parse through the strict schema and application loader", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")

@@ -1,12 +1,12 @@
 /**
  * One tool call in the transcript: what the agent did, and how it went.
  *
- * The header is a single line - a status bullet, the tool's name, its argument in
- * parentheses, and a compact text status - so a long run of reads and searches stays
- * scannable without making color the only way to tell whether an operation is still
- * active. Anything the call left behind - the paths it touched, or the diff an `edit`
- * proposes - hangs underneath on a `└ ` connector, the transcript's quiet "here's the
- * detail" tone.
+ * The header is a single line - a status bullet, a concise description of the tool,
+ * and a compact text status - so a long run of reads and searches stays scannable
+ * without making color the only way to tell whether an operation is still active.
+ * Anything the call left behind - the paths it touched, or the diff an `edit` proposes
+ * - hangs underneath on a `└ ` connector, the transcript's quiet "here's the detail"
+ * tone.
  *
  * The row is identified by `toolCallId` upstream, so React updates this component in
  * place as `tool_call_update`s arrive; nothing remounts when `in_progress` becomes
@@ -84,6 +84,33 @@ export const GENERIC_WAIT_TITLE = "wait"
 /** The useful, content-free wording for a generic wait tool call. */
 export const WAITING_FOR_TOOL_RESULT_LABEL = "Waiting for a tool result"
 
+/** The human-readable protocol label for a tool advertised by an MCP server. */
+export const MCP_TOOL_LABEL = "MCP"
+
+/** Separates the server and function in a compact MCP tool-call header. */
+export const MCP_TOOL_PATH_SEPARATOR = " -> "
+
+/**
+ * Turns ACP's technical MCP tool title into a compact, scan-friendly label.
+ *
+ * ACP identifies an MCP call as `mcp.<server>.<function>`. Keep the server name and
+ * every remaining function segment intact; a malformed or non-MCP title falls back to
+ * the ordinary `Run(title)` presentation instead of guessing at its structure.
+ */
+export function formatMcpToolCallTitle(title: string): string | null {
+  const [protocol, server, ...functionSegments] = title.trim().split(".")
+  if (
+    protocol !== "mcp" ||
+    !server ||
+    functionSegments.length === 0 ||
+    functionSegments.some((segment) => segment.length === 0)
+  ) {
+    return null
+  }
+
+  return `${MCP_TOOL_LABEL}(${[server, functionSegments.join(".")].join(MCP_TOOL_PATH_SEPARATOR)})`
+}
+
 /**
  * The connector that hangs sub-content off a header (U+2514 + a space).
  *
@@ -120,15 +147,16 @@ export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCa
   const palette = usePalette()
   const { kind, title, status, locations, diff } = record
   const genericWait = kind === "other" && title.trim().toLocaleLowerCase() === GENERIC_WAIT_TITLE
+  const mcpToolTitle = formatMcpToolCallTitle(title)
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
       <text>
         <span fg={palette.tool[status]}>{`${STATUS_BULLET} `}</span>
         <span fg={palette.text} attributes={TextAttributes.BOLD}>
-          {genericWait ? WAITING_FOR_TOOL_RESULT_LABEL : TOOL_KIND_NAMES[kind]}
+          {genericWait ? WAITING_FOR_TOOL_RESULT_LABEL : (mcpToolTitle ?? TOOL_KIND_NAMES[kind])}
         </span>
-        {genericWait ? null : (
+        {genericWait || mcpToolTitle ? null : (
           <>
             <span fg={palette.muted}>{"("}</span>
             <span fg={palette.text}>{title}</span>

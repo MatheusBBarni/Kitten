@@ -7,7 +7,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController } from "../../test/fakeController.ts"
 import { destroyMounted, settleMountedHighlights } from "../../test/reactTui.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { ToolCallDiffView, ToolCallRow } from "./ToolCallRow.tsx"
+import { formatMcpToolCallTitle, ToolCallDiffView, ToolCallRow } from "./ToolCallRow.tsx"
 import type { ToolCallRecord } from "../core/types.ts"
 import type { SyntaxDiagnostic } from "./syntaxParsers.ts"
 
@@ -61,6 +61,29 @@ describe("ToolCallRow activity labels", () => {
 
     expect(frame).toContain("Run(git status) · done")
     await destroyMounted(setup.renderer)
+  })
+
+  it("shows an MCP call as a compact protocol, server, and function label", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow record={toolRecord({ kind: "execute", title: "mcp.kitten-ask-user.ask_user" })} />
+      </CockpitProvider>,
+      { width: 64, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("MCP(kitten-ask-user -> ask_user)"))
+
+    expect(frame).toContain("MCP(kitten-ask-user -> ask_user) · running")
+    expect(frame).not.toContain("Run(mcp.kitten-ask-user.ask_user)")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("only formats complete MCP tool titles", () => {
+    expect(formatMcpToolCallTitle("mcp.kitten-ask-user.ask_user")).toBe("MCP(kitten-ask-user -> ask_user)")
+    expect(formatMcpToolCallTitle("mcp.server.function.with.dots")).toBe("MCP(server -> function.with.dots)")
+    expect(formatMcpToolCallTitle("mcp.kitten-ask-user")).toBeNull()
+    expect(formatMcpToolCallTitle("git status")).toBeNull()
   })
 })
 
