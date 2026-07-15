@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add terminal worktree review and cleanup routing
 type: frontend
 complexity: high
@@ -28,11 +28,11 @@ Add detailed terminal managed-worktree review and explicit cleanup confirmation 
 </requirements>
 
 ## Subtasks
-- [ ] Add selector-presentation-driven terminal review eligibility.
-- [ ] Add local captured review and cleanup-confirmation modes.
-- [ ] Add contextual modal commands and accurate key hints.
-- [ ] Route confirmed cleanup through the controller action only.
-- [ ] Extend fake-controller behavior and mounted modal/keymap coverage.
+- [x] Add selector-presentation-driven terminal review eligibility.
+- [x] Add local captured review and cleanup-confirmation modes.
+- [x] Add contextual modal commands and accurate key hints.
+- [x] Route confirmed cleanup through the controller action only.
+- [x] Extend fake-controller behavior and mounted modal/keymap coverage.
 
 ## Implementation Details
 
@@ -61,13 +61,13 @@ Use the Sessions modal as the detailed review surface from the TechSpec UI secti
 
 ## Tests
 - Unit tests:
-  - [ ] Terminal managed review shows labeled provenance and availability; ordinary or active rows expose no cleanup.
-  - [ ] Review then confirmation sends zero actions before Enter; Esc preserves the artifact.
-  - [ ] Pending confirmation blocks duplicate cleanup and preserves the captured child id despite focus changes.
-  - [ ] Existing `d` command still opens ordinary captured close, never cleanup.
+  - [x] Terminal managed review shows labeled provenance and availability; ordinary or active rows expose no cleanup.
+  - [x] Review then confirmation sends zero actions before Enter; Esc preserves the artifact.
+  - [x] Pending confirmation blocks duplicate cleanup and preserves the captured child id despite focus changes.
+  - [x] Existing `d` command still opens ordinary captured close, never cleanup.
 - Integration tests:
-  - [ ] Refused/removed outcomes stay contextual and approval/clarification preemption cannot fire cleanup beneath the higher-priority modal.
-  - [ ] Review/confirmation shortcuts do not leak to PromptEditor, shell, or global help.
+  - [x] Refused/removed outcomes stay contextual and approval/clarification preemption cannot fire cleanup beneath the higher-priority modal.
+  - [x] Review/confirmation shortcuts do not leak to PromptEditor, shell, or global help.
 - Test coverage target: >=80%
 - All tests must pass
 

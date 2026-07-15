@@ -8,16 +8,23 @@ import { createFakeController, type FakeController } from "../../test/fakeContro
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { evaluateExplorePolicy, type ExplorePolicySnapshot } from "../core/explorePolicy.ts"
-import type { SessionId, SessionSeed, SessionStatus } from "../core/types.ts"
+import type { ManagedWorktreeBinding, SessionId, SessionSeed, SessionStatus } from "../core/types.ts"
 import { PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { EXPLORE_RESTRICTION_SUMMARY } from "../store/selectors.ts"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
-import { SESSIONS_HINT } from "./keymap.ts"
+import {
+  MANAGED_WORKTREE_CLEANUP_HINT,
+  MANAGED_WORKTREE_CLEANUP_PENDING_HINT,
+  SESSIONS_HINT,
+  SESSIONS_REVIEW_HINT,
+} from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
 import { CLOSE_DIALOG_TITLE } from "./TabDialog.tsx"
 import {
   BACKGROUND_LABEL,
+  MANAGED_WORKTREE_CLEANUP_TITLE,
+  MANAGED_WORKTREE_REVIEW_TITLE,
   NEEDS_YOU_LABEL,
   SELECTED_LABEL,
   SESSION_MARKER,
@@ -96,14 +103,44 @@ function acceptedExplorePolicy(): ExplorePolicySnapshot {
   return decision.policy
 }
 
+function managedBinding(
+  childId: string,
+  availability: ManagedWorktreeBinding["availability"] = "available",
+  reason?: ManagedWorktreeBinding["reason"],
+): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `binding-${childId}`,
+    repoRoot: "/repo",
+    worktreePath: `/repo/.kitten/worktrees/${childId}`,
+    branch: `kitten/${childId}`,
+    baseBranch: "main",
+    baseSha: "0123456789abcdef",
+    ownerSessionId: childId,
+    availability,
+    ...(reason ? { reason } : {}),
+  }
+}
+
 function addDelegatedChild(
   controller: FakeController,
   status: "running" | "needs_input" | "finished" | "failed" | "cancelled",
-  options: { childId?: string; title?: string; policy?: ExplorePolicySnapshot } = {},
+  options: {
+    childId?: string
+    title?: string
+    policy?: ExplorePolicySnapshot
+    worktreeBinding?: ManagedWorktreeBinding
+  } = {},
 ): string {
   const childId = options.childId ?? `child-${status}`
   controller.store.addDelegatedSession({
-    seed: { id: childId, providerKind: "codex", title: options.title ?? `Child ${status}`, cwd: `/work/${childId}` },
+    seed: {
+      id: childId,
+      providerKind: "codex",
+      title: options.title ?? `Child ${status}`,
+      cwd: options.worktreeBinding?.worktreePath ?? `/work/${childId}`,
+      ...(options.worktreeBinding ? { worktreeBinding: options.worktreeBinding } : {}),
+    },
     parentId: "a",
     parentGeneration: 1,
     childGeneration: 1,
@@ -441,6 +478,182 @@ describe("SessionsOverlay card list", () => {
   })
 })
 
+describe("SessionsOverlay managed worktree review", () => {
+  it("shows labeled selector provenance only for a terminal managed child", async () => {
+    const controller = fleetController()
+    const terminalId = "managed-terminal"
+    addDelegatedChild(controller, "finished", {
+      childId: terminalId,
+      title: "Managed terminal",
+      worktreeBinding: managedBinding(terminalId),
+    })
+    const setup = await renderCockpit(controller, { width: 150, height: 40 })
+
+    await openOverview(setup)
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    let frame = await setup.waitForFrame((candidate) => candidate.includes(SESSIONS_REVIEW_HINT))
+    expect(frame).toContain("Managed terminal")
+
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    frame = await setup.waitForFrame((candidate) => candidate.includes(MANAGED_WORKTREE_REVIEW_TITLE))
+    expect(frame).toContain("Provenance: Kitten-managed workspace")
+    expect(frame).toContain("Branch: kitten/managed-terminal")
+    expect(frame).toContain("Path: /repo/.kitten/worktrees/managed-terminal")
+    expect(frame).toContain("Base: main @ 0123456789abcdef")
+    expect(frame).toContain("Availability: Review available")
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
+
+    await actAsync(() => setup.mockInput.pressEscape())
+    await destroyMounted(setup.renderer)
+  })
+
+  it("exposes no review or cleanup affordance for ordinary or active managed rows", async () => {
+    const controller = fleetController()
+    const activeId = "managed-active"
+    addDelegatedChild(controller, "running", {
+      childId: activeId,
+      title: "Managed active",
+      worktreeBinding: managedBinding(activeId),
+    })
+    const setup = await renderCockpit(controller, { width: 150, height: 40 })
+    let frame = await openOverview(setup)
+    expect(frame).not.toContain(SESSIONS_REVIEW_HINT)
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    expect(setup.captureCharFrame()).not.toContain(MANAGED_WORKTREE_REVIEW_TITLE)
+
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    frame = await setup.waitForFrame((candidate) =>
+      candidate.split("\n").some((line) => line.includes("Managed active") && line.includes(SESSION_MARKER)),
+    )
+    expect(frame).not.toContain(SESSIONS_REVIEW_HINT)
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    expect(setup.captureCharFrame()).not.toContain(MANAGED_WORKTREE_REVIEW_TITLE)
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("requires a separate confirmation, lets Esc preserve the artifact, and shows refusal context", async () => {
+    const childId = "managed-refused"
+    const controller = createFakeController({
+      store: createAppStore({ seeds: [...FLEET] }),
+      runtimes: runtimesFor(FLEET),
+      cleanupManagedWorktree: () => ({ kind: "refused", reason: "dirty" }),
+    })
+    addDelegatedChild(controller, "finished", {
+      childId,
+      title: "Dirty child",
+      worktreeBinding: managedBinding(childId),
+    })
+    const setup = await renderCockpit(controller, { width: 150, height: 40 })
+    await openOverview(setup)
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(SESSIONS_REVIEW_HINT))
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_REVIEW_TITLE))
+
+    await actAsync(() => setup.mockInput.pressKey("c"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_TITLE))
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
+    await actAsync(() => setup.mockInput.pressEscape())
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_REVIEW_TITLE))
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
+    expect(controller.store.getState().sessions[childId]?.worktreeBinding?.availability).toBe("available")
+
+    await actAsync(() => setup.mockInput.pressKey("c"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_TITLE))
+    await actAsync(() => setup.mockInput.pressEnter())
+    const refused = await setup.waitForFrame((frame) =>
+      frame.includes(MANAGED_WORKTREE_REVIEW_TITLE) && frame.includes("Reason: Managed workspace has uncommitted changes"),
+    )
+    expect(refused).toContain("Availability: Cleanup refused")
+    expect(controller.calls.cleanupManagedWorktree).toEqual([childId])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("blocks duplicate pending cleanup and keeps the captured child across focus changes", async () => {
+    let settle!: (result: { kind: "refused"; reason: "unmerged" }) => void
+    const pending = new Promise<{ kind: "refused"; reason: "unmerged" }>((resolve) => {
+      settle = resolve
+    })
+    const childId = "managed-captured"
+    const controller = createFakeController({
+      store: createAppStore({ seeds: [...FLEET] }),
+      runtimes: runtimesFor(FLEET),
+      cleanupManagedWorktree: () => pending,
+    })
+    addDelegatedChild(controller, "finished", {
+      childId,
+      title: "Captured child",
+      worktreeBinding: managedBinding(childId),
+    })
+    const setup = await renderCockpit(controller, { width: 150, height: 40 })
+    await openOverview(setup)
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(SESSIONS_REVIEW_HINT))
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_REVIEW_TITLE))
+    await actAsync(() => setup.mockInput.pressKey("c"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_HINT))
+    await actAsync(() => controller.actions.selectConversation("b"))
+    expect(controller.calls.selectConversation).toEqual(["b"])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+      setup.mockInput.pressEnter()
+    })
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_PENDING_HINT))
+    expect(controller.calls.cleanupManagedWorktree).toEqual([childId])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("a")
+
+    await actAsync(() => settle({ kind: "refused", reason: "unmerged" }))
+    const reviewed = await setup.waitForFrame((frame) =>
+      frame.includes(MANAGED_WORKTREE_REVIEW_TITLE) && frame.includes("branch is not merged"),
+    )
+    expect(reviewed).toContain("Child: Captured child")
+    expect(controller.calls.cleanupManagedWorktree).toEqual([childId])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a removed result contextual and disables further cleanup", async () => {
+    const childId = "managed-removed"
+    const controller = createFakeController({
+      store: createAppStore({ seeds: [...FLEET] }),
+      runtimes: runtimesFor(FLEET),
+      cleanupManagedWorktree: () => ({ kind: "removed" }),
+    })
+    addDelegatedChild(controller, "finished", { childId, worktreeBinding: managedBinding(childId) })
+    const setup = await renderCockpit(controller, { width: 150, height: 40 })
+    await openOverview(setup)
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(SESSIONS_REVIEW_HINT))
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_REVIEW_TITLE))
+    await actAsync(() => setup.mockInput.pressKey("c"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_HINT))
+    await actAsync(() => setup.mockInput.pressEnter())
+    const removed = await setup.waitForFrame((frame) =>
+      frame.includes("Availability: Review unavailable") && frame.includes("Reason: Managed workspace is missing"),
+    )
+    expect(removed).not.toContain("c review cleanup")
+    expect(controller.calls.cleanupManagedWorktree).toEqual([childId])
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
 describe("SessionsOverlay routing", () => {
   it("keeps one active explore child visible across tabs and sessions while focus moves normally", async () => {
     const controller = fleetController()
@@ -541,6 +754,7 @@ describe("SessionsOverlay routing", () => {
 
     expect(controller.store.getState().overlays.sessions).toBe(false)
     expect(controller.calls.closeConversation).toEqual([])
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
     await destroyMounted(setup.renderer)
   })
 
@@ -636,6 +850,56 @@ describe("SessionsOverlay routing", () => {
 })
 
 describe("SessionsOverlay modality", () => {
+  it("preserves captured cleanup confirmation beneath approval and clarification preemption", async () => {
+    const childId = "managed-preempted"
+    const controller = createFakeController({
+      store: createAppStore({ seeds: [...FLEET] }),
+      runtimes: runtimesFor(FLEET),
+      cleanupManagedWorktree: () => ({ kind: "refused", reason: "dirty" }),
+    })
+    addDelegatedChild(controller, "finished", { childId, worktreeBinding: managedBinding(childId) })
+    const setup = await renderCockpit(controller, { width: 150, height: 40 })
+    await openOverview(setup)
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) => frame.includes(SESSIONS_REVIEW_HINT))
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_REVIEW_TITLE))
+    await actAsync(() => setup.mockInput.pressKey("c"))
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_TITLE))
+
+    await actAsync(() => {
+      controller.store.openApproval({
+        sessionId: "b",
+        title: "Beta",
+        cwd: "/work/beta",
+        request: {
+          sessionId: "session-b",
+          toolCall: { toolCallId: "call-cleanup-preemption", kind: "edit", title: "Apply change" },
+          options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+        },
+      })
+    })
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitFor(() => controller.store.getState().overlays.approval === null)
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_TITLE))
+
+    await openClarification(controller, "clarification-cleanup-preemption")
+    await setup.waitForFrame((frame) => frame.includes("Choose a boundary"))
+    await actAsync(() => setup.mockInput.pressEscape())
+    await setup.waitFor(() => controller.store.getState().overlays.clarification === null)
+    expect(controller.calls.cleanupManagedWorktree).toEqual([])
+    await setup.waitForFrame((frame) => frame.includes(MANAGED_WORKTREE_CLEANUP_TITLE))
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitFor(() => controller.calls.cleanupManagedWorktree.length === 1)
+    expect(controller.calls.cleanupManagedWorktree).toEqual([childId])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("preserves its highlight and blocks Enter, n, arrows, and Escape until clarification settles", async () => {
     const controller = fleetController()
     setStatus(controller, "c", "finished")

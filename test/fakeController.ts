@@ -27,6 +27,7 @@ import {
   type SwitchFocusOptions,
 } from "../src/app/actions.ts"
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
+import type { CleanupManagedWorktreeResult } from "../src/app/managedWorktree.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
@@ -46,6 +47,7 @@ export interface RecordedCalls {
   startExploreChild: ExploreLaunchRequest[]
   steerDelegatedChild: { childId: SessionId; text: string }[]
   cancelDelegatedChild: SessionId[]
+  cleanupManagedWorktree: SessionId[]
   renameConversation: { sessionId: SessionId; displayName: string }[]
   selectConversation: SessionId[]
   selectConversationOptions: (SwitchFocusOptions | undefined)[]
@@ -114,6 +116,11 @@ export interface FakeControllerOptions {
     input: StartDelegatedChildInput,
     store: AppStore,
   ) => SessionId | null | Promise<SessionId | null>
+  /** Deterministic managed-worktree result for captured cleanup UI tests. */
+  cleanupManagedWorktree?: (
+    childId: SessionId,
+    store: AppStore,
+  ) => CleanupManagedWorktreeResult | Promise<CleanupManagedWorktreeResult>
   /** Typed fail-closed explore result used by delegation-dialog tests. */
   startExploreChild?: (
     input: ExploreLaunchRequest,
@@ -178,6 +185,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     startExploreChild: [],
     steerDelegatedChild: [],
     cancelDelegatedChild: [],
+    cleanupManagedWorktree: [],
     renameConversation: [],
     selectConversation: [],
     selectConversationOptions: [],
@@ -306,8 +314,17 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         })
         return sessionId
       },
-      async cleanupManagedWorktree() {
-        return { kind: "refused", reason: "not_managed" }
+      async cleanupManagedWorktree(childId) {
+        calls.cleanupManagedWorktree.push(childId)
+        const result = await (options.cleanupManagedWorktree?.(childId, store)
+          ?? { kind: "refused" as const, reason: "not_managed" as const })
+        const binding = store.getState().sessions[childId]?.worktreeBinding
+        if (binding?.kind === "managed") {
+          store.publishManagedWorktreeBinding(childId, result.kind === "removed"
+            ? { ...binding, availability: "unavailable", reason: "missing" }
+            : { ...binding, availability: "cleanup_refused", reason: result.reason })
+        }
+        return result
       },
       async startExploreChild(input) {
         calls.startExploreChild.push(input)

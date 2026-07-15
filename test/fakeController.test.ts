@@ -83,6 +83,39 @@ describe("createFakeController", () => {
     expect(controller.calls.cancelDelegatedChild).toEqual([childId!, childId!])
   })
 
+  it("records managed cleanup targets and publishes bounded review outcomes", async () => {
+    const controller = createFakeController({
+      cleanupManagedWorktree: () => ({ kind: "refused", reason: "dirty" }),
+    })
+    controller.store.addSession({
+      id: "managed-child",
+      providerKind: "codex",
+      title: "Managed child",
+      cwd: "/repo/.kitten/worktrees/managed-child",
+      worktreeBinding: {
+        kind: "managed",
+        id: "binding-managed-child",
+        repoRoot: "/repo",
+        worktreePath: "/repo/.kitten/worktrees/managed-child",
+        branch: "kitten/managed-child",
+        baseBranch: "main",
+        baseSha: "0123456789abcdef",
+        ownerSessionId: "managed-child",
+        availability: "available",
+      },
+    })
+
+    expect(await controller.actions.cleanupManagedWorktree("managed-child")).toEqual({
+      kind: "refused",
+      reason: "dirty",
+    })
+    expect(controller.calls.cleanupManagedWorktree).toEqual(["managed-child"])
+    expect(controller.store.getState().sessions["managed-child"]?.worktreeBinding).toMatchObject({
+      availability: "cleanup_refused",
+      reason: "dirty",
+    })
+  })
+
   it("keeps typed explore availability and launch separate from the legacy delegation seam", async () => {
     const controller = createFakeController({
       exploreAvailability: (parentId) => parentId === "claude-code"
