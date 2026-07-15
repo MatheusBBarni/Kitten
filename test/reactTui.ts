@@ -7,7 +7,7 @@
  * Both are wrapped here so no test has to remember.
  */
 
-import { CodeRenderable, type BaseRenderable, type CliRenderer } from "@opentui/core"
+import { CodeRenderable, destroyTreeSitterClient, type BaseRenderable, type CliRenderer } from "@opentui/core"
 import { createTestRenderer, type TestRendererOptions, type TestRendererSetup } from "@opentui/core/testing"
 import { createRoot } from "@opentui/react"
 import { act, type ReactNode } from "react"
@@ -107,6 +107,11 @@ export async function destroyMounted(renderer: CliRenderer): Promise<void> {
     await settleMountedHighlights(renderer)
     await renderer.idle()
   }
+  // `renderer.destroy()` starts global Tree-sitter cleanup only after it has removed
+  // the last renderer, and intentionally does not await that work. Finish it while
+  // this empty renderer is still tracked so the next test cannot adopt a client that
+  // is concurrently being torn down on slower native runners.
+  await destroyTreeSitterClient()
   await actAsync(() => {
     renderer.destroy()
   })

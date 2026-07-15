@@ -176,6 +176,17 @@ function endpointOf(server: ReturnType<AskUserBridge["register"]>): string {
   return server.env[ASK_USER_MCP_ENDPOINT_ENV]!
 }
 
+async function waitForPending(
+  fake: ReturnType<typeof createCoordinatorFake>,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (fake.pending.length >= count) return
+    await Bun.sleep(5)
+  }
+  throw new Error(`Timed out waiting for ${count} bridge clarification request(s)`)
+}
+
 describe("AskUserBridge registration", () => {
   it("creates an isolated POSIX route and a declaration containing no caller-selectable identity", async () => {
     const { bridge } = createBridge()
@@ -230,7 +241,7 @@ describe("AskUserBridge authenticated local IPC", () => {
     const server = bridge.register({ sessionId: "alpha", generation: 3 })
     try {
       const first = forwardAskUserToBridge(FORM, server.env, { newCallId: () => "completed-1" })
-      await Bun.sleep(0)
+      await waitForPending(fake, 1)
       fake.pending[0]!.settle({ kind: "skipped" })
       expect(await first).toEqual({ kind: "skipped" })
       await Bun.sleep(10)
@@ -239,7 +250,7 @@ describe("AskUserBridge authenticated local IPC", () => {
       expect(existsSync(endpointOf(server))).toBe(true)
 
       const second = forwardAskUserToBridge(FORM, server.env, { newCallId: () => "completed-2" })
-      await Bun.sleep(0)
+      await waitForPending(fake, 2)
       fake.pending[1]!.settle({ kind: "timed_out" })
       expect(await second).toEqual({ kind: "timed_out" })
     } finally {
@@ -253,7 +264,7 @@ describe("AskUserBridge authenticated local IPC", () => {
     const client = await connectClient(endpointOf(server))
     try {
       client.send(routeFrame(server, "call-1"))
-      await Bun.sleep(0)
+      await waitForPending(fake, 1)
       expect(fake.pending).toHaveLength(1)
       expect(fake.pending[0]).toMatchObject({ sessionId: "alpha", generation: 3, form: FORM })
       const outcome: ClarificationOutcome = {
