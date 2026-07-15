@@ -248,7 +248,7 @@ export function createAskUserMcpServer(
 
   server.registerTool(ASK_USER_MCP_TOOL_NAME, {
     title: "Ask the supervising user",
-    description: "Request a bounded consequential decision from the user supervising this session.",
+    description: "Ask the supervising user a structured consequential-decision question in Kitten. Use this instead of writing a plain-text question when the user's answer determines the safe next step; wait for its submitted, skipped, timed-out, or cancelled outcome before continuing.",
     inputSchema: askUserInputSchema,
   }, async (input) => {
     const parsed = askUserInputSchema.safeParse(input)

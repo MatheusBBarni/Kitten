@@ -149,6 +149,8 @@ export interface ControllerTelemetry extends ActionTelemetry {
 export interface McpRuntimeReadout {
   loaded: string[]
   skipped: McpResolutionResult["skipped"]
+  /** Kitten's per-session bridge is generated rather than read from user config. */
+  askUser?: "loading" | "attached" | "unavailable"
 }
 
 /**
@@ -618,9 +620,10 @@ export async function createSessionController(options: SessionControllerOptions)
   // session receives the same validated stdio server list.
   const mcpResolution = resolveMcpServers(options.config.mcpServers)
   const mcpServers = mcpResolution.resolved
-  const mcpReadout = (): McpRuntimeReadout => ({
+  const mcpReadout = (askUser: "loading" | "attached" | "unavailable" = "loading"): McpRuntimeReadout => ({
     loaded: mcpServers.map((server) => server.name),
     skipped: mcpResolution.skipped.map((server) => ({ ...server })),
+    askUser,
   })
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
@@ -1030,7 +1033,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: false,
         error: config ? "Starting" : "Provider unavailable",
-        mcp: mcpReadout(),
+        mcp: mcpReadout("loading"),
       },
       connection: null,
       acpSessionId: null,
@@ -1127,7 +1130,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: true,
         acpSessionId,
-        mcp: mcpReadout(),
+        mcp: mcpReadout("attached"),
       }
       runtime.connection = connection
       runtime.acpSessionId = acpSessionId
@@ -1166,7 +1169,7 @@ export async function createSessionController(options: SessionControllerOptions)
       cwd: runtime.seed.cwd,
       ready: false,
       error,
-      mcp: mcpReadout(),
+      mcp: mcpReadout("unavailable"),
     }
     runtime.connection = null
     runtime.acpSessionId = null
@@ -1348,7 +1351,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: seed.cwd,
         ready: true,
         acpSessionId,
-        mcp: mcpReadout(),
+        mcp: mcpReadout("attached"),
       }
       previous.connection = connection
       previous.acpSessionId = acpSessionId
@@ -1543,7 +1546,7 @@ export async function createSessionController(options: SessionControllerOptions)
         cwd: runtime.seed.cwd,
         ready: false,
         error: errorMessage(error),
-        mcp: mcpReadout(),
+        mcp: mcpReadout("unavailable"),
       }
       store.setConversationTeardown(sessionId, "open")
       store.setConversationAvailability(sessionId, {

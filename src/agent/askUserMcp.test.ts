@@ -111,6 +111,8 @@ describe("ask_user MCP server and serialization", () => {
     try {
       const tools = await client.listTools()
       expect(tools.tools.map((tool) => tool.name)).toEqual([ASK_USER_MCP_TOOL_NAME])
+      expect(tools.tools[0]?.description).toContain("instead of writing a plain-text question")
+      expect(tools.tools[0]?.description).toContain("consequential-decision")
       expect(tools.tools[0]!.inputSchema).toMatchObject({
         type: "object",
         required: ["fields"],

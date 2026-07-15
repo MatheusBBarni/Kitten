@@ -66,6 +66,8 @@ export interface FirstRunGuidanceOptions {
   persistenceEnabled?: boolean
   /** Resolved directory containing Kitten's saved-session records. */
   sessionsPath?: string
+  /** Whether Kitten should disclose its automatic local operator-question bridge. */
+  askUserMcpEnabled?: boolean
 }
 
 /**
@@ -155,10 +157,9 @@ export function buildFirstRunReport(input: {
 /**
  * Render the report as terminal-ready guidance lines.
  *
- * Only the blocking conditions and the concrete setup gaps are shown: the repo
- * requirement first (it must be fixed before anything else matters), then each
- * not-ready agent's own reason. When at least one agent is ready but another is not,
- * the lines still name the gap so the user can fix it without hunting.
+ * Blocking conditions and concrete setup gaps come first: the repo requirement
+ * must be fixed before anything else matters, then each not-ready agent names its
+ * own reason. Optional first-run disclosures follow once the cockpit is usable.
  */
 export function formatFirstRunReport(
   report: FirstRunReport,
@@ -181,6 +182,11 @@ export function formatFirstRunReport(
   if (options.persistenceEnabled && options.sessionsPath) {
     lines.push(
       `Kitten remembers sessions for this project in ${options.sessionsPath}; use /resume to restore one, then Ctrl+D to delete one or Ctrl+A to delete all.`,
+    )
+  }
+  if (options.askUserMcpEnabled) {
+    lines.push(
+      "Kitten loaded its built-in ask_user MCP bridge for every agent session; it opens structured operator questions in the cockpit and needs no mcpServers configuration.",
     )
   }
   return lines

@@ -28,6 +28,8 @@ bun start              # launch the cockpit
 
 `bun run selfcheck` prints a rendered frame followed by `SELF-CHECK OK` and exits 0 when boot wiring is sound. Use it as the fast "did I break boot" check - it needs no interactive terminal and no live agents.
 
+As each agent session starts, Kitten automatically loads its local `kitten-ask-user` MCP bridge. It gives agents the `ask_user` tool for structured consequential-decision questions in the cockpit; no `mcpServers` configuration is required. The status strip shows `ask_user attached` when Kitten has handed the declaration to the provider session; dynamically started sessions show `ask_user loading` first.
+
 Key bindings once the cockpit is up: `Ctrl+O` switch focus, `Ctrl+T` hand off the task to the other agent, `Enter` send, `Shift+Enter` newline, `Esc` interrupt, `F1` help.
 
 ## Two first-run gates (why boot might refuse)

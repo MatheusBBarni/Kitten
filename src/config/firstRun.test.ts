@@ -179,6 +179,16 @@ describe("formatFirstRunReport", () => {
     expect(report.blocked).toBe(false)
   })
 
+  it("explains the automatic ask_user bridge during first-run setup", () => {
+    const report = buildFirstRunReport({ insideRepo: true, agents: [ready("codex", "Codex")].map(readinessSetup) })
+
+    const lines = formatFirstRunReport(report, { askUserMcpEnabled: true })
+
+    expect(lines).toEqual([
+      "Kitten loaded its built-in ask_user MCP bridge for every agent session; it opens structured operator questions in the cockpit and needs no mcpServers configuration.",
+    ])
+  })
+
   it("omits the persistence disclosure when persistence is disabled", () => {
     const report = buildFirstRunReport({ insideRepo: true, agents: [ready("codex", "Codex")].map(readinessSetup) })
 

@@ -268,6 +268,21 @@ describe("StatusStrip", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("shows the built-in ask_user bridge lifecycle beside user MCP declarations", async () => {
+    const [claude, codex] = readyRuntimes()
+    claude!.mcp = { loaded: ["github"], skipped: [], askUser: "loading" }
+    const setup = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 100)
+
+    expect(setup.captureCharFrame()).toContain(`${MCP_STATUS_LABEL} +github; ask_user loading`)
+    await destroyMounted(setup.renderer)
+
+    claude!.mcp = { loaded: ["github"], skipped: [], askUser: "attached" }
+    const attached = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 100)
+    expect(attached.captureCharFrame()).toContain("ask_user attached")
+
+    await destroyMounted(attached.renderer)
+  })
+
   it("renders a saved layout in declared order and omits unavailable values without duplicate separators", async () => {
     const controller = createFakeController()
     saveCustomLayout(controller, {

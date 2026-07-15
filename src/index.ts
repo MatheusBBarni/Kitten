@@ -515,6 +515,7 @@ export async function main(deps: MainDeps = {}): Promise<BootedCockpit | null> {
       firstRunGuidance = {
         persistenceEnabled: config.persistenceEnabled,
         sessionsPath: join(resolveSessionsBasePath(), "sessions"),
+        askUserMcpEnabled: true,
       }
     }
     idleBannerVariant = bannerVariant(config.welcomeBanner, firstRunSeen)

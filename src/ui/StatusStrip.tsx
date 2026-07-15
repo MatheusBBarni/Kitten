@@ -309,7 +309,21 @@ function McpStatus({ runtime }: { runtime: AgentRuntimeState }): ReactNode {
   if (!mcp) return null
   const loaded = mcp.loaded.length > 0 ? `+${mcp.loaded.join(",")}` : ""
   const skipped = mcp.skipped.map(({ name, reason }) => `!${name} (${reason})`).join(", ")
-  if (!loaded && !skipped) return null
+  const askUser = mcp.askUser
+  if (!loaded && !skipped && !askUser) return null
+
+  const askUserLabel = askUser === "loading"
+    ? "ask_user loading"
+    : askUser === "attached"
+      ? "ask_user attached"
+      : askUser === "unavailable"
+        ? "ask_user unavailable"
+        : null
+  const askUserColor = askUser === "loading"
+    ? palette.status.awaiting_approval
+    : askUser === "attached"
+      ? palette.status.finished
+      : palette.status.error
 
   return (
     <>
@@ -317,6 +331,8 @@ function McpStatus({ runtime }: { runtime: AgentRuntimeState }): ReactNode {
       {loaded ? <span fg={palette.status.finished}>{loaded}</span> : null}
       {loaded && skipped ? <span fg={palette.muted}>; </span> : null}
       {skipped ? <span fg={palette.status.error}>{skipped}</span> : null}
+      {(loaded || skipped) && askUserLabel ? <span fg={palette.muted}>; </span> : null}
+      {askUserLabel ? <span fg={askUserColor}>{askUserLabel}</span> : null}
     </>
   )
 }
