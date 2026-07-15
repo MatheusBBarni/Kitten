@@ -77,7 +77,7 @@ export const BACKGROUND_STATUS_LABEL = "background"
 export const BACKGROUND_ATTENTION_LABEL = "needs attention"
 
 /** Compact label for the focused session's MCP provisioning result. */
-export const MCP_STATUS_LABEL = "mcp"
+export const MCP_STATUS_LABEL = "MCP"
 
 /** Compact status-strip copy for reducer-confirmed provider-default outcomes. */
 export const DEFAULT_APPLIED_STATUS_LABEL = "default applied"
@@ -312,12 +312,12 @@ function McpStatus({ runtime }: { runtime: AgentRuntimeState }): ReactNode {
   const askUser = mcp.askUser
   if (!loaded && !skipped && !askUser) return null
 
-  const askUserLabel = askUser === "loading"
-    ? "ask_user loading"
+  const askUserStatus = askUser === "loading"
+    ? "connecting"
     : askUser === "attached"
-      ? "ask_user attached"
+      ? "ready"
       : askUser === "unavailable"
-        ? "ask_user unavailable"
+        ? "unavailable"
         : null
   const askUserColor = askUser === "loading"
     ? palette.status.awaiting_approval
@@ -327,12 +327,17 @@ function McpStatus({ runtime }: { runtime: AgentRuntimeState }): ReactNode {
 
   return (
     <>
-      <span fg={palette.muted}>{` · ${MCP_STATUS_LABEL} `}</span>
+      <span fg={palette.muted}>{` · ${MCP_STATUS_LABEL}: `}</span>
       {loaded ? <span fg={palette.status.finished}>{loaded}</span> : null}
       {loaded && skipped ? <span fg={palette.muted}>; </span> : null}
       {skipped ? <span fg={palette.status.error}>{skipped}</span> : null}
-      {(loaded || skipped) && askUserLabel ? <span fg={palette.muted}>; </span> : null}
-      {askUserLabel ? <span fg={askUserColor}>{askUserLabel}</span> : null}
+      {(loaded || skipped) && askUserStatus ? <span fg={palette.muted}>; </span> : null}
+      {askUserStatus ? (
+        <>
+          <span fg={palette.text}>Ask User </span>
+          <span fg={askUserColor}>{askUserStatus}</span>
+        </>
+      ) : null}
     </>
   )
 }
