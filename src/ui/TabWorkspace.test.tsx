@@ -96,6 +96,7 @@ describe("TabWorkspace presentation", () => {
       status,
       statusLabel: label,
       terminalTranscriptAvailable: terminal,
+      explore: null,
     }
 
     expect(tabItemLabel(child)).toContain("Child of Parent")

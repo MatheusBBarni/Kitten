@@ -18,6 +18,9 @@ import {
   type CloseConversationResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
+  type ExploreAvailabilityResult,
+  type ExploreLaunchRequest,
+  type ExploreLaunchResult,
   type PromptInput,
   type StartDelegatedChildInput,
   type StatuslineWriteResult,
@@ -40,6 +43,7 @@ import type { ResumeMode } from "../src/telemetry/recorder.ts"
 export interface RecordedCalls {
   createConversation: number
   startDelegatedChild: StartDelegatedChildInput[]
+  startExploreChild: ExploreLaunchRequest[]
   steerDelegatedChild: { childId: SessionId; text: string }[]
   cancelDelegatedChild: SessionId[]
   renameConversation: { sessionId: SessionId; displayName: string }[]
@@ -110,6 +114,16 @@ export interface FakeControllerOptions {
     input: StartDelegatedChildInput,
     store: AppStore,
   ) => SessionId | null | Promise<SessionId | null>
+  /** Typed fail-closed explore result used by delegation-dialog tests. */
+  startExploreChild?: (
+    input: ExploreLaunchRequest,
+    store: AppStore,
+  ) => ExploreLaunchResult | Promise<ExploreLaunchResult>
+  /** Advisory availability captured when the delegation dialog opens. */
+  exploreAvailability?: (
+    parentId: SessionId,
+    store: AppStore,
+  ) => ExploreAvailabilityResult
   /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
   sendPrompt?: (
     input: PromptInput,
@@ -161,6 +175,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   const calls: RecordedCalls = {
     createConversation: 0,
     startDelegatedChild: [],
+    startExploreChild: [],
     steerDelegatedChild: [],
     cancelDelegatedChild: [],
     renameConversation: [],
@@ -292,18 +307,15 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         return sessionId
       },
       async startExploreChild(input) {
-        calls.startDelegatedChild.push(input)
-        const childId = options.startDelegatedChild
-          ? await options.startDelegatedChild(input, store)
-          : null
-        return childId
-          ? { kind: "started" as const, childId }
-          : { kind: "denied" as const, reason: "missing-attestation" as const }
+        calls.startExploreChild.push(input)
+        return await (options.startExploreChild?.(input, store)
+          ?? { kind: "denied" as const, reason: "missing-attestation" as const })
       },
-      exploreAvailability() {
-        return options.startDelegatedChild
-          ? { kind: "available" as const }
-          : { kind: "denied" as const, reason: "missing-attestation" as const }
+      exploreAvailability(parentId) {
+        return options.exploreAvailability?.(parentId, store)
+          ?? (options.startExploreChild
+            ? { kind: "available" as const }
+            : { kind: "denied" as const, reason: "missing-attestation" as const })
       },
       async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
         calls.steerDelegatedChild.push({ childId, text })

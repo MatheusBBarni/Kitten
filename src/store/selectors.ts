@@ -27,6 +27,10 @@ import type { StatuslinePreference } from "../core/statusline.ts"
 import { attentionConversationIds } from "../core/workspace.ts"
 import type { PromptHistoryState } from "../core/promptHistory.ts"
 import type {
+  ExploreDenialReason,
+  ExplorePolicySnapshot,
+} from "../core/explorePolicy.ts"
+import type {
   AvailableCommand,
   ConfigOption,
   ClarificationCapability,
@@ -101,6 +105,92 @@ export const DELEGATED_CHILD_STATUS_LABELS: Readonly<Record<DelegatedChildStatus
   cancelled: "Cancelled",
 }
 
+/** Fixed, content-free operator copy for every closed V1 refusal category. */
+export const EXPLORE_DENIAL_LABELS: Readonly<Record<ExploreDenialReason, string>> = Object.freeze({
+  "unsupported-provider": "This provider is not verified for safe explore delegation.",
+  "missing-attestation": "This runtime has no verified safe explore attestation.",
+  "stale-attestation": "This runtime's safe explore attestation is out of date.",
+  "parent-ineligible": "This conversation is not eligible to start an explore child.",
+  "parent-closing": "This conversation is closing and cannot start an explore child.",
+  "capacity-exhausted": "Safe explore child capacity is currently full.",
+  "bridge-unavailable": "The scoped ask_user capability is unavailable for safe explore.",
+  "startup-failed": "The safe explore child could not be started.",
+})
+
+export const EXPLORE_ROLE_LABEL = "Role: explore"
+export const EXPLORE_RESTRICTION_SUMMARY =
+  "Read-only filesystem · No shell · No external MCP or agent control · Scoped ask_user only · No recursion"
+
+export interface ExploreAvailabilityPresentation {
+  readonly kind: "available" | "unavailable"
+  readonly roleLabel: typeof EXPLORE_ROLE_LABEL
+  readonly restrictionSummary: typeof EXPLORE_RESTRICTION_SUMMARY
+  readonly statusLabel: string
+  readonly reason: ExploreDenialReason | null
+}
+
+const AVAILABLE_EXPLORE_PRESENTATION: ExploreAvailabilityPresentation = Object.freeze({
+  kind: "available",
+  roleLabel: EXPLORE_ROLE_LABEL,
+  restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+  statusLabel: "Available: safety will be verified again when you confirm.",
+  reason: null,
+})
+const DENIED_EXPLORE_PRESENTATIONS = Object.freeze(
+  Object.fromEntries(
+    Object.entries(EXPLORE_DENIAL_LABELS).map(([reason, label]) => [
+      reason,
+      Object.freeze({
+        kind: "unavailable" as const,
+        roleLabel: EXPLORE_ROLE_LABEL,
+        restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+        statusLabel: `Unavailable: ${label}`,
+        reason: reason as ExploreDenialReason,
+      }),
+    ]),
+  ) as Record<ExploreDenialReason, ExploreAvailabilityPresentation>,
+)
+
+/** Stable presentation for the controller's advisory result captured with the parent. */
+export const selectExploreAvailabilityPresentation = (
+  reason: ExploreDenialReason | null,
+): Selector<ExploreAvailabilityPresentation> => {
+  const presentation = reason === null
+    ? AVAILABLE_EXPLORE_PRESENTATION
+    : DENIED_EXPLORE_PRESENTATIONS[reason]
+  return () => presentation
+}
+
+export interface ExplorePolicyPresentation {
+  readonly role: "explore"
+  readonly roleLabel: "explore"
+  readonly compactLabel: "explore"
+  readonly restrictionSummary: typeof EXPLORE_RESTRICTION_SUMMARY
+  readonly attestationVersion: string
+  readonly confirmed: ExplorePolicySnapshot["confirmed"]
+}
+
+const explorePolicyPresentationCache = new WeakMap<ExplorePolicySnapshot, ExplorePolicyPresentation>()
+
+function explorePolicyPresentation(
+  policy: ExplorePolicySnapshot | undefined,
+  terminal: boolean,
+): ExplorePolicyPresentation | null {
+  if (policy?.role !== "explore" || terminal) return null
+  const cached = explorePolicyPresentationCache.get(policy)
+  if (cached) return cached
+  const presentation: ExplorePolicyPresentation = Object.freeze({
+    role: "explore",
+    roleLabel: "explore",
+    compactLabel: "explore",
+    restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+    attestationVersion: policy.attestationVersion,
+    confirmed: policy.confirmed,
+  })
+  explorePolicyPresentationCache.set(policy, presentation)
+  return presentation
+}
+
 export interface DelegatedChildPresentation {
   readonly kind: "child"
   readonly parentId: SessionId
@@ -109,6 +199,8 @@ export interface DelegatedChildPresentation {
   readonly status: DelegatedChildStatus
   readonly statusLabel: string
   readonly terminalTranscriptAvailable: boolean
+  /** Accepted live policy facts for task 05 presentation consumers. */
+  readonly explore: ExplorePolicyPresentation | null
 }
 
 export interface DelegationParentPresentation {
@@ -465,6 +557,7 @@ function delegationPresentation(
         status: child.status,
         statusLabel: DELEGATED_CHILD_STATUS_LABELS[child.status],
         terminalTranscriptAvailable: child.terminal !== undefined,
+        explore: explorePolicyPresentation(child.policy, child.terminal !== undefined),
       }
     : parent && aggregateStatus
       ? {

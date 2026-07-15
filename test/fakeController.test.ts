@@ -83,6 +83,32 @@ describe("createFakeController", () => {
     expect(controller.calls.cancelDelegatedChild).toEqual([childId!, childId!])
   })
 
+  it("keeps typed explore availability and launch separate from the legacy delegation seam", async () => {
+    const controller = createFakeController({
+      exploreAvailability: (parentId) => parentId === "claude-code"
+        ? { kind: "available" }
+        : { kind: "denied", reason: "parent-ineligible" },
+      startExploreChild: (input) => ({ kind: "started", childId: `explore-${input.parentId}` }),
+    })
+
+    expect(controller.actions.exploreAvailability("claude-code")).toEqual({ kind: "available" })
+    expect(controller.actions.exploreAvailability("codex")).toEqual({
+      kind: "denied",
+      reason: "parent-ineligible",
+    })
+    expect(await controller.actions.startExploreChild({
+      parentId: "claude-code",
+      task: "Inspect",
+      desiredOutcome: "Report",
+    })).toEqual({ kind: "started", childId: "explore-claude-code" })
+    expect(controller.calls.startExploreChild).toEqual([{
+      parentId: "claude-code",
+      task: "Inspect",
+      desiredOutcome: "Report",
+    }])
+    expect(controller.calls.startDelegatedChild).toEqual([])
+  })
+
   it("records statusline acknowledgement and confirmation without an ACP connection", async () => {
     const controller = createFakeController({ runtimes: [] })
     const layout = { separator: " | ", line: ["FOLDER", "MODEL"] } as const

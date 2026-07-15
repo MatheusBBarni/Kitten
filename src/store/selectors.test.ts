@@ -9,6 +9,11 @@ import type {
   HandoffBundle,
 } from "../core/types.ts"
 import type { StatuslineLayout } from "../core/statusline.ts"
+import {
+  EXPLORE_DENIAL_REASONS,
+  evaluateExplorePolicy,
+  type ExplorePolicySnapshot,
+} from "../core/explorePolicy.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
@@ -35,6 +40,7 @@ import {
   selectClarificationCapability,
   selectClarificationOverlay,
   selectDelegationOverlay,
+  selectExploreAvailabilityPresentation,
   selectDelegatedParentCloseSummary,
   selectFocusedPane,
   selectFocusedSessionId,
@@ -61,6 +67,8 @@ import {
   selectSharedWorkspaces,
   selectTabDialogOverlay,
   selectVisibleTabs,
+  EXPLORE_DENIAL_LABELS,
+  EXPLORE_RESTRICTION_SUMMARY,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -451,7 +459,31 @@ function fleetStore(): AppStore {
   })
 }
 
-function registerDelegatedChild(store: AppStore, childId = "child", title = "Child"): void {
+function acceptedExplorePolicy(model = "safe-model"): ExplorePolicySnapshot {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: {
+      filesystem: "read-only",
+      shell: false,
+      externalMcp: false,
+      agentControl: false,
+      askUser: true,
+      maxDepth: 0,
+    },
+    limits: { perParent: 2, global: 4 },
+    attestationVersion: "selector-v1",
+    confirmed: { provider: "codex", model, effort: "medium" },
+  })
+  if (decision.kind !== "eligible") throw new Error("explore policy fixture must be eligible")
+  return decision.policy
+}
+
+function registerDelegatedChild(
+  store: AppStore,
+  childId = "child",
+  title = "Child",
+  policy?: ExplorePolicySnapshot,
+): void {
   store.addDelegatedSession({
     seed: { id: childId, providerKind: "codex", title, cwd: `/w/${childId}` },
     parentId: "a",
@@ -459,6 +491,7 @@ function registerDelegatedChild(store: AppStore, childId = "child", title = "Chi
     childGeneration: 1,
     task: "Inspect the selector seam",
     desiredOutcome: "Return a concise result",
+    ...(policy ? { policy } : {}),
   })
 }
 
@@ -518,6 +551,7 @@ describe("selectSessionList", () => {
       status,
       statusLabel,
       terminalTranscriptAvailable: terminal,
+      explore: null,
     })
     expect(selectSessionList(store.getState())).toBe(first)
   })
@@ -580,6 +614,80 @@ describe("selectSessionList", () => {
       ],
     })
     expect(selectSessionList(store.getState()).map((item) => item.cwd)).toEqual(["/work/frontend", "/work/backend"])
+  })
+
+  it("projects live explore policy stably and rebuilds only when the accepted policy changes", () => {
+    const store = fleetStore()
+    registerDelegatedChild(store, "child", "Child", acceptedExplorePolicy("safe-model-a"))
+    publishDelegatedStatus(store, "child", "running")
+
+    const first = selectSessionList(store.getState()).find((item) => item.id === "child")?.delegation
+    expect(first?.kind).toBe("child")
+    if (first?.kind !== "child") throw new Error("expected delegated child presentation")
+    expect(first.explore).toMatchObject({
+      role: "explore",
+      roleLabel: "explore",
+      compactLabel: "explore",
+      restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+      attestationVersion: "selector-v1",
+      confirmed: { provider: "codex", model: "safe-model-a", effort: "medium" },
+    })
+
+    store.applyEvent("child", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    const streamed = selectSessionList(store.getState()).find((item) => item.id === "child")?.delegation
+    expect(streamed).toBe(first)
+
+    store.applyEvent("b", { kind: "agent_message", messageId: "other", textDelta: "token" })
+    const unrelated = selectSessionList(store.getState()).find((item) => item.id === "child")?.delegation
+    expect(unrelated).toBe(first)
+
+    const currentState = store.getState()
+    const currentChild = currentState.delegation.children.child
+    if (!currentChild) throw new Error("expected delegated child snapshot")
+    const changedState = {
+      ...currentState,
+      delegation: {
+        ...currentState.delegation,
+        children: {
+          ...currentState.delegation.children,
+          child: { ...currentChild, policy: acceptedExplorePolicy("safe-model-b") },
+        },
+      },
+    }
+    const changed = selectSessionList(changedState).find((item) => item.id === "child")?.delegation
+    expect(changed).not.toBe(first)
+    expect(changed?.kind === "child" ? changed.explore?.confirmed.model : null).toBe("safe-model-b")
+  })
+})
+
+describe("explore availability presentation", () => {
+  it("maps every closed denial to fixed content-free text with stable selector output", () => {
+    const store = fleetStore()
+    for (const reason of EXPLORE_DENIAL_REASONS) {
+      const selector = selectExploreAvailabilityPresentation(reason)
+      const first = selector(store.getState())
+      expect(first).toEqual({
+        kind: "unavailable",
+        roleLabel: "Role: explore",
+        restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+        statusLabel: `Unavailable: ${EXPLORE_DENIAL_LABELS[reason]}`,
+        reason,
+      })
+      expect(first.statusLabel).not.toMatch(/\/|config|error|task/i)
+      store.applyEvent("b", { kind: "agent_message", messageId: reason, textDelta: "unrelated" })
+      expect(selector(store.getState())).toBe(first)
+    }
+  })
+
+  it("projects an explicit textual available state and the complete V1 restriction contract", () => {
+    const presentation = selectExploreAvailabilityPresentation(null)(fleetStore().getState())
+    expect(presentation.kind).toBe("available")
+    expect(presentation.statusLabel).toContain("Available")
+    expect(presentation.restrictionSummary).toContain("Read-only filesystem")
+    expect(presentation.restrictionSummary).toContain("No shell")
+    expect(presentation.restrictionSummary).toContain("No external MCP or agent control")
+    expect(presentation.restrictionSummary).toContain("Scoped ask_user only")
+    expect(presentation.restrictionSummary).toContain("No recursion")
   })
 })
 

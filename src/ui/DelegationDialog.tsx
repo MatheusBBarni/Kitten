@@ -2,12 +2,14 @@
 
 import type { KeyEvent } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useRef, useState, type ReactNode } from "react"
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { SessionId } from "../core/types.ts"
+import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import type { DelegationOverlay } from "../store/appStore.ts"
 import {
+  EXPLORE_DENIAL_LABELS,
   selectDelegationOverlay,
+  selectExploreAvailabilityPresentation,
   selectIsApprovalOpen,
   selectIsClarificationOpen,
 } from "../store/selectors.ts"
@@ -20,8 +22,8 @@ export const DELEGATION_TASK_LABEL = "Task *"
 export const DELEGATION_OUTCOME_LABEL = "Desired outcome *"
 export const DELEGATION_TASK_ERROR = "Enter a task with at least one non-space character."
 export const DELEGATION_OUTCOME_ERROR = "Enter a desired outcome with at least one non-space character."
-export const DELEGATION_FAILURE = "The child could not be started. Review the details and try again."
 export const DELEGATION_PENDING = "Starting child…"
+export const DELEGATION_DENIED_PREFIX = "Denied:"
 
 type DelegationField = "task" | "outcome"
 
@@ -38,12 +40,21 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
   const { height } = useTerminalDimensions()
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
   const clarificationOpen = useAppSelector(selectIsClarificationOpen)
+  const advisory = useMemo(
+    () => controller.actions.exploreAvailability(overlay.parentId),
+    [controller, overlay.parentId],
+  )
+  const availabilitySelector = useMemo(
+    () => selectExploreAvailabilityPresentation(advisory.kind === "available" ? null : advisory.reason),
+    [advisory],
+  )
+  const availability = useAppSelector(availabilitySelector)
   const [field, setField] = useState<DelegationField>("task")
   const [task, setTask] = useState("")
   const [outcome, setOutcome] = useState("")
   const [taskError, setTaskError] = useState(false)
   const [outcomeError, setOutcomeError] = useState(false)
-  const [failure, setFailure] = useState(false)
+  const [launchDenial, setLaunchDenial] = useState<ExploreDenialReason | null>(null)
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
   const preempted = approvalOpen || clarificationOpen
@@ -65,34 +76,37 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
     const missingOutcome = normalizedOutcome.length === 0
     setTaskError(missingTask)
     setOutcomeError(missingOutcome)
-    setFailure(false)
+    setLaunchDenial(null)
     if (missingTask || missingOutcome) {
       setField(missingTask ? "task" : "outcome")
       return
     }
+    if (availability.kind === "unavailable") return
 
     pendingRef.current = true
     setPending(true)
-    let childId: SessionId | null = null
+    let denial: ExploreDenialReason | null = null
     try {
       const result = await controller.actions.startExploreChild({
         parentId: overlay.parentId,
         task: normalizedTask,
         desiredOutcome: normalizedOutcome,
       })
-      childId = result.kind === "started" ? result.childId : null
+      if (result.kind === "started") {
+        pendingRef.current = false
+        setPending(false)
+        if (stillOwnsSlot()) controller.store.closeDelegation()
+        return
+      }
+      denial = result.reason
     } catch {
-      childId = null
+      denial = "startup-failed"
     }
     pendingRef.current = false
     setPending(false)
     if (!stillOwnsSlot()) return
-    if (childId !== null) {
-      controller.store.closeDelegation()
-      return
-    }
-    setFailure(true)
-  }, [controller, outcome, overlay.parentId, stillOwnsSlot, task])
+    setLaunchDenial(denial)
+  }, [availability.kind, controller, outcome, overlay.parentId, stillOwnsSlot, task])
 
   const onKey = useCallback((key: KeyEvent): void => {
     if (preempted) return
@@ -140,6 +154,13 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
       titleColor={palette.accent}
     >
       <text fg={palette.muted}>{`Parent: ${displayName}`}</text>
+      <text fg={palette.text}>{availability.roleLabel}</text>
+      <text fg={palette.muted}>{availability.restrictionSummary}</text>
+      <text fg={launchDenial || availability.kind === "unavailable" ? palette.status.error : palette.accent}>
+        {launchDenial
+          ? `${DELEGATION_DENIED_PREFIX} ${EXPLORE_DENIAL_LABELS[launchDenial]}`
+          : availability.statusLabel}
+      </text>
       <text fg={palette.text}>{DELEGATION_TASK_LABEL}</text>
       <input
         focused={field === "task"}
@@ -148,7 +169,7 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
         onInput={(value) => {
           setTask(value)
           setTaskError(false)
-          setFailure(false)
+          setLaunchDenial(null)
         }}
         onSubmit={() => { void submit() }}
         style={{ textColor: palette.text, cursorColor: palette.accent }}
@@ -163,13 +184,12 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
         onInput={(value) => {
           setOutcome(value)
           setOutcomeError(false)
-          setFailure(false)
+          setLaunchDenial(null)
         }}
         onSubmit={() => { void submit() }}
         style={{ textColor: palette.text, cursorColor: palette.accent }}
       />
       {outcomeError ? <text fg={palette.status.error}>{DELEGATION_OUTCOME_ERROR}</text> : null}
-      {failure ? <text fg={palette.status.error}>{DELEGATION_FAILURE}</text> : null}
       {pending ? <text fg={palette.accent}>{DELEGATION_PENDING}</text> : null}
       <text fg={palette.muted}>{DELEGATION_HINT}</text>
     </box>
