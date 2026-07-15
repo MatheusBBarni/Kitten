@@ -12,6 +12,7 @@
 
 import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
 import type { StatuslinePreference } from "./statusline.ts"
+import type { ExplorePolicySnapshot } from "./explorePolicy.ts"
 
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
@@ -57,8 +58,13 @@ export interface DelegatedChildSnapshot {
   readonly status: DelegatedChildStatus
   readonly task: string
   readonly desiredOutcome: string
+  /** Accepted launch-time policy; absent only on the legacy path removed by task 03. */
+  readonly policy?: ExplorePolicySnapshot
   readonly terminal?: DelegatedChildTerminalSnapshot
 }
+
+/** Closed capacity boundary that refused an otherwise valid registration. */
+export type ExploreCapacityScope = "per-parent" | "global"
 
 /** Parent close intent is state, while cancellation and teardown stay controller-owned. */
 export type DelegationParentCloseState = "open" | "closing"
@@ -92,6 +98,8 @@ export type DelegationEvent =
       readonly childGeneration: number
       readonly task: string
       readonly desiredOutcome: string
+      /** Accepted immutable policy for reservation-aware explore registration. */
+      readonly policy?: ExplorePolicySnapshot
     }
   | {
       readonly kind: "publish_child_status"

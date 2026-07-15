@@ -25,7 +25,12 @@
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
-import { createDelegationState, delegationReducer } from "../core/orchestration.ts"
+import {
+  createDelegationState,
+  delegationReducer,
+  registerDelegatedChild,
+} from "../core/orchestration.ts"
+import type { ExplorePolicySnapshot } from "../core/explorePolicy.ts"
 import type {
   StatuslineLayout,
   StatuslinePreference,
@@ -41,6 +46,7 @@ import {
   type ConfigOption,
   type DelegationState,
   type DomainSessionEvent,
+  type ExploreCapacityScope,
   type HandoffBundle,
   type HarnessDeliveryNotice,
   type ProviderKind,
@@ -260,8 +266,20 @@ export interface DelegatedSessionRegistration {
   readonly childGeneration: number
   readonly task: string
   readonly desiredOutcome: string
+  /** Accepted explore policy; task 03 makes this mandatory at the controller boundary. */
+  readonly policy?: ExplorePolicySnapshot
   readonly displayName?: string
 }
+
+/** Synchronous result returned before any delegated runtime startup can begin. */
+export type DelegatedSessionAdmissionResult =
+  | { readonly kind: "accepted" }
+  | {
+      readonly kind: "denied"
+      readonly reason: "capacity-exhausted"
+      readonly scope: ExploreCapacityScope
+    }
+  | { readonly kind: "rejected" }
 
 export interface DelegatedChildIdentity {
   readonly parentId: SessionId
@@ -316,7 +334,7 @@ export interface AppStore {
   /** Atomically insert a normalized execution slice and its visible workspace entry. */
   addSession(seed: SessionSeed, options?: { displayName?: string; availability?: ConversationAvailability }): void
   /** Atomically insert and background a normal child session with delegation ownership. */
-  addDelegatedSession(registration: DelegatedSessionRegistration): void
+  addDelegatedSession(registration: DelegatedSessionRegistration): DelegatedSessionAdmissionResult
   /** Publish one accepted child lifecycle and its reducer-owned session status atomically. */
   publishDelegatedChildState(publication: DelegatedChildStatePublication): void
   /** Fence new child registration before a controller-owned parent cascade begins. */
@@ -596,8 +614,18 @@ class AppStoreImpl implements AppStore {
     })
   }
 
-  addDelegatedSession(registration: DelegatedSessionRegistration): void {
-    const { seed, parentId, parentGeneration, childGeneration, task, desiredOutcome } = registration
+  addDelegatedSession(
+    registration: DelegatedSessionRegistration,
+  ): DelegatedSessionAdmissionResult {
+    const {
+      seed,
+      parentId,
+      parentGeneration,
+      childGeneration,
+      task,
+      desiredOutcome,
+      policy,
+    } = registration
     if (
       !this.state.sessions[parentId] ||
       !this.state.workspace.conversations[parentId] ||
@@ -605,10 +633,10 @@ class AppStoreImpl implements AppStore {
       this.state.sessions[seed.id] ||
       this.state.workspace.conversations[seed.id]
     ) {
-      return
+      return { kind: "rejected" }
     }
 
-    const delegation = delegationReducer(this.state.delegation, {
+    const admission = registerDelegatedChild(this.state.delegation, {
       kind: "register_child",
       parentId,
       childId: seed.id,
@@ -616,8 +644,14 @@ class AppStoreImpl implements AppStore {
       childGeneration,
       task,
       desiredOutcome,
+      ...(policy ? { policy } : {}),
     })
-    if (delegation === this.state.delegation) return
+    if (admission.kind !== "accepted") {
+      return admission.kind === "denied"
+        ? { kind: "denied", reason: admission.reason, scope: admission.scope }
+        : { kind: "rejected" }
+    }
+    const delegation = admission.state
 
     const createdWorkspace = workspaceReducer(this.state.workspace, {
       kind: "create",
@@ -626,16 +660,16 @@ class AppStoreImpl implements AppStore {
       availability: { kind: "starting" },
       initialStatus: "idle",
     })
-    if (createdWorkspace === this.state.workspace) return
+    if (createdWorkspace === this.state.workspace) return { kind: "rejected" }
     const backgroundWorkspace = workspaceReducer(createdWorkspace, {
       kind: "background",
       sessionId: seed.id,
     })
-    if (backgroundWorkspace === createdWorkspace) return
+    if (backgroundWorkspace === createdWorkspace) return { kind: "rejected" }
     const workspace = backgroundWorkspace.selectedVisibleId === parentId
       ? backgroundWorkspace
       : { ...backgroundWorkspace, selectedVisibleId: parentId }
-    if (workspace.selectedVisibleId !== parentId) return
+    if (workspace.selectedVisibleId !== parentId) return { kind: "rejected" }
 
     this.commit({
       ...this.state,
@@ -648,6 +682,7 @@ class AppStoreImpl implements AppStore {
         [seed.id]: unknownClarificationCapability(),
       },
     })
+    return { kind: "accepted" }
   }
 
   publishDelegatedChildState(publication: DelegatedChildStatePublication): void {

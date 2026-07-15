@@ -1,11 +1,13 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  countOccupiedDelegatedChildren,
   createDelegationState,
   delegationReducer,
   isDelegatedChildCleanupEligible,
   isDelegationCleanupEligible,
   isDelegationSettled,
+  registerDelegatedChild,
   selectDelegatedChild,
   selectDelegationAggregateStatus,
   selectDelegationParent,
@@ -13,6 +15,11 @@ import {
   selectOrderedDelegatedChildIds,
   selectOrderedDelegatedChildren,
 } from "./orchestration.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+  type ExplorePolicySnapshot,
+} from "./explorePolicy.ts"
 import type {
   DelegatedChildStatus,
   DelegatedChildTerminalStatus,
@@ -20,11 +27,24 @@ import type {
   DelegationState,
 } from "./types.ts"
 
+function acceptedPolicy(perParent = 2, global = 6): ExplorePolicySnapshot {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: EXPLORE_RESTRICTIONS,
+    limits: { perParent, global },
+    attestationVersion: "orchestration-test-v1",
+    confirmed: { provider: "codex", model: "test-model", effort: "high" },
+  })
+  if (decision.kind !== "eligible") throw new Error("expected eligible policy fixture")
+  return decision.policy
+}
+
 const registration = (
   parentId = "parent",
   childId = "child-1",
   parentGeneration = 4,
   childGeneration = 9,
+  policy = acceptedPolicy(),
 ): Extract<DelegationEvent, { kind: "register_child" }> => ({
   kind: "register_child",
   parentId,
@@ -33,6 +53,7 @@ const registration = (
   childGeneration,
   task: `Implement ${childId}`,
   desiredOutcome: `Verified ${childId}`,
+  policy,
 })
 
 const register = (
@@ -89,6 +110,7 @@ describe("delegation registration", () => {
       status: "starting",
       task: "Implement child-1",
       desiredOutcome: "Verified child-1",
+      policy: registration().policy,
     })
     expect(selectDelegatedChild(second, "child-1")).toBe(firstChild)
     expect(first.parents.parent?.childIds).toEqual(["child-1"])
@@ -140,9 +162,76 @@ describe("delegation registration", () => {
       }),
     ).toBe(initial)
   })
+
+  it("accepts exactly the per-parent limit and returns a closed denial for the next child", () => {
+    const policy = acceptedPolicy(2, 10)
+    const first = register(createDelegationState(), registration("parent", "child-1", 4, 1, policy))
+    const second = register(first, registration("parent", "child-2", 4, 2, policy))
+    const thirdEvent = registration("parent", "child-3", 4, 3, policy)
+    const admission = registerDelegatedChild(second, thirdEvent)
+
+    expect(countOccupiedDelegatedChildren(second, "parent")).toBe(2)
+    expect(admission).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "per-parent",
+      state: second,
+    })
+    expect(delegationReducer(second, thirdEvent)).toBe(second)
+  })
+
+  it("enforces the candidate global limit across otherwise eligible parents", () => {
+    const policy = acceptedPolicy(2, 2)
+    let state = register(createDelegationState(), registration("parent-a", "child-a", 1, 1, policy))
+    state = register(state, registration("parent-b", "child-b", 2, 2, policy))
+    const admission = registerDelegatedChild(
+      state,
+      registration("parent-c", "child-c", 3, 3, policy),
+    )
+
+    expect(countOccupiedDelegatedChildren(state)).toBe(2)
+    expect(admission.kind).toBe("denied")
+    expect(admission).toMatchObject({
+      reason: "capacity-exhausted",
+      scope: "global",
+      state,
+    })
+  })
+
+  it("rejects a mutable policy-shaped value instead of attaching a safety claim", () => {
+    const policy = acceptedPolicy()
+    const mutable = {
+      ...policy,
+      restrictions: { ...policy.restrictions },
+      limits: { ...policy.limits },
+      confirmed: { ...policy.confirmed },
+    }
+    const event = { ...registration(), policy: mutable }
+    const empty = createDelegationState()
+
+    expect(registerDelegatedChild(empty, event)).toEqual({ kind: "rejected", state: empty })
+    expect(delegationReducer(empty, event)).toBe(empty)
+  })
 })
 
 describe("delegation lifecycle", () => {
+  it.each(["finished", "failed", "cancelled"] satisfies DelegatedChildTerminalStatus[])(
+    "counts starting, running, and needs-input occupancy until valid %s publication",
+    (terminalStatus) => {
+      const starting = register()
+      const running = publish(starting, "running")
+      const needsInput = publish(running, "needs_input")
+      const resumable = terminalStatus === "finished" ? publish(needsInput, "running") : needsInput
+      const terminal = publish(resumable, terminalStatus)
+
+      expect(countOccupiedDelegatedChildren(starting)).toBe(1)
+      expect(countOccupiedDelegatedChildren(running)).toBe(1)
+      expect(countOccupiedDelegatedChildren(needsInput)).toBe(1)
+      expect(countOccupiedDelegatedChildren(terminal)).toBe(0)
+      expect(selectDelegatedChild(terminal, "child-1")?.terminal?.status).toBe(terminalStatus)
+    },
+  )
+
   it("accepts exactly the legal lifecycle transition matrix", () => {
     const statuses = [
       "starting",
@@ -229,6 +318,12 @@ describe("delegation lifecycle", () => {
     expect(publish(running, "failed", { parentGeneration: 5 })).toBe(running)
     expect(publish(running, "failed", { childGeneration: 10 })).toBe(running)
     expect(publish(running, "failed", { at: Number.NaN })).toBe(running)
+    expect(countOccupiedDelegatedChildren(running)).toBe(1)
+
+    const terminal = publish(running, "failed", { at: 10 })
+    const duplicate = publish(terminal, "failed", { at: 11 })
+    expect(duplicate).toBe(terminal)
+    expect(countOccupiedDelegatedChildren(duplicate)).toBe(0)
   })
 })
 
@@ -276,6 +371,7 @@ describe("delegation selectors and cleanup", () => {
         childGeneration: 9,
       }),
     ).toBe(state)
+    expect(countOccupiedDelegatedChildren(state, "parent")).toBe(1)
 
     const terminal = publish(state, "cancelled", { at: 88 })
     expect(selectDelegationParent(terminal, "other-parent")).toBe(otherParent)
@@ -295,5 +391,28 @@ describe("delegation selectors and cleanup", () => {
     expect(selectDelegationParent(removed, "parent")).toBeUndefined()
     expect(selectDelegationParent(removed, "other-parent")).toBe(otherParent)
     expect(selectDelegatedChild(removed, "other-child")).toBe(otherChild)
+    expect(countOccupiedDelegatedChildren(removed, "parent")).toBe(0)
+  })
+
+  it("keeps a closing parent fenced after terminal capacity becomes available", () => {
+    const policy = acceptedPolicy(1, 2)
+    const starting = register(
+      createDelegationState(),
+      registration("parent", "child-1", 4, 1, policy),
+    )
+    const closing = delegationReducer(starting, {
+      kind: "mark_parent_closing",
+      parentId: "parent",
+      parentGeneration: 4,
+    })
+    const terminal = publish(closing, "failed", { childGeneration: 1 })
+
+    expect(countOccupiedDelegatedChildren(terminal, "parent")).toBe(0)
+    expect(
+      delegationReducer(
+        terminal,
+        registration("parent", "late-child", 4, 2, policy),
+      ),
+    ).toBe(terminal)
   })
 })

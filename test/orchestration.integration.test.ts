@@ -9,11 +9,16 @@ import type {
 import { createSessionController } from "../src/app/controller.ts"
 
 import {
+  countOccupiedDelegatedChildren,
   createDelegationState,
   delegationReducer,
   selectDelegationTerminalOutcomes,
   selectOrderedDelegatedChildren,
 } from "../src/core/orchestration.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+} from "../src/core/explorePolicy.ts"
 import type {
   AppConfig,
   ClarificationOutcome,
@@ -22,7 +27,9 @@ import type {
   DelegationEvent,
   DomainSessionEvent,
   ProviderKind,
+  SessionSeed,
 } from "../src/core/types.ts"
+import { createAppStore, type AppState } from "../src/store/appStore.ts"
 
 interface InjectedConnection extends AgentConnection {
   readonly prompts: Array<{ sessionId: string; input: AgentPromptInput }>
@@ -78,6 +85,75 @@ function injectedConnection(id: ProviderKind, ordinal: number): InjectedConnecti
 }
 
 describe("delegation pure consumer integration", () => {
+  it("atomically admits, denies, terminally releases, and removes policy-bearing children", () => {
+    const decision = evaluateExplorePolicy({
+      role: "explore",
+      restrictions: EXPLORE_RESTRICTIONS,
+      limits: { perParent: 1, global: 1 },
+      attestationVersion: "integration-capacity-v1",
+      confirmed: { provider: "codex", model: "test-model", effort: "high" },
+    })
+    if (decision.kind !== "eligible") throw new Error("expected eligible policy fixture")
+    const policy = decision.policy
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const seed = (id: string): SessionSeed => ({
+      id,
+      providerKind: "codex",
+      title: id,
+      cwd: "/work/child",
+    })
+    const registration = (id: string, generation: number) => ({
+      seed: seed(id),
+      parentId: "claude-code",
+      parentGeneration: 1,
+      childGeneration: generation,
+      task: "Inspect orchestration",
+      desiredOutcome: "Return verified findings",
+      policy,
+    })
+    const commits: AppState[] = []
+    store.subscribe((state) => commits.push(state))
+
+    expect(store.addDelegatedSession(registration("capacity-child", 1))).toEqual({
+      kind: "accepted",
+    })
+    expect(commits).toHaveLength(1)
+    expect(commits[0]?.sessions["capacity-child"]).toBeDefined()
+    expect(commits[0]?.workspace.conversations["capacity-child"]?.lifecycle).toBe("background")
+    expect(commits[0]?.workspace.selectedVisibleId).toBe("claude-code")
+    expect(commits[0]?.delegation.children["capacity-child"]?.policy).toBe(policy)
+
+    const beforeDenial = store.getState()
+    expect(store.addDelegatedSession(registration("denied-child", 2))).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "per-parent",
+    })
+    expect(store.getState()).toBe(beforeDenial)
+    expect(commits).toHaveLength(1)
+
+    const identity = {
+      parentId: "claude-code",
+      childId: "capacity-child",
+      parentGeneration: 1,
+      childGeneration: 1,
+    } as const
+    store.publishDelegatedChildState({
+      ...identity,
+      status: "failed",
+      sessionStatus: "error",
+      at: 50,
+    })
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(0)
+    expect(store.addDelegatedSession(registration("replacement-child", 3))).toEqual({
+      kind: "accepted",
+    })
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+
+    store.removeDelegationChild(identity)
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+  })
+
   it("reads two ordered terminal outcomes without importing runtime or ACP types", () => {
     const events: DelegationEvent[] = [
       {

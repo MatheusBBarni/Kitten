@@ -3,6 +3,12 @@ import { describe, expect, it } from "bun:test"
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState } from "../core/shellReducer.ts"
+import { countOccupiedDelegatedChildren } from "../core/orchestration.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+  type ExplorePolicySnapshot,
+} from "../core/explorePolicy.ts"
 import type { StatuslineLayout, StatuslinePreference } from "../core/statusline.ts"
 import { HARNESS_DELIVERY_FAILED_NOTICE, isHarnessDeliveryNotice } from "../core/types.ts"
 import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
@@ -115,13 +121,26 @@ const delegatedChildSeed: SessionSeed = {
   cwd: "/work/child",
 }
 
-const delegatedRegistration = () => ({
+function acceptedPolicy(perParent = 3, global = 6): ExplorePolicySnapshot {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: EXPLORE_RESTRICTIONS,
+    limits: { perParent, global },
+    attestationVersion: "app-store-test-v1",
+    confirmed: { provider: "codex", model: "test-model", effort: "high" },
+  })
+  if (decision.kind !== "eligible") throw new Error("expected eligible policy fixture")
+  return decision.policy
+}
+
+const delegatedRegistration = (policy = acceptedPolicy()) => ({
   seed: delegatedChildSeed,
   parentId: "claude-code",
   parentGeneration: 4,
   childGeneration: 1,
   task: "Inspect the parser",
   desiredOutcome: "Report concrete failure modes",
+  policy,
 })
 
 const delegatedIdentity = {
@@ -1570,8 +1589,10 @@ describe("delegated session store integration", () => {
     const observed: AppState[] = []
     store.subscribe((state) => observed.push(state))
 
-    store.addDelegatedSession(delegatedRegistration())
+    const policy = acceptedPolicy()
+    const result = store.addDelegatedSession(delegatedRegistration(policy))
 
+    expect(result).toEqual({ kind: "accepted" })
     expect(observed).toHaveLength(1)
     const inserted = observed[0]!
     expect(inserted.sessions[delegatedChildSeed.id]).toEqual(createSessionState(delegatedChildSeed))
@@ -1583,7 +1604,9 @@ describe("delegated session store integration", () => {
       childId: delegatedChildSeed.id,
       parentId: "claude-code",
       status: "starting",
+      policy,
     })
+    expect(selectDelegatedChild(delegatedChildSeed.id)(inserted)?.policy).toBe(policy)
   })
 
   it("retains parent focus and unrelated structural references during registration", () => {
@@ -1687,6 +1710,106 @@ describe("delegated session store integration", () => {
       sessionStatus: "working",
     })
     expect(store.getState()).toBe(running)
+  })
+
+  it("denies exhausted capacity without a commit or partial session/workspace mutation", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const policy = acceptedPolicy(1, 4)
+    expect(store.addDelegatedSession(delegatedRegistration(policy))).toEqual({ kind: "accepted" })
+    const beforeDenial = store.getState()
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    const result = store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "capacity-denied-child" },
+      childGeneration: 2,
+    })
+
+    expect(result).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "per-parent",
+    })
+    expect(store.getState()).toBe(beforeDenial)
+    expect(observed).toEqual([])
+    expect(store.getState().sessions["capacity-denied-child"]).toBeUndefined()
+    expect(store.getState().workspace.conversations["capacity-denied-child"]).toBeUndefined()
+    expect(store.getState().delegation.children["capacity-denied-child"]).toBeUndefined()
+  })
+
+  it("denies the global limit across parents that remain below their local caps", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const policy = acceptedPolicy(2, 2)
+    expect(store.addDelegatedSession(delegatedRegistration(policy))).toEqual({ kind: "accepted" })
+
+    store.selectConversation("codex")
+    expect(store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "codex-child" },
+      parentId: "codex",
+      parentGeneration: 2,
+      childGeneration: 2,
+    })).toEqual({ kind: "accepted" })
+
+    store.selectConversation("cursor")
+    const beforeDenial = store.getState()
+    expect(store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "cursor-child" },
+      parentId: "cursor",
+      parentGeneration: 3,
+      childGeneration: 3,
+    })).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "global",
+    })
+    expect(store.getState()).toBe(beforeDenial)
+  })
+
+  it("releases on a valid terminal publication once, not on later visible removal", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const policy = acceptedPolicy(1, 1)
+    store.addDelegatedSession(delegatedRegistration(policy))
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 100,
+    })
+    const terminal = store.getState()
+    expect(countOccupiedDelegatedChildren(terminal.delegation)).toBe(0)
+    expect(terminal.delegation.children["delegated-child"]?.terminal).toEqual({
+      status: "finished",
+      at: 100,
+    })
+
+    const replacementResult = store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "replacement-child" },
+      childGeneration: 2,
+    })
+    expect(replacementResult).toEqual({ kind: "accepted" })
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+
+    const beforeDuplicate = store.getState()
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 101,
+    })
+    expect(store.getState()).toBe(beforeDuplicate)
+    store.removeDelegationChild(delegatedIdentity)
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
   })
 
   it("marks matching parent close intent once and rejects later child registration", () => {
