@@ -7,6 +7,8 @@ import type {
   DefaultApplyResult,
   DomainSessionEvent,
   HandoffBundle,
+  ManagedWorktreeAvailability,
+  ManagedWorktreeBinding,
 } from "../core/types.ts"
 import type { StatuslineLayout } from "../core/statusline.ts"
 import {
@@ -69,6 +71,9 @@ import {
   selectVisibleTabs,
   EXPLORE_DENIAL_LABELS,
   EXPLORE_RESTRICTION_SUMMARY,
+  MANAGED_WORKTREE_AVAILABILITY_LABELS,
+  MANAGED_WORKTREE_REASON_LABELS,
+  selectManagedWorktreeReview,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -515,6 +520,25 @@ function publishDelegatedStatus(
   }
 }
 
+function managedWorktreeBinding(
+  ownerSessionId: string,
+  availability: ManagedWorktreeAvailability = "available",
+  overrides: Partial<ManagedWorktreeBinding> = {},
+): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `binding-${ownerSessionId}`,
+    repoRoot: "/repo",
+    worktreePath: `/repo/.kitten/worktrees/${ownerSessionId}`,
+    branch: `kitten/${ownerSessionId}`,
+    baseBranch: "main",
+    baseSha: "0123456789abcdef",
+    ownerSessionId,
+    availability,
+    ...overrides,
+  }
+}
+
 describe("needsAttention (ADR-006)", () => {
   it("is true for the states the developer must act on", () => {
     expect(needsAttention("awaiting_clarification")).toBe(true)
@@ -657,6 +681,140 @@ describe("selectSessionList", () => {
     const changed = selectSessionList(changedState).find((item) => item.id === "child")?.delegation
     expect(changed).not.toBe(first)
     expect(changed?.kind === "child" ? changed.explore?.confirmed.model : null).toBe("safe-model-b")
+  })
+})
+
+describe("managed worktree review presentation", () => {
+  it.each([
+    ["unverified", "Review status unverified"],
+    ["available", "Review available"],
+    ["unavailable", "Review unavailable"],
+    ["cleanup_refused", "Cleanup refused"],
+  ] as const)("maps %s to bounded explicit text", (availability, availabilityLabel) => {
+    const binding = managedWorktreeBinding("child", availability, {
+      ...(availability === "available" ? {} : { reason: "verification_failed" }),
+    })
+    const store = createAppStore({
+      seeds: [{
+        id: "child",
+        providerKind: "codex",
+        title: "Child",
+        cwd: binding.worktreePath,
+        worktreeBinding: binding,
+      }],
+    })
+
+    const review = selectManagedWorktreeReview("child")(store.getState())
+    expect(review).toMatchObject({
+      kind: "managed-worktree",
+      managed: true,
+      managedLabel: "Managed worktree",
+      provenance: "kitten-managed",
+      provenanceLabel: "Kitten-managed workspace",
+      worktreePath: binding.worktreePath,
+      branch: binding.branch,
+      baseBranch: binding.baseBranch,
+      baseSha: binding.baseSha,
+      availability,
+      availabilityLabel,
+    })
+    expect(review?.availabilityLabel).toBe(MANAGED_WORKTREE_AVAILABILITY_LABELS[availability])
+    expect(review?.reasonLabel).toBe(
+      binding.reason ? MANAGED_WORKTREE_REASON_LABELS[binding.reason] : null,
+    )
+    expect(review?.availabilityLabel).not.toContain(binding.worktreePath)
+  })
+
+  it("returns null only for an ordinary session and preserves unchanged presentation identity", () => {
+    const binding = managedWorktreeBinding("child")
+    const store = createAppStore({
+      seeds: [
+        { id: "ordinary", providerKind: "claude-code", title: "Ordinary", cwd: "/repo" },
+        {
+          id: "child",
+          providerKind: "codex",
+          title: "Child",
+          cwd: binding.worktreePath,
+          worktreeBinding: binding,
+        },
+      ],
+    })
+    const selectReview = selectManagedWorktreeReview("child")
+    const first = selectReview(store.getState())
+
+    expect(selectManagedWorktreeReview("ordinary")(store.getState())).toBeNull()
+    expect(first).not.toBeNull()
+    store.applyEvent("child", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/elsewhere" })
+    expect(selectReview(store.getState())).toBe(first)
+  })
+
+  it("shares one cached review object across restored row/view projections without delegation", () => {
+    const unavailable = managedWorktreeBinding("child", "unavailable", { reason: "missing" })
+    const store = createAppStore({
+      seeds: [
+        { id: "sibling", providerKind: "claude-code", title: "Sibling", cwd: "/repo" },
+        {
+          id: "child",
+          providerKind: "codex",
+          title: "Restored child",
+          cwd: unavailable.worktreePath,
+          worktreeBinding: unavailable,
+        },
+      ],
+    })
+
+    const row = selectSessionList(store.getState()).find((item) => item.id === "child")
+    const view = selectVisibleTabs(store.getState()).find((item) => item.id === "child")
+    expect(row?.cwd).toBe(unavailable.worktreePath)
+    expect(view?.cwd).toBe(unavailable.worktreePath)
+    expect(row?.delegation).toBeNull()
+    expect(view?.delegation).toBeNull()
+    expect(row?.review).toBe(view?.review)
+    expect(row?.review).toBe(selectManagedWorktreeReview("child")(store.getState()))
+    expect(row?.review).toMatchObject({
+      availability: "unavailable",
+      availabilityLabel: "Review unavailable",
+      reason: "missing",
+      reasonLabel: "Managed workspace is missing",
+    })
+  })
+
+  it("replaces only the updated child row/view while siblings remain stable", () => {
+    const binding = managedWorktreeBinding("child", "available")
+    const store = createAppStore({
+      seeds: [
+        { id: "sibling", providerKind: "claude-code", title: "Sibling", cwd: "/repo" },
+        {
+          id: "child",
+          providerKind: "codex",
+          title: "Child",
+          cwd: binding.worktreePath,
+          worktreeBinding: binding,
+        },
+      ],
+    })
+    const rowsBefore = selectSessionList(store.getState())
+    const viewsBefore = selectVisibleTabs(store.getState())
+
+    store.publishManagedWorktreeBinding(
+      "child",
+      managedWorktreeBinding("child", "cleanup_refused", { reason: "dirty" }),
+    )
+
+    const rowsAfter = selectSessionList(store.getState())
+    const viewsAfter = selectVisibleTabs(store.getState())
+    expect(rowsAfter[0]).toBe(rowsBefore[0])
+    expect(rowsAfter[1]).not.toBe(rowsBefore[1])
+    expect(viewsAfter[0]).toBe(viewsBefore[0])
+    expect(viewsAfter[1]).not.toBe(viewsBefore[1])
+    expect(rowsAfter[1]?.review).toBe(viewsAfter[1]?.review)
+    expect(rowsAfter[1]?.review).toMatchObject({
+      availability: "cleanup_refused",
+      availabilityLabel: "Cleanup refused",
+      reason: "dirty",
+      reasonLabel: "Managed workspace has uncommitted changes",
+    })
   })
 })
 

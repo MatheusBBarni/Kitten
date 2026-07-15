@@ -17,6 +17,7 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import {
   BACKGROUND_STATUS_LABEL,
+  CONTEXT_HEADROOM_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
   MCP_STATUS_LABEL,
   StatusStrip,
@@ -103,6 +104,7 @@ describe("StatusStrip", () => {
     const setup = await renderStrip(controller)
 
     expect(setup.captureCharFrame()).toContain("Claude:—")
+    expect(setup.captureCharFrame()).toContain(`${CONTEXT_HEADROOM_LABEL} —`)
     expect(setup.captureCharFrame()).not.toContain("Codex:")
 
     await actAsync(() => controller.actions.selectConversation("codex"))
@@ -122,7 +124,7 @@ describe("StatusStrip", () => {
     }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("Claude:opus:high 38% █░░")
+    expect(frame).toContain("Claude:opus:high ctx 38% █░░")
     expect(frame).not.toContain("working")
     expect(frame).not.toContain("Codex:")
     expect(frame).toContain(KEYMAP_HINT)
@@ -410,7 +412,7 @@ describe("StatusStrip", () => {
     }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("Cursor:Composer:High 75% ██░")
+    expect(frame).toContain("Cursor:Composer:High ctx 75% ██░")
     expect(frame).toContain(`${MCP_STATUS_LABEL}: +github`)
     expect(frame).not.toContain("Claude:")
     expect(frame).not.toContain("Codex:")

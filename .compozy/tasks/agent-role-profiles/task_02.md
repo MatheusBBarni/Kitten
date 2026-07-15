@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Reserve and release explore capacity atomically in delegation state
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Make `explore` capacity a reducer and store invariant instead of a controller pr
 </requirements>
 
 ## Subtasks
-- [ ] 2.1 Extend delegated-child registration to carry an accepted policy snapshot.
-- [ ] 2.2 Add pure occupancy and capacity-admission behavior to delegation transitions.
-- [ ] 2.3 Commit accepted child session, workspace, snapshot, and reservation as one store update.
-- [ ] 2.4 Preserve release behavior across failed, cancelled, finished, parent-close, and stale-event paths.
-- [ ] 2.5 Add reducer and store tests for caps, races, no-ops, and cleanup.
+- [x] 2.1 Extend delegated-child registration to carry an accepted policy snapshot.
+- [x] 2.2 Add pure occupancy and capacity-admission behavior to delegation transitions.
+- [x] 2.3 Commit accepted child session, workspace, snapshot, and reservation as one store update.
+- [x] 2.4 Preserve release behavior across failed, cancelled, finished, parent-close, and stale-event paths.
+- [x] 2.5 Add reducer and store tests for caps, races, no-ops, and cleanup.
 
 ## Implementation Details
 
@@ -68,15 +68,15 @@ Follow TechSpec sections “Data Models,” “Impact Analysis,” and “Develo
 ## Tests
 
 - Unit tests:
-  - [ ] Per-parent admission accepts exactly the configured number of `starting` children and rejects the next request with an unchanged state reference.
-  - [ ] Global admission rejects a child when two parents collectively consume the global limit even if each parent remains below its local limit.
-  - [ ] `starting`, `running`, and `needs_input` consume a slot; valid `finished`, `failed`, and `cancelled` transitions free it while terminal snapshots remain inspectable.
-  - [ ] Wrong generation, wrong parent, illegal transition, duplicate terminal publication, and child removal do not release an occupied slot.
-  - [ ] A closing parent rejects registration even when another child terminalizes during the close flow.
+  - [x] Per-parent admission accepts exactly the configured number of `starting` children and rejects the next request with an unchanged state reference.
+  - [x] Global admission rejects a child when two parents collectively consume the global limit even if each parent remains below its local limit.
+  - [x] `starting`, `running`, and `needs_input` consume a slot; valid `finished`, `failed`, and `cancelled` transitions free it while terminal snapshots remain inspectable.
+  - [x] Wrong generation, wrong parent, illegal transition, duplicate terminal publication, and child removal do not release an occupied slot.
+  - [x] A closing parent rejects registration even when another child terminalizes during the close flow.
 - Integration tests:
-  - [ ] An accepted AppStore registration emits one commit containing the session, background workspace entry, policy snapshot, and reservation while preserving parent focus.
-  - [ ] A capacity denial emits no commit and creates no session, workspace entry, or delegated child.
-  - [ ] Terminal publication releases admission once, and later visible-child removal does not change capacity again.
+  - [x] An accepted AppStore registration emits one commit containing the session, background workspace entry, policy snapshot, and reservation while preserving parent focus.
+  - [x] A capacity denial emits no commit and creates no session, workspace entry, or delegated child.
+  - [x] Terminal publication releases admission once, and later visible-child removal does not change capacity again.
 - Test coverage target: >=80%
 - All tests must pass
 

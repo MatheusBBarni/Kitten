@@ -49,6 +49,7 @@ import {
   type ExploreCapacityScope,
   type HandoffBundle,
   type HarnessDeliveryNotice,
+  type ManagedWorktreeBinding,
   type ProviderKind,
   type SessionId,
   type SessionSeed,
@@ -337,6 +338,8 @@ export interface AppStore {
   addDelegatedSession(registration: DelegatedSessionRegistration): DelegatedSessionAdmissionResult
   /** Publish one accepted child lifecycle and its reducer-owned session status atomically. */
   publishDelegatedChildState(publication: DelegatedChildStatePublication): void
+  /** Publish controller-verified managed-worktree review state for its owning session. */
+  publishManagedWorktreeBinding(sessionId: SessionId, binding: ManagedWorktreeBinding): void
   /** Fence new child registration before a controller-owned parent cascade begins. */
   markDelegationParentClosing(parentId: SessionId, parentGeneration: number): void
   /** Atomically remove one terminal child from session, workspace, and delegation state. */
@@ -570,6 +573,7 @@ class AppStoreImpl implements AppStore {
       title: existing.title,
       cwd: existing.cwd,
       task: existing.task,
+      worktreeBinding: existing.worktreeBinding,
       acpSessionId,
     })
     const workspace = options.preserveWorkspaceAttention
@@ -705,6 +709,24 @@ class AppStoreImpl implements AppStore {
       sessions: { ...this.state.sessions, [publication.childId]: nextSession },
       delegation,
       workspace,
+    })
+  }
+
+  publishManagedWorktreeBinding(sessionId: SessionId, binding: ManagedWorktreeBinding): void {
+    const session = this.state.sessions[sessionId]
+    if (
+      !session ||
+      binding.ownerSessionId !== sessionId ||
+      sameManagedWorktreeBinding(session.worktreeBinding, binding)
+    ) {
+      return
+    }
+    this.commit({
+      ...this.state,
+      sessions: {
+        ...this.state.sessions,
+        [sessionId]: { ...session, worktreeBinding: binding },
+      },
     })
   }
 
@@ -1233,6 +1255,22 @@ function sameClarificationCapability(
     return left.adapterPackage === right.adapterPackage && left.adapterVersion === right.adapterVersion
   }
   return left.status === "unsupported" && right.status === "unsupported" && left.reason === right.reason
+}
+
+function sameManagedWorktreeBinding(
+  left: ManagedWorktreeBinding | undefined,
+  right: ManagedWorktreeBinding,
+): boolean {
+  return left?.kind === right.kind &&
+    left.id === right.id &&
+    left.repoRoot === right.repoRoot &&
+    left.worktreePath === right.worktreePath &&
+    left.branch === right.branch &&
+    left.baseBranch === right.baseBranch &&
+    left.baseSha === right.baseSha &&
+    left.ownerSessionId === right.ownerSessionId &&
+    left.availability === right.availability &&
+    left.reason === right.reason
 }
 
 /**

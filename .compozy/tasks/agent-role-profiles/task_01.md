@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add the closed explore policy and immutable child snapshot contract
 type: backend
 complexity: medium

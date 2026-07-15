@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { AvailableCommand, ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import type { AvailableCommand, ConfigOption, DomainSessionEvent, ManagedWorktreeBinding, SessionState, ToolCallTurn } from "./types.ts"
 import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
 
 /**
@@ -11,6 +11,18 @@ import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
  */
 
 const initial = (): SessionState => createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" })
+
+const managedBinding: ManagedWorktreeBinding = {
+  kind: "managed",
+  id: "managed-child",
+  repoRoot: "/repo",
+  worktreePath: "/repo/.kitten/worktrees/managed-child",
+  branch: "kitten/managed-child",
+  baseBranch: "main",
+  baseSha: "abc123",
+  ownerSessionId: "managed-child",
+  availability: "unverified",
+}
 
 /** Fold a sequence of events over a fresh session state. */
 const fold = (events: DomainSessionEvent[], start: SessionState = initial()): SessionState =>
@@ -30,6 +42,7 @@ describe("createSessionState", () => {
       cwd: "/w",
       branch: undefined,
       task: undefined,
+      worktreeBinding: undefined,
       acpSessionId: "s-42",
       turns: [],
       status: "idle",
@@ -42,6 +55,19 @@ describe("createSessionState", () => {
       commands: [],
       promptHistory: { entries: [], cursor: null },
     })
+  })
+
+  it("preserves a managed seed binding while ordinary seeds remain unbound", () => {
+    const managed = createSessionState({
+      id: "managed-child",
+      providerKind: "codex",
+      title: "Managed child",
+      cwd: managedBinding.worktreePath,
+      worktreeBinding: managedBinding,
+    })
+
+    expect(managed.worktreeBinding).toBe(managedBinding)
+    expect(initial().worktreeBinding).toBeUndefined()
   })
 
   it("defaults configOptions to an empty array", () => {

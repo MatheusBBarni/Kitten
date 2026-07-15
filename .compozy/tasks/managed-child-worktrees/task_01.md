@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add protocol-free managed-worktree binding state
 type: refactor
 complexity: high

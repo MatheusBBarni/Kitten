@@ -239,6 +239,8 @@ export interface SessionControllerOptions {
   usageSeenSink?: UsageSeenSink
   /** Whether configured first tasks should be sent after startup. Defaults to true. */
   sendInitialTasks?: boolean
+  /** Whether ordinary fresh sessions should apply configured provider defaults before use. */
+  applyProviderDefaultsOnFreshSession?: boolean
   /** Exact profile decision; injectable for deterministic credential-free tests. */
   resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
   /** Closed explore attestation decision; injectable with reviewed fake evidence in tests. */
@@ -1684,6 +1686,7 @@ export async function createSessionController(options: SessionControllerOptions)
     store.addSession(seed, { displayName: seed.title, availability: { kind: "starting" } })
     registerRuntime(seed, config)
     await startSession(seed, config)
+    await applyProviderDefaultsToFreshSession(sessionId)
     refreshBranch(sessionId)
     return sessionId
   }
@@ -2009,6 +2012,18 @@ export async function createSessionController(options: SessionControllerOptions)
     }
   }
 
+  async function applyProviderDefaultsToFreshSession(sessionId: SessionId): Promise<void> {
+    if (!options.applyProviderDefaultsOnFreshSession) return
+    const runtime = runtimes.get(sessionId)
+    const defaults = runtime ? providerDefaults[runtime.seed.providerKind] : undefined
+    if (
+      !runtime?.state.ready ||
+      runtime.mcpScope !== "ordinary" ||
+      (!defaults?.model && !defaults?.effort)
+    ) return
+    await actions.applyProviderDefaults(sessionId)
+  }
+
   const actions = createControllerActions({
     store,
     getSession,
@@ -2043,6 +2058,7 @@ export async function createSessionController(options: SessionControllerOptions)
           runtime.config !== null && !store.getState().delegation.children[runtime.seed.id],
       )
       await Promise.all(entries.map((entry) => restoreSession(entry.seed, entry.config, undefined, undefined)))
+      await Promise.all(entries.map((entry) => applyProviderDefaultsToFreshSession(entry.seed.id)))
       for (const entry of entries) {
         store.setRestoration(entry.seed.id, null)
         refreshBranch(entry.seed.id)
@@ -2056,12 +2072,18 @@ export async function createSessionController(options: SessionControllerOptions)
       const restored = await restoreSession(entry.seed, entry.config, undefined, undefined)
       const ready = restored && getSession(sessionId) !== undefined
       if (ready) {
+        await applyProviderDefaultsToFreshSession(sessionId)
         store.setRestoration(sessionId, null)
         refreshBranch(sessionId)
       }
       return ready
     },
   })
+
+  // Apply configured model and reasoning defaults before any fresh session receives
+  // its optional opening task (ADR-005). Restored sessions intentionally retain their
+  // persisted provider settings instead.
+  await Promise.all(initialPlan.map((entry) => applyProviderDefaultsToFreshSession(entry.seed.id)))
 
   // Send each ready session its optional first task as the opening prompt (ADR-005),
   // unless boot already found a persisted run that it will restore. A restore replaces

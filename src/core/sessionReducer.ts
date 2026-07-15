@@ -38,6 +38,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     cwd: seed.cwd,
     branch: undefined,
     task: seed.task,
+    worktreeBinding: seed.worktreeBinding,
     acpSessionId: seed.acpSessionId ?? "",
     turns: [],
     status: "idle",

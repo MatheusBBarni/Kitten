@@ -52,6 +52,9 @@ import type {
   Turn,
   HandoffBundle,
   HarnessDeliveryNotice,
+  ManagedWorktreeAvailability,
+  ManagedWorktreeBinding,
+  ManagedWorktreeReason,
   ConversationAvailability,
   TeardownState,
   WorkspaceConversation,
@@ -212,6 +215,93 @@ export interface DelegationParentPresentation {
 
 /** Render-ready delegation data; views never inspect raw ownership records. */
 export type DelegationPresentation = DelegatedChildPresentation | DelegationParentPresentation
+
+/** Explicit, non-color-only review text for every managed-worktree availability. */
+export const MANAGED_WORKTREE_AVAILABILITY_LABELS: Readonly<
+  Record<ManagedWorktreeAvailability, string>
+> = Object.freeze({
+  unverified: "Review status unverified",
+  available: "Review available",
+  unavailable: "Review unavailable",
+  cleanup_refused: "Cleanup refused",
+})
+
+/** Bounded operator copy for controller-published managed-worktree reasons. */
+export const MANAGED_WORKTREE_REASON_LABELS: Readonly<Record<ManagedWorktreeReason, string>> =
+  Object.freeze({
+    not_git_repository: "No Git repository was found",
+    detached_head: "The source checkout has no attached branch",
+    submodules_unsupported: "Repositories with submodules are not supported",
+    root_conflict: "The managed workspace root is unavailable",
+    collision: "The managed workspace identity is already in use",
+    verification_failed: "Managed workspace verification failed",
+    missing: "Managed workspace is missing",
+    external: "Workspace provenance is outside Kitten management",
+    dirty: "Managed workspace has uncommitted changes",
+    unmerged: "Managed workspace branch is not merged",
+    live_owned: "Managed workspace is still owned by a live child",
+    not_managed: "Workspace is not managed by Kitten",
+    git_failed: "Git could not complete the workspace operation",
+  })
+
+/** One selector-owned model shared by compact and detailed review consumers. */
+export interface ManagedWorktreeReviewPresentation {
+  readonly kind: "managed-worktree"
+  readonly managed: true
+  readonly managedLabel: "Managed worktree"
+  readonly provenance: "kitten-managed"
+  readonly provenanceLabel: "Kitten-managed workspace"
+  readonly worktreePath: string
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseSha: string
+  readonly availability: ManagedWorktreeAvailability
+  readonly availabilityLabel: string
+  readonly reason: ManagedWorktreeReason | null
+  readonly reasonLabel: string | null
+}
+
+const managedWorktreeReviewCache = new Map<string, ManagedWorktreeReviewPresentation>()
+
+function managedWorktreeReviewPresentation(
+  binding: ManagedWorktreeBinding | undefined,
+): ManagedWorktreeReviewPresentation | null {
+  if (!binding) return null
+  const key = JSON.stringify([
+    binding.worktreePath,
+    binding.branch,
+    binding.baseBranch,
+    binding.baseSha,
+    binding.availability,
+    binding.reason ?? null,
+  ])
+  const cached = managedWorktreeReviewCache.get(key)
+  if (cached) return cached
+  const reason = binding.reason ?? null
+  const presentation: ManagedWorktreeReviewPresentation = Object.freeze({
+    kind: "managed-worktree",
+    managed: true,
+    managedLabel: "Managed worktree",
+    provenance: "kitten-managed",
+    provenanceLabel: "Kitten-managed workspace",
+    worktreePath: binding.worktreePath,
+    branch: binding.branch,
+    baseBranch: binding.baseBranch,
+    baseSha: binding.baseSha,
+    availability: binding.availability,
+    availabilityLabel: MANAGED_WORKTREE_AVAILABILITY_LABELS[binding.availability],
+    reason,
+    reasonLabel: reason === null ? null : MANAGED_WORKTREE_REASON_LABELS[reason],
+  })
+  managedWorktreeReviewCache.set(key, presentation)
+  return presentation
+}
+
+/** One stable render-safe review projection, or `null` for an ordinary session. */
+export const selectManagedWorktreeReview =
+  (sessionId: SessionId): Selector<ManagedWorktreeReviewPresentation | null> =>
+  (state) =>
+    managedWorktreeReviewPresentation(state.sessions[sessionId]?.worktreeBinding)
 
 export interface DelegatedParentCloseStatusSummary {
   readonly status: DelegatedChildStatus
@@ -503,6 +593,8 @@ export interface SessionListItem {
   attentionSeen: boolean
   /** Cached lineage/lifecycle or parent-group presentation for delegated work. */
   delegation: DelegationPresentation | null
+  /** Shared managed-worktree review facts, independent of live delegation ownership. */
+  review: ManagedWorktreeReviewPresentation | null
 }
 
 /**
@@ -515,6 +607,62 @@ const sessionListCache = new WeakMap<
   WorkspaceState,
   WeakMap<DelegationState, WeakMap<AppState["sessions"], SessionListItem[]>>
 >()
+const sessionListItemCache = new WeakMap<WorkspaceConversation, Map<string, SessionListItem>>()
+const stableSessionLists = new WeakMap<SessionId[], SessionListItem[]>()
+const projectionObjectIds = new WeakMap<object, number>()
+let nextProjectionObjectId = 1
+
+function projectionObjectKey(value: object | null): string {
+  if (value === null) return "null"
+  let id = projectionObjectIds.get(value)
+  if (id === undefined) {
+    id = nextProjectionObjectId++
+    projectionObjectIds.set(value, id)
+  }
+  return String(id)
+}
+
+function delegationPresentationKey(presentation: DelegationPresentation | null): string {
+  if (presentation === null) return "ordinary"
+  if (presentation.kind === "parent") {
+    return JSON.stringify([
+      presentation.kind,
+      presentation.childCount,
+      presentation.groupStatus,
+      presentation.groupLabel,
+    ])
+  }
+  return JSON.stringify([
+    presentation.kind,
+    presentation.parentId,
+    presentation.parentLabel,
+    presentation.lineageLabel,
+    presentation.status,
+    presentation.statusLabel,
+    presentation.terminalTranscriptAvailable,
+    presentation.explore?.role ?? null,
+    presentation.explore?.roleLabel ?? null,
+    presentation.explore?.compactLabel ?? null,
+    presentation.explore?.restrictionSummary ?? null,
+    presentation.explore?.attestationVersion ?? null,
+    presentation.explore?.confirmed.provider ?? null,
+    presentation.explore?.confirmed.model ?? null,
+    presentation.explore?.confirmed.effort ?? null,
+  ])
+}
+
+function stableSessionList(state: AppState, next: SessionListItem[]): SessionListItem[] {
+  const previous = stableSessionLists.get(state.workspace.order)
+  if (
+    previous &&
+    previous.length === next.length &&
+    previous.every((item, index) => item === next[index])
+  ) {
+    return previous
+  }
+  stableSessionLists.set(state.workspace.order, next)
+  return next
+}
 
 function displayLabel(state: AppState, sessionId: SessionId): string {
   const conversation = state.workspace.conversations[sessionId]
@@ -595,13 +743,33 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
     const conversation = state.workspace.conversations[id]
     if (!session || !conversation) return []
     const duplicate = duplicatePosition(state, id)
-    return [{
+    const label = duplicate.count > 1
+      ? `${conversation.displayName} (${duplicate.index})`
+      : conversation.displayName
+    const delegation = delegationPresentation(state, id)
+    const review = managedWorktreeReviewPresentation(session.worktreeBinding)
+    const key = JSON.stringify([
+      label,
+      session.providerKind,
+      session.cwd,
+      session.status,
+      conversation.lifecycle,
+      state.workspace.selectedVisibleId === id,
+      conversation.attention.seen,
+      delegationPresentationKey(delegation),
+      projectionObjectKey(review),
+    ])
+    let byKey = sessionListItemCache.get(conversation)
+    if (!byKey) {
+      byKey = new Map()
+      sessionListItemCache.set(conversation, byKey)
+    }
+    const cachedItem = byKey.get(key)
+    if (cachedItem) return [cachedItem]
+    const item: SessionListItem = {
       id,
       title: conversation.displayName,
-      label:
-        duplicate.count > 1
-          ? `${conversation.displayName} (${duplicate.index})`
-          : conversation.displayName,
+      label,
       providerKind: session.providerKind,
       cwd: session.cwd,
       status: session.status,
@@ -609,11 +777,15 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
       lifecycle: conversation.lifecycle,
       selected: state.workspace.selectedVisibleId === id,
       attentionSeen: conversation.attention.seen,
-      delegation: delegationPresentation(state, id),
-    }]
+      delegation,
+      review,
+    }
+    byKey.set(key, item)
+    return [item]
   })
-  bySessions.set(state.sessions, list)
-  return list
+  const stable = stableSessionList(state, list)
+  bySessions.set(state.sessions, stable)
+  return stable
 }
 
 /**
@@ -799,6 +971,8 @@ export interface WorkspaceConversationView {
   sharedWorkspaceCount: number
   /** Cached lineage/lifecycle or parent-group presentation for delegated work. */
   delegation: DelegationPresentation | null
+  /** The same cached managed-worktree review object exposed by session-list rows. */
+  review: ManagedWorktreeReviewPresentation | null
 }
 
 export interface SharedWorkspaceCue {
@@ -854,11 +1028,7 @@ function workspaceConversationView(
   const sharedCount = sharedWorkspaceCount(state, session.cwd)
   const selected = state.workspace.selectedVisibleId === sessionId
   const delegation = delegationPresentation(state, sessionId)
-  const delegationKey = delegation === null
-    ? "ordinary"
-    : delegation.kind === "child"
-      ? `child:${delegation.parentLabel}:${delegation.status}:${delegation.terminalTranscriptAvailable}`
-      : `parent:${delegation.childCount}:${delegation.groupStatus}`
+  const review = managedWorktreeReviewPresentation(session.worktreeBinding)
   const key = [
     session.providerKind,
     session.cwd,
@@ -867,7 +1037,8 @@ function workspaceConversationView(
     duplicate.index,
     duplicate.count,
     sharedCount,
-    delegationKey,
+    delegationPresentationKey(delegation),
+    projectionObjectKey(review),
   ].join("\u0000")
   let byKey = conversationViewCache.get(conversation)
   if (!byKey) {
@@ -896,6 +1067,7 @@ function workspaceConversationView(
     duplicateCount: duplicate.count,
     sharedWorkspaceCount: sharedCount,
     delegation,
+    review,
   }
   byKey.set(key, view)
   return view

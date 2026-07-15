@@ -11,7 +11,7 @@ import {
 } from "../core/explorePolicy.ts"
 import type { StatuslineLayout, StatuslinePreference } from "../core/statusline.ts"
 import { HARNESS_DELIVERY_FAILED_NOTICE, isHarnessDeliveryNotice } from "../core/types.ts"
-import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
+import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, ManagedWorktreeBinding, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import {
   createAppStore,
   defaultSessionSeeds,
@@ -119,6 +119,25 @@ const delegatedChildSeed: SessionSeed = {
   providerKind: "codex",
   title: "Delegated child",
   cwd: "/work/child",
+}
+
+const managedBinding: ManagedWorktreeBinding = {
+  kind: "managed",
+  id: "managed-child",
+  repoRoot: "/repo",
+  worktreePath: "/repo/.kitten/worktrees/managed-child",
+  branch: "kitten/managed-child",
+  baseBranch: "main",
+  baseSha: "abc123",
+  ownerSessionId: "managed-child",
+  availability: "unverified",
+}
+
+const managedChildSeed: SessionSeed = {
+  ...delegatedChildSeed,
+  id: managedBinding.ownerSessionId,
+  cwd: managedBinding.worktreePath,
+  worktreeBinding: managedBinding,
 }
 
 function acceptedPolicy(perParent = 3, global = 6): ExplorePolicySnapshot {
@@ -439,6 +458,66 @@ describe("startSession", () => {
     const freshHistory = selectSessionPromptHistory("codex")(store.getState())
     expect(freshHistory).toEqual({ entries: [], cursor: null })
     expect(freshHistory).not.toBe(priorHistory)
+  })
+
+  it("resets ACP execution state without removing a managed-worktree binding", () => {
+    const store = createAppStore({ seeds: [managedChildSeed] })
+    store.applyEvent(managedChildSeed.id, message("m1", "stale"))
+    store.applyEvent(managedChildSeed.id, { kind: "status", status: "working" })
+
+    store.startSession(managedChildSeed.id, "acp-managed")
+
+    const session = store.getState().sessions[managedChildSeed.id]!
+    expect(session.acpSessionId).toBe("acp-managed")
+    expect(session.turns).toEqual([])
+    expect(session.status).toBe("idle")
+    expect(session.worktreeBinding).toBe(managedBinding)
+  })
+})
+
+describe("managed-worktree binding publication", () => {
+  it("is a complete no-op for unknown sessions, mismatched owners, and semantic repeats", () => {
+    const store = createAppStore({ seeds: [managedChildSeed] })
+    const initial = store.getState()
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    store.publishManagedWorktreeBinding("missing", {
+      ...managedBinding,
+      ownerSessionId: "missing",
+    })
+    store.publishManagedWorktreeBinding(managedChildSeed.id, {
+      ...managedBinding,
+      ownerSessionId: "another-session",
+    })
+    store.publishManagedWorktreeBinding(managedChildSeed.id, { ...managedBinding })
+
+    expect(store.getState()).toBe(initial)
+    expect(observed).toEqual([])
+  })
+
+  it("replaces only the addressed session for a valid controller publication", () => {
+    const sibling: SessionSeed = {
+      id: "sibling",
+      providerKind: "claude-code",
+      title: "Sibling",
+      cwd: "/repo",
+    }
+    const store = createAppStore({ seeds: [managedChildSeed, sibling] })
+    const before = store.getState()
+    const available = { ...managedBinding, availability: "available" as const }
+
+    store.publishManagedWorktreeBinding(managedChildSeed.id, available)
+
+    const after = store.getState()
+    expect(after).not.toBe(before)
+    expect(after.sessions).not.toBe(before.sessions)
+    expect(after.sessions[managedChildSeed.id]).not.toBe(before.sessions[managedChildSeed.id])
+    expect(after.sessions[managedChildSeed.id]?.worktreeBinding).toBe(available)
+    expect(after.sessions.sibling).toBe(before.sessions.sibling)
+    expect(after.workspace).toBe(before.workspace)
+    expect(after.delegation).toBe(before.delegation)
+    expect(after.overlays).toBe(before.overlays)
   })
 })
 
@@ -1584,6 +1663,28 @@ describe("workspace lifecycle integration", () => {
 })
 
 describe("delegated session store integration", () => {
+  it("retains managed binding state through delegated insertion and restore replacement", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const registration = { ...delegatedRegistration(), seed: managedChildSeed }
+
+    expect(store.addDelegatedSession(registration)).toEqual({ kind: "accepted" })
+    expect(store.getState().sessions[managedChildSeed.id]?.worktreeBinding).toBe(managedBinding)
+    expect(selectDelegatedChild(managedChildSeed.id)(store.getState())).not.toBeNull()
+
+    store.replaceSessions(
+      [{
+        seed: managedChildSeed,
+        workspace: { sessionId: managedChildSeed.id, displayName: "Managed review" },
+      }],
+      managedChildSeed.id,
+    )
+
+    const restored = store.getState()
+    expect(restored.sessions[managedChildSeed.id]?.worktreeBinding).toBe(managedBinding)
+    expect(restored.delegation).toEqual({ parents: {}, children: {} })
+    expect(selectDelegatedChild(managedChildSeed.id)(restored)).toBeNull()
+  })
+
   it("notifies once with the child session, background workspace entry, and ownership together", () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     const observed: AppState[] = []

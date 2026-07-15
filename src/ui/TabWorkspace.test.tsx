@@ -52,6 +52,7 @@ function view(id: string, selected = false): WorkspaceConversationView {
     duplicateCount: 1,
     sharedWorkspaceCount: 1,
     delegation: null,
+    review: null,
   }
 }
 

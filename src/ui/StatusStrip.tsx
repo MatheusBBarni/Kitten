@@ -59,6 +59,9 @@ export const FOCUS_MARKER = "▸"
 /** Three cells keep both agent gauges inside the exact 80-column strip budget. */
 const STATUS_STRIP_HEADROOM_CELLS = 3
 
+/** Short, explicit label for the selected session's remaining context window. */
+export const CONTEXT_HEADROOM_LABEL = "ctx"
+
 /** Outer padding plus one readable cell between custom content and the fixed affordance. */
 const CUSTOM_STATUSLINE_RESERVED_CELLS = 3
 
@@ -261,7 +264,7 @@ export function AgentStatusChip({ runtime, selectors }: AgentStatusChipProps): R
       <span fg={palette.accent}>{`${provider}:`}</span>
       <span fg={displayModel === null ? palette.muted : palette.text}>{displayModel ?? "—"}</span>
       {displayEffort === null ? null : <span fg={palette.muted}>{`:${displayEffort}`}</span>}
-      <span fg={palette.text}>{` ${headroom.label}`}</span>
+      <span fg={palette.text}>{` ${CONTEXT_HEADROOM_LABEL} ${headroom.label}`}</span>
       {selectedHeadroom === null ? null : (
         <>
           <span fg={palette.text}>{` ${"█".repeat(headroom.filled)}`}</span>

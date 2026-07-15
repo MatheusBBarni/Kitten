@@ -114,16 +114,19 @@ describe("boot config persistence integration", () => {
     })
 
     let loadedDefaults: unknown
+    let appliesDefaultsToFreshSessions: boolean | undefined
     const second = await createCockpitSession({
       loadConfig: () => loadAppConfig({ path }),
       buildController: async (options) => {
         loadedDefaults = options.config.providerDefaults
+        appliesDefaultsToFreshSessions = options.applyProviderDefaultsOnFreshSession
         return controllerOver(options.store!)
       },
       watchConfig: () => ({ close() {} }),
     })
     try {
       expect(loadedDefaults).toEqual(persisted.providerDefaults)
+      expect(appliesDefaultsToFreshSessions).toBe(true)
     } finally {
       await second.controller.dispose()
     }

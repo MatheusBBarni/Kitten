@@ -191,6 +191,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     // Startup always creates fresh ACP sessions. Saved runs are restored only from
     // the explicit `/resume` picker, never by selecting one during boot.
     sendInitialTasks: true,
+    applyProviderDefaultsOnFreshSession: true,
   })
 
   recordReadiness(recorder, baseController.runtimes())

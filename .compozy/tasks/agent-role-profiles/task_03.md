@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add attested fail-closed explore child launch and MCP isolation
 type: backend
 complexity: critical
@@ -30,12 +30,12 @@ Replace inherited delegated-child authority with a closed provider-specific atte
 </requirements>
 
 ## Subtasks
-- [ ] 3.1 Define the closed provider evidence registry and exact-match attestation result.
-- [ ] 3.2 Add typed `explore` launch and availability results to the controller action surface.
-- [ ] 3.3 Gate fresh child creation on accepted evidence and atomic capacity admission.
-- [ ] 3.4 Isolate eligible child MCP configuration to the scoped question bridge.
-- [ ] 3.5 Preserve ordinary-session provider and MCP behavior outside the `explore` path.
-- [ ] 3.6 Add denial, accepted-fake-evidence, bridge-failure, and stale-generation coverage.
+- [x] 3.1 Define the closed provider evidence registry and exact-match attestation result.
+- [x] 3.2 Add typed `explore` launch and availability results to the controller action surface.
+- [x] 3.3 Gate fresh child creation on accepted evidence and atomic capacity admission.
+- [x] 3.4 Isolate eligible child MCP configuration to the scoped question bridge.
+- [x] 3.5 Preserve ordinary-session provider and MCP behavior outside the `explore` path.
+- [x] 3.6 Add denial, accepted-fake-evidence, bridge-failure, and stale-generation coverage.
 
 ## Implementation Details
 
@@ -75,16 +75,16 @@ Implement TechSpec sections “Core Interfaces,” “Integration Points,” and
 ## Tests
 
 - Unit tests:
-  - [ ] Exact complete restricted evidence is accepted only when provider, command, ordered arguments, environment, and runtime version all match.
-  - [ ] Unknown provider/release, changed command/argument/environment, stale version, and claims allowing write, shell, recursion, external MCP, or agent control deny with a closed reason.
-  - [ ] User-authored configuration attempts to declare explore safety or attestation remain strict-config errors or exact-evidence mismatches.
-  - [ ] The production verifier has no eligible default provider until reviewed evidence is introduced.
+  - [x] Exact complete restricted evidence is accepted only when provider, command, ordered arguments, environment, and runtime version all match.
+  - [x] Unknown provider/release, changed command/argument/environment, stale version, and claims allowing write, shell, recursion, external MCP, or agent control deny with a closed reason.
+  - [x] User-authored configuration attempts to declare explore safety or attestation remain strict-config errors or exact-evidence mismatches.
+  - [x] The production verifier has no eligible default provider until reviewed evidence is introduced.
 - Integration tests:
-  - [ ] Missing/stale evidence creates no connection, bridge route, ACP session, child snapshot, reservation, or prompt.
-  - [ ] Injected accepted evidence launches with a fresh attested recipe and exactly one generation-scoped `kitten-ask-user` declaration while configured external MCP names are absent.
-  - [ ] Scoped bridge registration failure and capacity denial leave no runnable child and clean any temporary bridge state.
-  - [ ] Ordinary sessions retain their existing resolved global MCP plus question bridge behavior.
-  - [ ] A stale generation cannot turn a denied or failed launch into a running child.
+  - [x] Missing/stale evidence creates no connection, bridge route, ACP session, child snapshot, reservation, or prompt.
+  - [x] Injected accepted evidence launches with a fresh attested recipe and exactly one generation-scoped `kitten-ask-user` declaration while configured external MCP names are absent.
+  - [x] Scoped bridge registration failure and capacity denial leave no runnable child and clean any temporary bridge state.
+  - [x] Ordinary sessions retain their existing resolved global MCP plus question bridge behavior.
+  - [x] A stale generation cannot turn a denied or failed launch into a running child.
 - Test coverage target: >=80%
 - All tests must pass
 

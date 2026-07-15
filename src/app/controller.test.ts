@@ -749,6 +749,7 @@ async function controllerOverFleet(
     repositoryFileSource?: RepositoryFileSource
     createShellRuntime?: ShellRuntimeFactory
     sendInitialTasks?: boolean
+    applyProviderDefaultsOnFreshSession?: boolean
     resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
     bridge?: RecordingBridge
   } = {},
@@ -768,6 +769,7 @@ async function controllerOverFleet(
     repositoryFileSource: overrides.repositoryFileSource,
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
     sendInitialTasks: overrides.sendInitialTasks,
+    applyProviderDefaultsOnFreshSession: overrides.applyProviderDefaultsOnFreshSession,
     resolveHarnessCapability: overrides.resolveHarnessCapability ?? (() => TEST_HARNESS_CAPABILITY),
     createAskUserBridge: bridge.factory,
   })
@@ -2634,6 +2636,44 @@ describe("createSessionController - multi-session fleet", () => {
       { kind: "user", messageId: "msg-1", text: "start the build" },
     ])
     expect(controller.store.getState().sessions.codex!.promptHistory.entries).toEqual([])
+
+    await controller.dispose()
+  })
+
+  it("applies saved defaults before sending a fresh session's configured startup task", async () => {
+    const config: AppConfig = {
+      providers: PROVIDERS,
+      providerDefaults: { codex: { model: "opus", effort: "high" } },
+      sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      mcpServers: [],
+      shell: APP_CONFIG.shell,
+      clarificationTimeoutSeconds: 300,
+      persistenceEnabled: true,
+      telemetryEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    }
+    const { controller, created } = await controllerOverFleet(
+      config,
+      () => ({
+        newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+        setConfig: (_sessionId, configId, value) => configId === "model"
+          ? [modelOption(value), effortOption("low")]
+          : [modelOption("opus"), effortOption(value)],
+      }),
+      { applyProviderDefaultsOnFreshSession: true },
+    )
+
+    expect(created[0]!.configCalls).toEqual([
+      { sessionId: "acp-0", configId: "model", value: "opus" },
+      { sessionId: "acp-0", configId: "effort", value: "high" },
+    ])
+    await waitFor(() => created[0]!.prompts.length === 1, "the defaulted opening task prompt to be sent")
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("high"),
+    ])
 
     await controller.dispose()
   })

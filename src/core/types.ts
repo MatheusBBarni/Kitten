@@ -28,6 +28,43 @@ export type ProviderKind = "claude-code" | "codex" | "cursor"
  */
 export type SessionId = string
 
+/** Closed review/cleanup standing for one Kitten-managed worktree binding. */
+export type ManagedWorktreeAvailability =
+  | "unverified"
+  | "available"
+  | "unavailable"
+  | "cleanup_refused"
+
+/** Bounded lifecycle reasons; raw Git errors and workspace content never enter core state. */
+export type ManagedWorktreeReason =
+  | "not_git_repository"
+  | "detached_head"
+  | "submodules_unsupported"
+  | "root_conflict"
+  | "collision"
+  | "verification_failed"
+  | "missing"
+  | "external"
+  | "dirty"
+  | "unmerged"
+  | "live_owned"
+  | "not_managed"
+  | "git_failed"
+
+/** Immutable, protocol-free identity and review state for a Kitten-managed worktree. */
+export interface ManagedWorktreeBinding {
+  readonly kind: "managed"
+  readonly id: string
+  readonly repoRoot: string
+  readonly worktreePath: string
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseSha: string
+  readonly ownerSessionId: SessionId
+  readonly availability: ManagedWorktreeAvailability
+  readonly reason?: ManagedWorktreeReason
+}
+
 /** Closed, protocol-free lifecycle for one host-owned delegated child. */
 export type DelegatedChildStatus =
   | "starting"
@@ -561,6 +598,8 @@ export interface SessionSeed {
   title: string
   cwd: string
   task?: string
+  /** Controller-produced managed-worktree identity, when this session owns one. */
+  readonly worktreeBinding?: ManagedWorktreeBinding
   /** The ACP session id, when already known; defaults to `""` (not yet handshaken). */
   acpSessionId?: string
 }
@@ -589,6 +628,8 @@ export interface SessionState {
   /** The session working tree's current branch, when it can be resolved. */
   branch?: string
   task?: string
+  /** Immutable managed-worktree identity and bounded controller-published review state. */
+  readonly worktreeBinding?: ManagedWorktreeBinding
   acpSessionId: string
   turns: Turn[]
   status: SessionStatus
