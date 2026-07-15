@@ -4,6 +4,7 @@
 // Boundary OUT: ACP response mapping and controller coordinator lifecycle, owned by agentConnection/controller suites
 
 import { describe, expect, it } from "bun:test"
+import { RGBA } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -24,12 +25,25 @@ import {
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import { CLARIFICATION_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
+import { DARK_PALETTE } from "./theme.ts"
 
 const WIDTH = 80
 const HEIGHT = 24
 const REQUEST_ID = "clarification-1"
 const GENERATION = 7
 const DRAFT_MARKER = "zzq"
+
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
+}
+
+function backgroundOf(setup: TestRendererSetup, needle: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text.includes(needle))
+    ?.bg.toString()
+}
 
 const SINGLE_PAYLOAD: ClarificationPayload = {
   prompt: "Choose the implementation boundary",
@@ -174,6 +188,7 @@ describe("ClarificationPrompt contents and priority", () => {
     expect(frame).toContain("↑↓ move  Tab/Shift+Tab field/text")
     expect(frame).toContain("Esc cancel request")
     expect(frame).not.toContain(APPROVAL_TITLE)
+    expect(frame).not.toContain(PROMPT_PLACEHOLDER)
     expect(frame.toLocaleLowerCase()).not.toContain("permission")
 
     await destroyMounted(renderer)
@@ -201,7 +216,8 @@ describe("ClarificationPrompt contents and priority", () => {
     expect(frame).toContain("Architecture *")
     expect(frame).toContain("Select one boundary or add a precise alternative.")
     expect(frame).toContain("Required deliverables *")
-    expect(frame).toContain("Custom answer:")
+    expect(frame).toContain("4. Custom answer:")
+    expect(frame).toContain("Type a custom answer")
     expect(frame.toLocaleLowerCase()).not.toContain("mcp")
     expect(frame.toLocaleLowerCase()).not.toContain("generation")
 
@@ -359,6 +375,61 @@ describe("ClarificationPrompt outcomes", () => {
     await destroyMounted(renderer)
   })
 
+  it("navigates into the final custom-answer row and sends its text with the selection", async () => {
+    const payload: ClarificationPayload = { ...RICH_PAYLOAD, fields: [RICH_PAYLOAD.fields[0]!] }
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderWithClarification(controller, payload)
+
+    await actAsync(() => {
+      mockInput.pressArrow("down")
+    })
+    await waitForFrame((frame) => frame.includes(`${CLARIFICATION_SELECTION_MARKER} 2.`))
+    await actAsync(() => {
+      mockInput.pressArrow("down")
+    })
+    await waitForFrame((frame) => frame.includes(`${CLARIFICATION_SELECTION_MARKER} 3.`))
+    await actAsync(() => {
+      mockInput.pressArrow("down")
+    })
+    await waitForFrame((frame) => frame.includes(`${CLARIFICATION_SELECTION_MARKER} 4. Custom answer:`))
+    await actAsync(async () => {
+      await mockInput.typeText("Keep the bridge controller-owned")
+    })
+    await actAsync(() => {
+      mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({
+      kind: "submitted",
+      answers: {
+        boundary: {
+          selectedOptionIds: ["view"],
+          customText: "Keep the bridge controller-owned",
+        },
+      },
+    })
+
+    await destroyMounted(renderer)
+  })
+
+  it("paints the active option with the palette selection surface", async () => {
+    const controller = createFakeController()
+    const setup = await renderWithClarification(controller, SINGLE_PAYLOAD)
+    const { renderer, mockInput, waitForFrame } = setup
+
+    expect(backgroundOf(setup, "Controller")).toBe(paletteColor(DARK_PALETTE.selectionSurface))
+
+    await actAsync(() => {
+      mockInput.pressArrow("down")
+    })
+    await waitForFrame((frame) => frame.includes(`${CLARIFICATION_SELECTION_MARKER} 2.`))
+
+    expect(backgroundOf(setup, "Store")).toBe(paletteColor(DARK_PALETTE.selectionSurface))
+    expect(backgroundOf(setup, "Controller")).not.toBe(paletteColor(DARK_PALETTE.selectionSurface))
+
+    await destroyMounted(renderer)
+  })
+
   it("submits multiple selections with allowed custom text kept separate", async () => {
     const payload: ClarificationPayload = { ...RICH_PAYLOAD, fields: [RICH_PAYLOAD.fields[1]!] }
     const controller = createFakeController()
@@ -417,7 +488,7 @@ describe("ClarificationPrompt outcomes", () => {
       { requestId: REQUEST_ID, generation: GENERATION, outcome: { kind: "cancelled" } },
     ])
     expect(controller.calls.cancel).toHaveLength(0)
-    expect(await waitForFrame((frame) => !frame.includes(CLARIFICATION_HINT))).toContain(PROMPT_PLACEHOLDER)
+    expect(await waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(renderer)
   })
@@ -494,7 +565,7 @@ describe("ClarificationPrompt focus isolation", () => {
     await actAsync(() => {
       controller.actions.respondClarification(REQUEST_ID, GENERATION, { kind: "cancelled" })
     })
-    const closed = await waitForFrame((frame) => !frame.includes(CLARIFICATION_HINT))
+    const closed = await waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
     expect(closed).not.toContain(DRAFT_MARKER)
     expect(closed).toContain(PROMPT_PLACEHOLDER)
 

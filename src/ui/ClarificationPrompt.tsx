@@ -96,20 +96,33 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
   const moveOption = useCallback((delta: -1 | 1): void => {
     if (!activeField || activeField.mode === "text" || editingText) return
     setValidationError(false)
-    setOptionIndices((current) => {
-      const index = current[activeField.id] ?? 0
-      return {
-        ...current,
-        [activeField.id]: Math.max(0, Math.min(index + delta, activeField.options.length - 1)),
-      }
-    })
-  }, [activeField, editingText])
+    const index = optionIndices[activeField.id] ?? 0
+    if (delta === 1 && index === activeField.options.length - 1 && activeField.allowsCustom) {
+      const customTargetIndex = focusTargets.findIndex(
+        (target) => target.fieldIndex === activeTarget?.fieldIndex && target.kind === "text",
+      )
+      if (customTargetIndex >= 0) setActiveTargetIndex(customTargetIndex)
+      return
+    }
+    setOptionIndices((current) => ({
+      ...current,
+      [activeField.id]: Math.max(0, Math.min(index + delta, activeField.options.length - 1)),
+    }))
+  }, [activeField, activeTarget?.fieldIndex, editingText, focusTargets, optionIndices])
 
   const chooseDigit = useCallback((index: number): void => {
-    if (!activeField || activeField.mode === "text" || editingText || !activeField.options[index]) return
+    if (!activeField || activeField.mode === "text" || editingText) return
+    if (activeField.allowsCustom && index === activeField.options.length) {
+      const customTargetIndex = focusTargets.findIndex(
+        (target) => target.fieldIndex === activeTarget?.fieldIndex && target.kind === "text",
+      )
+      if (customTargetIndex >= 0) setActiveTargetIndex(customTargetIndex)
+      return
+    }
+    if (!activeField.options[index]) return
     setValidationError(false)
     setOptionIndices((current) => ({ ...current, [activeField.id]: index }))
-  }, [activeField, editingText])
+  }, [activeField, activeTarget?.fieldIndex, editingText, focusTargets])
 
   const toggleMulti = useCallback((): void => {
     if (!activeField || activeField.mode !== "multi" || editingText) return
@@ -137,6 +150,11 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
 
     const command = matchClarificationCommand(key)
     if (editingText) {
+      if (command === "prev-option" && activeField?.mode !== "text") {
+        key.preventDefault()
+        moveFocus(-1)
+        return
+      }
       if (command === "toggle-option") return
       if (command === null && isTextInputKey(key)) return
       if (command === "prev-option" || command === "next-option") return
@@ -183,6 +201,7 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
         top: 1,
         left: 2,
         right: 2,
+        height: Math.max(height - 2, 1),
         maxHeight: Math.max(height - 2, 1),
         flexDirection: "column",
         border: true,
@@ -253,7 +272,7 @@ function ClarificationFieldView({
   const palette = usePalette()
   const fieldLabel = `${field.label}${field.required ? " *" : ""}`
   const active = activeTarget !== null
-  const showTextInput = field.mode === "text" || field.allowsCustom
+  const customActive = field.mode !== "text" && field.allowsCustom && activeTarget === "text"
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
@@ -270,7 +289,14 @@ function ClarificationFieldView({
           const highlighted = activeTarget === "choice" && index === optionIndex
           const checked = field.mode === "multi" && selected.includes(option.id)
           return (
-            <box key={option.id} style={{ flexDirection: "column", paddingLeft: 2 }}>
+            <box
+              key={option.id}
+              style={{
+                flexDirection: "column",
+                paddingLeft: 2,
+                backgroundColor: highlighted ? palette.selectionSurface : undefined,
+              }}
+            >
               <text>
                 <span fg={highlighted ? palette.status.awaiting_clarification : palette.muted}>
                   {highlighted ? CLARIFICATION_SELECTION_MARKER : " "}
@@ -283,17 +309,53 @@ function ClarificationFieldView({
           )
         })
       ) : null}
-      {showTextInput ? (
-        <box style={{ flexDirection: "row", paddingLeft: 2 }}>
-          <text fg={activeTarget === "text" ? palette.text : palette.muted}>
-            {field.mode === "text" ? "Response: " : "Custom answer: "}
+      {field.mode !== "text" && field.allowsCustom ? (
+        <box
+          style={{
+            flexDirection: "row",
+            paddingLeft: 2,
+            backgroundColor: customActive ? palette.selectionSurface : undefined,
+          }}
+        >
+          <text>
+            <span fg={customActive ? palette.status.awaiting_clarification : palette.muted}>
+              {customActive ? CLARIFICATION_SELECTION_MARKER : " "}
+            </span>
+            <span fg={palette.muted}>{` ${field.options.length + 1}. `}</span>
+            <span fg={customActive ? palette.text : palette.muted}>Custom answer: </span>
           </text>
+          <input
+            focused={customActive}
+            value={text}
+            placeholder="Type a custom answer"
+            onInput={onText}
+            onSubmit={onSubmit}
+            style={{
+              flexGrow: 1,
+              textColor: palette.text,
+              cursorColor: palette.status.awaiting_clarification,
+              backgroundColor: customActive ? palette.selectionSurface : palette.surface,
+              focusedBackgroundColor: palette.selectionSurface,
+            }}
+          />
+        </box>
+      ) : null}
+      {field.mode === "text" ? (
+        <box style={{ flexDirection: "row", paddingLeft: 2 }}>
+          <text fg={activeTarget === "text" ? palette.text : palette.muted}>Response: </text>
           <input
             focused={activeTarget === "text"}
             value={text}
+            placeholder="Type a response"
             onInput={onText}
             onSubmit={onSubmit}
-            style={{ flexGrow: 1, textColor: palette.text, cursorColor: palette.status.awaiting_clarification }}
+            style={{
+              flexGrow: 1,
+              textColor: palette.text,
+              cursorColor: palette.status.awaiting_clarification,
+              backgroundColor: palette.surface,
+              focusedBackgroundColor: palette.selectionSurface,
+            }}
           />
         </box>
       ) : null}

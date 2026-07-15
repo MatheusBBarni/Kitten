@@ -1,12 +1,12 @@
 /**
  * One tool call in the transcript: what the agent did, and how it went.
  *
- * The header is a single line - a status bullet, the tool's name, and its argument in
- * parentheses - so a long run of reads and searches stays scannable. It borrows Claude
- * Code's own transcript shape: `● Read(src/app.ts)`, where the filled bullet's color
- * carries the status and there is no trailing status word to read. Anything the call
- * left behind - the paths it touched, or the diff an `edit` proposes - hangs underneath
- * on a `└ ` connector, the transcript's quiet "here's the detail" tone.
+ * The header is a single line - a status bullet, the tool's name, its argument in
+ * parentheses, and a compact text status - so a long run of reads and searches stays
+ * scannable without making color the only way to tell whether an operation is still
+ * active. Anything the call left behind - the paths it touched, or the diff an `edit`
+ * proposes - hangs underneath on a `└ ` connector, the transcript's quiet "here's the
+ * detail" tone.
  *
  * The row is identified by `toolCallId` upstream, so React updates this component in
  * place as `tool_call_update`s arrive; nothing remounts when `in_progress` becomes
@@ -65,12 +65,24 @@ export const TOOL_KIND_NAMES: Readonly<Record<ToolCallKind, string>> = {
 }
 
 /**
- * The header's status bullet (U+25CF). Its color - not a trailing word - tells pending
- * from running from done from failed, mirroring Claude Code's transcript: a filled
- * circle reads as a status light. Dropping the status word frees the row's tail for the
- * argument in parentheses.
+ * The header's status bullet (U+25CF). Color is a quick scanning aid; the adjacent
+ * status label remains the canonical, accessible explanation of the tool's state.
  */
 export const STATUS_BULLET = "●"
+
+/** Short, textual status labels that complement the tool row's colored status bullet. */
+export const TOOL_STATUS_LABELS: Readonly<Record<ToolCallRecord["status"], string>> = {
+  pending: "queued",
+  in_progress: "running",
+  completed: "done",
+  failed: "failed",
+}
+
+/** A generic Codex `wait` call carries no safe detail about the operation it is awaiting. */
+export const GENERIC_WAIT_TITLE = "wait"
+
+/** The useful, content-free wording for a generic wait tool call. */
+export const WAITING_FOR_TOOL_RESULT_LABEL = "Waiting for a tool result"
 
 /**
  * The connector that hangs sub-content off a header (U+2514 + a space).
@@ -107,17 +119,23 @@ export interface ToolCallRowProps {
 export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCallRowProps): ReactNode {
   const palette = usePalette()
   const { kind, title, status, locations, diff } = record
+  const genericWait = kind === "other" && title.trim().toLocaleLowerCase() === GENERIC_WAIT_TITLE
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
       <text>
         <span fg={palette.tool[status]}>{`${STATUS_BULLET} `}</span>
         <span fg={palette.text} attributes={TextAttributes.BOLD}>
-          {TOOL_KIND_NAMES[kind]}
+          {genericWait ? WAITING_FOR_TOOL_RESULT_LABEL : TOOL_KIND_NAMES[kind]}
         </span>
-        <span fg={palette.muted}>{"("}</span>
-        <span fg={palette.text}>{title}</span>
-        <span fg={palette.muted}>{")"}</span>
+        {genericWait ? null : (
+          <>
+            <span fg={palette.muted}>{"("}</span>
+            <span fg={palette.text}>{title}</span>
+            <span fg={palette.muted}>{")"}</span>
+          </>
+        )}
+        <span fg={palette.muted}>{` · ${TOOL_STATUS_LABELS[status]}`}</span>
       </text>
 
       {kind === "edit" && diff ? (

@@ -590,7 +590,7 @@ describe("ConversationView streaming", () => {
 })
 
 describe("ConversationView tool calls", () => {
-  it("heads the row with `● Name(title)`, the status carried by the bullet's color, no status word", async () => {
+  it("heads the row with `● Name(title) · status`, using both text and color for progress", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame, waitFor, captureSpans, captureCharFrame } = await renderConversation(controller)
 
@@ -604,16 +604,14 @@ describe("ConversationView tool calls", () => {
     )
     const running = await waitForFrame((f) => f.includes("Update app.ts"))
 
-    // The header reads `● Edit(Update app.ts)`: capitalized name, title in parentheses,
-    // and none of the old trailing status words.
+    // The header reads `● Edit(Update app.ts) · running`: capitalized name, title in
+    // parentheses, and a compact status label that does not rely on color alone.
     expect(running).toContain(STATUS_BULLET)
     expect(running).toContain(TOOL_KIND_NAMES.edit)
     expect(running).toContain("Update app.ts")
-    for (const word of ["in_progress", "completed", "pending", "failed"]) {
-      expect(running).not.toContain(word)
-    }
+    expect(running).toContain("running")
 
-    // The bullet, not a word, carries the status - here the in-progress tool color.
+    // Color remains the quick-scanning aid for the in-progress state.
     const bulletColor = () =>
       captureSpans()
         .lines.flatMap((line) => line.spans)
@@ -621,13 +619,14 @@ describe("ConversationView tool calls", () => {
         ?.fg?.toString()
     expect(bulletColor()).toBe(paletteColor(DARK_PALETTE.tool.in_progress))
 
-    // Upserted by id: the same single row restyles the bullet in place on completion.
+    // Upserted by id: the same single row updates its bullet and status label on completion.
     await actAsync(() => toolCall(controller, "claude-code", { toolCallId: "t1", status: "completed" }))
     await waitFor(() => bulletColor() === paletteColor(DARK_PALETTE.tool.completed))
 
     const done = captureCharFrame()
     expect(done.match(/Update app\.ts/g)).toHaveLength(1)
     expect(done).toContain(TOOL_KIND_NAMES.edit)
+    expect(done).toContain("done")
 
     await destroyMounted(renderer)
   })

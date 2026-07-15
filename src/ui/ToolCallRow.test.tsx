@@ -7,7 +7,8 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController } from "../../test/fakeController.ts"
 import { destroyMounted, settleMountedHighlights } from "../../test/reactTui.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
-import { ToolCallDiffView } from "./ToolCallRow.tsx"
+import { ToolCallDiffView, ToolCallRow } from "./ToolCallRow.tsx"
+import type { ToolCallRecord } from "../core/types.ts"
 import type { SyntaxDiagnostic } from "./syntaxParsers.ts"
 
 function collectCodeRenderables(root: BaseRenderable): CodeRenderable[] {
@@ -19,6 +20,49 @@ function collectCodeRenderables(root: BaseRenderable): CodeRenderable[] {
 function unified(path: string, before: string, after: string): string {
   return [`--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", `-${before}`, `+${after}`].join("\n")
 }
+
+function toolRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
+  return {
+    toolCallId: "tool-1",
+    kind: "other",
+    title: "wait",
+    status: "in_progress",
+    locations: [],
+    ...overrides,
+  }
+}
+
+describe("ToolCallRow activity labels", () => {
+  it("explains a generic wait tool call without exposing it as Tool(wait)", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow record={toolRecord()} />
+      </CockpitProvider>,
+      { width: 64, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("Waiting for a tool result · running"))
+
+    expect(frame).not.toContain("Tool(wait)")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a normal tool's technical label while stating its terminal status", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow record={toolRecord({ kind: "execute", title: "git status", status: "completed" })} />
+      </CockpitProvider>,
+      { width: 64, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("Run(git status) · done"))
+
+    expect(frame).toContain("Run(git status) · done")
+    await destroyMounted(setup.renderer)
+  })
+})
 
 describe("ToolCallDiffView syntax fallback", () => {
   for (const path of ["src/archive.privateext", "Makefile", ".gitignore"]) {
