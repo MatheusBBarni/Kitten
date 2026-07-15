@@ -19,6 +19,7 @@ import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
 import { CLARIFICATION_TITLE } from "./ClarificationPrompt.tsx"
 import { CockpitApp } from "./CockpitApp.tsx"
 import {
+  DELEGATION_COMMITTED_BASE_DISCLOSURE,
   DELEGATION_DIALOG_TITLE,
   DELEGATION_DENIED_PREFIX,
   DELEGATION_OUTCOME_ERROR,
@@ -102,6 +103,20 @@ function deferredExplore() {
 }
 
 describe("DelegationDialog launch", () => {
+  it("discloses the committed parent base and excludes uncommitted parent changes", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpit(controller)
+
+    try {
+      const frame = await openWithChord(setup)
+      expect(frame).toContain(DELEGATION_COMMITTED_BASE_DISCLOSURE)
+      expect(frame).toContain("parent committed HEAD")
+      expect(frame).toContain("Uncommitted parent changes are excluded")
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   it("opens through Ctrl+G and /delegate only with a focused parent", async () => {
     const controller = createFakeController()
     const setup = await renderCockpit(controller)

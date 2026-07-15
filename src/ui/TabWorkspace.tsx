@@ -56,7 +56,15 @@ export function tabItemLabel(tab: WorkspaceConversationView): string {
         tab.delegation.explore ? ` · ${tab.delegation.explore.compactLabel}` : ""
       }`
       : ` · ${tab.delegation.groupLabel}`
-  return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${delegation}${shared}`
+  const terminalReview = tab.delegation?.kind === "child"
+    ? tab.delegation.terminalTranscriptAvailable
+    : tab.status === "finished" || tab.status === "error"
+  const review = tab.review === null
+    ? ""
+    : ` · ${terminalReview || tab.review.availability !== "available"
+      ? tab.review.availabilityLabel
+      : tab.review.managedLabel}`
+  return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${delegation}${review}${shared}`
 }
 
 function overflowLabel(hiddenCount: number, backgroundCount: number): string | null {

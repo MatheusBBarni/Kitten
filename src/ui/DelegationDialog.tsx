@@ -24,6 +24,8 @@ export const DELEGATION_TASK_ERROR = "Enter a task with at least one non-space c
 export const DELEGATION_OUTCOME_ERROR = "Enter a desired outcome with at least one non-space character."
 export const DELEGATION_PENDING = "Starting child…"
 export const DELEGATION_DENIED_PREFIX = "Denied:"
+export const DELEGATION_COMMITTED_BASE_DISCLOSURE =
+  "Child starts from the parent committed HEAD. Uncommitted parent changes are excluded."
 
 type DelegationField = "task" | "outcome"
 
@@ -156,6 +158,7 @@ function DelegationDialogBody({ overlay }: { overlay: DelegationOverlay }): Reac
       <text fg={palette.muted}>{`Parent: ${displayName}`}</text>
       <text fg={palette.text}>{availability.roleLabel}</text>
       <text fg={palette.muted}>{availability.restrictionSummary}</text>
+      <text fg={palette.muted}>{DELEGATION_COMMITTED_BASE_DISCLOSURE}</text>
       <text fg={launchDenial || availability.kind === "unavailable" ? palette.status.error : palette.accent}>
         {launchDenial
           ? `${DELEGATION_DENIED_PREFIX} ${EXPLORE_DENIAL_LABELS[launchDenial]}`

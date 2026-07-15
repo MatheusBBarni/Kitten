@@ -6,12 +6,13 @@ import { createFakeController, type FakeController } from "../../test/fakeContro
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { evaluateExplorePolicy, type ExplorePolicySnapshot } from "../core/explorePolicy.ts"
-import type { SessionSeed, SessionStatus } from "../core/types.ts"
+import type { ManagedWorktreeBinding, SessionSeed, SessionStatus } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import {
   EXPLORE_RESTRICTION_SUMMARY,
   selectVisibleTabs,
   type ExplorePolicyPresentation,
+  type ManagedWorktreeReviewPresentation,
   type WorkspaceConversationView,
 } from "../store/selectors.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
@@ -65,6 +66,44 @@ const EXPLORE_PRESENTATION: ExplorePolicyPresentation = {
   confirmed: { provider: "codex", model: "safe-model", effort: "medium" },
 }
 
+function review(
+  availability: ManagedWorktreeReviewPresentation["availability"] = "available",
+): ManagedWorktreeReviewPresentation {
+  return {
+    kind: "managed-worktree",
+    managed: true,
+    managedLabel: "Managed worktree",
+    provenance: "kitten-managed",
+    provenanceLabel: "Kitten-managed workspace",
+    worktreePath: "/repo/.kitten/worktrees/child",
+    branch: "kitten/child",
+    baseBranch: "main",
+    baseSha: "0123456789abcdef",
+    availability,
+    availabilityLabel: availability === "available" ? "Review available" : "Review unavailable",
+    reason: availability === "unavailable" ? "missing" : null,
+    reasonLabel: availability === "unavailable" ? "Managed workspace is missing" : null,
+  }
+}
+
+function managedBinding(
+  ownerSessionId: string,
+  availability: ManagedWorktreeBinding["availability"],
+): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `binding-${ownerSessionId}`,
+    repoRoot: "/repo",
+    worktreePath: `/repo/.kitten/worktrees/${ownerSessionId}`,
+    branch: `kitten/${ownerSessionId}`,
+    baseBranch: "main",
+    baseSha: "0123456789abcdef",
+    ownerSessionId,
+    availability,
+    ...(availability === "unavailable" ? { reason: "missing" as const } : {}),
+  }
+}
+
 function acceptedExplorePolicy(): ExplorePolicySnapshot {
   const decision = evaluateExplorePolicy({
     role: "explore",
@@ -115,6 +154,51 @@ async function renderStrip(controller: FakeController, width = 120) {
 }
 
 describe("TabWorkspace presentation", () => {
+  it("adds one selector-provided managed cue while leaving an ordinary child label unchanged", () => {
+    const managed = view("managed")
+    managed.review = review()
+    const ordinary = view("ordinary")
+    ordinary.delegation = {
+      kind: "child",
+      parentId: "parent",
+      parentLabel: "Parent",
+      lineageLabel: "Child of Parent",
+      status: "running",
+      statusLabel: "Running",
+      terminalTranscriptAvailable: false,
+      explore: null,
+    }
+
+    expect(tabItemLabel(managed)).toBe("[tab] managed · idle · Managed worktree")
+    expect(tabItemLabel(ordinary)).toBe("[tab] ordinary · idle · Child of Parent · Running")
+  })
+
+  it("uses selector-owned terminal and unavailable review labels without detailed binding identity", () => {
+    const terminal = view("terminal")
+    terminal.review = review()
+    terminal.delegation = {
+      kind: "child",
+      parentId: "parent",
+      parentLabel: "Parent",
+      lineageLabel: "Child of Parent",
+      status: "finished",
+      statusLabel: "Finished",
+      terminalTranscriptAvailable: true,
+      explore: null,
+    }
+    const unavailable = view("unavailable")
+    unavailable.review = review("unavailable")
+
+    expect(tabItemLabel(terminal)).toContain(" · Review available")
+    expect(tabItemLabel(unavailable)).toContain(" · Review unavailable")
+    for (const label of [tabItemLabel(terminal), tabItemLabel(unavailable)]) {
+      expect(label).not.toContain("/repo")
+      expect(label).not.toContain("kitten/child")
+      expect(label).not.toContain("0123456789abcdef")
+      expect(label).not.toContain("Managed workspace is missing")
+    }
+  })
+
   it("adds only the selector-provided compact explore cue to an active child label", () => {
     const child = view("child")
     child.delegation = {
@@ -315,6 +399,72 @@ describe("TabWorkspace presentation", () => {
     expect(layout.visible.some((tab) => tab.id === "two")).toBe(true)
     expect(layout.overflowLabel).toContain(TAB_OVERFLOW_LABEL)
     expect(layout.overflowLabel).toContain("bg 1")
+  })
+
+  it("renders an unavailable selector projection compactly while Sessions remains discoverable", async () => {
+    const binding = managedBinding("managed", "unavailable")
+    const seeds: SessionSeed[] = [
+      {
+        id: "managed",
+        providerKind: "codex",
+        title: "Managed child",
+        cwd: binding.worktreePath,
+        worktreeBinding: binding,
+      },
+      { id: "sibling", providerKind: "claude-code", title: "Sibling", cwd: "/repo" },
+    ]
+    const runtimes: AgentRuntimeState[] = seeds.map((seed) => ({
+      sessionId: seed.id,
+      providerKind: seed.providerKind,
+      displayName: seed.title,
+      title: seed.title,
+      cwd: seed.cwd,
+      ready: true,
+      acpSessionId: `acp-${seed.id}`,
+    }))
+    const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
+    const setup = await renderStrip(controller, 70)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Review unavailable")
+    expect(frame).toContain(TAB_OVERFLOW_LABEL)
+    expect(frame).not.toContain(binding.worktreePath)
+    expect(frame).not.toContain(binding.branch)
+    expect(frame).not.toContain(binding.baseSha)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders an available terminal selector projection as review-ready text", async () => {
+    const binding = managedBinding("managed", "available")
+    const seed: SessionSeed = {
+      id: "managed",
+      providerKind: "codex",
+      title: "Managed child",
+      cwd: binding.worktreePath,
+      worktreeBinding: binding,
+    }
+    const store = createAppStore({ seeds: [seed] })
+    store.applyEvent(seed.id, { kind: "status", status: "finished" })
+    const controller = createFakeController({
+      store,
+      runtimes: [{
+        sessionId: seed.id,
+        providerKind: seed.providerKind,
+        displayName: seed.title,
+        title: seed.title,
+        cwd: seed.cwd,
+        ready: true,
+        acpSessionId: "acp-managed",
+      }],
+    })
+    const setup = await renderStrip(controller, 100)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Review available")
+    expect(frame).not.toContain(binding.worktreePath)
+    expect(frame).not.toContain(binding.branch)
+    expect(frame).not.toContain(binding.baseSha)
+    await destroyMounted(setup.renderer)
   })
 
   it("does not publish a tab-list change when only transcript content streams", () => {
