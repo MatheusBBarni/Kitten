@@ -203,6 +203,7 @@ async function openClarification(controller: FakeController, requestId: string):
           id: "boundary",
           label: "Boundary",
           mode: "single",
+          allowsCustom: false,
           required: true,
           options: [
             { id: "controller", label: "Controller" },
@@ -857,6 +858,7 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",

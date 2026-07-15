@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Extend the clarification dialog for form metadata, custom answers, skip, and timeout
 type: frontend
 complexity: high

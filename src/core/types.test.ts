@@ -53,6 +53,7 @@ describe("clarification contracts", () => {
         label: "Runtime",
         description: "Choose one runtime",
         mode: "single",
+        allowsCustom: true,
         required: true,
         options: [
           { id: "bun", label: "Bun", description: "Use the repository runtime" },
@@ -63,6 +64,7 @@ describe("clarification contracts", () => {
         id: "checks",
         label: "Checks",
         mode: "multi",
+        allowsCustom: false,
         required: false,
         options: [
           { id: "types", label: "Typecheck" },
@@ -77,15 +79,33 @@ describe("clarification contracts", () => {
         required: false,
       },
     ]
-    const payload: ClarificationPayload = { prompt: "How should I proceed?", fields }
-    const answered: ClarificationOutcome = {
-      kind: "answered",
-      values: { runtime: "bun", checks: ["types", "tests"], notes: "Keep it small" },
+    const payload: ClarificationPayload = {
+      title: "Implementation decision",
+      context: "Keep the adapter boundary protocol-free.",
+      prompt: "How should I proceed?",
+      fields,
+    }
+    const submitted: ClarificationOutcome = {
+      kind: "submitted",
+      answers: {
+        runtime: { selectedOptionIds: ["bun"], customText: "Use the pinned runtime" },
+        checks: { selectedOptionIds: ["types", "tests"] },
+        notes: { selectedOptionIds: [], customText: "Keep it small" },
+      },
     }
     const cancelled: ClarificationOutcome = { kind: "cancelled" }
 
-    expect(payload).toEqual({ prompt: "How should I proceed?", fields })
-    expect(answered.kind).toBe("answered")
+    expect(payload).toEqual({
+      title: "Implementation decision",
+      context: "Keep the adapter boundary protocol-free.",
+      prompt: "How should I proceed?",
+      fields,
+    })
+    expect(submitted.kind).toBe("submitted")
+    expect(submitted.answers.runtime).toEqual({
+      selectedOptionIds: ["bun"],
+      customText: "Use the pinned runtime",
+    })
     expect(cancelled).toEqual({ kind: "cancelled" })
     expect(payload).not.toHaveProperty("requestId")
     expect(payload).not.toHaveProperty("connectionGeneration")
@@ -99,10 +119,18 @@ describe("clarification contracts", () => {
     accept({ id: "runtime", label: "Runtime", mode: "single", required: true })
     // @ts-expect-error Text fields cannot carry choice options.
     accept({ id: "notes", label: "Notes", mode: "text", required: false, options: [] })
-    // @ts-expect-error Answer values are normalized to strings or string arrays.
-    acceptOutcome({ kind: "answered", values: { runtime: 1 } })
-    // @ts-expect-error Cancellation carries no answer values.
-    acceptOutcome({ kind: "cancelled", values: {} })
+    // @ts-expect-error Submitted answers preserve structured selections and custom text.
+    acceptOutcome({ kind: "submitted", answers: { runtime: "bun" } })
+    // @ts-expect-error Cancellation carries no answers.
+    acceptOutcome({ kind: "cancelled", answers: {} })
+
+    const terminalKinds: ClarificationOutcome["kind"][] = [
+      "submitted",
+      "skipped",
+      "timed_out",
+      "cancelled",
+    ]
+    expect(terminalKinds).toHaveLength(4)
 
     expect(true).toBe(true)
   })

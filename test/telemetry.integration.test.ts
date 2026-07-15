@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -17,6 +17,8 @@ import type {
   ClarificationOutcome,
   ClarificationPayload,
   ConfigOption,
+  DomainSessionEvent,
+  ProviderKind,
   SessionId,
 } from "../src/core/types.ts"
 import { createAppStore, type AppStore } from "../src/store/appStore.ts"
@@ -118,6 +120,25 @@ function clarificationConnection(): {
       if (!handler) throw new Error("clarification handler not registered")
       return handler(payload)
     },
+  }
+}
+
+function clarificationAppConfig(dir: string, telemetryEnabled: boolean): AppConfig {
+  return {
+    providers: {
+      "claude-code": { displayName: "Claude Code", command: "claude-acp", args: [], env: {} },
+      codex: { displayName: "Codex", command: "codex-acp", args: [], env: {} },
+    } as unknown as AppConfig["providers"],
+    providerDefaults: {},
+    sessions: [{ provider: "claude-code", cwd: dir, title: "Private" }],
+    mcpServers: [],
+    shell: { enabled: false, command: "/bin/sh", scrollback: 100 },
+    clarificationTimeoutSeconds: 300,
+    persistenceEnabled: false,
+    telemetryEnabled,
+    theme: "auto",
+    welcomeBanner: "auto",
+    statusline: { llmDisclosureAcknowledged: false, layout: null },
   }
 }
 
@@ -524,33 +545,8 @@ describe("clarification lifecycle over controller and local JSONL", () => {
         sessionRef: "run-fixed",
       })
       const stub = clarificationConnection()
-      const config: AppConfig = {
-        providers: {
-          "claude-code": {
-            displayName: "Claude Code",
-            command: "claude-acp",
-            args: [],
-            env: {},
-          },
-          codex: {
-            displayName: "Codex",
-            command: "codex-acp",
-            args: [],
-            env: {},
-          },
-        } as unknown as AppConfig["providers"],
-        providerDefaults: {},
-        sessions: [{ provider: "claude-code", cwd: dir, title: "Private" }],
-        mcpServers: [],
-        shell: { enabled: false, command: "/bin/sh", scrollback: 100 },
-        persistenceEnabled: false,
-        telemetryEnabled: true,
-        theme: "auto",
-        welcomeBanner: "auto",
-        statusline: { llmDisclosureAcknowledged: false, layout: null },
-      }
       const controller = await createSessionController({
-        config,
+        config: clarificationAppConfig(dir, true),
         createConnection: () => stub.connection,
         readBranch: async () => null,
         recorder,
@@ -564,6 +560,7 @@ describe("clarification lifecycle over controller and local JSONL", () => {
             id: "single-private",
             label: "private single",
             mode: "single",
+            allowsCustom: false,
             required: true,
             options: [{ id: "selected-private", label: "private option" }],
           },
@@ -571,6 +568,7 @@ describe("clarification lifecycle over controller and local JSONL", () => {
             id: "multi-private",
             label: "private multi",
             mode: "multi",
+            allowsCustom: false,
             required: false,
             options: [{ id: "multi-value-private", label: "private multi option" }],
           },
@@ -587,11 +585,11 @@ describe("clarification lifecycle over controller and local JSONL", () => {
       const overlay = controller.store.getState().overlays.clarification!
       clock += 31_000
       controller.actions.respondClarification(overlay.requestId, overlay.generation, {
-        kind: "answered",
-        values: {
-          "single-private": "selected-private",
-          "multi-private": ["multi-value-private"],
-          "text-private": "private answer",
+        kind: "submitted",
+        answers: {
+          "single-private": { selectedOptionIds: ["selected-private"] },
+          "multi-private": { selectedOptionIds: ["multi-value-private"] },
+          "text-private": { selectedOptionIds: [], customText: "private answer" },
         },
       })
       await clarification
@@ -607,13 +605,12 @@ describe("clarification lifecycle over controller and local JSONL", () => {
         "clarification_presented",
         "clarification_settled",
       ])
-      expect(records.at(-1)).toMatchObject({
-        terminalKind: "answered",
-        hasSingle: true,
-        hasMulti: true,
-        hasText: true,
-        fieldCountBucket: "two_to_three",
+      expect(records.at(-1)).toEqual({
+        type: "clarification_settled",
+        terminalKind: "submitted",
         durationBucket: "30_to_120s",
+        at: 32_000,
+        sessionRef: "run-fixed",
       })
       expect(raw).not.toContain("private prompt")
       expect(raw).not.toContain("private option")
@@ -622,6 +619,208 @@ describe("clarification lifecycle over controller and local JSONL", () => {
       expect(raw).not.toContain("claude-acp")
       expect(raw).not.toContain("request-private")
 
+      await controller.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("writes one content-free timed-out terminal record in an opt-in run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-clarification-timeout-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      let clock = 1_000
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => clock,
+        sessionRef: "run-timeout",
+      })
+      const stub = clarificationConnection()
+      const controller = await createSessionController({
+        config: clarificationAppConfig(dir, true),
+        createConnection: () => stub.connection,
+        readBranch: async () => null,
+        recorder,
+        newInteractionId: () => "request-id-private",
+        sendInitialTasks: false,
+      })
+      const clarification = stub.clarify({
+        title: "private title",
+        context: "private context",
+        prompt: "private prompt",
+        fields: [{
+          id: "field-id-private",
+          label: "private field",
+          mode: "single",
+          allowsCustom: false,
+          required: true,
+          options: [{ id: "option-id-private", label: "private option label" }],
+        }],
+      })
+      const overlay = controller.store.getState().overlays.clarification!
+      clock += 300_000
+      controller.actions.respondClarification(overlay.requestId, overlay.generation, { kind: "timed_out" })
+      await clarification
+
+      const raw = readFileSync(path, "utf8")
+      const terminalRecords = raw
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as TelemetryRecord)
+        .filter((record) => record.type === "clarification_settled")
+      expect(terminalRecords).toEqual([{
+        type: "clarification_settled",
+        terminalKind: "timed_out",
+        durationBucket: "over_120s",
+        at: 301_000,
+        sessionRef: "run-timeout",
+      }])
+      for (const forbidden of [
+        "private title",
+        "private context",
+        "private prompt",
+        "field-id-private",
+        "private field",
+        "option-id-private",
+        "private option label",
+        "request-id-private",
+        dir,
+        "claude-acp",
+      ]) expect(raw).not.toContain(forbidden)
+
+      await controller.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("creates no clarification output when telemetry is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-clarification-disabled-int-"))
+    try {
+      const records: TelemetryRecord[] = []
+      const recorder = createTelemetryRecorder({
+        enabled: false,
+        sink: { write: (record) => records.push(record) },
+      })
+      const stub = clarificationConnection()
+      const controller = await createSessionController({
+        config: clarificationAppConfig(dir, false),
+        createConnection: () => stub.connection,
+        readBranch: async () => null,
+        recorder,
+        sendInitialTasks: false,
+      })
+      const clarification = stub.clarify({
+        prompt: "private disabled prompt",
+        fields: [{ id: "private-field", label: "Private", mode: "text", required: true }],
+      })
+      const overlay = controller.store.getState().overlays.clarification!
+      controller.actions.respondClarification(overlay.requestId, overlay.generation, { kind: "timed_out" })
+      await clarification
+
+      expect(records).toEqual([])
+      await controller.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("delegated lifecycle telemetry over the local JSONL sink", () => {
+  it("never serializes delegated content, identities, paths, titles, or provider failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-delegation-telemetry-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      const privateCwd = join(dir, "PRIVATE_CWD_SENTINEL")
+      mkdirSync(privateCwd)
+      const events: Array<(event: DomainSessionEvent) => void> = []
+      let connectionIndex = 0
+      const providerError = "PROVIDER_ERROR_SENTINEL"
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => 500,
+        sessionRef: "anonymous-delegation-run",
+      })
+      const config = clarificationAppConfig(privateCwd, true)
+      config.sessions = [{
+        provider: "claude-code",
+        cwd: privateCwd,
+        title: "PRIVATE_TITLE_SENTINEL",
+      }]
+      const controller = await createSessionController({
+        config,
+        cwd: privateCwd,
+        createConnection(provider) {
+          const index = connectionIndex++
+          let emit: (event: DomainSessionEvent) => void = () => {}
+          events[index] = (event) => emit(event)
+          return {
+            id: provider.id as ProviderKind,
+            connect: async () => ({ ready: true as const, protocolVersion: 1, canLoadSession: false }),
+            newSession: async () => `ACP_SESSION_SENTINEL_${index}`,
+            loadSession: async () => {},
+            prompt: async () => ({ stopReason: "end_turn" as const }),
+            cancel: async () => {},
+            setSessionConfigOption: async () => [],
+            onUpdate(next) {
+              emit = next
+              return () => { emit = () => {} }
+            },
+            onPermission: () => () => {},
+            onClarification: () => () => {},
+            async dispose() {
+              if (index === 1) throw new Error(providerError)
+            },
+          } as AgentConnection
+        },
+        newSessionId: () => "SESSION_ID_SENTINEL",
+        readBranch: async () => null,
+        sendInitialTasks: false,
+        recorder,
+        resolveHarnessCapability: () => ({
+          status: "supported",
+          profileId: "telemetry-integration-profile",
+          encoder: "codex-prompt-meta-v1",
+        }),
+      })
+      const parentId = controller.store.getState().workspace.selectedVisibleId!
+      await controller.actions.startDelegatedChild({
+        parentId,
+        task: "TASK_TEXT_SENTINEL",
+        desiredOutcome: "OUTCOME_TEXT_SENTINEL",
+      })
+
+      expect(await controller.closeConversation(parentId, "cancel")).toEqual({ outcome: "teardown-failed" })
+      events[1]?.({ kind: "status", status: "finished" })
+
+      const records = readFileSync(path, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line) as TelemetryRecord)
+      const delegatedRecords = records.filter((record) => record.type.startsWith("delegated_"))
+      expect(delegatedRecords.map((record) => record.type)).toEqual([
+        "delegated_launch_requested",
+        "delegated_launch_succeeded",
+        "delegated_visible_running_ms",
+        "delegated_cascade_requested",
+        "delegated_child_terminal",
+        "delegated_teardown_failed",
+      ])
+      expect(delegatedRecords.every((record) => record.agent === undefined)).toBe(true)
+      const serialized = JSON.stringify(records)
+      for (const forbidden of [
+        "TASK_TEXT_SENTINEL",
+        "OUTCOME_TEXT_SENTINEL",
+        "SESSION_ID_SENTINEL",
+        "ACP_SESSION_SENTINEL",
+        "PRIVATE_CWD_SENTINEL",
+        "PRIVATE_TITLE_SENTINEL",
+        providerError,
+      ]) {
+        expect(serialized).not.toContain(forbidden)
+      }
       await controller.dispose()
     } finally {
       rmSync(dir, { recursive: true, force: true })

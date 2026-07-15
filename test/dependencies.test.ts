@@ -7,7 +7,13 @@ import { CLAUDE_CODE_ACP_PACKAGE, CODEX_ACP_PACKAGE } from "../src/config/config
  * TechSpecs require OpenTUI, the ACP SDK, and xterm's headless emulator to be
  * version-pinned exactly because these runtime boundaries are fast-moving.
  */
-const EXACT_PIN_REQUIRED = ["@opentui/core", "@opentui/react", "@agentclientprotocol/sdk", "@xterm/headless"] as const
+const EXACT_PIN_REQUIRED = [
+  "@opentui/core",
+  "@opentui/react",
+  "@agentclientprotocol/sdk",
+  "@modelcontextprotocol/sdk",
+  "@xterm/headless",
+] as const
 const CONTRACT_ADAPTER_PINS = [
   "@agentclientprotocol/claude-agent-acp",
   "@agentclientprotocol/codex-acp",
@@ -33,6 +39,10 @@ describe("dependency pinning", () => {
       expect(spec.startsWith("^")).toBe(false)
       expect(spec.startsWith("~")).toBe(false)
     }
+  })
+
+  it("pins the MCP child SDK to the reviewed runtime version", () => {
+    expect(deps["@modelcontextprotocol/sdk"]).toBe("1.29.0")
   })
 
   it("pins react to an exact version", () => {

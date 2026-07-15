@@ -3,9 +3,11 @@ import { describe, expect, test } from "bun:test"
 import {
   createAgentConnection,
   type AgentConnection,
+  type AgentPromptInput,
   type PermissionOutcome,
   type ReadyState,
 } from "../src/agent/agentConnection.ts"
+import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../src/config/harnessCapability.ts"
 import {
   defaultAppConfig,
   findAgentConfig,
@@ -24,6 +26,8 @@ const NATIVE_RECIPE = {
   args: ["acp"] as const,
   env: {},
 }
+const SYNTHETIC_HARNESS = "For this synthetic contract only, reply with KITTEN_HARNESS_OK exactly."
+const SYNTHETIC_USER = "Follow the host guidance for this synthetic contract."
 
 interface VersionProbeResult {
   exitCode: number
@@ -33,7 +37,7 @@ interface VersionProbeResult {
 interface CursorContractConnection {
   connect(): Promise<ReadyState>
   newSession(cwd: string): Promise<string>
-  prompt(sessionId: string, blocks: Array<{ type: "text"; text: string }>): Promise<{ stopReason: string }>
+  prompt(sessionId: string, input: AgentPromptInput): Promise<{ stopReason: string }>
   onPermission(handler: () => Promise<PermissionOutcome>): void
   onUpdate(handler: (event: DomainSessionEvent) => void): () => void
   dispose(): Promise<void>
@@ -42,7 +46,7 @@ interface CursorContractConnection {
 interface CursorContractDependencies {
   resolveBuiltInRecipe(): ResolvedAgentConfig
   probeVersion(command: "agent"): Promise<VersionProbeResult>
-  createConnection(config: ResolvedAgentConfig): CursorContractConnection
+  createConnection(config: ResolvedAgentConfig, harnessProfile: CertifiedHarnessProfile): CursorContractConnection
   cwd: string
   roundTimeoutMs: number
 }
@@ -62,6 +66,9 @@ export interface CursorCertificationEvidence {
     authenticated: boolean
     sessionCreated: boolean
     promptCompleted: boolean
+    harnessSeparated: boolean
+    userBlocksPreserved: boolean
+    harnessNotUserText: boolean
     permissionRequested: boolean
     permissionSafelyCancelled: boolean
     disposedCleanly: boolean
@@ -105,13 +112,34 @@ export async function runCursorAcpContract(options: {
   const matchedProfile = matchCertifiedCursorRuntimeProfile(recipe, observedVersion, [candidateProfile])
   if (!matchedProfile) throw new Error("The observed Cursor version does not match the exact candidate native profile")
 
-  const connection = options.dependencies.createConnection({ ...recipe, runtimeProfile: matchedProfile })
+  const harnessProfile: CertifiedHarnessProfile = {
+    profileId: `cursor-agent-${observedVersion}`,
+    encoder: "cursor-prompt-meta-v1",
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: {
+      providerKind: "cursor",
+      command: NATIVE_RECIPE.command,
+      args: [...NATIVE_RECIPE.args],
+      env: {},
+      adapterPackage: "cursor-agent",
+      adapterVersion: observedVersion,
+    },
+  }
+
+  const connection = options.dependencies.createConnection({ ...recipe, runtimeProfile: matchedProfile }, harnessProfile)
   let permissionRequested = false
   let permissionSafelyCancelled = false
   let unexpectedClose = false
   let disposedCleanly = false
+  let output = ""
+  let resolveOutput!: () => void
+  const outputAvailable = new Promise<void>((resolve) => { resolveOutput = resolve })
   const unsubscribe = connection.onUpdate((event) => {
     if (event.kind === "status" && event.status === "error") unexpectedClose = true
+    if (event.kind === "agent_message") {
+      output += event.textDelta
+      resolveOutput()
+    }
   })
   connection.onPermission(async () => {
     permissionRequested = true
@@ -140,17 +168,20 @@ export async function runCursorAcpContract(options: {
     if (!sessionCreated) throw new Error("Cursor returned an empty session id")
 
     const turn = await withTimeout(
-      connection.prompt(sessionId, [
-        {
-          type: "text",
-          text: "Reply with OK only. Do not use tools, read files, write files, or run commands.",
-        },
-      ]),
+      connection.prompt(sessionId, {
+        userBlocks: [{ type: "text", text: SYNTHETIC_USER }],
+        harness: { version: "v1", text: SYNTHETIC_HARNESS },
+        profileId: harnessProfile.profileId,
+      }),
       options.dependencies.roundTimeoutMs,
-      "benign prompt",
+      "harness prompt",
     )
     promptCompleted = turn.stopReason.length > 0
     if (!promptCompleted) throw new Error("Cursor completed the prompt without a stop reason")
+    if (output.length === 0) {
+      await withTimeout(outputAvailable, options.dependencies.roundTimeoutMs, "harness output")
+    }
+    if (output.trim() !== "KITTEN_HARNESS_OK") throw new Error("Cursor did not prove the candidate harness encoding")
   } finally {
     try {
       await withTimeout(connection.dispose(), options.dependencies.roundTimeoutMs, "disposal")
@@ -180,6 +211,9 @@ export async function runCursorAcpContract(options: {
       authenticated,
       sessionCreated,
       promptCompleted,
+      harnessSeparated: true,
+      userBlocksPreserved: true,
+      harnessNotUserText: true,
       permissionRequested,
       permissionSafelyCancelled,
       disposedCleanly,
@@ -189,6 +223,7 @@ export async function runCursorAcpContract(options: {
   options.onEvidence?.(evidence)
   return { status: "passed", evidence }
 }
+
 
 export function parseExactSemanticVersion(output: string | undefined): string {
   const version = output?.trim() ?? ""
@@ -229,8 +264,8 @@ function realDependencies(): CursorContractDependencies {
       ])
       return { exitCode, stdout }
     },
-    createConnection(config): AgentConnection {
-      return createAgentConnection({ config })
+    createConnection(config, harnessProfile): AgentConnection {
+      return createAgentConnection({ config, harnessProfiles: [harnessProfile] })
     },
     cwd: process.cwd(),
     roundTimeoutMs: ROUND_TIMEOUT_MS,
@@ -319,6 +354,9 @@ describe("Cursor ACP contract harness", () => {
         authenticated: true,
         sessionCreated: true,
         promptCompleted: true,
+        harnessSeparated: true,
+        userBlocksPreserved: true,
+        harnessNotUserText: true,
         permissionRequested: true,
         permissionSafelyCancelled: true,
         disposedCleanly: true,
@@ -394,7 +432,7 @@ describe("Cursor ACP contract harness", () => {
           emitted = true
         },
       }),
-    ).rejects.toThrow(/benign prompt timed out/)
+    ).rejects.toThrow(/harness prompt timed out/)
     expect(calls).toContain("dispose")
     expect(emitted).toBe(false)
   })
@@ -445,7 +483,7 @@ function fakeDependencies(
       calls.push(`version:${command}`)
       return { exitCode: 0, stdout: options.versionOutput ?? "1.2.3\n" }
     },
-    createConnection(config) {
+    createConnection(config, harnessProfile) {
       calls.push(`create:${config.command} ${config.args.join(" ")}`)
       let permissionHandler: (() => Promise<PermissionOutcome>) | undefined
       let updateHandler: ((event: DomainSessionEvent) => void) | undefined
@@ -458,13 +496,20 @@ function fakeDependencies(
           calls.push("newSession")
           return "cursor-contract-session"
         },
-        async prompt() {
+        async prompt(_sessionId, input) {
           calls.push("prompt")
+          expect(Array.isArray(input)).toBe(false)
+          if (!Array.isArray(input)) {
+            expect(input.userBlocks).toEqual([{ type: "text", text: SYNTHETIC_USER }])
+            expect(input.harness).toEqual({ version: "v1", text: SYNTHETIC_HARNESS })
+            expect(input.profileId).toBe(harnessProfile.profileId)
+          }
           if (options.requestPermission) {
             calls.push("permission")
             expect(await permissionHandler?.()).toEqual({ outcome: "cancelled" })
           }
           if (options.unexpectedClose) updateHandler?.({ kind: "status", status: "error" })
+          updateHandler?.({ kind: "agent_message", messageId: "synthetic", textDelta: "KITTEN_HARNESS_OK" })
           return options.prompt ?? { stopReason: "end_turn" }
         },
         onPermission(handler) {

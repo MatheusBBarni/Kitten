@@ -5,6 +5,11 @@ import { testRender } from "@opentui/react/test-utils"
 import { createAgentConnection, type AgentConnection } from "../src/agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../src/agent/transport.ts"
 import { createSessionController, type AgentRuntimeState } from "../src/app/controller.ts"
+import {
+  HARNESS_CONTRACT_SDK_VERSION,
+  type CertifiedHarnessProfile,
+  type HarnessCapability,
+} from "../src/config/harnessCapability.ts"
 import type { AgentConfig, AppConfig, ProviderKind, SessionSeed } from "../src/core/types.ts"
 import { createAppStore } from "../src/store/appStore.ts"
 import { CockpitApp } from "../src/ui/CockpitApp.tsx"
@@ -31,11 +36,33 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
+}
+const TEST_HARNESS_CAPABILITY: HarnessCapability = {
+  status: "supported",
+  profileId: "session-status-integration-profile",
+  encoder: "codex-prompt-meta-v1",
+}
+
+function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
+  return {
+    profileId: "session-status-integration-profile",
+    encoder: "codex-prompt-meta-v1",
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: {
+      providerKind: config.id,
+      command: config.command,
+      args: [...config.args],
+      env: { ...config.env },
+      adapterPackage: "session-status-test-adapter",
+      adapterVersion: "1.0.0",
+    },
+  }
 }
 
 /** A real adapter over a mock agent whose prompt turns always stop with `end_turn`. */
@@ -44,6 +71,7 @@ function endTurnConnection(config: AgentConfig): AgentConnection {
   startMockAgent(pair.agent, { sessionId: `${config.id}-session`, onPrompt: async () => "end_turn" as const })
   return createAgentConnection({
     config,
+    harnessProfiles: [testHarnessProfile(config)],
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     // Flush streamed deltas immediately; coalescing timing is not this test's subject.
     scheduler: { schedule: (flush) => flush(), dispose: () => {} },
@@ -58,6 +86,7 @@ function connectionToMockAgent(
   const agent = startMockAgent(pair.agent, options)
   const connection = createAgentConnection({
     config,
+    harnessProfiles: [testHarnessProfile(config)],
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler: { schedule: (flush) => flush(), dispose: () => {} },
   })
@@ -73,6 +102,7 @@ describe("session status integration (end_turn -> finished)", () => {
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       createConnection: (config) => connections[config.id],
     })
 
@@ -168,6 +198,7 @@ describe("session status integration (end_turn -> finished)", () => {
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       createConnection: (config) => connections[config.id],
     })
     controller.actions.backgroundConversation("codex")

@@ -128,6 +128,13 @@ describe("opt-in gating", () => {
     recorder.tabCloseKeptOpen()
     recorder.tabRestore({ visibleCount: 2, backgroundCount: 1, unavailableCount: 0 })
     recorder.tabAttentionSeen("finished", "background")
+    recorder.delegatedLaunchRequested("private-child")
+    recorder.delegatedLaunchSucceeded("private-child")
+    recorder.delegatedLaunchFailed("private-child")
+    recorder.delegatedChildTerminal("private-child", "finished")
+    recorder.delegatedCascadeRequested("private-parent")
+    recorder.delegatedCascadeCompleted("private-parent")
+    recorder.delegatedTeardownFailed("private-child")
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -152,6 +159,90 @@ describe("opt-in gating", () => {
     recorder.tabSelectionStarted("kitty_chord")
     recorder.tabSelectionSettled()
     recorder.tabRestore({ visibleCount: 0, backgroundCount: 0, unavailableCount: 0 })
+    recorder.delegatedLaunchRequested("private-child")
+    recorder.delegatedLaunchSucceeded("private-child")
+    recorder.delegatedChildTerminal("private-child", "cancelled")
+    recorder.delegatedCascadeRequested("private-parent")
+    recorder.delegatedCascadeCompleted("private-parent")
+    recorder.delegatedTeardownFailed("private-child")
+  })
+})
+
+describe("delegated lifecycle telemetry", () => {
+  it("records only the allowlisted lifecycle vocabulary and deduplicates terminal callbacks", () => {
+    const sink = memorySink()
+    const clock = fakeClock(100)
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "anonymous-run",
+    })
+    const sensitiveKey = [
+      "TASK_SENTINEL",
+      "OUTCOME_SENTINEL",
+      "SESSION_SENTINEL",
+      "/private/cwd/path",
+      "provider raw error",
+    ].join(":")
+
+    recorder.delegatedLaunchRequested(sensitiveKey)
+    clock.advance(125)
+    recorder.delegatedLaunchSucceeded(sensitiveKey)
+    recorder.delegatedLaunchSucceeded(sensitiveKey)
+    recorder.delegatedChildTerminal(sensitiveKey, "finished")
+    recorder.delegatedChildTerminal(sensitiveKey, "failed")
+    recorder.delegatedCascadeRequested(sensitiveKey)
+    recorder.delegatedCascadeRequested(sensitiveKey)
+    recorder.delegatedCascadeCompleted(sensitiveKey)
+    recorder.delegatedCascadeCompleted(sensitiveKey)
+    recorder.delegatedTeardownFailed(sensitiveKey)
+    recorder.delegatedTeardownFailed(sensitiveKey)
+
+    expect(sink.records).toEqual([
+      { type: "delegated_launch_requested", at: 100, sessionRef: "anonymous-run" },
+      { type: "delegated_launch_succeeded", at: 225, sessionRef: "anonymous-run" },
+      { type: "delegated_visible_running_ms", durationMs: 125, at: 225, sessionRef: "anonymous-run" },
+      {
+        type: "delegated_child_terminal",
+        delegatedStatus: "finished",
+        at: 225,
+        sessionRef: "anonymous-run",
+      },
+      { type: "delegated_cascade_requested", at: 225, sessionRef: "anonymous-run" },
+      { type: "delegated_cascade_completed", at: 225, sessionRef: "anonymous-run" },
+      { type: "delegated_teardown_failed", at: 225, sessionRef: "anonymous-run" },
+    ])
+    const serialized = JSON.stringify(sink.records)
+    for (const forbidden of [
+      "TASK_SENTINEL",
+      "OUTCOME_SENTINEL",
+      "SESSION_SENTINEL",
+      "/private/cwd/path",
+      "provider raw error",
+      '"agent"',
+    ]) {
+      expect(serialized).not.toContain(forbidden)
+    }
+    expect(sink.records.every((record) => Object.keys(record).every((key) =>
+      ["type", "at", "sessionRef", "durationMs", "delegatedStatus"].includes(key),
+    ))).toBe(true)
+  })
+
+  it("records one failed launch only when a private launch clock exists", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run" })
+
+    recorder.delegatedLaunchFailed("not-requested")
+    recorder.delegatedLaunchRequested("failed-child")
+    recorder.delegatedLaunchFailed("failed-child")
+    recorder.delegatedLaunchFailed("failed-child")
+    recorder.delegatedLaunchSucceeded("failed-child")
+
+    expect(sink.records).toEqual([
+      { type: "delegated_launch_requested", at: 42, sessionRef: "run" },
+      { type: "delegated_launch_failed", at: 42, sessionRef: "run" },
+    ])
   })
 })
 
@@ -329,7 +420,7 @@ describe("clarification lifecycle events", () => {
     recorder.clarificationPreempted("developer-named-session", "permission")
     clock.advance(7_000)
     recorder.clarificationResumed("developer-named-session", "permission")
-    recorder.clarificationSettled("request-private", "answered")
+    recorder.clarificationSettled("request-private", "submitted")
     recorder.clarificationSettled("request-private", "cancelled")
 
     expect(types(sink.records)).toEqual([
@@ -372,12 +463,7 @@ describe("clarification lifecycle events", () => {
       },
       {
         type: "clarification_settled",
-        agentRef: 1,
-        terminalKind: "answered",
-        hasSingle: true,
-        hasMulti: true,
-        hasText: true,
-        fieldCountBucket: "two_to_three",
+        terminalKind: "submitted",
         durationBucket: "5_to_30s",
         at: 8_000,
         sessionRef: "run-1",
@@ -426,18 +512,45 @@ describe("clarification lifecycle events", () => {
       ["agentRef", "at", "capability", "focused", "sessionRef", "type"],
       ["agentRef", "at", "lossReason", "sessionRef", "type"],
       [
-        "agentRef",
         "at",
         "durationBucket",
-        "fieldCountBucket",
-        "hasMulti",
-        "hasSingle",
-        "hasText",
         "sessionRef",
         "terminalKind",
         "type",
       ],
     ])
+  })
+
+  it.each([
+    ["submitted", 1_000, "under_5s"],
+    ["skipped", 5_000, "5_to_30s"],
+    ["timed_out", 30_000, "30_to_120s"],
+    ["cancelled", 121_000, "over_120s"],
+  ] as const)("records %s with only its closed outcome and a coarse duration bucket", (terminalKind, elapsed, durationBucket) => {
+    const sink = memorySink()
+    const clock = fakeClock()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: clock.now, sessionRef: "run-1" })
+    recorder.clarificationPresented({
+      requestId: `private-${terminalKind}`,
+      sessionId: "/private/customer/session",
+      capability: "supported",
+      focused: true,
+      hasSingle: true,
+      hasMulti: true,
+      hasText: true,
+      fieldCount: 10,
+    })
+
+    clock.advance(elapsed)
+    recorder.clarificationSettled(`private-${terminalKind}`, terminalKind)
+
+    expect(sink.records.at(-1)).toEqual({
+      type: "clarification_settled",
+      terminalKind,
+      durationBucket,
+      at: 1_000 + elapsed,
+      sessionRef: "run-1",
+    })
   })
 })
 

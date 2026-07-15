@@ -22,6 +22,7 @@ import type { BannerVariant } from "../config/appState.ts"
 import type { HandoffBundle, SessionId, Turn } from "../core/types.ts"
 import {
   selectFocusedSessionId,
+  selectFocusedHarnessDeliveryNotice,
   selectRestoration,
   selectRestorationBundle,
   selectSessionTurns,
@@ -43,6 +44,8 @@ export const RESTORATION_UNAVAILABLE_LABEL = "history unavailable"
 export const RESTORATION_FRESH_LABEL = "Previous history was unavailable — started a fresh session"
 export const RESTORATION_CONTEXT_LABEL = "Persisted hand-off context"
 export const START_FRESH_LABEL = "start fresh from this context"
+export const DEGRADED_START_LABEL = "Safe start unavailable"
+export const DEGRADED_START_RECOVERY_LABEL = "Your task is preserved. Start a fresh conversation"
 export const CONVERSATION_SCROLLBOX_ID = "conversation-scrollbox"
 
 /**
@@ -79,8 +82,10 @@ export function ConversationView({
   const turns = useAppSelector(turnsSelector)
   const restoration = useAppSelector(restorationSelector)
   const bundle = useAppSelector(selectRestorationBundle)
+  const deliveryNotice = useAppSelector(selectFocusedHarnessDeliveryNotice)
   if (focusedSessionId === null) return null
   const leadingContent = workspaceChrome ? <TabWorkspace /> : null
+  const recoveryNotice = deliveryNotice ? <DegradedStartRecovery /> : null
 
   let content: ReactNode
   if (restoration === "unavailable") {
@@ -94,11 +99,20 @@ export function ConversationView({
         focusedSessionId,
         turns,
         welcomeBannerVariant,
-        <FreshRestorationBadge />,
+        <>
+          <FreshRestorationBadge />
+          {recoveryNotice}
+        </>,
         leadingContent,
       )
     } else {
-      content = <UnavailableRestoration bundle={bundle} leadingContent={leadingContent} />
+      content = (
+        <UnavailableRestoration
+          bundle={bundle}
+          leadingContent={leadingContent}
+          recoveryNotice={recoveryNotice}
+        />
+      )
     }
   } else if (restoration === null) {
     content = renderConversationContent(
@@ -106,7 +120,7 @@ export function ConversationView({
       focusedSessionId,
       turns,
       welcomeBannerVariant,
-      null,
+      recoveryNotice,
       leadingContent,
     )
   } else {
@@ -115,7 +129,10 @@ export function ConversationView({
       focusedSessionId,
       turns,
       welcomeBannerVariant,
-      <LiveRestorationBadge />,
+      <>
+        <LiveRestorationBadge />
+        {recoveryNotice}
+      </>,
       leadingContent,
     )
   }
@@ -196,12 +213,28 @@ function FreshRestorationBadge(): ReactNode {
   )
 }
 
+/** Fixed recovery copy sourced only from the closed notice projection. */
+function DegradedStartRecovery(): ReactNode {
+  const palette = usePalette()
+  return (
+    <box style={{ flexShrink: 0, flexDirection: "column", marginTop: 1, marginBottom: 1 }}>
+      <text fg={palette.status.error}>{DEGRADED_START_LABEL}</text>
+      <text>
+        <span fg={palette.text}>{`${DEGRADED_START_RECOVERY_LABEL}: `}</span>
+        <span fg={palette.accent}>{NEW_RUN_KEY_HINT}</span>
+      </text>
+    </box>
+  )
+}
+
 function UnavailableRestoration({
   bundle,
   leadingContent,
+  recoveryNotice,
 }: {
   bundle: HandoffBundle | null
   leadingContent: ReactNode
+  recoveryNotice: ReactNode
 }): ReactNode {
   const palette = usePalette()
   return (
@@ -211,6 +244,7 @@ function UnavailableRestoration({
       horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
     >
       {leadingContent}
+      {recoveryNotice}
       <text style={{ marginTop: 1 }} fg={palette.status.error}>
         {RESTORATION_UNAVAILABLE_LABEL}
       </text>

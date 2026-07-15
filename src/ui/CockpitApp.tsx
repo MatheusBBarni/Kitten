@@ -48,6 +48,7 @@ import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController, useShellBufferType } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
 import { ConversationActivity } from "./ConversationActivity.tsx"
+import { DelegationDialog } from "./DelegationDialog.tsx"
 import { EmptyWorkspace } from "./EmptyWorkspace.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
 import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
@@ -176,6 +177,17 @@ function CockpitFrame({
         case "hand-off":
           if (handoff.begin().ok) setHelpOpen(false)
           return
+        case "delegate": {
+          const parentId = state.focusedPane.kind === "agent"
+            ? state.focusedPane.sessionId
+            : null
+          if (!parentId || state.workspace.selectedVisibleId !== parentId) return
+          controller.store.openDelegation({ parentId })
+          if (controller.store.getState().overlays.delegation?.parentId === parentId) {
+            setHelpOpen(false)
+          }
+          return
+        }
         case "sessions":
           setHelpOpen(false)
           controller.store.openSessions()
@@ -202,6 +214,10 @@ function CockpitFrame({
           const sessionId = state.workspace.selectedVisibleId
           const restoration = sessionId ? state.restoration[sessionId] : null
           const bundle = state.restorationBundle
+          if (sessionId && state.harnessDeliveryNotices[sessionId]) {
+            void controller.actions.startFreshFromContext(undefined, sessionId)
+            return
+          }
           if (sessionId && restoration === "unavailable" && bundle) {
             void controller.actions.startFreshFromContext(
               composeHandoffBlocks(bundle, createHandoffEdits(bundle)),
@@ -405,6 +421,8 @@ function CockpitFrame({
       <StatuslineOverlay flow={statusline} />
 
       <TabDialog />
+
+      <DelegationDialog />
 
       {/* Permission remains above ordinary cockpit overlays. */}
       <ApprovalPrompt />

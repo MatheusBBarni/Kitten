@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add coordinator request handles and exact timeout settlement
 type: backend
 complexity: high

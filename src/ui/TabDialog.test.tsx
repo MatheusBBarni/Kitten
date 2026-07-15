@@ -5,7 +5,7 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import type { SessionId, SessionStatus } from "../core/types.ts"
+import type { DelegatedChildStatus, SessionId, SessionStatus } from "../core/types.ts"
 import { createInMemoryShellRuntimeFactory } from "../shell/shellRuntime.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { TAB_CLOSE_HINT, TAB_RENAME_HINT } from "./keymap.ts"
@@ -17,6 +17,7 @@ import {
   EMPTY_RENAME_ERROR,
   IDLE_CLOSE_LABEL,
   KEEP_OPEN_LABEL,
+  KEEP_WORKING_LABEL,
   RENAME_DIALOG_TITLE,
 } from "./TabDialog.tsx"
 
@@ -46,6 +47,44 @@ async function openDialog(
 
 function setStatus(controller: FakeController, sessionId: SessionId, status: SessionStatus): void {
   controller.store.applyEvent(sessionId, { kind: "status", status })
+}
+
+function addDelegatedChild(
+  controller: FakeController,
+  parentId: SessionId,
+  childId: SessionId,
+  status: DelegatedChildStatus,
+): void {
+  const selected = controller.store.getState().workspace.selectedVisibleId
+  if (selected !== parentId) controller.store.selectConversation(parentId)
+  controller.store.addDelegatedSession({
+    seed: { id: childId, providerKind: "codex", title: childId, cwd: "/workspace/kitten" },
+    parentId,
+    parentGeneration: 1,
+    childGeneration: 1,
+    task: `Handle ${childId}`,
+    desiredOutcome: `Report ${childId}`,
+  })
+  if (selected && selected !== parentId) controller.store.selectConversation(selected)
+
+  const identity = { parentId, childId, parentGeneration: 1, childGeneration: 1 }
+  if (status === "starting") return
+  if (status === "running") {
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "working" })
+  } else if (status === "needs_input") {
+    controller.store.publishDelegatedChildState({
+      ...identity,
+      status,
+      sessionStatus: "awaiting_clarification",
+    })
+  } else if (status === "finished") {
+    controller.store.publishDelegatedChildState({ ...identity, status: "running", sessionStatus: "working" })
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "finished", at: 1 })
+  } else if (status === "failed") {
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "error", at: 1 })
+  } else {
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "idle", at: 1 })
+  }
 }
 
 function openApproval(controller: FakeController): void {
@@ -148,6 +187,131 @@ describe("TabDialog rename", () => {
 })
 
 describe("TabDialog close policy", () => {
+  it("shows active child count and statuses with only cancel-and-close or keep-working", async () => {
+    const controller = createFakeController()
+    setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "running-child", "running")
+    addDelegatedChild(controller, "claude-code", "input-child", "needs_input")
+    const setup = await renderCockpit(controller)
+
+    try {
+      const opened = await openDialog(setup, controller, "close")
+      expect(opened).toContain("2 active child tasks affected")
+      expect(opened).toContain("Running (1)")
+      expect(opened).toContain("Needs input (1)")
+      expect(opened).toContain("Cancel 2 child tasks and close")
+      expect(opened).toContain(KEEP_WORKING_LABEL)
+      expect(opened).not.toContain(BACKGROUND_LABEL)
+      expect(opened).not.toContain("detach")
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("confirms delegated parent cancellation once through the parent close action only", async () => {
+    const controller = createFakeController()
+    setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "running-child", "running")
+    const setup = await renderCockpit(controller)
+
+    try {
+      await openDialog(setup, controller, "close")
+      await actAsync(() => setup.mockInput.pressEnter())
+
+      expect(controller.calls.closeConversation).toEqual([
+        { sessionId: "claude-code", choice: "cancel" },
+      ])
+      expect(controller.calls.cancelDelegatedChild).toEqual([])
+      expect(controller.calls.cancel).toEqual([])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("keeps delegated lifecycle unchanged on Keep working and Escape", async () => {
+    const controller = createFakeController()
+    setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "running-child", "running")
+    const setup = await renderCockpit(controller)
+    const before = controller.store.getState().delegation
+
+    try {
+      await openDialog(setup, controller, "close")
+      await actAsync(() => {
+        setup.mockInput.pressArrow("down")
+        setup.mockInput.pressEnter()
+      })
+      expect(controller.calls.closeConversation).toEqual([
+        { sessionId: "claude-code", choice: "keep-open" },
+      ])
+      expect(controller.store.getState().delegation).toBe(before)
+
+      await openDialog(setup, controller, "close")
+      await actAsync(() => setup.mockInput.pressEscape())
+      expect(controller.calls.closeConversation).toHaveLength(1)
+      expect(controller.store.getState().delegation).toBe(before)
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("returns to ordinary close policy for terminal-only delegated children", async () => {
+    const controller = createFakeController()
+    addDelegatedChild(controller, "claude-code", "finished-child", "finished")
+    addDelegatedChild(controller, "claude-code", "failed-child", "failed")
+    const setup = await renderCockpit(controller)
+
+    try {
+      const opened = await openDialog(setup, controller, "close")
+      expect(opened).toContain(IDLE_CLOSE_LABEL)
+      expect(opened).not.toContain("child tasks affected")
+      expect(opened).not.toContain(KEEP_WORKING_LABEL)
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("updates live child summary copy and keeps the selected choice clamped", async () => {
+    const controller = createFakeController()
+    setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "running-child", "running")
+    addDelegatedChild(controller, "claude-code", "input-child", "needs_input")
+    const setup = await renderCockpit(controller)
+
+    try {
+      await openDialog(setup, controller, "close")
+      await actAsync(() => setup.mockInput.pressArrow("down"))
+      await actAsync(() => controller.store.publishDelegatedChildState({
+        parentId: "claude-code",
+        childId: "input-child",
+        parentGeneration: 1,
+        childGeneration: 1,
+        status: "running",
+        sessionStatus: "working",
+      }))
+      const updated = await setup.waitForFrame((frame) => frame.includes("Running (2)"))
+      expect(updated).not.toContain("Needs input")
+
+      await actAsync(() => controller.store.publishDelegatedChildState({
+        parentId: "claude-code",
+        childId: "input-child",
+        parentGeneration: 1,
+        childGeneration: 1,
+        status: "finished",
+        sessionStatus: "finished",
+        at: 2,
+      }))
+      const reduced = await setup.waitForFrame((frame) => frame.includes("1 active child task affected"))
+      expect(reduced).toContain("Cancel 1 child task and close")
+      await actAsync(() => setup.mockInput.pressEnter())
+      expect(controller.calls.closeConversation).toEqual([
+        { sessionId: "claude-code", choice: "keep-open" },
+      ])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   it("uses the direct close outcome for idle work and does not expose active choices", async () => {
     const controller = createFakeController()
     const setup = await renderCockpit(controller)
@@ -159,6 +323,26 @@ describe("TabDialog close policy", () => {
       expect(opened).not.toContain(BACKGROUND_LABEL)
       expect(opened).not.toContain(CANCEL_DELIBERATELY_LABEL)
       expect(opened).not.toContain(KEEP_OPEN_LABEL)
+
+      await actAsync(() => setup.mockInput.pressEnter())
+      expect(controller.calls.closeConversation).toEqual([
+        { sessionId: "claude-code", choice: "close" },
+      ])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("uses the direct close outcome after all delegated child work settles", async () => {
+    const controller = createFakeController()
+    addDelegatedChild(controller, "claude-code", "settled-child", "finished")
+    const setup = await renderCockpit(controller)
+
+    try {
+      const opened = await openDialog(setup, controller, "close")
+      expect(opened).toContain(IDLE_CLOSE_LABEL)
+      expect(opened).not.toContain("active child task affected")
+      expect(opened).not.toContain(CANCEL_DELIBERATELY_LABEL)
 
       await actAsync(() => setup.mockInput.pressEnter())
       expect(controller.calls.closeConversation).toEqual([
@@ -264,6 +448,7 @@ describe("TabDialog modal integration", () => {
   it("blocks prompt and global tab-key leakage, then restores prompt focus on Escape", async () => {
     const controller = createFakeController()
     setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "modal-child", "running")
     controller.store.confirmKittyKeyboard()
     const setup = await renderCockpit(controller)
 
@@ -294,6 +479,7 @@ describe("TabDialog modal integration", () => {
     const controller = createFakeController({ shell: { ready: true, runtime } })
     controller.store.setFocusedPane({ kind: "shell" })
     setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "shell-child", "running")
     const setup = await renderCockpit(controller)
 
     try {
@@ -306,6 +492,31 @@ describe("TabDialog modal integration", () => {
     } finally {
       await destroyMounted(setup.renderer)
       await runtime.dispose()
+    }
+  })
+
+  it("stands down the delegated close warning while approval has priority", async () => {
+    const controller = createFakeController()
+    setStatus(controller, "claude-code", "working")
+    addDelegatedChild(controller, "claude-code", "approval-child", "running")
+    const setup = await renderCockpit(controller)
+
+    try {
+      await openDialog(setup, controller, "close")
+      await actAsync(() => openApproval(controller))
+      const approval = await setup.waitForFrame((frame) => frame.includes("Topmost action"))
+      expect(approval).not.toContain("Cancel 1 child task and close")
+      expect(controller.store.getState().overlays.tabDialog).toEqual({
+        kind: "close",
+        sessionId: "claude-code",
+      })
+
+      await actAsync(() => setup.mockInput.pressEscape())
+      const resumed = await setup.waitForFrame((frame) => frame.includes("Cancel 1 child task and close"))
+      expect(resumed).toContain(KEEP_WORKING_LABEL)
+      expect(controller.calls.closeConversation).toEqual([])
+    } finally {
+      await destroyMounted(setup.renderer)
     }
   })
 })

@@ -19,6 +19,7 @@ import {
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type PromptInput,
+  type StartDelegatedChildInput,
   type StatuslineWriteResult,
   type SwitchFocusOptions,
 } from "../src/app/actions.ts"
@@ -38,6 +39,9 @@ import type { ResumeMode } from "../src/telemetry/recorder.ts"
 /** Every action call the cockpit made, in order. */
 export interface RecordedCalls {
   createConversation: number
+  startDelegatedChild: StartDelegatedChildInput[]
+  steerDelegatedChild: { childId: SessionId; text: string }[]
+  cancelDelegatedChild: SessionId[]
   renameConversation: { sessionId: SessionId; displayName: string }[]
   selectConversation: SessionId[]
   selectConversationOptions: (SwitchFocusOptions | undefined)[]
@@ -67,7 +71,7 @@ export interface RecordedCalls {
   jumpToNextNeedy: number
   jumpToNextAttention: number
   startNewRun: number
-  startFreshFromContext: { input: PromptInput; sessionId: SessionId | undefined }[]
+  startFreshFromContext: { input: PromptInput | undefined; sessionId: SessionId | undefined }[]
   restore: PersistedRunRecord[]
   restoreModes: ResumeMode[]
   respondPermission: PermissionOutcome[]
@@ -101,6 +105,11 @@ export interface FakeControllerOptions {
   /** Deterministic persistence outcomes for statusline UI tests. */
   acknowledgeStatuslineResult?: StatuslineWriteResult
   confirmStatuslineResult?: StatuslineWriteResult
+  /** Deterministic delegated-launch result for pending and fail-soft UI tests. */
+  startDelegatedChild?: (
+    input: StartDelegatedChildInput,
+    store: AppStore,
+  ) => SessionId | null | Promise<SessionId | null>
   /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
   sendPrompt?: (
     input: PromptInput,
@@ -151,6 +160,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   }
   const calls: RecordedCalls = {
     createConversation: 0,
+    startDelegatedChild: [],
+    steerDelegatedChild: [],
+    cancelDelegatedChild: [],
     renameConversation: [],
     selectConversation: [],
     selectConversationOptions: [],
@@ -186,6 +198,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
 
   const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
   let created = 0
+  const rejectedFreshPrompts = new Map<SessionId, PromptInput>()
 
   async function closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult> {
     calls.closeConversation.push({ sessionId, choice })
@@ -237,6 +250,67 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         })
         return sessionId
       },
+      async startDelegatedChild(input): Promise<SessionId | null> {
+        calls.startDelegatedChild.push(input)
+        if (options.startDelegatedChild) return await options.startDelegatedChild(input, store)
+        const parent = store.getState().sessions[input.parentId]
+        if (!parent || input.task.trim().length === 0 || input.desiredOutcome.trim().length === 0) return null
+        created += 1
+        const sessionId = `fake-delegated-${created}`
+        store.addDelegatedSession({
+          seed: {
+            id: sessionId,
+            providerKind: parent.providerKind,
+            title: `Delegated ${created}`,
+            cwd: parent.cwd,
+          },
+          parentId: input.parentId,
+          parentGeneration: 1,
+          childGeneration: created + 1,
+          task: input.task.trim(),
+          desiredOutcome: input.desiredOutcome.trim(),
+        })
+        store.publishDelegatedChildState({
+          parentId: input.parentId,
+          childId: sessionId,
+          parentGeneration: 1,
+          childGeneration: created + 1,
+          status: "running",
+          sessionStatus: "working",
+        })
+        if (!store.getState().delegation.children[sessionId]) return null
+        runtimes.push({
+          sessionId,
+          providerKind: parent.providerKind,
+          displayName: `Delegated ${created}`,
+          title: `Delegated ${created}`,
+          cwd: parent.cwd,
+          ready: true,
+          acpSessionId: `fake-delegated-acp-${created}`,
+          mcp: { loaded: [], skipped: [] },
+        })
+        return sessionId
+      },
+      async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
+        calls.steerDelegatedChild.push({ childId, text })
+        const child = store.getState().delegation.children[childId]
+        if (!child || child.terminal || text.trim().length === 0) return null
+        return options.sendPrompt?.(text, childId, store) ?? null
+      },
+      async cancelDelegatedChild(childId): Promise<void> {
+        calls.cancelDelegatedChild.push(childId)
+        const child = store.getState().delegation.children[childId]
+        if (!child || child.terminal) return
+        store.publishDelegatedChildState({
+          parentId: child.parentId,
+          childId,
+          parentGeneration: child.parentGeneration,
+          childGeneration: child.childGeneration,
+          status: "cancelled",
+          sessionStatus: "idle",
+          at: Date.now(),
+        })
+      },
       renameConversation(sessionId, displayName): void {
         calls.renameConversation.push({ sessionId, displayName })
         store.renameConversation(sessionId, displayName)
@@ -277,7 +351,12 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       async sendPrompt(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
         calls.sendPrompt.push({ input, sessionId })
-        return await (options.sendPrompt?.(input, sessionId, store) ?? null)
+        const result = await (options.sendPrompt?.(input, sessionId, store) ?? null)
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (result === null && target && store.getState().harnessDeliveryNotices[target]) {
+          rejectedFreshPrompts.set(target, input)
+        }
+        return result
       },
       recordPromptHistory(text: string, sessionId?: SessionId): void {
         calls.recordPromptHistory.push({ text, sessionId })
@@ -374,9 +453,18 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         calls.startNewRun++
         for (const sessionId of store.getState().workspace.order) store.setRestoration(sessionId, null)
       },
-      async startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
-        calls.startFreshFromContext.push({ input, sessionId })
-        if (sessionId) store.setRestoration(sessionId, null)
+      async startFreshFromContext(input?: PromptInput, sessionId?: SessionId): Promise<PromptResult | null> {
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        const recoveredInput = input ?? (target ? rejectedFreshPrompts.get(target) : undefined)
+        calls.startFreshFromContext.push({ input: recoveredInput, sessionId })
+        if (target) {
+          store.setRestoration(target, null)
+          if (store.getState().harnessDeliveryNotices[target]) {
+            const generation = (store.getState().harnessDeliveries[target]?.generation ?? 0) + 1
+            store.setHarnessDelivery(target, { version: "v1", generation, state: "pending" })
+            if (recoveredInput) rejectedFreshPrompts.delete(target)
+          }
+        }
         return null
       },
       respondPermission(outcome: PermissionOutcome): void {

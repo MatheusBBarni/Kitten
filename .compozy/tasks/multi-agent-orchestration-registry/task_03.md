@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Controller-Owned Delegated Child Launch"
 type: backend
 complexity: high

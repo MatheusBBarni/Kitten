@@ -15,7 +15,7 @@ bun install            # install deps (bunfig pins exact versions; see below)
 bun start              # run the cockpit (alias: bun run dev)
 bun run selfcheck      # headless boot self-check (mounts the real tree, no terminal); alias for `bun run src/index.ts --self-check`
 bun test               # run the whole suite (bun's built-in runner)
-bun test --coverage    # coverage; threshold 0.8 is enforced when coverage runs (bun run test:coverage)
+bun test --coverage --isolate # coverage; threshold 0.8 is enforced when coverage runs (bun run test:coverage)
 bun run typecheck      # tsc --noEmit
 bun run build          # compile standalone per-platform binaries (scripts/build.ts)
 bun run build:local    # quick single-binary compile for the host only

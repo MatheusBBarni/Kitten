@@ -60,6 +60,9 @@ export const BACKGROUND_LABEL = "Background"
 /** The workspace-selected conversation gets a textual cue as well as the marker. */
 export const SELECTED_LABEL = "selected"
 
+/** Terminal delegated work remains inspectable through its normal conversation. */
+export const OPEN_TRANSCRIPT_LABEL = "Open transcript"
+
 /** Stable hook for the keyboard-following conversation list. */
 export const SESSIONS_SCROLLBOX_ID = "sessions-overlay-list"
 
@@ -267,6 +270,16 @@ export function SessionCard({
       <text fg={palette.muted}>
         {`   ${PROVIDER_DISPLAY_NAMES[session.providerKind]}  ·  ${session.cwd}`}
       </text>
+      {session.delegation?.kind === "child" ? (
+        <text fg={palette.muted}>
+          {`   ${session.delegation.lineageLabel}  ·  Delegated ${session.delegation.statusLabel}`}
+          {session.delegation.terminalTranscriptAvailable ? `  ·  ${OPEN_TRANSCRIPT_LABEL}` : ""}
+        </text>
+      ) : session.delegation?.kind === "parent" ? (
+        <text fg={palette.muted}>
+          {`   ${session.delegation.groupLabel}  ·  ${session.delegation.childCount} ${session.delegation.childCount === 1 ? "child" : "children"}`}
+        </text>
+      ) : null}
     </box>
   )
 }

@@ -7,7 +7,12 @@ import { describe, expect, it } from "bun:test"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
-import type { ClarificationPayload, SessionId } from "../core/types.ts"
+import type {
+  ClarificationMultiField,
+  ClarificationPayload,
+  ClarificationSingleField,
+  SessionId,
+} from "../core/types.ts"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
@@ -34,6 +39,7 @@ const SINGLE_PAYLOAD: ClarificationPayload = {
       label: "Implementation boundary",
       description: "Where should orchestration live?",
       mode: "single",
+      allowsCustom: false,
       required: true,
       options: [
         { id: "controller", label: "Controller", description: "Own the lifecycle centrally." },
@@ -52,6 +58,7 @@ const MULTI_PAYLOAD: ClarificationPayload = {
       label: "Deliverables",
       description: "Select every compatible item.",
       mode: "multi",
+      allowsCustom: false,
       required: true,
       options: [
         { id: "tests", label: "Tests", description: "Add focused coverage." },
@@ -79,6 +86,26 @@ const MIXED_PAYLOAD: ClarificationPayload = {
   fields: [
     SINGLE_PAYLOAD.fields[0]!,
     TEXT_PAYLOAD.fields[0]!,
+  ],
+}
+
+const RICH_PAYLOAD: ClarificationPayload = {
+  title: "Release boundary",
+  context: "Choose the safest change for this run.",
+  prompt: "Confirm the implementation plan",
+  fields: [
+    {
+      ...(SINGLE_PAYLOAD.fields[0] as ClarificationSingleField),
+      label: "Architecture",
+      description: "Select one boundary or add a precise alternative.",
+      allowsCustom: true,
+    },
+    {
+      ...(MULTI_PAYLOAD.fields[0] as ClarificationMultiField),
+      label: "Required deliverables",
+      description: "Select all that apply and add any missing deliverable.",
+      allowsCustom: true,
+    },
   ],
 }
 
@@ -163,6 +190,23 @@ describe("ClarificationPrompt contents and priority", () => {
 
     await destroyMounted(setup.renderer)
   })
+
+  it("renders form metadata, field metadata, required indicators, and custom-answer affordances", async () => {
+    const controller = createFakeController()
+    const { renderer, captureCharFrame } = await renderWithClarification(controller, RICH_PAYLOAD)
+
+    const frame = captureCharFrame()
+    expect(frame).toContain("Release boundary")
+    expect(frame).toContain("Choose the safest change for this run.")
+    expect(frame).toContain("Architecture *")
+    expect(frame).toContain("Select one boundary or add a precise alternative.")
+    expect(frame).toContain("Required deliverables *")
+    expect(frame).toContain("Custom answer:")
+    expect(frame.toLocaleLowerCase()).not.toContain("mcp")
+    expect(frame.toLocaleLowerCase()).not.toContain("generation")
+
+    await destroyMounted(renderer)
+  })
 })
 
 describe("ClarificationPrompt outcomes", () => {
@@ -186,7 +230,7 @@ describe("ClarificationPrompt outcomes", () => {
       {
         requestId: REQUEST_ID,
         generation: GENERATION,
-        outcome: { kind: "answered", values: { boundary: "view" } },
+        outcome: { kind: "submitted", answers: { boundary: { selectedOptionIds: ["view"] } } },
       },
     ])
 
@@ -217,7 +261,10 @@ describe("ClarificationPrompt outcomes", () => {
       {
         requestId: REQUEST_ID,
         generation: GENERATION,
-        outcome: { kind: "answered", values: { deliverables: ["tests", "docs"] } },
+        outcome: {
+          kind: "submitted",
+          answers: { deliverables: { selectedOptionIds: ["tests", "docs"] } },
+        },
       },
     ])
 
@@ -240,7 +287,10 @@ describe("ClarificationPrompt outcomes", () => {
       {
         requestId: REQUEST_ID,
         generation: GENERATION,
-        outcome: { kind: "answered", values: { notes: "Keep the reducer pure" } },
+        outcome: {
+          kind: "submitted",
+          answers: { notes: { selectedOptionIds: [], customText: "Keep the reducer pure" } },
+        },
       },
     ])
 
@@ -267,11 +317,73 @@ describe("ClarificationPrompt outcomes", () => {
         requestId: REQUEST_ID,
         generation: GENERATION,
         outcome: {
-          kind: "answered",
-          values: { boundary: "controller", notes: "Keep lifecycle ownership central" },
+          kind: "submitted",
+          answers: {
+            boundary: { selectedOptionIds: ["controller"] },
+            notes: { selectedOptionIds: [], customText: "Keep lifecycle ownership central" },
+          },
         },
       },
     ])
+
+    await destroyMounted(renderer)
+  })
+
+  it("submits a single selection with allowed custom text kept separate", async () => {
+    const payload: ClarificationPayload = { ...RICH_PAYLOAD, fields: [RICH_PAYLOAD.fields[0]!] }
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderWithClarification(controller, payload)
+
+    await actAsync(() => {
+      mockInput.pressArrow("down")
+      mockInput.pressTab()
+    })
+    await actAsync(async () => {
+      await mockInput.typeText("Keep the bridge controller-owned")
+    })
+    await waitForFrame((frame) => frame.includes("Keep the bridge controller-owned"))
+    await actAsync(() => {
+      mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({
+      kind: "submitted",
+      answers: {
+        boundary: {
+          selectedOptionIds: ["store"],
+          customText: "Keep the bridge controller-owned",
+        },
+      },
+    })
+
+    await destroyMounted(renderer)
+  })
+
+  it("submits multiple selections with allowed custom text kept separate", async () => {
+    const payload: ClarificationPayload = { ...RICH_PAYLOAD, fields: [RICH_PAYLOAD.fields[1]!] }
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderWithClarification(controller, payload)
+
+    await actAsync(async () => {
+      await mockInput.typeText(" ")
+    })
+    await actAsync(() => {
+      mockInput.pressTab()
+    })
+    await actAsync(async () => {
+      await mockInput.typeText("Changelog")
+    })
+    await waitForFrame((frame) => frame.includes("Changelog"))
+    await actAsync(() => {
+      mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification.at(-1)?.outcome).toEqual({
+      kind: "submitted",
+      answers: {
+        deliverables: { selectedOptionIds: ["tests"], customText: "Changelog" },
+      },
+    })
 
     await destroyMounted(renderer)
   })
@@ -308,6 +420,58 @@ describe("ClarificationPrompt outcomes", () => {
     expect(await waitForFrame((frame) => !frame.includes(CLARIFICATION_HINT))).toContain(PROMPT_PLACEHOLDER)
 
     await destroyMounted(renderer)
+  })
+
+  it("resolves explicit Skip separately from Escape cancellation", async () => {
+    const controller = createFakeController()
+    const { renderer, mockInput } = await renderWithClarification(controller, RICH_PAYLOAD)
+
+    await actAsync(() => {
+      mockInput.pressKey("s", { ctrl: true })
+    })
+
+    expect(controller.calls.respondClarification).toEqual([
+      { requestId: REQUEST_ID, generation: GENERATION, outcome: { kind: "skipped" } },
+    ])
+
+    await destroyMounted(renderer)
+  })
+
+  it("does not let keys overwrite a timed-out projection or settle a stale request identity", async () => {
+    const controller = createFakeController()
+    const setup = await renderWithClarification(controller, RICH_PAYLOAD)
+
+    await actAsync(() => {
+      controller.actions.respondClarification(REQUEST_ID, GENERATION, { kind: "timed_out" })
+      setup.mockInput.pressEnter()
+      setup.mockInput.pressEscape()
+      setup.mockInput.pressKey("s", { ctrl: true })
+    })
+    expect(controller.calls.respondClarification).toEqual([
+      { requestId: REQUEST_ID, generation: GENERATION, outcome: { kind: "timed_out" } },
+    ])
+
+    await actAsync(() => {
+      controller.store.openClarification({
+        requestId: "clarification-new",
+        generation: GENERATION + 1,
+        sessionId: "codex",
+        title: "new owner",
+        cwd: "/workspace/new",
+        payload: SINGLE_PAYLOAD,
+      })
+    })
+    await setup.waitForFrame((frame) => frame.includes(clarificationTitleFor("Codex")))
+    await actAsync(() => {
+      setup.mockInput.pressEscape()
+    })
+    expect(controller.calls.respondClarification.at(-1)).toEqual({
+      requestId: "clarification-new",
+      generation: GENERATION + 1,
+      outcome: { kind: "cancelled" },
+    })
+
+    await destroyMounted(setup.renderer)
   })
 })
 

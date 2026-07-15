@@ -5,6 +5,7 @@ import { testRender } from "@opentui/react/test-utils"
 
 import type {
   AgentConnection,
+  AgentPromptInput,
   PermissionOutcome,
   PermissionRequest,
   PromptBlock,
@@ -15,7 +16,17 @@ import {
   createHandoffEdits,
 } from "../src/app/handoff.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
-import type { DomainSessionEvent, HandoffBundle, ProviderKind } from "../src/core/types.ts"
+import type {
+  ClarificationOutcome,
+  ClarificationPayload,
+  DomainSessionEvent,
+  HandoffBundle,
+  ProviderKind,
+} from "../src/core/types.ts"
+import {
+  selectDelegationAggregateStatus,
+  selectOrderedDelegatedChildren,
+} from "../src/core/orchestration.ts"
 import type { PersistedRunRecord } from "../src/persistence/runRecord.ts"
 import { createRunWriter } from "../src/persistence/runWriter.ts"
 import type { RunStore } from "../src/persistence/runStore.ts"
@@ -46,7 +57,10 @@ function recordingRunStore(): RunStore & { record: PersistedRunRecord | null } {
   }
 }
 
-function fakeConnection(id: ProviderKind): AgentConnection {
+function fakeConnection(
+  id: ProviderKind,
+  prompts: Array<{ id: ProviderKind; input: AgentPromptInput }> = [],
+): AgentConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   return {
     id,
@@ -60,7 +74,10 @@ function fakeConnection(id: ProviderKind): AgentConnection {
       }
       for (const subscriber of subscribers) subscriber(event)
     },
-    prompt: async (_sessionId: string, _blocks: PromptBlock[]) => ({ stopReason: "end_turn" }),
+    prompt: async (_sessionId, input) => {
+      prompts.push({ id, input })
+      return { stopReason: "end_turn" }
+    },
     cancel: async () => {},
     setSessionConfigOption: async () => [],
     onUpdate(callback) {
@@ -70,6 +87,49 @@ function fakeConnection(id: ProviderKind): AgentConnection {
     onPermission(_handler: (request: PermissionRequest) => Promise<PermissionOutcome>) {},
     onClarification: () => () => {},
     dispose: async () => {},
+  }
+}
+
+interface LifecycleRestoreConnection extends AgentConnection {
+  emit(event: DomainSessionEvent): void
+  clarify(payload: ClarificationPayload): Promise<ClarificationOutcome>
+  disposeCalls(): number
+}
+
+function lifecycleRestoreConnection(id: ProviderKind, ordinal: number): LifecycleRestoreConnection {
+  const subscribers = new Set<(event: DomainSessionEvent) => void>()
+  let clarification: ((payload: ClarificationPayload) => Promise<ClarificationOutcome>) | null = null
+  let disposals = 0
+  return {
+    id,
+    connect: async () => ({ ready: true, protocolVersion: 1, canLoadSession: true }),
+    newSession: async () => `${id}-lifecycle-${ordinal}`,
+    loadSession: async () => {},
+    prompt: async () => ({ stopReason: "end_turn" }),
+    cancel: async () => {},
+    setSessionConfigOption: async () => [],
+    onUpdate(callback) {
+      subscribers.add(callback)
+      return () => subscribers.delete(callback)
+    },
+    onPermission() {},
+    onClarification(handler) {
+      clarification = handler
+      return () => {
+        if (clarification === handler) clarification = null
+      }
+    },
+    async dispose() {
+      disposals += 1
+    },
+    emit(event) {
+      for (const subscriber of subscribers) subscriber(event)
+    },
+    clarify(payload) {
+      if (!clarification) throw new Error("clarification handler unavailable")
+      return clarification(payload)
+    },
+    disposeCalls: () => disposals,
   }
 }
 
@@ -124,6 +184,151 @@ describe("writer-produced run restore", () => {
 
     await controller.dispose()
   })
+
+  it("restores an unresolved V3 checkpoint without replay and leaves its loaded sibling promptable", async () => {
+    const cwd = process.cwd()
+    const source = createAppStore()
+    source.startSession("claude-code", "claude-persisted")
+    source.startSession("codex", "codex-persisted")
+    source.applyEvent("claude-code", { kind: "user_message", messageId: "u1", text: "ambiguous first task" })
+    source.applyEvent("codex", { kind: "user_message", messageId: "u2", text: "completed first task" })
+    source.setHarnessDelivery("claude-code", { version: "v1", generation: 5, state: "in_flight" })
+    source.setHarnessDelivery("codex", { version: "v1", generation: 3, state: "delivered" })
+
+    const runStore = recordingRunStore()
+    const writer = createRunWriter({
+      enabled: true,
+      runStore,
+      projectCwd: cwd,
+      runId: "checkpoint-run",
+      now: () => 1_000,
+    })
+    writer.watch(source)
+    writer.dispose()
+    expect(runStore.record?.version).toBe(3)
+
+    const prompts: Array<{ id: ProviderKind; input: AgentPromptInput }> = []
+    const controller = await createSessionController({
+      config: { ...defaultAppConfig(), shell: { ...defaultAppConfig().shell, enabled: false } },
+      cwd,
+      createConnection: (config) => fakeConnection(config.id, prompts),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+    await controller.restore(runStore.record!)
+
+    expect(controller.store.getState().harnessDeliveries["claude-code"]).toMatchObject({
+      state: "failed",
+      failureCategory: "dispatch_indeterminate",
+    })
+    expect(await controller.actions.sendPrompt("must not replay", "claude-code")).toBeNull()
+    expect(await controller.actions.sendPrompt("continue safely", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(prompts).toEqual([{ id: "codex", input: [{ type: "text", text: "continue safely" }] }])
+    expect(controller.store.getState().harnessDeliveries.codex?.state).toBe("not_required")
+
+    await controller.dispose()
+  })
+
+  it("restores over delegated ownership, settles its pending interaction once, and ignores old callbacks", async () => {
+    const cwd = process.cwd()
+    const source = createAppStore()
+    source.startSession("claude-code", "claude-persisted")
+    source.startSession("codex", "codex-persisted")
+    source.setFocus("claude-code")
+    source.addDelegatedSession({
+      seed: {
+        id: "persisted-ordinary-child",
+        providerKind: "claude-code",
+        title: "Persisted ordinary child",
+        cwd,
+      },
+      parentId: "claude-code",
+      parentGeneration: 10,
+      childGeneration: 11,
+      task: "Ephemeral delegated task",
+      desiredOutcome: "Ephemeral delegated outcome",
+      displayName: "Persisted ordinary child",
+    })
+    source.startSession("persisted-ordinary-child", "persisted-child-acp")
+    source.publishDelegatedChildState({
+      parentId: "claude-code",
+      childId: "persisted-ordinary-child",
+      parentGeneration: 10,
+      childGeneration: 11,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 123,
+    })
+    const runStore = recordingRunStore()
+    const writer = createRunWriter({
+      enabled: true,
+      runStore,
+      projectCwd: cwd,
+      runId: "delegated-restore",
+      now: () => 1_000,
+    })
+    writer.watch(source)
+    writer.dispose()
+
+    const created: LifecycleRestoreConnection[] = []
+    const controller = await createSessionController({
+      config: { ...defaultAppConfig(), shell: { ...defaultAppConfig().shell, enabled: false } },
+      cwd,
+      createConnection(config) {
+        const connection = lifecycleRestoreConnection(config.id, created.length)
+        created.push(connection)
+        return connection
+      },
+      newSessionId: () => "restore-owned-child",
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => ({
+        status: "supported",
+        profileId: "restore-lifecycle-test",
+        encoder: "codex-prompt-meta-v1",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const childId = await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Wait for restore",
+      desiredOutcome: "No stale ownership",
+    })
+    const oldChild = created[2]!
+    let settlements = 0
+    const clarification = oldChild.clarify({
+      prompt: "Choose restore behavior",
+      fields: [{
+        id: "restore",
+        label: "Restore",
+        mode: "single",
+        required: true,
+        allowsCustom: false,
+        options: [{ id: "continue", label: "Continue" }],
+      }],
+    })
+    void clarification.then(() => settlements += 1)
+
+    await controller.restore(runStore.record!)
+    expect(await clarification).toEqual({ kind: "cancelled" })
+    await Bun.sleep(0)
+    expect(settlements).toBe(1)
+    expect(oldChild.disposeCalls()).toBe(1)
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    expect(controller.store.getState().sessions[childId!]).toBeUndefined()
+    expect(controller.store.getState().sessions["persisted-ordinary-child"]).toBeDefined()
+    expect(controller.store.getState().workspace.conversations["persisted-ordinary-child"]).toBeDefined()
+    expect(selectOrderedDelegatedChildren(controller.store.getState().delegation, "claude-code")).toEqual([])
+    expect(selectDelegationAggregateStatus(controller.store.getState().delegation, "claude-code")).toBeNull()
+    expect(controller.store.getState().delegation.parents["claude-code"]?.closeState).toBeUndefined()
+
+    const restoredBeforeLate = controller.store.getState()
+    oldChild.emit({ kind: "status", status: "finished" })
+    oldChild.emit({ kind: "agent_message", messageId: "late", textDelta: "ignored" })
+    expect(controller.store.getState()).toBe(restoredBeforeLate)
+    expect(settlements).toBe(1)
+    await controller.dispose()
+  })
 })
 
 const DEGRADED_BUNDLE: HandoffBundle = {
@@ -144,6 +349,11 @@ describe("unavailable-pane fresh-start integration", () => {
       config: { ...defaultAppConfig(), shell: { ...defaultAppConfig().shell, enabled: false } },
       cwd: process.cwd(),
       readBranch: async () => null,
+      resolveHarnessCapability: () => ({
+        status: "supported",
+        profileId: "session-restore-test",
+        encoder: "codex-prompt-meta-v1",
+      }),
       createConnection(idConfig) {
         const id = idConfig.id
         const instance = created[id]++
@@ -166,8 +376,8 @@ describe("unavailable-pane fresh-start integration", () => {
               })
             }
           },
-          async prompt(sessionId, blocks) {
-            prompts.push({ id, sessionId, blocks })
+          async prompt(sessionId, input) {
+            prompts.push({ id, sessionId, blocks: Array.isArray(input) ? input : [...input.userBlocks] })
             return { stopReason: "end_turn" }
           },
           cancel: async () => {},

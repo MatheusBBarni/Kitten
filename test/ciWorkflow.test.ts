@@ -16,6 +16,9 @@ type Workflow = {
 
 const source = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text()
 const workflow = Bun.YAML.parse(source) as Workflow
+const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json() as {
+  scripts: Record<string, string | undefined>
+}
 
 describe("CI workflow", () => {
   it("resolves the README install channel before installing root dependencies", () => {
@@ -43,5 +46,9 @@ describe("CI workflow", () => {
       "working-directory": "site",
       run: "bun install --frozen-lockfile",
     })
+  })
+
+  it("isolates coverage test files so native OpenTUI state cannot leak between them", () => {
+    expect(packageJson.scripts["test:coverage"]).toBe("bun test --coverage --isolate")
   })
 })

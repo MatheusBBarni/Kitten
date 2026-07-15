@@ -18,6 +18,7 @@ import {
   TAB_OVERFLOW_LABEL,
   TAB_SELECTED_MARKER,
   TabWorkspace,
+  tabItemLabel,
 } from "./TabWorkspace.tsx"
 
 function pointOf(frame: string, text: string): { x: number; y: number } {
@@ -44,6 +45,7 @@ function view(id: string, selected = false): WorkspaceConversationView {
     duplicateIndex: 1,
     duplicateCount: 1,
     sharedWorkspaceCount: 1,
+    delegation: null,
   }
 }
 
@@ -78,6 +80,85 @@ async function renderStrip(controller: FakeController, width = 120) {
 }
 
 describe("TabWorkspace presentation", () => {
+  it.each([
+    ["running", "Running", false],
+    ["needs_input", "Needs input", false],
+    ["finished", "Finished", true],
+    ["failed", "Failed", true],
+    ["cancelled", "Cancelled", true],
+  ] as const)("renders delegated %s as selector-provided text", (status, label, terminal) => {
+    const child = view("child")
+    child.delegation = {
+      kind: "child",
+      parentId: "parent",
+      parentLabel: "Parent",
+      lineageLabel: "Child of Parent",
+      status,
+      statusLabel: label,
+      terminalTranscriptAvailable: terminal,
+    }
+
+    expect(tabItemLabel(child)).toContain("Child of Parent")
+    expect(tabItemLabel(child)).toContain(label)
+  })
+
+  it("shows a selected parent's active delegated group without losing overflow access", async () => {
+    const { seeds, runtimes } = fleet(2)
+    const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
+    controller.store.addDelegatedSession({
+      seed: { id: "child", providerKind: "claude-code", title: "Research", cwd: "/work/child" },
+      parentId: "s1",
+      parentGeneration: 1,
+      childGeneration: 1,
+      task: "Research the selector seam",
+      desiredOutcome: "Return the constraints",
+    })
+    controller.store.publishDelegatedChildState({
+      parentId: "s1",
+      childId: "child",
+      parentGeneration: 1,
+      childGeneration: 1,
+      status: "running",
+      sessionStatus: "working",
+    })
+
+    const setup = await renderStrip(controller, 90)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Group active")
+    expect(frame).toContain(TAB_OVERFLOW_LABEL)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("identifies a reopened delegated child and retains its Running lifecycle", async () => {
+    const { seeds, runtimes } = fleet(1)
+    const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
+    controller.store.addDelegatedSession({
+      seed: { id: "child", providerKind: "codex", title: "Research", cwd: "/work/child" },
+      parentId: "s1",
+      parentGeneration: 1,
+      childGeneration: 1,
+      task: "Research the selector seam",
+      desiredOutcome: "Return the constraints",
+    })
+    controller.store.publishDelegatedChildState({
+      parentId: "s1",
+      childId: "child",
+      parentGeneration: 1,
+      childGeneration: 1,
+      status: "running",
+      sessionStatus: "working",
+    })
+    controller.store.reopenConversation("child")
+
+    const setup = await renderStrip(controller, 120)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Child of Session 1")
+    expect(frame).toContain("Running")
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders workspace order with selected and non-color status cues", async () => {
     const { seeds, runtimes } = fleet(5)
     const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })

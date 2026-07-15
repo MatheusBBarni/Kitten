@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the session-bound authenticated local IPC bridge
 type: backend
 complexity: high

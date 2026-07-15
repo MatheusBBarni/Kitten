@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { CodeRenderable, destroyTreeSitterClient, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
+import { CodeRenderable, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
 import { createMockMouse, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 import { useState } from "react"
@@ -79,6 +79,24 @@ async function settleMarkdownHighlights(setup: TestRendererSetup): Promise<void>
   throw new Error("Markdown code renderable did not mount")
 }
 
+/**
+ * Wait for highlighted source to reach the terminal, not merely for the current
+ * `highlightingDone` promise. OpenTUI can replace that promise on the next native
+ * turn after a code leaf mounts, leaving its initial resolved value stale.
+ */
+async function waitForHighlightedSource(setup: TestRendererSetup, source: string): Promise<string> {
+  let frame = setup.captureCharFrame()
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await settleMarkdownHighlights(setup)
+    setup.renderer.requestRender()
+    await setup.flush()
+    frame = setup.captureCharFrame()
+    if (frame.includes(source)) return frame
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`Markdown source did not render after highlighting: ${source}`)
+}
+
 async function destroyMarkdown(setup: TestRendererSetup): Promise<void> {
   await Promise.all(collectCodeRenderables(setup.renderer.root).map((code) => code.highlightingDone))
   await setup.flush()
@@ -127,7 +145,6 @@ describe("Markdown", () => {
   })
 
   it("styles a heading with the theme accent instead of the reading foreground", async () => {
-    await destroyTreeSitterClient()
     const setup = await renderMarkdown("# HEADING_SENTINEL")
     await setup.waitForFrame((frame) => frame.includes("HEADING_SENTINEL"))
     await setup.waitFor(() => {
@@ -164,8 +181,7 @@ describe("Markdown", () => {
       await client.initialize()
       expect(await client.preloadParser(label)).toBeTrue()
       const setup = await renderMarkdown(`\`\`\`${label}\n${source}\n\`\`\``)
-      await settleMarkdownHighlights(setup)
-      await setup.waitForFrame((frame) => frame.includes(source))
+      await waitForHighlightedSource(setup, source)
       await setup.waitFor(() => {
         const styled = spanContaining(setup, sentinel)?.fg.toString() !== paletteColor(DARK_PALETTE.text)
         if (!styled) setup.renderer.requestRender()
@@ -473,8 +489,7 @@ describe("Markdown", () => {
       await client.initialize()
       expect(await client.preloadParser(label)).toBeTrue()
       const setup = await renderMarkdown(`\`\`\`${label}\n${source}\n\`\`\``)
-      await settleMarkdownHighlights(setup)
-      const frame = await setup.waitForFrame((candidate) => candidate.includes(source))
+      const frame = await waitForHighlightedSource(setup, source)
       const rows = frame.split("\n")
       const row = rows.findIndex((candidate) => candidate.includes(source))
       const start = rows[row]!.indexOf(source)

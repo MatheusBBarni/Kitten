@@ -7,6 +7,7 @@ import type { TestRendererSetup } from "@opentui/core/testing"
 import { createAgentConnection, type AgentConnection, type PermissionRequest } from "../agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import { createSessionController } from "../app/controller.ts"
+import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
 import type { AgentConfig, AppConfig, ProviderKind, SessionId, SessionStatus } from "../core/types.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
@@ -88,6 +89,7 @@ async function openClarification(controller: FakeController, requestId: string):
           id: "boundary",
           label: "Boundary",
           mode: "single",
+          allowsCustom: false,
           required: true,
           options: [
             { id: "controller", label: "Controller" },
@@ -530,6 +532,11 @@ describe("ApprovalPrompt modality", () => {
 
 const CLAUDE: AgentConfig = { id: "claude-code", displayName: "Claude Code", command: "claude-acp", args: [], env: {} }
 const CODEX: AgentConfig = { id: "codex", displayName: "Codex", command: "codex-acp", args: [], env: {} }
+const TEST_HARNESS_CAPABILITY: HarnessCapability = {
+  status: "supported",
+  profileId: "approval-prompt-integration-profile",
+  encoder: "codex-prompt-meta-v1",
+}
 const APP_CONFIG: AppConfig = {
   providers: {
     "claude-code": { displayName: CLAUDE.displayName, command: CLAUDE.command, args: CLAUDE.args, env: CLAUDE.env },
@@ -539,11 +546,28 @@ const APP_CONFIG: AppConfig = {
   sessions: [],
   mcpServers: [],
   shell: { enabled: true, command: "/bin/sh", scrollback: 1_000 },
+  clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
+}
+
+function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
+  return {
+    profileId: "approval-prompt-integration-profile",
+    encoder: "codex-prompt-meta-v1",
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: {
+      providerKind: config.id,
+      command: config.command,
+      args: [...config.args],
+      env: { ...config.env },
+      adapterPackage: "approval-prompt-test-adapter",
+      adapterVersion: "1.0.0",
+    },
+  }
 }
 
 /** Wire a real `AgentConnection` to a fresh in-process mock ACP agent. */
@@ -552,6 +576,7 @@ function connectionToMockAgent(config: AgentConfig, onPrompt?: MockPromptScript)
   const agent = startMockAgent(pair.agent, { sessionId: `${config.id}-session`, onPrompt })
   const connection = createAgentConnection({
     config,
+    harnessProfiles: [testHarnessProfile(config)],
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler: { schedule: (flush) => flush(), dispose: () => {} },
   })
@@ -572,6 +597,7 @@ describe("integration - a mock agent's permission request", () => {
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: "/workspace/kitten",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       createConnection: (config) => connections[config.id],
     })
 
@@ -584,8 +610,10 @@ describe("integration - a mock agent's permission request", () => {
 
     // The agent blocks inside its prompt turn until the user answers.
     let prompt: Promise<unknown> = Promise.resolve()
-    await actAsync(() => {
+    const awaitingApproval = waitForApprovalForSession(controller.store, "claude-code")
+    await actAsync(async () => {
       prompt = controller.actions.sendPrompt("bump b", "claude-code")
+      await awaitingApproval
     })
     const opened = await setup.waitForFrame((frame) => frame.includes(approvalTitleFor("Claude Code")))
     expect(opened).toContain("Bump b")
@@ -633,13 +661,19 @@ describe("integration - two sessions of the same provider requesting permission 
       ],
       mcpServers: [],
       shell: APP_CONFIG.shell,
+      clarificationTimeoutSeconds: 300,
       persistenceEnabled: true,
       telemetryEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
-    const controller = await createSessionController({ config, cwd: root, createConnection: () => queue.shift()! })
+    const controller = await createSessionController({
+      config,
+      cwd: root,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      createConnection: () => queue.shift()!,
+    })
 
     const setup = await testRender(<CockpitApp controller={controller} />, {
       width: WIDTH,

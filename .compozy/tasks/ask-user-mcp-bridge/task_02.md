@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add fixed timeout configuration and content-free telemetry outcomes
 type: backend
 complexity: medium

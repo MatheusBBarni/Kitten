@@ -139,6 +139,14 @@ export type TelemetryEventType =
   | "tab_restore"
   | "tab_attention_seen"
   | "tab_switch_latency_ms"
+  | "delegated_launch_requested"
+  | "delegated_launch_succeeded"
+  | "delegated_launch_failed"
+  | "delegated_visible_running_ms"
+  | "delegated_child_terminal"
+  | "delegated_cascade_requested"
+  | "delegated_cascade_completed"
+  | "delegated_teardown_failed"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
 export type ClarificationCapabilityStatus = "supported" | "unsupported"
@@ -147,14 +155,13 @@ export type ClarificationCapabilityDiagnostic =
   | "unknown_recipe"
   | "recipe_overridden"
   | "unverified_recipe"
-export type ClarificationTerminalKind = "answered" | "cancelled"
+export type ClarificationTerminalKind = "submitted" | "skipped" | "timed_out" | "cancelled"
 export type ClarificationInteractionKind = "permission" | "clarification"
 export type ClarificationSessionLossReason =
   | "connection_error"
   | "session_replaced"
   | "conversation_closed"
   | "controller_disposed"
-export type ClarificationFieldCountBucket = "zero" | "one" | "two_to_three" | "four_or_more"
 export type ClarificationDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
 
 /** The complete readiness taxonomy permitted in local telemetry. */
@@ -205,6 +212,7 @@ export type TabSwitchLatencyBucket = "under_200ms" | "200_to_499ms" | "500_to_99
 export type TabAttentionStatus = "awaiting_approval" | "error" | "finished"
 export type TabLifecycle = "visible" | "background"
 export type ProviderDefaultOutcome = "none" | "applied" | "partial" | "unavailable"
+export type DelegatedTerminalStatus = "finished" | "failed" | "cancelled"
 
 /** Exact restore facts accepted by the recorder before it reduces them to buckets. */
 export interface TabRestoreInput {
@@ -260,8 +268,7 @@ export interface TelemetryRecord {
   hasSingle?: boolean
   hasMulti?: boolean
   hasText?: boolean
-  /** Coarse form size and latency buckets; exact counts and durations are not recorded. */
-  fieldCountBucket?: ClarificationFieldCountBucket
+  /** Coarse latency bucket; exact durations are not recorded. */
   durationBucket?: ClarificationDurationBucket
   /** The closed kind of interaction suspended or resumed by clarification priority. */
   interactionKind?: ClarificationInteractionKind
@@ -283,6 +290,8 @@ export interface TelemetryRecord {
   /** The bounded terminal provider-default category; no requested values are recorded. */
   defaultOutcome?: ProviderDefaultOutcome
   lifecycle?: TabLifecycle
+  /** Closed delegated terminal state; never a task, outcome, identity, or provider error. */
+  delegatedStatus?: DelegatedTerminalStatus
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -413,6 +422,20 @@ export interface TelemetryRecorder {
   tabRestore(input: TabRestoreInput): void
   /** One approval/error/finished attention epoch was visited. */
   tabAttentionSeen(status: TabAttentionStatus, lifecycle: TabLifecycle): void
+  /** Start private launch timing after one delegated registration is accepted. */
+  delegatedLaunchRequested(lifecycleKey: string): void
+  /** Settle one accepted launch and emit its visible-Running latency exactly once. */
+  delegatedLaunchSucceeded(lifecycleKey: string): void
+  /** Settle one accepted pre-Running launch failure exactly once. */
+  delegatedLaunchFailed(lifecycleKey: string): void
+  /** Emit one accepted terminal lifecycle outcome, deduplicated by private key. */
+  delegatedChildTerminal(lifecycleKey: string, status: DelegatedTerminalStatus): void
+  /** Emit the first accepted parent cascade request. */
+  delegatedCascadeRequested(lifecycleKey: string): void
+  /** Emit completion for a previously accepted cascade exactly once. */
+  delegatedCascadeCompleted(lifecycleKey: string): void
+  /** Emit one content-free teardown failure without serializing its cause. */
+  delegatedTeardownFailed(lifecycleKey: string): void
   /** Start the picker-open-to-interactive clock before opening its store slot. */
   resumePickerOpened(): void
   /** Close the picker clock after its interactive tree commits. */
@@ -485,6 +508,13 @@ const NOOP_RECORDER: TelemetryRecorder = {
   tabCloseKeptOpen() {},
   tabRestore() {},
   tabAttentionSeen() {},
+  delegatedLaunchRequested() {},
+  delegatedLaunchSucceeded() {},
+  delegatedLaunchFailed() {},
+  delegatedChildTerminal() {},
+  delegatedCascadeRequested() {},
+  delegatedCascadeCompleted() {},
+  delegatedTeardownFailed() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
   watch() {
@@ -540,10 +570,6 @@ interface AgentWatch {
 interface ClarificationWatch {
   startedAt: number
   agentRef: number
-  hasSingle: boolean
-  hasMulti: boolean
-  hasText: boolean
-  fieldCountBucket: ClarificationFieldCountBucket
 }
 
 class ActiveRecorder implements TelemetryRecorder {
@@ -561,6 +587,12 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly watches = new Map<SessionId, AgentWatch>()
   private readonly agentRefs = new Map<SessionId, number>()
   private readonly clarificationWatches = new Map<string, ClarificationWatch>()
+  private readonly delegatedLaunchStarts = new Map<string, number>()
+  private readonly delegatedLaunchSettled = new Set<string>()
+  private readonly delegatedTerminals = new Set<string>()
+  private readonly delegatedCascadeRequestedKeys = new Set<string>()
+  private readonly delegatedCascadeCompletedKeys = new Set<string>()
+  private readonly delegatedTeardownFailures = new Set<string>()
   private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
@@ -692,10 +724,6 @@ class ActiveRecorder implements TelemetryRecorder {
     const watch: ClarificationWatch = {
       startedAt: at,
       agentRef: this.agentRef(input.sessionId),
-      hasSingle: input.hasSingle,
-      hasMulti: input.hasMulti,
-      hasText: input.hasText,
-      fieldCountBucket: bucketClarificationFieldCount(input.fieldCount),
     }
     this.clarificationWatches.set(input.requestId, watch)
     this.record({
@@ -713,12 +741,7 @@ class ActiveRecorder implements TelemetryRecorder {
     const at = this.now()
     this.record({
       type: "clarification_settled",
-      agentRef: watch.agentRef,
       terminalKind,
-      hasSingle: watch.hasSingle,
-      hasMulti: watch.hasMulti,
-      hasText: watch.hasText,
-      fieldCountBucket: watch.fieldCountBucket,
       durationBucket: bucketClarificationDuration(at - watch.startedAt),
     }, at)
   }
@@ -827,6 +850,57 @@ class ActiveRecorder implements TelemetryRecorder {
 
   tabAttentionSeen(attentionStatus: TabAttentionStatus, lifecycle: TabLifecycle): void {
     this.record({ type: "tab_attention_seen", attentionStatus, lifecycle })
+  }
+
+  delegatedLaunchRequested(lifecycleKey: string): void {
+    if (this.delegatedLaunchStarts.has(lifecycleKey) || this.delegatedLaunchSettled.has(lifecycleKey)) return
+    const at = this.now()
+    this.delegatedLaunchStarts.set(lifecycleKey, at)
+    this.record({ type: "delegated_launch_requested" }, at)
+  }
+
+  delegatedLaunchSucceeded(lifecycleKey: string): void {
+    const startedAt = this.delegatedLaunchStarts.get(lifecycleKey)
+    if (startedAt === undefined || this.delegatedLaunchSettled.has(lifecycleKey)) return
+    this.delegatedLaunchSettled.add(lifecycleKey)
+    this.delegatedLaunchStarts.delete(lifecycleKey)
+    const at = this.now()
+    this.record({ type: "delegated_launch_succeeded" }, at)
+    this.record({ type: "delegated_visible_running_ms", durationMs: at - startedAt }, at)
+  }
+
+  delegatedLaunchFailed(lifecycleKey: string): void {
+    if (!this.delegatedLaunchStarts.has(lifecycleKey) || this.delegatedLaunchSettled.has(lifecycleKey)) return
+    this.delegatedLaunchSettled.add(lifecycleKey)
+    this.delegatedLaunchStarts.delete(lifecycleKey)
+    this.record({ type: "delegated_launch_failed" })
+  }
+
+  delegatedChildTerminal(lifecycleKey: string, delegatedStatus: DelegatedTerminalStatus): void {
+    if (this.delegatedTerminals.has(lifecycleKey)) return
+    this.delegatedTerminals.add(lifecycleKey)
+    this.record({ type: "delegated_child_terminal", delegatedStatus })
+  }
+
+  delegatedCascadeRequested(lifecycleKey: string): void {
+    if (this.delegatedCascadeRequestedKeys.has(lifecycleKey)) return
+    this.delegatedCascadeRequestedKeys.add(lifecycleKey)
+    this.record({ type: "delegated_cascade_requested" })
+  }
+
+  delegatedCascadeCompleted(lifecycleKey: string): void {
+    if (
+      !this.delegatedCascadeRequestedKeys.has(lifecycleKey) ||
+      this.delegatedCascadeCompletedKeys.has(lifecycleKey)
+    ) return
+    this.delegatedCascadeCompletedKeys.add(lifecycleKey)
+    this.record({ type: "delegated_cascade_completed" })
+  }
+
+  delegatedTeardownFailed(lifecycleKey: string): void {
+    if (this.delegatedTeardownFailures.has(lifecycleKey)) return
+    this.delegatedTeardownFailures.add(lifecycleKey)
+    this.record({ type: "delegated_teardown_failed" })
   }
 
   resumePickerOpened(): void {
@@ -1043,13 +1117,6 @@ class ActiveRecorder implements TelemetryRecorder {
     if (effortChangeKept(events)) this.record({ type: "effort_change_kept", agent: sessionId })
     watch.effortRetention = null
   }
-}
-
-function bucketClarificationFieldCount(count: number): ClarificationFieldCountBucket {
-  if (count <= 0) return "zero"
-  if (count === 1) return "one"
-  if (count <= 3) return "two_to_three"
-  return "four_or_more"
 }
 
 function bucketClarificationDuration(durationMs: number): ClarificationDurationBucket {

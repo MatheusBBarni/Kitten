@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path"
 import { createSecretRedactor } from "../core/secretRedactor.ts"
 import { resolveTelemetryPath } from "../telemetry/recorder.ts"
 import {
+  HARNESS_DELIVERY_CHECKPOINT_SCHEMA,
   PERSISTED_RUN_RECORD_SCHEMA,
   migratePersistedRunV1,
   type PersistedAgent,
@@ -20,6 +21,7 @@ import {
   type PersistedRunRecord,
   type PersistedRunRecordV1,
   type PersistedRunRecordV2,
+  type PersistedRunRecordV3,
   type PersistedRunSummary,
   type PersistedWorkspaceConversationV2,
 } from "./runRecord.ts"
@@ -30,6 +32,7 @@ export {
   type PersistedRunRecord,
   type PersistedRunRecordV1,
   type PersistedRunRecordV2,
+  type PersistedRunRecordV3,
   type PersistedRunSummary,
 } from "./runRecord.ts"
 
@@ -217,8 +220,7 @@ function sanitizeRecord(record: PersistedRunRecord): PersistedRunRecord {
     }
   }
 
-  return {
-    version: 2,
+  const common = {
     runId: record.runId,
     cwd: resolve(record.cwd),
     gitBranch: record.gitBranch === null ? null : redactor.redact(record.gitBranch).text,
@@ -232,6 +234,18 @@ function sanitizeRecord(record: PersistedRunRecord): PersistedRunRecord {
     },
     handoffBundle: record.handoffBundle,
   }
+
+  if (record.version === 2) return { version: 2, ...common }
+
+  const harnessDeliveries: PersistedRunRecordV3["harnessDeliveries"] = {}
+  for (const [sessionId, checkpoint] of Object.entries(record.harnessDeliveries)) {
+    const decoded = HARNESS_DELIVERY_CHECKPOINT_SCHEMA.safeParse(checkpoint)
+    if (!decoded.success) {
+      throw new Error(`Invalid harness delivery checkpoint: ${decoded.error.message}`)
+    }
+    harnessDeliveries[sessionId] = decoded.data
+  }
+  return { version: 3, ...common, harnessDeliveries }
 }
 
 function toSummary(record: PersistedRunRecord): PersistedRunSummary | null {

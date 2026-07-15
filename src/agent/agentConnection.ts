@@ -22,6 +22,7 @@ import {
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionNotification,
+  type PromptRequest,
   type StopReason,
   type WriteTextFileRequest,
   type WriteTextFileResponse,
@@ -42,6 +43,12 @@ import type {
 } from "../core/types.ts"
 import { KITTEN_VERSION } from "../version.ts"
 import {
+  CERTIFIED_HARNESS_PROFILES,
+  matchCertifiedHarnessProfile,
+  type CertifiedHarnessProfile,
+  type HarnessProfileId,
+} from "../config/harnessCapability.ts"
+import {
   toAcpElicitationOutcome,
   toAcpMcpServers,
   translateConfigOptions,
@@ -55,6 +62,26 @@ import { spawnAgentTransport, type AgentTransport, type TransportFactory } from 
 export interface PromptBlock {
   type: "text"
   text: string
+}
+
+/**
+ * Adapter-only input that keeps intentional user blocks separate from optional
+ * host guidance. Core, store, UI, history, and persistence never receive it.
+ */
+export interface HarnessPromptEnvelope {
+  readonly userBlocks: readonly PromptBlock[]
+  readonly harness?: { readonly version: string; readonly text: string }
+  readonly profileId?: HarnessProfileId
+}
+
+export type AgentPromptInput = PromptBlock[] | HarnessPromptEnvelope
+
+/** Fixed pre-dispatch failure; it intentionally carries no recipe or content. */
+export class UnsupportedHarnessProfileError extends Error {
+  constructor() {
+    super("Harness delivery is unsupported for this runtime profile")
+    this.name = "UnsupportedHarnessProfileError"
+  }
 }
 
 /** Why a prompt turn stopped, normalized from the ACP stop reason. */
@@ -107,7 +134,7 @@ export interface AgentConnection {
   connect(): Promise<ReadyState>
   newSession(cwd: string, mcpServers?: McpServerConfig[]): Promise<string>
   loadSession(sessionId: string, cwd: string, mcpServers?: McpServerConfig[]): Promise<void>
-  prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult>
+  prompt(sessionId: string, input: AgentPromptInput): Promise<PromptResult>
   cancel(sessionId: string): Promise<void>
   /**
    * Change one config option (model, reasoning effort, ...) on the live session and
@@ -170,6 +197,8 @@ export interface AgentConnectionOptions {
   transport?: TransportFactory
   /** Frame scheduler for coalescing; defaults to a real timer-based scheduler. */
   scheduler?: FrameScheduler
+  /** Reviewed profiles; injectable only so deterministic adapter tests stay credential-free. */
+  harnessProfiles?: readonly CertifiedHarnessProfile[]
 }
 
 /** Create an {@link AgentConnection} for one configured agent. */
@@ -200,6 +229,7 @@ class AgentConnectionImpl implements AgentConnection {
   private readonly clarificationSupported: boolean
   private readonly transportFactory: TransportFactory
   private readonly scheduler: FrameScheduler
+  private readonly harnessProfiles: readonly CertifiedHarnessProfile[]
 
   private transport: AgentTransport | null = null
   private connection: ClientSideConnection | null = null
@@ -233,6 +263,7 @@ class AgentConnectionImpl implements AgentConnection {
       "clarificationCapability" in options.config && options.config.clarificationCapability.status === "supported"
     this.transportFactory = options.transport ?? spawnAgentTransport
     this.scheduler = options.scheduler ?? createFrameScheduler()
+    this.harnessProfiles = options.harnessProfiles ?? CERTIFIED_HARNESS_PROFILES
   }
 
   async connect(): Promise<ReadyState> {
@@ -321,16 +352,16 @@ class AgentConnectionImpl implements AgentConnection {
     this.activeSessionId = sessionId
   }
 
-  async prompt(sessionId: string, blocks: PromptBlock[]): Promise<PromptResult> {
+  async prompt(sessionId: string, input: AgentPromptInput): Promise<PromptResult> {
+    // Resolve and validate the complete envelope before beginning a prompt or
+    // invoking ACP. A profile ID supplied by the caller never grants capability.
+    const request = this.toPromptRequest(sessionId, input)
     const connection = this.requireConnection()
     const inFlight = this.beginPrompt(sessionId)
     this.emit({ kind: "status", status: "working" })
     try {
       const result = await Promise.race([
-        connection.prompt({
-          sessionId,
-          prompt: blocks.map((block) => ({ type: "text", text: block.text })),
-        }),
+        connection.prompt(request),
         inFlight.recovery,
       ])
       const stopReason = result.stopReason satisfies StopReason
@@ -348,6 +379,27 @@ class AgentConnectionImpl implements AgentConnection {
       throw error
     } finally {
       this.completePrompt(inFlight)
+    }
+  }
+
+  private toPromptRequest(sessionId: string, input: AgentPromptInput): PromptRequest {
+    const envelope = Array.isArray(input) ? undefined : input
+    const userBlocks = envelope?.userBlocks ?? input as PromptBlock[]
+    const prompt = userBlocks.map((block) => ({ type: "text" as const, text: block.text }))
+    if (!envelope?.harness) return { sessionId, prompt }
+    if (!envelope.profileId) throw new UnsupportedHarnessProfileError()
+
+    const profile = matchCertifiedHarnessProfile(this.config, envelope.profileId, this.harnessProfiles)
+    if (!profile) throw new UnsupportedHarnessProfileError()
+
+    const harness = { version: envelope.harness.version, text: envelope.harness.text }
+    switch (profile.encoder) {
+      case "claude-code-prompt-meta-v1":
+        return { sessionId, prompt, _meta: { claudeCode: { kittenHarness: harness } } }
+      case "codex-prompt-meta-v1":
+        return { sessionId, prompt, _meta: { codex: { kittenHarness: harness } } }
+      case "cursor-prompt-meta-v1":
+        return { sessionId, prompt, _meta: { cursor: { kittenHarness: harness } } }
     }
   }
 

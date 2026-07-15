@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Pure Delegation State and Selectors"
 type: backend
 complexity: high

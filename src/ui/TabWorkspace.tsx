@@ -49,7 +49,12 @@ export function tabItemLabel(tab: WorkspaceConversationView): string {
   const shared = tab.sharedWorkspaceCount > 1
     ? ` · ${SHARED_WORKSPACE_LABEL}×${tab.sharedWorkspaceCount}`
     : ""
-  return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${shared}`
+  const delegation = tab.delegation === null
+    ? ""
+    : tab.delegation.kind === "child"
+      ? ` · ${tab.delegation.lineageLabel} · ${tab.delegation.statusLabel}`
+      : ` · ${tab.delegation.groupLabel}`
+  return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${delegation}${shared}`
 }
 
 function overflowLabel(hiddenCount: number, backgroundCount: number): string | null {

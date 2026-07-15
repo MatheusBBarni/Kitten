@@ -184,6 +184,7 @@ function openClarification(controller: FakeController): void {
         id: "boundary",
         label: "Boundary",
         mode: "single",
+        allowsCustom: false,
         required: true,
         options: [
           { id: "controller", label: "Controller" },

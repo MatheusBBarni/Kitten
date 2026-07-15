@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Add Degraded-Start Recovery UI Without Content Leakage"
 type: frontend
 complexity: high

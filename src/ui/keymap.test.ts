@@ -15,6 +15,8 @@ import {
   clarificationOptionIndex,
   COCKPIT_COMMANDS,
   COCKPIT_KEYMAP,
+  DELEGATION_HINT,
+  DELEGATION_KEYMAP,
   EDITOR_KEYMAP,
   HANDOFF_CONFIG_HINT,
   HANDOFF_EDIT_HINT,
@@ -25,6 +27,7 @@ import {
   KEYMAP_HINT,
   matchApprovalCommand,
   matchClarificationCommand,
+  matchDelegationCommand,
   matchClipboardCommand,
   matchCommand,
   matchHandoffCommand,
@@ -69,6 +72,11 @@ describe("matchCommand", () => {
   it("maps Ctrl+T to the hand-off while leaving a bare t to the prompt", () => {
     expect(matchCommand(key("t", { ctrl: true }))).toBe("hand-off")
     expect(matchCommand(key("t"))).toBeNull()
+  })
+
+  it("maps Ctrl+G to delegation while leaving a bare g to the prompt", () => {
+    expect(matchCommand(key("g", { ctrl: true }))).toBe("delegate")
+    expect(matchCommand(key("g"))).toBeNull()
   })
 
   it("leaves every retired cockpit action chord to the prompt", () => {
@@ -138,7 +146,7 @@ describe("matchClipboardCommand", () => {
 describe("COCKPIT_KEYMAP", () => {
   it("registers each conditional tab chord plus the retained hand-off, shell, and help bindings once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["previous-tab", "next-tab", "hand-off", "toggle-shell", "close-help"])
+    expect(commands).toEqual(["previous-tab", "next-tab", "hand-off", "delegate", "toggle-shell", "close-help"])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -179,6 +187,7 @@ describe("COCKPIT_COMMANDS", () => {
       ["toggle-shell", "shell"],
       ["run-externally", "copy"],
       ["hand-off", "handoff"],
+      ["delegate", "delegate"],
       ["sessions", "sessions"],
       ["previous-tab", "previous-tab"],
       ["next-tab", "next-tab"],
@@ -285,6 +294,10 @@ describe("HELP_ENTRIES", () => {
   it("lists slash commands, the retained shell chord, then editor input", () => {
     expect(HELP_ENTRIES).toEqual([
       ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
+      {
+        keys: "Ctrl+G",
+        description: "Delegate focused child work from the current conversation",
+      },
       { keys: "Ctrl+` / F2", description: "Focus or leave the integrated shell" },
       ...EDITOR_KEYMAP,
     ])
@@ -328,6 +341,7 @@ describe("HELP_ENTRIES", () => {
     for (const binding of [
       ...APPROVAL_KEYMAP,
       ...CLARIFICATION_KEYMAP,
+      ...DELEGATION_KEYMAP,
       ...HANDOFF_KEYMAP,
       ...SESSION_PICKER_KEYMAP,
       ...SESSIONS_KEYMAP,
@@ -337,6 +351,25 @@ describe("HELP_ENTRIES", () => {
     ]) {
       expect(HELP_ENTRIES).not.toContainEqual(binding)
     }
+  })
+})
+
+describe("delegation keymap", () => {
+  it("maps field navigation, submission, and cancellation without claiming text", () => {
+    expect(matchDelegationCommand(key("tab", { shift: true }))).toBe("prev-field")
+    expect(matchDelegationCommand(key("tab"))).toBe("next-field")
+    expect(matchDelegationCommand(key("return"))).toBe("confirm")
+    expect(matchDelegationCommand(key("kpenter"))).toBe("confirm")
+    expect(matchDelegationCommand(key("escape"))).toBe("cancel")
+    expect(matchDelegationCommand(key("g"))).toBeNull()
+    expect(matchDelegationCommand(key("g", { ctrl: true }))).toBeNull()
+  })
+
+  it("binds each dialog command once and documents every binding", () => {
+    const commands = DELEGATION_KEYMAP.map(({ command }) => command)
+    expect(commands).toEqual(["prev-field", "next-field", "confirm", "cancel"])
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const binding of DELEGATION_KEYMAP) expect(DELEGATION_HINT).toContain(binding.keys)
   })
 })
 
@@ -403,7 +436,7 @@ describe("APPROVAL_KEYMAP", () => {
 })
 
 describe("clarification keymap", () => {
-  it("maps navigation, field focus, toggle, submission, and cancellation", () => {
+  it("maps navigation, field focus, toggle, submission, skip, and cancellation", () => {
     expect(matchClarificationCommand(key("up"))).toBe("prev-option")
     expect(matchClarificationCommand(key("down"))).toBe("next-option")
     expect(matchClarificationCommand(key("tab", { shift: true }))).toBe("prev-field")
@@ -411,6 +444,7 @@ describe("clarification keymap", () => {
     expect(matchClarificationCommand(key("space"))).toBe("toggle-option")
     expect(matchClarificationCommand(key("return"))).toBe("confirm")
     expect(matchClarificationCommand(key("kpenter"))).toBe("confirm")
+    expect(matchClarificationCommand(key("s", { ctrl: true }))).toBe("skip")
     expect(matchClarificationCommand(key("escape"))).toBe("cancel")
   })
 
@@ -438,12 +472,14 @@ describe("clarification keymap", () => {
       "next-field",
       "toggle-option",
       "confirm",
+      "skip",
       "cancel",
     ])
     expect(new Set(commands).size).toBe(commands.length)
     for (const binding of CLARIFICATION_KEYMAP) expect(CLARIFICATION_HINT).toContain(binding.keys)
     expect(CLARIFICATION_HINT).toContain("1-9")
     expect(CLARIFICATION_HINT).toContain("cancel request")
+    expect(CLARIFICATION_HINT).toContain("skip form")
   })
 })
 

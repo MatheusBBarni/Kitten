@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Persist Content-Free Delivery Checkpoints Across Restore"
 type: refactor
 complexity: high

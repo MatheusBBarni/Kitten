@@ -11,6 +11,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { createAgentConnection, type AgentConnection } from "../src/agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../src/agent/transport.ts"
 import { createSessionController, type SessionController } from "../src/app/controller.ts"
+import { HARNESS_CONTRACT_SDK_VERSION } from "../src/config/harnessCapability.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import type {
   AppConfig,
@@ -40,6 +41,11 @@ import { actAsync, destroyMounted } from "./reactTui.ts"
 const CWD = process.cwd()
 const WIDTH = 92
 const HEIGHT = 28
+const TEST_HARNESS_CAPABILITY = {
+  status: "supported",
+  profileId: "clarification-lifecycle-test",
+  encoder: "codex-prompt-meta-v1",
+} as const
 
 const SUPPORTED_ADAPTER: Partial<Record<ProviderKind, { adapterPackage: string; adapterVersion: string }>> = {
   "claude-code": {
@@ -92,6 +98,19 @@ function wireAgent(providerKind: ProviderKind, options: MockAgentOptions = {}): 
     config,
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler: { schedule: (flush) => flush(), dispose: () => {} },
+    harnessProfiles: [{
+      profileId: TEST_HARNESS_CAPABILITY.profileId,
+      encoder: TEST_HARNESS_CAPABILITY.encoder,
+      sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+      recipe: {
+        providerKind,
+        command: config.command,
+        args: [...config.args],
+        env: { ...config.env },
+        adapterPackage: supportedAdapter.adapterPackage,
+        adapterVersion: supportedAdapter.adapterVersion,
+      },
+    }],
   })
   return { connection, agent }
 }
@@ -185,6 +204,7 @@ describe("clarification lifecycle integration", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       newInteractionId: () => "clarification-answer",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     let lifecycle: MountedLifecycle | undefined
 
@@ -243,6 +263,7 @@ describe("clarification lifecycle integration", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       newInteractionId: () => `clarification-${++interaction}`,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     let lifecycle: MountedLifecycle | undefined
 
@@ -301,6 +322,7 @@ describe("clarification lifecycle integration", () => {
       createConnection: () => claude.connection,
       readBranch: async () => null,
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     controller.store.setThemePreference("dark")
     controller.store.openSettings()
@@ -349,6 +371,75 @@ describe("clarification lifecycle integration", () => {
     }
   })
 
+  it("times out one suspended session without settling the active sibling", async () => {
+    const scheduled: Array<() => void> = []
+    const claude = wireAgent("claude-code", {
+      sessionId: "claude-acp",
+      onPrompt: async (request, ctx) => {
+        await ctx.createElicitation(singleForm(request.sessionId, "Claude decision"))
+      },
+    })
+    const codex = wireAgent("codex", {
+      sessionId: "codex-acp",
+      onPrompt: async (request, ctx) => {
+        await ctx.createElicitation(singleForm(request.sessionId, "Codex decision"))
+      },
+    })
+    const connections = {
+      "claude-code": claude.connection,
+      codex: codex.connection,
+    } as Record<ProviderKind, AgentConnection>
+    const controller = await createSessionController({
+      config: appConfig([
+        { provider: "claude-code", cwd: CWD, title: "Planner" },
+        { provider: "codex", cwd: CWD, title: "Builder" },
+      ]),
+      cwd: CWD,
+      createConnection: (config) => connections[config.id],
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      scheduleClarificationTimeout(callback) {
+        scheduled.push(callback)
+        return () => {}
+      },
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    let lifecycle: MountedLifecycle | undefined
+
+    try {
+      lifecycle = await mountLifecycle(controller)
+      let claudePrompt!: PendingPrompt
+      await actAsync(() => {
+        claudePrompt = controller.actions.sendPrompt("ask Claude", "claude-code")
+      })
+      await lifecycle.setup.waitForFrame((frame) => frame.includes("Claude decision"))
+
+      let codexPrompt!: PendingPrompt
+      await actAsync(() => {
+        codexPrompt = controller.actions.sendPrompt("ask Codex", "codex")
+      })
+      await lifecycle.setup.waitForFrame((frame) => frame.includes("Codex decision"))
+      expect(scheduled).toHaveLength(2)
+
+      await actAsync(() => scheduled[0]!())
+      expect(await claudePrompt).toEqual({ stopReason: "end_turn" })
+      expect(claude.agent.elicitationOutcomes).toEqual([{ action: "cancel" }])
+      expect(codex.agent.elicitationOutcomes).toEqual([])
+      expect(controller.store.getState().overlays.clarification).toMatchObject({
+        sessionId: "codex",
+        title: "Builder",
+      })
+
+      await actAsync(() => lifecycle!.setup.mockInput.pressEnter())
+      expect(await codexPrompt).toEqual({ stopReason: "end_turn" })
+      expect(codex.agent.elicitationOutcomes).toEqual([
+        { action: "accept", content: { choice: "first" } },
+      ])
+    } finally {
+      await destroyLifecycle(lifecycle)
+    }
+  })
+
   it("terminally cancels on restoration and rejects a stale answer without replay", async () => {
     const agents: WireAgent[] = []
     const config = appConfig([{ provider: "claude-code", cwd: CWD, title: "Planner" }])
@@ -371,6 +462,7 @@ describe("clarification lifecycle integration", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       newInteractionId: () => "clarification-before-restore",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     let lifecycle: MountedLifecycle | undefined
 
@@ -413,8 +505,8 @@ describe("clarification lifecycle integration", () => {
 
       await actAsync(() => {
         controller.actions.respondClarification(stale.requestId, stale.generation, {
-          kind: "answered",
-          values: { choice: "second" },
+          kind: "submitted",
+          answers: { choice: { selectedOptionIds: ["second"] } },
         })
       })
       expect(agents[0]!.agent.elicitationOutcomes).toEqual([{ action: "cancel" }])
@@ -456,6 +548,7 @@ describe("clarification lifecycle integration", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       recorder,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     const stopNotifier = createNotifier({
       channel: { notify: (input) => notifications.push(input) },
@@ -521,8 +614,7 @@ describe("clarification lifecycle integration", () => {
       ])
       expect(telemetry.find((record) => record.type === "clarification_settled")).toMatchObject({
         type: "clarification_settled",
-        agentRef: 1,
-        terminalKind: "answered",
+        terminalKind: "submitted",
         durationBucket: "under_5s",
         at: 1_000,
         sessionRef: "clarification-lifecycle",
@@ -546,6 +638,7 @@ describe("clarification lifecycle integration", () => {
       createConnection: () => claude.connection,
       readBranch: async () => null,
       sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     let lifecycle: MountedLifecycle | undefined
 

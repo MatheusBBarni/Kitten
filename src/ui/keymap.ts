@@ -49,6 +49,7 @@ export type CockpitCommand =
   | "toggle-shell"
   | "run-externally"
   | "hand-off"
+  | "delegate"
   | "sessions"
   | "resume-session"
   | "start-new-run"
@@ -78,7 +79,11 @@ export type ClarificationCommand =
   | "next-field"
   | "toggle-option"
   | "confirm"
+  | "skip"
   | "cancel"
+
+/** Every intent the explicit delegation dialog handles while it owns input. */
+export type DelegationCommand = "prev-field" | "next-field" | "confirm" | "cancel"
 
 /** Every intent the rename/close tab dialog handles while it owns the modal slot. */
 export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "cancel"
@@ -198,6 +203,7 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "toggle-shell", name: "shell", description: "Focus the integrated shell" },
   { command: "run-externally", name: "copy", description: "Copy the latest shell command for an external terminal" },
   { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
+  { command: "delegate", name: "delegate", description: "Start child work without leaving this conversation" },
   { command: "sessions", name: "sessions", description: "Show every session and jump to one that needs you" },
   { command: "previous-tab", name: "previous-tab", description: "Select the previous visible conversation" },
   { command: "next-tab", name: "next-tab", description: "Select the next visible conversation" },
@@ -234,6 +240,12 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Ctrl+T",
     description: "Open the curated hand-off flow",
     matches: ctrl("t"),
+  },
+  {
+    command: "delegate",
+    keys: "Ctrl+G",
+    description: "Delegate focused child work from the current conversation",
+    matches: ctrl("g"),
   },
   {
     command: "toggle-shell",
@@ -393,9 +405,43 @@ export const CLARIFICATION_KEYMAP: readonly KeyBinding<ClarificationCommand>[] =
     matches: plainAny("return", "kpenter"),
   },
   {
+    command: "skip",
+    keys: "Ctrl+S",
+    description: "Skip the whole clarification form",
+    matches: ctrl("s"),
+  },
+  {
     command: "cancel",
     keys: "Esc",
     description: "Cancel the clarification request",
+    matches: plain("escape"),
+  },
+]
+
+/** Field navigation and decisions for the explicit delegation form. */
+export const DELEGATION_KEYMAP: readonly KeyBinding<DelegationCommand>[] = [
+  {
+    command: "prev-field",
+    keys: "Shift+Tab",
+    description: "Focus the previous delegation field",
+    matches: shiftPlain("tab"),
+  },
+  {
+    command: "next-field",
+    keys: "Tab",
+    description: "Focus the next delegation field",
+    matches: plain("tab"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Start the delegated child",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Cancel delegation without launching",
     matches: plain("escape"),
   },
 ]
@@ -719,6 +765,7 @@ export function helpEntries(capability: KeyboardCapability): readonly HelpEntry[
     : []
   return [
     ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
+    ...COCKPIT_KEYMAP.filter((entry) => entry.command === "delegate").map(({ keys, description }) => ({ keys, description })),
     ...directTabBindings.map(({ keys, description }) => ({ keys, description })),
     { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
     ...EDITOR_KEYMAP,
@@ -768,7 +815,10 @@ export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} 
 
 /** The complete keyboard teaching surface shown only while clarification owns input. */
 export const CLARIFICATION_HINT =
-  `↑↓ move  Tab/Shift+Tab field/text  1-${MAX_DIGIT_OPTIONS} pick  Space toggle  Enter submit  Esc cancel request`
+  `↑↓ move  Tab/Shift+Tab field/text  1-${MAX_DIGIT_OPTIONS} pick  Space toggle  Enter submit  Ctrl+S skip form  Esc cancel request`
+
+/** The complete keyboard teaching surface for explicit delegation. */
+export const DELEGATION_HINT = "Tab/Shift+Tab field  Enter launch  Esc cancel"
 
 /** The hint printed while the rename input owns ordinary text keys. */
 export const TAB_RENAME_HINT = "Enter rename  Esc keep current name"
@@ -838,6 +888,9 @@ export const matchApprovalCommand = makeMatcher(APPROVAL_KEYMAP)
 
 /** The clarification command a keypress maps to, or null for focused text editing. */
 export const matchClarificationCommand = makeMatcher(CLARIFICATION_KEYMAP)
+
+/** The delegation dialog command a keypress maps to, or null for focused text editing. */
+export const matchDelegationCommand = makeMatcher(DELEGATION_KEYMAP)
 
 /** The rename/close dialog command a keypress maps to, or `null` for input text. */
 export const matchTabDialogCommand = makeMatcher(TAB_DIALOG_KEYMAP)

@@ -15,6 +15,14 @@
  */
 
 import { EFFORT_CATEGORY, MODEL_CATEGORY, needsAttention } from "../core/types.ts"
+import {
+  isTerminalDelegatedChildStatus,
+  selectDelegatedChild as selectCoreDelegatedChild,
+  selectDelegationAggregateStatus as selectCoreDelegationAggregateStatus,
+  selectDelegationParent as selectCoreDelegationParent,
+  selectOrderedDelegatedChildIds,
+  selectOrderedDelegatedChildren,
+} from "../core/orchestration.ts"
 import type { StatuslinePreference } from "../core/statusline.ts"
 import { attentionConversationIds } from "../core/workspace.ts"
 import type { PromptHistoryState } from "../core/promptHistory.ts"
@@ -24,6 +32,11 @@ import type {
   ClarificationCapability,
   ContextUsage,
   DefaultApplyResult,
+  DelegatedChildSnapshot,
+  DelegatedChildStatus,
+  DelegationAggregateStatus,
+  DelegationParent,
+  DelegationState,
   PendingDiff,
   PlanEntry,
   ProviderKind,
@@ -34,6 +47,7 @@ import type {
   ThemePreference,
   Turn,
   HandoffBundle,
+  HarnessDeliveryNotice,
   ConversationAvailability,
   TeardownState,
   WorkspaceConversation,
@@ -44,6 +58,7 @@ import type {
   AppState,
   ApprovalOverlay,
   ClarificationOverlay,
+  DelegationOverlay,
   FocusedPane,
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
@@ -76,9 +91,117 @@ const UNKNOWN_CLARIFICATION_CAPABILITY: ClarificationCapability = {
   reason: "unknown_recipe",
 }
 
+/** Selector-owned text for delegated lifecycle presentation. */
+export const DELEGATED_CHILD_STATUS_LABELS: Readonly<Record<DelegatedChildStatus, string>> = {
+  starting: "Starting",
+  running: "Running",
+  needs_input: "Needs input",
+  finished: "Finished",
+  failed: "Failed",
+  cancelled: "Cancelled",
+}
+
+export interface DelegatedChildPresentation {
+  readonly kind: "child"
+  readonly parentId: SessionId
+  readonly parentLabel: string
+  readonly lineageLabel: string
+  readonly status: DelegatedChildStatus
+  readonly statusLabel: string
+  readonly terminalTranscriptAvailable: boolean
+}
+
+export interface DelegationParentPresentation {
+  readonly kind: "parent"
+  readonly childCount: number
+  readonly groupStatus: "active" | "settled"
+  readonly groupLabel: "Group active" | "Group settled"
+}
+
+/** Render-ready delegation data; views never inspect raw ownership records. */
+export type DelegationPresentation = DelegatedChildPresentation | DelegationParentPresentation
+
+export interface DelegatedParentCloseStatusSummary {
+  readonly status: DelegatedChildStatus
+  readonly label: string
+  readonly count: number
+}
+
+export interface DelegatedParentCloseSummary {
+  readonly activeChildCount: number
+  readonly statuses: readonly DelegatedParentCloseStatusSummary[]
+}
+
+const delegationPresentationCache = new WeakMap<
+  DelegationState,
+  Map<string, DelegationPresentation | null>
+>()
+const delegatedParentCloseSummaryCache = new WeakMap<
+  DelegationState,
+  Map<SessionId, DelegatedParentCloseSummary | null>
+>()
+
 /** The active conversation, retained while the shell owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
   state.workspace.selectedVisibleId
+
+/** The complete ephemeral delegation projection for controller/store integration. */
+export const selectDelegationState: Selector<DelegationState> = (state) => state.delegation
+
+/** One stable parent ownership record, or `null` when the session owns no children. */
+export const selectDelegationParent =
+  (parentId: SessionId): Selector<DelegationParent | null> =>
+  (state) =>
+    selectCoreDelegationParent(state.delegation, parentId) ?? null
+
+/** One stable child lifecycle snapshot, or `null` for an ordinary/removed session. */
+export const selectDelegatedChild =
+  (childId: SessionId): Selector<DelegatedChildSnapshot | null> =>
+  (state) =>
+    selectCoreDelegatedChild(state.delegation, childId) ?? null
+
+/** Stable registration-order child ids owned by one parent. */
+export const selectDelegatedChildIds =
+  (parentId: SessionId): Selector<readonly SessionId[]> =>
+  (state) =>
+    selectOrderedDelegatedChildIds(state.delegation, parentId)
+
+/** Allocation-free aggregate lifecycle for one parent group. */
+export const selectDelegationGroupStatus =
+  (parentId: SessionId): Selector<DelegationAggregateStatus | null> =>
+  (state) =>
+    selectCoreDelegationAggregateStatus(state.delegation, parentId)
+
+/** Active child count and explicit lifecycle labels for one captured parent close. */
+export const selectDelegatedParentCloseSummary =
+  (parentId: SessionId): Selector<DelegatedParentCloseSummary | null> =>
+  (state) => {
+    let byParent = delegatedParentCloseSummaryCache.get(state.delegation)
+    if (!byParent) {
+      byParent = new Map()
+      delegatedParentCloseSummaryCache.set(state.delegation, byParent)
+    }
+    if (byParent.has(parentId)) return byParent.get(parentId) ?? null
+
+    const activeChildren = selectOrderedDelegatedChildren(state.delegation, parentId).filter(
+      (child) => !isTerminalDelegatedChildStatus(child.status),
+    )
+    if (activeChildren.length === 0) {
+      byParent.set(parentId, null)
+      return null
+    }
+
+    const statuses = (["starting", "running", "needs_input"] as const).flatMap((status) => {
+      const count = activeChildren.filter((child) => child.status === status).length
+      return count > 0 ? [{ status, label: DELEGATED_CHILD_STATUS_LABELS[status], count }] : []
+    })
+    const summary: DelegatedParentCloseSummary = {
+      activeChildCount: activeChildren.length,
+      statuses,
+    }
+    byParent.set(parentId, summary)
+    return summary
+  }
 
 /** One conversation's reactive connection standing, or `null` when it no longer exists. */
 export const selectConversationAvailability =
@@ -152,6 +275,18 @@ export const selectRestoration =
 /** The persisted hand-off context for a restored run's unavailable pane. */
 export const selectRestorationBundle: Selector<HandoffBundle | null> = (state) =>
   state.restorationBundle
+
+/** One session's fixed unsafe-start recovery notice; healthy states return `null`. */
+export const selectHarnessDeliveryNotice =
+  (sessionId: SessionId | null): Selector<HarnessDeliveryNotice | null> =>
+  (state) =>
+    (sessionId ? state.harnessDeliveryNotices[sessionId] : null) ?? null
+
+/** The selected conversation's fixed unsafe-start recovery notice. */
+export const selectFocusedHarnessDeliveryNotice: Selector<HarnessDeliveryNotice | null> = (state) => {
+  const sessionId = state.workspace.selectedVisibleId
+  return sessionId ? (state.harnessDeliveryNotices[sessionId] ?? null) : null
+}
 
 /** One session's current git branch, or `null` when it has not been resolved. */
 export const selectSessionBranch =
@@ -274,26 +409,93 @@ export interface SessionListItem {
   selected: boolean
   /** Whether the current attention epoch has already been visited. */
   attentionSeen: boolean
+  /** Cached lineage/lifecycle or parent-group presentation for delegated work. */
+  delegation: DelegationPresentation | null
 }
 
 /**
- * Cache of one derived list per {@link AppState} object. The store commits a fresh
- * `AppState` on every change and keeps unchanged ones by identity (structural
- * sharing), so keying on the state object gives {@link selectSessionList} a stable
- * reference between commits - which `useSyncExternalStore` requires of its snapshot -
- * while still rebuilding on any real change. A `WeakMap` keeps it correct across
- * concurrent stores and lets a superseded state (and its list) be collected.
+ * Cache one derived list per combination of the three immutable slices it reads.
+ * Structural sharing keeps the result stable across unrelated commits, while a
+ * session, workspace, or delegation change rebuilds the projection. Weak keys keep
+ * concurrent stores isolated and allow superseded slices to be collected.
  */
-const sessionListCache = new WeakMap<AppState, SessionListItem[]>()
+const sessionListCache = new WeakMap<
+  WorkspaceState,
+  WeakMap<DelegationState, WeakMap<AppState["sessions"], SessionListItem[]>>
+>()
+
+function displayLabel(state: AppState, sessionId: SessionId): string {
+  const conversation = state.workspace.conversations[sessionId]
+  if (!conversation) return sessionId
+  const duplicate = duplicatePosition(state, sessionId)
+  return duplicate.count > 1
+    ? `${conversation.displayName} (${duplicate.index})`
+    : conversation.displayName
+}
+
+function delegationPresentation(
+  state: AppState,
+  sessionId: SessionId,
+): DelegationPresentation | null {
+  const child = selectCoreDelegatedChild(state.delegation, sessionId)
+  const parent = selectCoreDelegationParent(state.delegation, sessionId)
+  const parentLabel = child ? displayLabel(state, child.parentId) : ""
+  const aggregateStatus = parent
+    ? selectCoreDelegationAggregateStatus(state.delegation, sessionId)
+    : null
+  const groupStatus = aggregateStatus === "settled" ? "settled" : "active"
+  const key = child
+    ? `child\u0000${sessionId}\u0000${parentLabel}\u0000${child.status}`
+    : parent && aggregateStatus
+      ? `parent\u0000${sessionId}\u0000${parent.childIds.length}\u0000${groupStatus}`
+      : `ordinary\u0000${sessionId}`
+  let cache = delegationPresentationCache.get(state.delegation)
+  if (!cache) {
+    cache = new Map()
+    delegationPresentationCache.set(state.delegation, cache)
+  }
+  if (cache.has(key)) return cache.get(key) ?? null
+
+  const presentation: DelegationPresentation | null = child
+    ? {
+        kind: "child",
+        parentId: child.parentId,
+        parentLabel,
+        lineageLabel: `Child of ${parentLabel}`,
+        status: child.status,
+        statusLabel: DELEGATED_CHILD_STATUS_LABELS[child.status],
+        terminalTranscriptAvailable: child.terminal !== undefined,
+      }
+    : parent && aggregateStatus
+      ? {
+          kind: "parent",
+          childCount: parent.childIds.length,
+          groupStatus,
+          groupLabel: groupStatus === "settled" ? "Group settled" : "Group active",
+        }
+      : null
+  cache.set(key, presentation)
+  return presentation
+}
 
 /**
  * Every session with its status, in display order (ADR-006). The `/sessions` overview
  * (task_05) reads this to draw its card list and mark which rows need you. It is
- * memoized per state object (see {@link sessionListCache}): a subscriber wakes on any
- * committed change but a repeated read of the same state returns the same array.
+ * memoized by the immutable state slices it reads (see {@link sessionListCache}), so
+ * unrelated commits retain the same array while relevant changes rebuild it.
  */
 export const selectSessionList: Selector<SessionListItem[]> = (state) => {
-  const cached = sessionListCache.get(state)
+  let byDelegation = sessionListCache.get(state.workspace)
+  if (!byDelegation) {
+    byDelegation = new WeakMap()
+    sessionListCache.set(state.workspace, byDelegation)
+  }
+  let bySessions = byDelegation.get(state.delegation)
+  if (!bySessions) {
+    bySessions = new WeakMap()
+    byDelegation.set(state.delegation, bySessions)
+  }
+  const cached = bySessions.get(state.sessions)
   if (cached) return cached
   const list = state.workspace.order.flatMap((id) => {
     const session = state.sessions[id]!
@@ -314,9 +516,10 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
       lifecycle: conversation.lifecycle,
       selected: state.workspace.selectedVisibleId === id,
       attentionSeen: conversation.attention.seen,
+      delegation: delegationPresentation(state, id),
     }]
   })
-  sessionListCache.set(state, list)
+  bySessions.set(state.sessions, list)
   return list
 }
 
@@ -377,6 +580,10 @@ export const selectApprovalOverlay: Selector<ApprovalOverlay | null> = (state) =
 export const selectClarificationOverlay: Selector<ClarificationOverlay | null> = (state) =>
   state.overlays.clarification
 
+/** The focused parent captured for an explicit delegation launch. */
+export const selectDelegationOverlay: Selector<DelegationOverlay | null> = (state) =>
+  state.overlays.delegation
+
 /** Whether clarification currently owns top modal priority. */
 export const selectIsClarificationOpen: Selector<boolean> = (state) =>
   state.overlays.clarification !== null
@@ -434,6 +641,7 @@ export const selectTabDialogOverlay: Selector<TabDialogOverlay | null> = (state)
 export type ActiveModal =
   | { kind: "clarification"; sessionId: SessionId; requestId: string }
   | { kind: "approval"; sessionId: SessionId }
+  | { kind: "delegation"; sessionId: SessionId }
   | { kind: "tab-dialog"; sessionId: SessionId }
   | { kind: "sessions" }
   | { kind: "session-picker" }
@@ -454,6 +662,7 @@ export const selectActiveModal: Selector<ActiveModal> = (state) => {
     }
   }
   if (overlays.approval) return { kind: "approval", sessionId: overlays.approval.sessionId }
+  if (overlays.delegation) return { kind: "delegation", sessionId: overlays.delegation.parentId }
   if (overlays.tabDialog) return { kind: "tab-dialog", sessionId: overlays.tabDialog.sessionId }
   if (overlays.sessions) return { kind: "sessions" }
   if (overlays.sessionPicker) return { kind: "session-picker" }
@@ -468,6 +677,7 @@ export const selectActiveModal: Selector<ActiveModal> = (state) => {
 export const selectHasOpenOverlay: Selector<boolean> = (state) =>
   state.overlays.clarification !== null ||
   state.overlays.approval !== null ||
+  state.overlays.delegation !== null ||
   state.overlays.handoffPreview !== null ||
   state.overlays.handoffTarget !== null ||
   state.overlays.modelSelect !== null ||
@@ -494,6 +704,8 @@ export interface WorkspaceConversationView {
   duplicateIndex: number
   duplicateCount: number
   sharedWorkspaceCount: number
+  /** Cached lineage/lifecycle or parent-group presentation for delegated work. */
+  delegation: DelegationPresentation | null
 }
 
 export interface SharedWorkspaceCue {
@@ -510,7 +722,14 @@ interface WorkspaceListCache {
   shared?: SharedWorkspaceCue[]
 }
 
-const workspaceListCache = new WeakMap<WorkspaceState, WorkspaceListCache>()
+const workspaceListCache = new WeakMap<
+  WorkspaceState,
+  WeakMap<DelegationState, WorkspaceListCache>
+>()
+const stableWorkspaceLists = new WeakMap<
+  SessionId[],
+  Pick<WorkspaceListCache, "visible" | "background" | "attention">
+>()
 const conversationViewCache = new WeakMap<
   WorkspaceConversation,
   Map<string, WorkspaceConversationView>
@@ -541,6 +760,12 @@ function workspaceConversationView(
   const duplicate = duplicatePosition(state, sessionId)
   const sharedCount = sharedWorkspaceCount(state, session.cwd)
   const selected = state.workspace.selectedVisibleId === sessionId
+  const delegation = delegationPresentation(state, sessionId)
+  const delegationKey = delegation === null
+    ? "ordinary"
+    : delegation.kind === "child"
+      ? `child:${delegation.parentLabel}:${delegation.status}:${delegation.terminalTranscriptAvailable}`
+      : `parent:${delegation.childCount}:${delegation.groupStatus}`
   const key = [
     session.providerKind,
     session.cwd,
@@ -549,6 +774,7 @@ function workspaceConversationView(
     duplicate.index,
     duplicate.count,
     sharedCount,
+    delegationKey,
   ].join("\u0000")
   let byKey = conversationViewCache.get(conversation)
   if (!byKey) {
@@ -576,20 +802,21 @@ function workspaceConversationView(
     duplicateIndex: duplicate.index,
     duplicateCount: duplicate.count,
     sharedWorkspaceCount: sharedCount,
+    delegation,
   }
   byKey.set(key, view)
   return view
 }
 
 function stableList(
-  workspace: WorkspaceState,
+  state: AppState,
   slot: "visible" | "background" | "attention",
   next: WorkspaceConversationView[],
 ): WorkspaceConversationView[] {
-  let cache = workspaceListCache.get(workspace)
+  let cache = stableWorkspaceLists.get(state.workspace.order)
   if (!cache) {
     cache = {}
-    workspaceListCache.set(workspace, cache)
+    stableWorkspaceLists.set(state.workspace.order, cache)
   }
   const previous = cache[slot]
   if (
@@ -603,9 +830,23 @@ function stableList(
   return next
 }
 
+function workspaceCache(state: AppState): WorkspaceListCache {
+  let byDelegation = workspaceListCache.get(state.workspace)
+  if (!byDelegation) {
+    byDelegation = new WeakMap()
+    workspaceListCache.set(state.workspace, byDelegation)
+  }
+  let cache = byDelegation.get(state.delegation)
+  if (!cache) {
+    cache = {}
+    byDelegation.set(state.delegation, cache)
+  }
+  return cache
+}
+
 export const selectVisibleTabs: Selector<WorkspaceConversationView[]> = (state) =>
   stableList(
-    state.workspace,
+    state,
     "visible",
     state.workspace.order.flatMap((id) => {
       if (state.workspace.conversations[id]?.lifecycle !== "visible") return []
@@ -616,7 +857,7 @@ export const selectVisibleTabs: Selector<WorkspaceConversationView[]> = (state) 
 
 export const selectBackgroundWork: Selector<WorkspaceConversationView[]> = (state) =>
   stableList(
-    state.workspace,
+    state,
     "background",
     state.workspace.order.flatMap((id) => {
       if (state.workspace.conversations[id]?.lifecycle !== "background") return []
@@ -627,7 +868,7 @@ export const selectBackgroundWork: Selector<WorkspaceConversationView[]> = (stat
 
 export const selectAttentionQueue: Selector<WorkspaceConversationView[]> = (state) =>
   stableList(
-    state.workspace,
+    state,
     "attention",
     attentionConversationIds(state.workspace).flatMap((id) => {
       const item = workspaceConversationView(state, id)
@@ -639,11 +880,7 @@ export const selectNextAttention: Selector<SessionId | null> = (state) =>
   attentionConversationIds(state.workspace)[0] ?? null
 
 export const selectDuplicateLabels: Selector<Readonly<Record<SessionId, string>>> = (state) => {
-  let cache = workspaceListCache.get(state.workspace)
-  if (!cache) {
-    cache = {}
-    workspaceListCache.set(state.workspace, cache)
-  }
+  const cache = workspaceCache(state)
   if (cache.duplicateLabels) return cache.duplicateLabels
   const labels: Record<SessionId, string> = {}
   for (const id of state.workspace.order) {
@@ -655,11 +892,7 @@ export const selectDuplicateLabels: Selector<Readonly<Record<SessionId, string>>
 }
 
 export const selectSharedWorkspaces: Selector<SharedWorkspaceCue[]> = (state) => {
-  let cache = workspaceListCache.get(state.workspace)
-  if (!cache) {
-    cache = {}
-    workspaceListCache.set(state.workspace, cache)
-  }
+  const cache = workspaceCache(state)
   if (cache.shared) return cache.shared
   const idsByCwd = new Map<string, SessionId[]>()
   for (const id of state.workspace.order) {

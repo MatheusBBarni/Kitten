@@ -13,6 +13,8 @@ import { CockpitApp } from "./CockpitApp.tsx"
 import {
   ConversationView,
   CONVERSATION_SCROLLBOX_ID,
+  DEGRADED_START_LABEL,
+  DEGRADED_START_RECOVERY_LABEL,
   EMPTY_TRANSCRIPT_HINT,
   RESTORATION_CONTEXT_LABEL,
   RESTORATION_FRESH_LABEL,
@@ -342,6 +344,79 @@ describe("ConversationView turns", () => {
     expect(headingSpan()?.fg?.toString()).not.toBe(paletteColor(DARK_PALETTE.text))
 
     await destroyMounted(renderer)
+  })
+})
+
+describe("ConversationView degraded-start recovery", () => {
+  it("keeps pending, delivered, and not-required delivery states silent", async () => {
+    for (const state of ["pending", "delivered", "not_required"] as const) {
+      const controller = createFakeController()
+      controller.store.setHarnessDelivery("claude-code", { version: "v1", generation: 1, state })
+      const setup = await renderConversation(controller)
+      const frame = setup.captureCharFrame()
+
+      expect(frame).not.toContain(DEGRADED_START_LABEL)
+      expect(frame).not.toContain(DEGRADED_START_RECOVERY_LABEL)
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("renders only fixed recovery copy for a failed start", async () => {
+    const controller = createFakeController()
+    controller.store.setHarnessDelivery("claude-code", {
+      version: "v1",
+      generation: 1,
+      state: "failed",
+      failureCategory: "unsupported_profile",
+    })
+    const setup = await renderConversation(controller)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain(DEGRADED_START_LABEL)
+    expect(frame).toContain(DEGRADED_START_RECOVERY_LABEL)
+    expect(frame).toContain("/new")
+    for (const hidden of [
+      "synthetic harness",
+      "private task",
+      "claude-certified",
+      "/private/repo",
+      "adapter exploded",
+      "provider-session",
+    ]) expect(frame).not.toContain(hidden)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses keyboard-only /new to recover the focused rejected task and restore quiet rendering", async () => {
+    const task = "preserve this original task"
+    const syntheticHarness = "SYNTHETIC_HARNESS_MUST_NOT_RENDER"
+    const controller = createFakeController({
+      sendPrompt(_input, sessionId, store) {
+        store.setHarnessDelivery(sessionId ?? "claude-code", {
+          version: "v1",
+          generation: 1,
+          state: "failed",
+          failureCategory: "unsupported_profile",
+        })
+        return null
+      },
+    })
+    const setup = await renderConversation(controller)
+
+    await actAsync(async () => setup.mockInput.typeText(task))
+    await actAsync(() => setup.mockInput.pressEnter())
+    const degraded = await setup.waitForFrame((frame) => frame.includes(DEGRADED_START_LABEL))
+    expect(degraded).toContain("/new")
+    expect(degraded).not.toContain(syntheticHarness)
+
+    await runSlashCommand(setup, "new")
+    expect(controller.calls.startFreshFromContext).toEqual([{ input: task, sessionId: "claude-code" }])
+    const quiet = await setup.waitForFrame((frame) => !frame.includes(DEGRADED_START_LABEL))
+    expect(quiet).not.toContain(DEGRADED_START_RECOVERY_LABEL)
+    expect(quiet).not.toContain(syntheticHarness)
+    expect(controller.store.getState().sessions["claude-code"]?.promptHistory.entries).toEqual([task])
+
+    await destroyMounted(setup.renderer)
   })
 })
 

@@ -15,6 +15,7 @@ import {
   exitBlocked,
   main,
   runtimeSetup,
+  wantsAskUserMcp,
   wantsHelp,
   wantsReloadProbe,
   wantsSelfCheck,
@@ -348,6 +349,12 @@ describe("wantsSelfCheck", () => {
   it("detects the --self-check flag", () => {
     expect(wantsSelfCheck(["bun", "index.ts", "--self-check"])).toBe(true)
     expect(wantsSelfCheck(["bun", "index.ts"])).toBe(false)
+  })
+
+  it("enters MCP child mode only for the explicit reserved flag", () => {
+    expect(wantsAskUserMcp(["bun", "index.ts", "--ask-user-mcp"])).toBe(true)
+    expect(wantsAskUserMcp(["bun", "index.ts", "--self-check"])).toBe(false)
+    expect(wantsAskUserMcp(["bun", "index.ts"])).toBe(false)
   })
 
   it("detects the opt-in real-adapter reload probe flag independently", () => {

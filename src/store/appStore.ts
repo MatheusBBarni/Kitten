@@ -25,6 +25,7 @@
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
+import { createDelegationState, delegationReducer } from "../core/orchestration.ts"
 import type {
   StatuslineLayout,
   StatuslinePreference,
@@ -34,11 +35,14 @@ import { createWorkspaceState, workspaceReducer } from "../core/workspace.ts"
 import {
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_KINDS,
+  HARNESS_DELIVERY_FAILED_NOTICE,
   type ClarificationCapability,
   type ClarificationPayload,
   type ConfigOption,
+  type DelegationState,
   type DomainSessionEvent,
   type HandoffBundle,
+  type HarnessDeliveryNotice,
   type ProviderKind,
   type SessionId,
   type SessionSeed,
@@ -53,6 +57,7 @@ import {
   type WorkspaceConversationSeed,
   type WorkspaceNotice,
 } from "../core/types.ts"
+import type { HarnessPromptVersion } from "../core/harnessPrompt.ts"
 
 /** Every provider kind Kitten seeds a default session for, in cockpit order (ADR-001). */
 export const AGENT_IDS: readonly ProviderKind[] = PROVIDER_KINDS
@@ -171,6 +176,11 @@ export type TabDialogOverlay =
   | { kind: "rename"; sessionId: SessionId }
   | { kind: "close"; sessionId: SessionId }
 
+/** The focused parent captured when the explicit delegation flow opens. */
+export interface DelegationOverlay {
+  parentId: SessionId
+}
+
 /**
  * The overlay slots. At most one overlay of each kind exists at a time; the UI
  * (tasks 11 and 12) decides how to stack them. `null` means "closed".
@@ -182,6 +192,8 @@ export type TabDialogOverlay =
 export interface OverlayState {
   approval: ApprovalOverlay | null
   clarification: ClarificationOverlay | null
+  /** Captures only the parent identity; all launch drafts remain component-local. */
+  delegation: DelegationOverlay | null
   handoffPreview: HandoffPreviewOverlay | null
   /** The hand-off target picker, open only while the developer is choosing a recipient. */
   handoffTarget: HandoffTargetOverlay | null
@@ -210,6 +222,8 @@ export interface OverlayState {
  */
 export interface AppState {
   sessions: Record<SessionId, SessionState>
+  /** Protocol-free live delegation ownership; intentionally empty after restore. */
+  delegation: DelegationState
   /** User-owned conversation metadata, order, lifecycle, selection, and attention acknowledgement. */
   workspace: WorkspaceState
   /** Ephemeral action feedback for valid empty-workspace states. */
@@ -221,11 +235,53 @@ export interface AppState {
   preferences: Preferences
   /** Protocol-free capability classification exposed per configured session. */
   clarificationCapabilities: Record<SessionId, ClarificationCapability>
+  /** Content-free controller checkpoint projection consumed by persistence and recovery work. */
+  harnessDeliveries: Partial<Record<SessionId, HarnessDeliveryCheckpointProjection>>
+  /** Ephemeral fixed recovery projection; absent for every healthy delivery state. */
+  harnessDeliveryNotices: Partial<Record<SessionId, HarnessDeliveryNotice>>
   overlays: OverlayState
   restoration: Record<SessionId, RestorationMode | null>
   /** The persisted hand-off context for the currently restored cockpit run. */
   restorationBundle: HandoffBundle | null
 }
+
+export interface HarnessDeliveryCheckpointProjection {
+  readonly version: HarnessPromptVersion
+  readonly generation: number
+  readonly state: "not_required" | "pending" | "in_flight" | "delivered" | "failed"
+  readonly failureCategory?: "unsupported_profile" | "harness_render_failed" | "dispatch_indeterminate"
+}
+
+/** Inputs required to atomically register one normal session as a delegated child. */
+export interface DelegatedSessionRegistration {
+  readonly seed: SessionSeed
+  readonly parentId: SessionId
+  readonly parentGeneration: number
+  readonly childGeneration: number
+  readonly task: string
+  readonly desiredOutcome: string
+  readonly displayName?: string
+}
+
+export interface DelegatedChildIdentity {
+  readonly parentId: SessionId
+  readonly childId: SessionId
+  readonly parentGeneration: number
+  readonly childGeneration: number
+}
+
+/** One generation-fenced lifecycle projection paired with its normal session status. */
+export type DelegatedChildStatePublication = DelegatedChildIdentity &
+  (
+    | { readonly status: "running"; readonly sessionStatus: "working" }
+    | {
+        readonly status: "needs_input"
+        readonly sessionStatus: "awaiting_clarification" | "awaiting_approval"
+      }
+    | { readonly status: "finished"; readonly sessionStatus: "finished"; readonly at: number }
+    | { readonly status: "failed"; readonly sessionStatus: "error"; readonly at: number }
+    | { readonly status: "cancelled"; readonly sessionStatus: "idle"; readonly at: number }
+  )
 
 /** A function projecting a narrow slice out of the state, for `subscribeSelector`. */
 export type Selector<T> = (state: AppState) => T
@@ -259,6 +315,14 @@ export interface AppStore {
   ): void
   /** Atomically insert a normalized execution slice and its visible workspace entry. */
   addSession(seed: SessionSeed, options?: { displayName?: string; availability?: ConversationAvailability }): void
+  /** Atomically insert and background a normal child session with delegation ownership. */
+  addDelegatedSession(registration: DelegatedSessionRegistration): void
+  /** Publish one accepted child lifecycle and its reducer-owned session status atomically. */
+  publishDelegatedChildState(publication: DelegatedChildStatePublication): void
+  /** Fence new child registration before a controller-owned parent cascade begins. */
+  markDelegationParentClosing(parentId: SessionId, parentGeneration: number): void
+  /** Atomically remove one terminal child from session, workspace, and delegation state. */
+  removeDelegationChild(identity: DelegatedChildIdentity): void
   /** Atomically replace execution/workspace membership from validated restore descriptors. */
   replaceSessions(
     entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
@@ -289,6 +353,10 @@ export interface AppStore {
   openClarification(overlay: ClarificationOverlay): void
   /** Clear only the clarification projection. */
   closeClarification(): void
+  /** Capture the currently focused parent for an explicit child launch. */
+  openDelegation(overlay: DelegationOverlay): void
+  /** Cancel or finish the explicit delegation flow. */
+  closeDelegation(): void
   /** Open the hand-off preview overlay for the assembled bundle. */
   openHandoffPreview(overlay: HandoffPreviewOverlay): void
   /** Clear the hand-off preview slot. Closing a closed slot is a no-op. */
@@ -324,6 +392,11 @@ export interface AppStore {
   closeSessionPicker(): void
   /** Publish one session's resolved structured-clarification capability. */
   setClarificationCapability(sessionId: SessionId, capability: ClarificationCapability): void
+  /** Publish one fixed, content-free controller delivery checkpoint. */
+  setHarnessDelivery(
+    sessionId: SessionId,
+    checkpoint: HarnessDeliveryCheckpointProjection,
+  ): void
   /** Set one session's restoration status without changing its transcript. */
   setRestoration(sessionId: SessionId, mode: RestorationMode | null): void
   /** Replace the persisted context exposed by degraded restored panes. */
@@ -376,6 +449,7 @@ class AppStoreImpl implements AppStore {
     })
     this.state = {
       sessions,
+      delegation: createDelegationState(),
       workspace,
       workspaceNotice: null,
       keyboardCapability: "unknown",
@@ -391,9 +465,12 @@ class AppStoreImpl implements AppStore {
         },
       },
       clarificationCapabilities,
+      harnessDeliveries: {},
+      harnessDeliveryNotices: {},
       overlays: {
         approval: null,
         clarification: null,
+        delegation: null,
         handoffPreview: null,
         handoffTarget: null,
         modelSelect: null,
@@ -513,7 +590,135 @@ class AppStoreImpl implements AppStore {
         ...this.state.clarificationCapabilities,
         [seed.id]: unknownClarificationCapability(),
       },
+      harnessDeliveries: { ...this.state.harnessDeliveries },
+      harnessDeliveryNotices: { ...this.state.harnessDeliveryNotices },
       focusedPane: { kind: "agent", sessionId: seed.id },
+    })
+  }
+
+  addDelegatedSession(registration: DelegatedSessionRegistration): void {
+    const { seed, parentId, parentGeneration, childGeneration, task, desiredOutcome } = registration
+    if (
+      !this.state.sessions[parentId] ||
+      !this.state.workspace.conversations[parentId] ||
+      this.state.workspace.selectedVisibleId !== parentId ||
+      this.state.sessions[seed.id] ||
+      this.state.workspace.conversations[seed.id]
+    ) {
+      return
+    }
+
+    const delegation = delegationReducer(this.state.delegation, {
+      kind: "register_child",
+      parentId,
+      childId: seed.id,
+      parentGeneration,
+      childGeneration,
+      task,
+      desiredOutcome,
+    })
+    if (delegation === this.state.delegation) return
+
+    const createdWorkspace = workspaceReducer(this.state.workspace, {
+      kind: "create",
+      sessionId: seed.id,
+      displayName: registration.displayName ?? seed.title,
+      availability: { kind: "starting" },
+      initialStatus: "idle",
+    })
+    if (createdWorkspace === this.state.workspace) return
+    const backgroundWorkspace = workspaceReducer(createdWorkspace, {
+      kind: "background",
+      sessionId: seed.id,
+    })
+    if (backgroundWorkspace === createdWorkspace) return
+    const workspace = backgroundWorkspace.selectedVisibleId === parentId
+      ? backgroundWorkspace
+      : { ...backgroundWorkspace, selectedVisibleId: parentId }
+    if (workspace.selectedVisibleId !== parentId) return
+
+    this.commit({
+      ...this.state,
+      sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      delegation,
+      workspace,
+      restoration: { ...this.state.restoration, [seed.id]: null },
+      clarificationCapabilities: {
+        ...this.state.clarificationCapabilities,
+        [seed.id]: unknownClarificationCapability(),
+      },
+    })
+  }
+
+  publishDelegatedChildState(publication: DelegatedChildStatePublication): void {
+    const session = this.state.sessions[publication.childId]
+    if (!session) return
+    const delegation = reduceDelegatedChildPublication(this.state.delegation, publication)
+    if (delegation === this.state.delegation) return
+
+    const nextSession = sessionReducer(session, {
+      kind: "status",
+      status: publication.sessionStatus,
+    })
+    const workspace = workspaceReducer(this.state.workspace, {
+      kind: "execution_status",
+      sessionId: publication.childId,
+      status: nextSession.status,
+    })
+    this.commit({
+      ...this.state,
+      sessions: { ...this.state.sessions, [publication.childId]: nextSession },
+      delegation,
+      workspace,
+    })
+  }
+
+  markDelegationParentClosing(parentId: SessionId, parentGeneration: number): void {
+    const delegation = delegationReducer(this.state.delegation, {
+      kind: "mark_parent_closing",
+      parentId,
+      parentGeneration,
+    })
+    if (delegation === this.state.delegation) return
+    this.commit({ ...this.state, delegation })
+  }
+
+  removeDelegationChild(identity: DelegatedChildIdentity): void {
+    const session = this.state.sessions[identity.childId]
+    const conversation = this.state.workspace.conversations[identity.childId]
+    if (!session || !conversation) return
+    const delegation = delegationReducer(this.state.delegation, {
+      kind: "remove_child",
+      ...identity,
+    })
+    if (delegation === this.state.delegation) return
+
+    const workspace = workspaceReducer(this.state.workspace, {
+      kind: "close_succeeded",
+      sessionId: identity.childId,
+    })
+    const sessions = { ...this.state.sessions }
+    const restoration = { ...this.state.restoration }
+    const clarificationCapabilities = { ...this.state.clarificationCapabilities }
+    const harnessDeliveries = { ...this.state.harnessDeliveries }
+    const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
+    delete sessions[identity.childId]
+    delete restoration[identity.childId]
+    delete clarificationCapabilities[identity.childId]
+    delete harnessDeliveries[identity.childId]
+    delete harnessDeliveryNotices[identity.childId]
+
+    this.commit({
+      ...this.state,
+      sessions,
+      delegation,
+      workspace,
+      overlays: clearSessionOverlays(this.state.overlays, identity.childId),
+      restoration,
+      clarificationCapabilities,
+      harnessDeliveries,
+      harnessDeliveryNotices,
+      focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
   }
 
@@ -536,10 +741,14 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      delegation: createDelegationState(),
       workspace,
       workspaceNotice: null,
+      overlays: { ...this.state.overlays, delegation: null },
       restoration,
       clarificationCapabilities,
+      harnessDeliveries: {},
+      harnessDeliveryNotices: {},
       focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
   }
@@ -550,24 +759,22 @@ class AppStoreImpl implements AppStore {
     const sessions = { ...this.state.sessions }
     const restoration = { ...this.state.restoration }
     const clarificationCapabilities = { ...this.state.clarificationCapabilities }
+    const harnessDeliveries = { ...this.state.harnessDeliveries }
+    const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[sessionId]
     delete restoration[sessionId]
     delete clarificationCapabilities[sessionId]
+    delete harnessDeliveries[sessionId]
+    delete harnessDeliveryNotices[sessionId]
     this.commit({
       ...this.state,
       sessions,
       workspace,
-      overlays:
-        this.state.overlays.tabDialog?.sessionId === sessionId ||
-        this.state.overlays.clarification?.sessionId === sessionId
-          ? {
-              ...this.state.overlays,
-              ...(this.state.overlays.tabDialog?.sessionId === sessionId ? { tabDialog: null } : {}),
-              ...(this.state.overlays.clarification?.sessionId === sessionId ? { clarification: null } : {}),
-            }
-          : this.state.overlays,
+      overlays: clearSessionOverlays(this.state.overlays, sessionId),
       restoration,
       clarificationCapabilities,
+      harnessDeliveries,
+      harnessDeliveryNotices,
       focusedPane: reconcilePane(this.state.focusedPane, workspace),
     })
   }
@@ -676,6 +883,29 @@ class AppStoreImpl implements AppStore {
   closeClarification(): void {
     if (this.state.overlays.clarification === null) return
     this.setOverlays({ clarification: null })
+  }
+
+  openDelegation(overlay: DelegationOverlay): void {
+    const state = this.state
+    const conversation = state.workspace.conversations[overlay.parentId]
+    if (
+      hasOpenOverlay(state.overlays) ||
+      state.focusedPane.kind !== "agent" ||
+      state.focusedPane.sessionId !== overlay.parentId ||
+      state.workspace.selectedVisibleId !== overlay.parentId ||
+      conversation?.lifecycle !== "visible" ||
+      conversation.teardownState === "closing" ||
+      !state.sessions[overlay.parentId] ||
+      state.delegation.children[overlay.parentId]
+    ) {
+      return
+    }
+    this.setOverlays({ delegation: overlay })
+  }
+
+  closeDelegation(): void {
+    if (this.state.overlays.delegation === null) return
+    this.setOverlays({ delegation: null })
   }
 
   openHandoffPreview(overlay: HandoffPreviewOverlay): void {
@@ -805,6 +1035,34 @@ class AppStoreImpl implements AppStore {
     this.commit({ ...this.state, restorationBundle: bundle })
   }
 
+  setHarnessDelivery(
+    sessionId: SessionId,
+    checkpoint: HarnessDeliveryCheckpointProjection,
+  ): void {
+    if (!this.state.sessions[sessionId]) return
+    const current = this.state.harnessDeliveries[sessionId]
+    const currentNotice = this.state.harnessDeliveryNotices[sessionId]
+    const nextNotice = checkpoint.state === "failed" ? HARNESS_DELIVERY_FAILED_NOTICE : undefined
+    if (
+      current?.version === checkpoint.version &&
+      current.generation === checkpoint.generation &&
+      current.state === checkpoint.state &&
+      current.failureCategory === checkpoint.failureCategory &&
+      currentNotice === nextNotice
+    ) return
+    const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
+    if (nextNotice) harnessDeliveryNotices[sessionId] = nextNotice
+    else delete harnessDeliveryNotices[sessionId]
+    this.commit({
+      ...this.state,
+      harnessDeliveries: {
+        ...this.state.harnessDeliveries,
+        [sessionId]: { ...checkpoint },
+      },
+      harnessDeliveryNotices,
+    })
+  }
+
   setThemePreference(theme: ThemePreference): void {
     if (this.state.preferences.theme === theme) return
     this.commit({ ...this.state, preferences: { ...this.state.preferences, theme } })
@@ -855,10 +1113,51 @@ function reconcilePane(pane: FocusedPane, workspace: WorkspaceState): FocusedPan
     : { kind: "workspace" }
 }
 
+function reduceDelegatedChildPublication(
+  delegation: DelegationState,
+  publication: DelegatedChildStatePublication,
+): DelegationState {
+  const identity = {
+    parentId: publication.parentId,
+    childId: publication.childId,
+    parentGeneration: publication.parentGeneration,
+    childGeneration: publication.childGeneration,
+  }
+  return publication.status === "running" || publication.status === "needs_input"
+    ? delegationReducer(delegation, {
+        kind: "publish_child_status",
+        ...identity,
+        status: publication.status,
+      })
+    : delegationReducer(delegation, {
+        kind: "publish_child_status",
+        ...identity,
+        status: publication.status,
+        at: publication.at,
+      })
+}
+
+function clearSessionOverlays(overlays: OverlayState, sessionId: SessionId): OverlayState {
+  if (
+    overlays.tabDialog?.sessionId !== sessionId &&
+    overlays.clarification?.sessionId !== sessionId &&
+    overlays.delegation?.parentId !== sessionId
+  ) {
+    return overlays
+  }
+  return {
+    ...overlays,
+    ...(overlays.tabDialog?.sessionId === sessionId ? { tabDialog: null } : {}),
+    ...(overlays.clarification?.sessionId === sessionId ? { clarification: null } : {}),
+    ...(overlays.delegation?.parentId === sessionId ? { delegation: null } : {}),
+  }
+}
+
 function hasOpenOverlay(overlays: OverlayState): boolean {
   return (
     overlays.approval !== null ||
     overlays.clarification !== null ||
+    overlays.delegation !== null ||
     overlays.handoffPreview !== null ||
     overlays.handoffTarget !== null ||
     overlays.modelSelect !== null ||

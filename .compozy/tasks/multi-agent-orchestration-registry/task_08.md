@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Enforce Delegation Persistence and Telemetry Boundaries"
 type: backend
 complexity: high

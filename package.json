@@ -27,7 +27,7 @@
     "dev": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:coverage": "bun test --coverage",
+    "test:coverage": "bun test --coverage --isolate",
     "selfcheck": "bun run src/index.ts --self-check",
     "selfcheck:reload": "bun run src/index.ts --self-check --reload-probe",
     "build": "bun run scripts/build.ts",
@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.2.1",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@opentui/core": "0.4.3",
     "@opentui/react": "0.4.3",
     "@xterm/headless": "6.0.0",

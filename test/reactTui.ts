@@ -13,6 +13,7 @@ import { createRoot } from "@opentui/react"
 import { act, type ReactNode } from "react"
 
 const mountedRoots = new WeakMap<CliRenderer, ReturnType<typeof createRoot>>()
+let rendererLease: CliRenderer | undefined
 
 /** Run a callback with React's act environment enabled, restoring the flag after. */
 export async function withActEnvironment(fn: () => Promise<void>): Promise<void> {
@@ -81,6 +82,19 @@ export async function settleMountedHighlights(renderer: CliRenderer): Promise<vo
   await Promise.all(collectCodeRenderables(renderer.root).map((code) => code.highlightingDone))
 }
 
+/**
+ * Keep one inert renderer alive for the test process after the first teardown.
+ *
+ * OpenTUI asynchronously destroys its process-wide Tree-sitter client when the
+ * final renderer closes. A following test can otherwise mount while that native
+ * cleanup is still in flight. The lease is intentionally released by process exit.
+ */
+async function retainRendererLease(): Promise<void> {
+  if (rendererLease && !rendererLease.isDestroyed) return
+  const { renderer } = await createTestRenderer({ width: 1, height: 1 })
+  rendererLease = renderer
+}
+
 /** Destroy a renderer that has a mounted React root, flushing teardown inside act. */
 export async function destroyMounted(renderer: CliRenderer): Promise<void> {
   if (renderer.isDestroyed) return
@@ -107,6 +121,7 @@ export async function destroyMounted(renderer: CliRenderer): Promise<void> {
     await settleMountedHighlights(renderer)
     await renderer.idle()
   }
+  await retainRendererLease()
   await actAsync(() => {
     renderer.destroy()
   })

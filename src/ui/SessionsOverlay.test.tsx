@@ -75,6 +75,40 @@ function setStatus(controller: FakeController, sessionId: SessionId, status: Ses
   controller.store.applyEvent(sessionId, { kind: "status", status })
 }
 
+function addDelegatedChild(
+  controller: FakeController,
+  status: "running" | "needs_input" | "finished" | "failed" | "cancelled",
+  options: { childId?: string; title?: string } = {},
+): string {
+  const childId = options.childId ?? `child-${status}`
+  controller.store.addDelegatedSession({
+    seed: { id: childId, providerKind: "codex", title: options.title ?? `Child ${status}`, cwd: `/work/${childId}` },
+    parentId: "a",
+    parentGeneration: 1,
+    childGeneration: 1,
+    task: `Handle ${status}`,
+    desiredOutcome: `Report ${status}`,
+  })
+  const identity = { parentId: "a", childId, parentGeneration: 1, childGeneration: 1 }
+  if (status === "running") {
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "working" })
+  } else if (status === "needs_input") {
+    controller.store.publishDelegatedChildState({
+      ...identity,
+      status,
+      sessionStatus: "awaiting_clarification",
+    })
+  } else if (status === "finished") {
+    controller.store.publishDelegatedChildState({ ...identity, status: "running", sessionStatus: "working" })
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "finished", at: 1 })
+  } else if (status === "failed") {
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "error", at: 1 })
+  } else {
+    controller.store.publishDelegatedChildState({ ...identity, status, sessionStatus: "idle", at: 1 })
+  }
+  return childId
+}
+
 async function renderCockpit(
   controller: FakeController,
   dimensions: { width: number; height: number } = { width: WIDTH, height: HEIGHT },
@@ -120,6 +154,7 @@ async function openClarification(controller: FakeController, requestId: string):
           id: "boundary",
           label: "Boundary",
           mode: "single",
+          allowsCustom: false,
           required: true,
           options: [
             { id: "controller", label: "Controller" },
@@ -157,6 +192,33 @@ describe("SessionsOverlay visibility", () => {
 })
 
 describe("SessionsOverlay card list", () => {
+  it.each([
+    ["running", "Running", false],
+    ["needs_input", "Needs input", false],
+    ["finished", "Finished", true],
+    ["failed", "Failed", true],
+    ["cancelled", "Cancelled", true],
+  ] as const)("shows child lineage and the delegated %s lifecycle", async (status, label, terminal) => {
+    const controller = fleetController()
+    addDelegatedChild(controller, status)
+    const setup = await renderCockpit(controller, { width: 100, height: 40 })
+
+    await openOverview(setup)
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes(`Child ${status}`) && line.includes(SESSION_MARKER)),
+    )
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("Child of Alpha"))
+
+    expect(frame).toContain("Child of Alpha")
+    expect(frame).toContain(`Delegated ${label}`)
+    expect(frame.includes("Open transcript")).toBe(terminal)
+    if (status === "needs_input") expect(frame).toContain(NEEDS_YOU_LABEL)
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders one card per session in order, with its title, provider, directory, and state", async () => {
     const controller = fleetController()
     setStatus(controller, "b", "awaiting_approval")
@@ -290,9 +352,60 @@ describe("SessionsOverlay card list", () => {
     expect(scrollbox!.scrollTop).toBeGreaterThan(0)
     await destroyMounted(setup.renderer)
   })
+
+  it("keeps long delegated lineage rows scrollable in a narrow overview", async () => {
+    const controller = fleetController()
+    controller.store.renameConversation("a", "Alpha parent with a deliberately long lineage label")
+    for (let index = 0; index < 8; index += 1) {
+      addDelegatedChild(controller, "running", {
+        childId: `long-child-${index}`,
+        title: `Delegated target ${index}`,
+      })
+    }
+    const setup = await renderCockpit(controller, { width: 46, height: 16 })
+    await actAsync(() => controller.store.openSessions())
+    await setup.waitForFrame((frame) => frame.includes("n next attention") && frame.includes("Esc close"))
+    const scrollbox = setup.renderer.root.findDescendantById(SESSIONS_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length + 7; index += 1) setup.mockInput.pressArrow("down")
+    })
+    const frame = await setup.waitForFrame((value) =>
+      value.split("\n").some((line) => line.includes("Delegated target 7") && line.includes(SESSION_MARKER)),
+    )
+
+    expect(frame).toContain("n next attention")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
+    await destroyMounted(setup.renderer)
+  })
 })
 
 describe("SessionsOverlay routing", () => {
+  it("reopens a delegated child transcript without changing parent-child ownership", async () => {
+    const controller = fleetController()
+    const childId = addDelegatedChild(controller, "finished", { title: "Terminal child" })
+    const before = controller.store.getState().delegation.children[childId]
+    const setup = await renderCockpit(controller)
+    await actAsync(() => controller.store.openSessions())
+    await setup.waitForFrame((frame) => frame.includes(SESSIONS_HINT))
+
+    await actAsync(() => {
+      for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")
+    })
+    await setup.waitForFrame((frame) =>
+      frame.split("\n").some((line) => line.includes("Terminal child") && line.includes(SESSION_MARKER)),
+    )
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => !frame.includes(SESSIONS_HINT))
+
+    expect(controller.calls.reopenConversation).toEqual([childId])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(childId)
+    expect(controller.store.getState().delegation.children[childId]).toBe(before)
+    expect(controller.store.getState().delegation.children[childId]?.parentId).toBe("a")
+    await destroyMounted(setup.renderer)
+  })
+
   it("jumps focus into the highlighted session on Enter and closes", async () => {
     const controller = fleetController()
     const setup = await renderCockpit(controller)
@@ -346,6 +459,34 @@ describe("SessionsOverlay routing", () => {
 
     expect(controller.store.getState().overlays.sessions).toBe(false)
     expect(controller.calls.closeConversation).toEqual([])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a background delegated parent captured and unfocused through close confirmation", async () => {
+    const controller = fleetController()
+    setStatus(controller, "a", "working")
+    addDelegatedChild(controller, "running", { childId: "active-child" })
+    controller.store.backgroundConversation("a")
+    const setup = await renderCockpit(controller)
+
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
+    await openOverview(setup)
+    await actAsync(() => setup.mockInput.pressKeys(["d"]))
+    const dialog = await setup.waitForFrame((frame) =>
+      frame.includes(CLOSE_DIALOG_TITLE) && frame.includes("Cancel 1 child task and close"),
+    )
+
+    expect(dialog).toContain("Alpha · a")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({ kind: "close", sessionId: "a" })
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
+    expect(controller.calls.selectConversation).toEqual([])
+    expect(controller.calls.reopenConversation).toEqual([])
+    expect(controller.calls.closeConversation).toEqual([])
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    expect(controller.calls.closeConversation).toEqual([{ sessionId: "a", choice: "cancel" }])
+    expect(controller.calls.cancelDelegatedChild).toEqual([])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("b")
     await destroyMounted(setup.renderer)
   })
 

@@ -43,11 +43,23 @@ export interface PromptSendOptions {
   readonly persist?: boolean
 }
 
+/** Explicit, provider-neutral work assigned to one background child session. */
+export interface StartDelegatedChildInput {
+  readonly parentId: SessionId
+  readonly task: string
+  readonly desiredOutcome: string
+}
+
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
   readonly sessionId: SessionId
   readonly acpSessionId: string
   readonly connection: AgentConnection
+}
+
+/** A controller-authorized prompt invocation prepared before visible recording. */
+export interface PreparedPromptDispatch {
+  invoke(): Promise<PromptResult>
 }
 
 /**
@@ -160,6 +172,13 @@ export interface ActionDeps {
   store: AppStore
   /** Resolve a session's live connection, or `undefined` when it has none (not ready). */
   getSession(sessionId: SessionId): AgentSession | undefined
+  /** Validate and claim one prompt dispatch before actions records its visible turn. */
+  preparePromptDispatch?: (
+    sessionId: SessionId,
+    blocks: PromptBlock[],
+  ) => PreparedPromptDispatch | null
+  /** Settle a possibly invoked first delivery before cancellation reaches transport. */
+  terminalizePromptDispatch?: (sessionId: SessionId) => void
   /** Read the latest controller-owned default for one configured session. */
   getProviderDefault?: (sessionId: SessionId) => ProviderModelDefault | undefined
   /** Settle the permission request currently shown in the approval overlay. */
@@ -186,6 +205,12 @@ export interface ActionDeps {
   startFreshSession?: (sessionId: SessionId) => Promise<boolean>
   /** Create and start one controller-owned conversation runtime. */
   createConversation?: () => Promise<SessionId | null>
+  /** Create, register, and dispatch one controller-owned delegated child. */
+  startDelegatedChild?: (input: StartDelegatedChildInput) => Promise<SessionId | null>
+  /** Send additional direction to one live, owned delegated child. */
+  steerDelegatedChild?: (childId: SessionId, text: string) => Promise<PromptResult | null>
+  /** Cancel one live, owned delegated child without exposing its runtime. */
+  cancelDelegatedChild?: (childId: SessionId) => Promise<void>
   /** Apply an explicit close outcome through the controller-owned teardown path. */
   closeConversation?: (sessionId: SessionId, choice: CloseChoice) => Promise<CloseConversationResult>
   /** Persist disclosure acknowledgement before applying it to the reactive store. */
@@ -198,6 +223,12 @@ export interface ActionDeps {
 export interface ControllerActions {
   /** Create a fresh visible conversation, or return `null` when none can be created. */
   createConversation(): Promise<SessionId | null>
+  /** Start explicit child work in the background while retaining parent focus. */
+  startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null>
+  /** Send non-empty additional direction to one current, non-terminal owned child. */
+  steerDelegatedChild(childId: SessionId, text: string): Promise<PromptResult | null>
+  /** Idempotently cancel one current, non-terminal owned child. */
+  cancelDelegatedChild(childId: SessionId): Promise<void>
   /** Rename an existing non-Closed conversation after whitespace normalization. */
   renameConversation(sessionId: SessionId, displayName: string): void
   /** Select one Visible conversation. Unknown, Background, and Closed ids are no-ops. */
@@ -272,8 +303,11 @@ export interface ControllerActions {
   jumpToNextAttention(): void
   /** Leave a restored run by replacing every agent session with a fresh one. */
   startNewRun(): Promise<void>
-  /** Start one fresh agent session and seed it with persisted context. */
-  startFreshFromContext(input: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
+  /**
+   * Start one fresh agent session and seed it with explicit context, or with the
+   * focused session's retained definitely-unsent task when `input` is omitted.
+   */
+  startFreshFromContext(input?: PromptInput, sessionId?: SessionId): Promise<PromptResult | null>
   /** Answer the pending permission request with the user's decision. */
   respondPermission(outcome: PermissionOutcome): void
   /** Answer or cancel only the matching active clarification request. */
@@ -305,12 +339,27 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
+  const startDelegatedChild = deps.startDelegatedChild ?? (async () => null)
+  const steerDelegatedChild = deps.steerDelegatedChild ?? (async () => null)
+  const cancelDelegatedChild = deps.cancelDelegatedChild ?? (async () => {})
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
   const acknowledgeStatuslineDisclosure = deps.acknowledgeStatuslineDisclosure ??
     (async () => ({ outcome: "error" as const, message: "Statusline preferences are unavailable." }))
   const confirmStatusline = deps.confirmStatusline ??
     (async () => ({ outcome: "error" as const, message: "Statusline preferences are unavailable." }))
   const defaultApplyQueues = new Map<SessionId, Promise<DefaultApplyResult>>()
+  // Memory-only user content retained only after controller dispatch rejects the
+  // prompt before any visible turn is recorded. It never enters store notice state,
+  // persistence, telemetry, or diagnostics.
+  const rejectedFreshPrompts = new Map<SessionId, PromptBlock[]>()
+
+  const preparePromptDispatch = deps.preparePromptDispatch ?? ((sessionId, blocks) => {
+    const session = getSession(sessionId)
+    if (!session) return null
+    return {
+      invoke: () => session.connection.prompt(session.acpSessionId, blocks),
+    }
+  })
 
   const focused = (): SessionId | undefined =>
     store.getState().workspace.selectedVisibleId ?? undefined
@@ -322,10 +371,15 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   ): Promise<PromptResult | null> {
     const sessionId = requestedSessionId ?? focused()
     if (!sessionId) return null
-    const session = getSession(sessionId)
-    if (!session) return null
     const blocks = composePromptBlocks(input)
     if (blocks.length === 0) return null
+    const dispatch = preparePromptDispatch(sessionId, blocks)
+    if (!dispatch) {
+      if (store.getState().harnessDeliveryNotices[sessionId]) {
+        rejectedFreshPrompts.set(sessionId, blocks)
+      }
+      return null
+    }
 
     // ACP never echoes the user's prompt back as a session update, so the
     // transcript only shows this turn if the controller records it.
@@ -336,7 +390,9 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       persist: options?.persist,
     })
     try {
-      return await session.connection.prompt(session.acpSessionId, blocks)
+      const result = await dispatch.invoke()
+      rejectedFreshPrompts.delete(sessionId)
+      return result
     } catch (error) {
       onError(sessionId, error)
       return null
@@ -545,6 +601,32 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
+    async startDelegatedChild(input): Promise<SessionId | null> {
+      try {
+        return await startDelegatedChild(input)
+      } catch (error) {
+        onError(input.parentId, error)
+        return null
+      }
+    },
+
+    async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
+      try {
+        return await steerDelegatedChild(childId, text)
+      } catch (error) {
+        onError(childId, error)
+        return null
+      }
+    },
+
+    async cancelDelegatedChild(childId): Promise<void> {
+      try {
+        await cancelDelegatedChild(childId)
+      } catch (error) {
+        onError(childId, error)
+      }
+    },
+
     renameConversation(sessionId, displayName): void {
       store.renameConversation(sessionId, displayName)
     },
@@ -624,6 +706,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       const session = getSession(sessionId)
       if (!session) return
       try {
+        deps.terminalizePromptDispatch?.(sessionId)
         await session.connection.cancel(session.acpSessionId)
       } catch (error) {
         onError(sessionId, error)
@@ -698,14 +781,19 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     async startFreshFromContext(input, requestedSessionId?: SessionId): Promise<PromptResult | null> {
       const sessionId = requestedSessionId ?? focused()
       if (!sessionId) return null
-      const blocks = composePromptBlocks(input)
-      if (blocks.length === 0) return null
+      const blocks = input === undefined
+        ? rejectedFreshPrompts.get(sessionId)
+        : composePromptBlocks(input)
+      if (blocks?.length === 0) return null
       try {
         if (!(await startFreshSession(sessionId))) return null
       } catch (error) {
         onError(sessionId, error)
         return null
       }
+      // A restored content-free failure intentionally has no task payload to
+      // recover. Replacement still succeeds and clears the unsafe generation.
+      if (!blocks) return null
       return sendPrompt(blocks, sessionId)
     },
 

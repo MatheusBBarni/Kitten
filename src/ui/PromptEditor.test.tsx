@@ -423,6 +423,7 @@ describe("PromptEditor slash commands", () => {
         setup.mockInput.pressArrow("down")
       }
     })
+    await setup.renderer.idle()
 
     const scrolled = await frameWith(setup, "Agent commands", "▸ /review")
     expect(scrolled).not.toContain("▸ /handoff")
