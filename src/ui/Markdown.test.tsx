@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test"
 
-import { CodeRenderable, destroyTreeSitterClient, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
+import { CodeRenderable, getTreeSitterClient, RGBA, type BaseRenderable } from "@opentui/core"
 import { createMockMouse, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 import { useState } from "react"
@@ -127,7 +127,6 @@ describe("Markdown", () => {
   })
 
   it("styles a heading with the theme accent instead of the reading foreground", async () => {
-    await destroyTreeSitterClient()
     const setup = await renderMarkdown("# HEADING_SENTINEL")
     await setup.waitForFrame((frame) => frame.includes("HEADING_SENTINEL"))
     await setup.waitFor(() => {
