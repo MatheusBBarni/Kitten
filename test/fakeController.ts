@@ -306,6 +306,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         })
         return sessionId
       },
+      async cleanupManagedWorktree() {
+        return { kind: "refused", reason: "not_managed" }
+      },
       async startExploreChild(input) {
         calls.startExploreChild.push(input)
         return await (options.startExploreChild?.(input, store)

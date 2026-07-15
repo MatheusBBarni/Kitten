@@ -35,6 +35,7 @@ import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
+import type { CleanupManagedWorktreeResult } from "./managedWorktree.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
@@ -218,6 +219,8 @@ export interface ActionDeps {
   createConversation?: () => Promise<SessionId | null>
   /** Create, register, and dispatch one controller-owned delegated child. */
   startDelegatedChild?: (input: StartDelegatedChildInput) => Promise<SessionId | null>
+  /** Remove one verified terminal managed child workspace after controller gating. */
+  cleanupManagedWorktree?: (childId: SessionId) => Promise<CleanupManagedWorktreeResult>
   /** Authoritative fail-closed explore launch. */
   startExploreChild?: (input: ExploreLaunchRequest) => Promise<ExploreLaunchResult>
   /** Advisory only; launch always re-attests. */
@@ -240,6 +243,8 @@ export interface ControllerActions {
   createConversation(): Promise<SessionId | null>
   /** Start explicit child work in the background while retaining parent focus. */
   startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null>
+  /** Explicitly clean one managed terminal non-live child workspace. */
+  cleanupManagedWorktree(childId: SessionId): Promise<CleanupManagedWorktreeResult>
   /** Start only an exactly attested explore child, with a typed closed outcome. */
   startExploreChild(input: ExploreLaunchRequest): Promise<ExploreLaunchResult>
   /** Read current advisory eligibility without reserving or starting anything. */
@@ -359,6 +364,10 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
   const startDelegatedChild = deps.startDelegatedChild ?? (async () => null)
+  const cleanupManagedWorktree = deps.cleanupManagedWorktree ?? (async () => ({
+    kind: "refused" as const,
+    reason: "not_managed" as const,
+  }))
   const startExploreChild = deps.startExploreChild ?? (async () => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
   const exploreAvailability = deps.exploreAvailability ?? (() => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
   const steerDelegatedChild = deps.steerDelegatedChild ?? (async () => null)
@@ -628,6 +637,15 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       } catch (error) {
         onError(input.parentId, error)
         return null
+      }
+    },
+
+    async cleanupManagedWorktree(childId): Promise<CleanupManagedWorktreeResult> {
+      try {
+        return await cleanupManagedWorktree(childId)
+      } catch (error) {
+        onError(childId, error)
+        return { kind: "failed", reason: "git_failed" }
       }
     },
 

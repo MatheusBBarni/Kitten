@@ -28,6 +28,7 @@ import type {
   ClarificationPayload,
   ConfigOption,
   DomainSessionEvent,
+  ManagedWorktreeBinding,
   McpServerConfig,
   ProviderKind,
   ResolvedAgentConfig,
@@ -65,6 +66,13 @@ import {
 } from "./controller.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 import { createHandoffEdits, createHandoffFlow } from "./handoff.ts"
+import type {
+  CleanupManagedWorktreeInput,
+  CleanupManagedWorktreeResult,
+  ManagedWorktreeProvisioner,
+  ProvisionManagedWorktreeInput,
+  ProvisionManagedWorktreeResult,
+} from "./managedWorktree.ts"
 import {
   ASK_USER_MCP_SERVER_NAME,
   type AskUserBridge,
@@ -125,6 +133,43 @@ const TEST_HARNESS_CAPABILITY: HarnessCapability = {
   status: "supported",
   profileId: "controller-test-profile",
   encoder: "codex-prompt-meta-v1",
+}
+
+function testManagedWorktreeBinding(ownerSessionId: SessionId, ordinal = ownerSessionId): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `kw-${ordinal}`,
+    repoRoot: CWD,
+    worktreePath: `${CWD}/.kitten/worktrees/kw-${ordinal}`,
+    branch: `kitten/kw-${ordinal}`,
+    baseBranch: "main",
+    baseSha: "a".repeat(40),
+    ownerSessionId,
+    availability: "available",
+  }
+}
+
+function createTestManagedWorktreeProvisioner(overrides: {
+  provision?: (input: ProvisionManagedWorktreeInput) => Promise<ProvisionManagedWorktreeResult>
+  cleanup?: (input: CleanupManagedWorktreeInput) => Promise<CleanupManagedWorktreeResult>
+} = {}): ManagedWorktreeProvisioner {
+  let ordinal = 0
+  return {
+    async provision(input) {
+      if (overrides.provision) return await overrides.provision(input)
+      ordinal += 1
+      return {
+        kind: "provisioned",
+        binding: testManagedWorktreeBinding(input.ownerSessionId, `${ordinal}`),
+      }
+    },
+    async reconcile(binding) {
+      return { kind: "available", binding }
+    },
+    async cleanup(input) {
+      return await (overrides.cleanup?.(input) ?? Promise.resolve({ kind: "removed" as const }))
+    },
+  }
 }
 
 function testExploreCapability(config: ResolvedAgentConfig, limits = { perParent: 8, global: 16 }): ExploreCapability {
@@ -481,6 +526,14 @@ function createTestShellFactory(): ShellRuntimeFactory {
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
   const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+function deferredValue<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
     resolve = done
   })
   return { promise, resolve }
@@ -1457,7 +1510,8 @@ describe("createSessionController - harness delivery lifecycle", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
 
     const oldPrompt = controller.actions.sendPrompt("old generation", "claude-code")
@@ -3885,6 +3939,160 @@ describe("createSessionController - per-conversation close", () => {
 })
 
 describe("createSessionController - dynamic conversation actions", () => {
+  it("keeps delegated launch side effects behind successful provisioning", async () => {
+    const provision = deferredValue<ProvisionManagedWorktreeResult>()
+    const events: string[] = []
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        if (created.length >= 2) events.push("connection")
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createAskUserBridge: (options) => {
+        const live = bridge.factory(options)
+        return {
+          ...live,
+          register(input) {
+            if (input.sessionId === "transactional-child") events.push("bridge")
+            return live.register(input)
+          },
+        }
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "transactional-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async () => {
+          events.push("provision")
+          return await provision.promise
+        },
+      }),
+      recorder: {
+        focusSwitch() {},
+        delegatedLaunchRequested: () => events.push("launch-requested"),
+        delegatedLaunchSucceeded: () => events.push("launch-succeeded"),
+      },
+    })
+    controller.store.subscribe((state) => {
+      if (state.sessions["transactional-child"] && !events.includes("store")) events.push("store")
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const initialConnections = created.length
+    const initialBridgeCount = bridge.registrations.length
+
+    const launch = controller.actions.startDelegatedChild({
+      parentId,
+      task: "Wait for isolation",
+      desiredOutcome: "No early side effects",
+    })
+    await Bun.sleep(0)
+
+    expect(events).toEqual(["provision"])
+    expect(created).toHaveLength(initialConnections)
+    expect(controller.store.getState().sessions["transactional-child"]).toBeUndefined()
+    expect(controller.runtime("transactional-child")).toBeUndefined()
+    expect(bridge.registrations).toHaveLength(initialBridgeCount)
+
+    const binding = testManagedWorktreeBinding("transactional-child", "transactional")
+    provision.resolve({ kind: "provisioned", binding })
+    expect(await launch).toBe("transactional-child")
+    expect(events).toEqual([
+      "provision",
+      "store",
+      "launch-requested",
+      "bridge",
+      "connection",
+      "launch-succeeded",
+    ])
+    expect(created.at(-1)?.newSessionCwds).toEqual([binding.worktreePath])
+    await controller.dispose()
+  })
+
+  it("returns null on provisioning failure without registering child artifacts", async () => {
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createAskUserBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "provision-failure-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async () => ({ kind: "failed", reason: "verification_failed" }),
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const before = controller.store.getState()
+    const initialConnections = created.length
+    const initialBridgeCount = bridge.registrations.length
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Must not start",
+      desiredOutcome: "No child artifacts",
+    })).toBeNull()
+    expect(controller.store.getState()).toBe(before)
+    expect(controller.runtime("provision-failure-child")).toBeUndefined()
+    expect(created).toHaveLength(initialConnections)
+    expect(bridge.registrations).toHaveLength(initialBridgeCount)
+    await controller.dispose()
+  })
+
+  it("rolls back only the provisioned binding when parent ownership changes before registration", async () => {
+    const provision = deferredValue<ProvisionManagedWorktreeResult>()
+    const cleanupInputs: CleanupManagedWorktreeInput[] = []
+    const binding = testManagedWorktreeBinding("stale-parent-child", "stale-parent")
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "stale-parent-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async () => await provision.promise,
+        cleanup: async (input) => {
+          cleanupInputs.push(input)
+          return { kind: "removed" }
+        },
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const siblingId = controller.store.getState().workspace.order.find((id) => id !== parentId)!
+    const launch = controller.actions.startDelegatedChild({
+      parentId,
+      task: "Lose parent ownership",
+      desiredOutcome: "Rollback before registration",
+    })
+    await Bun.sleep(0)
+    controller.actions.selectConversation(siblingId)
+    provision.resolve({ kind: "provisioned", binding })
+
+    expect(await launch).toBeNull()
+    expect(cleanupInputs).toEqual([{ binding, ownerTerminal: true, ownerLive: false }])
+    expect(controller.store.getState().sessions["stale-parent-child"]).toBeUndefined()
+    expect(controller.runtime("stale-parent-child")).toBeUndefined()
+    await controller.dispose()
+  })
+
   it("denies production explore before allocating connection, bridge, ACP, store, reservation, or prompt state", async () => {
     const created: StubConnection[] = []
     const records: TelemetryRecord[] = []
@@ -3976,6 +4184,7 @@ describe("createSessionController - dynamic conversation actions", () => {
           },
         }
       },
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
 
@@ -4004,7 +4213,7 @@ describe("createSessionController - dynamic conversation actions", () => {
     await controller.dispose()
   })
 
-  it("cleans an admitted reservation when scoped bridge provisioning fails", async () => {
+  it("retains an admitted managed child when scoped bridge provisioning fails", async () => {
     const created: StubConnection[] = []
     const records: TelemetryRecord[] = []
     const bridge = createRecordingBridge()
@@ -4030,7 +4239,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       readBranch: async () => null,
       newSessionId: () => "bridge-failure-child",
       sendInitialTasks: false,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       recorder: createTelemetryRecorder({
         enabled: true,
         sink: { write: (record) => records.push(record) },
@@ -4045,8 +4255,14 @@ describe("createSessionController - dynamic conversation actions", () => {
       reason: "bridge-unavailable",
     })
     expect(created).toHaveLength(initialConnections)
-    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
-    expect(controller.store.getState().sessions["bridge-failure-child"]).toBeUndefined()
+    expect(controller.store.getState().delegation.children["bridge-failure-child"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed" },
+    })
+    expect(controller.store.getState().sessions["bridge-failure-child"]?.worktreeBinding).toMatchObject({
+      ownerSessionId: "bridge-failure-child",
+      availability: "available",
+    })
     expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
       expect.objectContaining({ type: "explore_launch_eligible", count: 1 }),
       expect.objectContaining({
@@ -4078,6 +4294,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       resolveExploreCapability: (config) => testExploreCapability(config, { perParent: 1, global: 1 }),
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       recorder: createTelemetryRecorder({
         enabled: true,
         sink: { write: (record) => records.push(record) },
@@ -4126,7 +4343,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "stale-start-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const launch = controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })
@@ -4166,7 +4384,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "telemetry-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       recorder,
       now: () => 900,
     })
@@ -4230,7 +4449,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "delegated-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const parent = controller.store.getState().sessions[parentId]!
@@ -4244,11 +4464,14 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(childId).toBe("delegated-child")
     expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
     expect(controller.store.getState().workspace.conversations[childId!]?.lifecycle).toBe("background")
+    const binding = controller.store.getState().sessions[childId!]?.worktreeBinding!
     expect(controller.store.getState().sessions[childId!]).toMatchObject({
       providerKind: parent.providerKind,
-      cwd: parent.cwd,
+      cwd: binding.worktreePath,
+      worktreeBinding: binding,
     })
-    expect(created.at(-1)?.newSessionCwds).toEqual([parent.cwd])
+    expect(binding.worktreePath).not.toBe(parent.cwd)
+    expect(created.at(-1)?.newSessionCwds).toEqual([binding.worktreePath])
     expect(created.at(-1)?.prompts.at(-1)?.blocks).toEqual([
       {
         type: "text",
@@ -4274,7 +4497,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const initialConnectionCount = created.length
@@ -4293,6 +4517,9 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect([first, second]).toEqual(["delegated-one", "delegated-two"])
     expect(created).toHaveLength(initialConnectionCount + 2)
     expect(created.at(-2)).not.toBe(created.at(-1))
+    expect(created.at(-2)?.newSessionCwds[0]).not.toBe(created.at(-1)?.newSessionCwds[0])
+    expect(created.at(-2)?.newSessionCwds[0]).not.toBe(CWD)
+    expect(created.at(-1)?.newSessionCwds[0]).not.toBe(CWD)
     expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
     expect(controller.store.getState().delegation.parents[parentId]?.childIds).toEqual([
       "delegated-one",
@@ -4316,7 +4543,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 77,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4351,7 +4579,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "settled-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
@@ -4380,7 +4609,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "terminal-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
@@ -4415,7 +4645,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "One", desiredOutcome: "Stopped" })
@@ -4463,7 +4694,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "terminal-race-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 44,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4503,7 +4735,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "failing-close-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 77,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4533,7 +4766,7 @@ describe("createSessionController - dynamic conversation actions", () => {
     await controller.dispose()
   })
 
-  it("cleans failed explore startup and prompt reservations without breaking parent or sibling work", async () => {
+  it("retains failed managed children for review without breaking parent or sibling work", async () => {
     const created: StubConnection[] = []
     const records: TelemetryRecord[] = []
     const ids = ["startup-failure", "prompt-failure", "healthy-child"]
@@ -4556,7 +4789,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 1234,
       recorder: createTelemetryRecorder({
         enabled: true,
@@ -4582,10 +4816,22 @@ describe("createSessionController - dynamic conversation actions", () => {
       desiredOutcome: "Accept follow-up direction",
     })).toEqual({ kind: "started", childId: "healthy-child" })
 
-    expect(controller.store.getState().delegation.children["startup-failure"]).toBeUndefined()
-    expect(controller.store.getState().delegation.children["prompt-failure"]).toBeUndefined()
-    expect(controller.store.getState().sessions["startup-failure"]).toBeUndefined()
-    expect(controller.store.getState().sessions["prompt-failure"]).toBeUndefined()
+    expect(controller.store.getState().delegation.children["startup-failure"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed", at: 1234 },
+    })
+    expect(controller.store.getState().delegation.children["prompt-failure"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed", at: 1234 },
+    })
+    expect(controller.store.getState().sessions["startup-failure"]?.worktreeBinding).toMatchObject({
+      ownerSessionId: "startup-failure",
+      availability: "available",
+    })
+    expect(controller.store.getState().sessions["prompt-failure"]?.worktreeBinding).toMatchObject({
+      ownerSessionId: "prompt-failure",
+      availability: "available",
+    })
     expect(JSON.stringify(records)).not.toContain("Fail during startup")
     expect(JSON.stringify(records)).not.toContain("Fail during prompt")
     expect(records.filter((record) => record.type === "explore_start_failed")).toEqual([
@@ -4596,6 +4842,130 @@ describe("createSessionController - dynamic conversation actions", () => {
       stopReason: "end_turn",
     })
     expect(await controller.actions.sendPrompt("Parent remains usable", parentId)).toEqual({ stopReason: "end_turn" })
+  })
+
+  it("gates cleanup to managed terminal non-live children and publishes bounded refusal state", async () => {
+    const created: StubConnection[] = []
+    const cleanupInputs: CleanupManagedWorktreeInput[] = []
+    const cleanupErrors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const ids = ["failed-review-child", "live-terminal-child"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length === 2
+          ? { newSessionThrows: new Error("startup failed") }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        cleanup: async (input) => {
+          cleanupInputs.push(input)
+          if (cleanupInputs.length === 2) throw new Error("cleanup exploded")
+          return { kind: "refused", reason: "dirty" }
+        },
+      }),
+      onError: (sessionId, error) => cleanupErrors.push({ sessionId, error }),
+      now: () => 55,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Fail after registration",
+      desiredOutcome: "Retain review binding",
+    })).toBeNull()
+    expect(cleanupInputs).toHaveLength(0)
+
+    expect(await controller.actions.cleanupManagedWorktree("missing")).toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+    expect(await controller.actions.cleanupManagedWorktree(parentId)).toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Finish while ACP remains live",
+      desiredOutcome: "Refuse live cleanup",
+    })).toBe("live-terminal-child")
+    created.at(-1)!.emit({ kind: "status", status: "finished" })
+    expect(await controller.actions.cleanupManagedWorktree("live-terminal-child")).toEqual({
+      kind: "refused",
+      reason: "live_owned",
+    })
+    expect(cleanupInputs).toHaveLength(0)
+
+    controller.store.addDelegatedSession({
+      seed: {
+        id: "mismatched-child",
+        providerKind: "codex",
+        title: "Mismatched child",
+        cwd: `${CWD}/mismatched`,
+        worktreeBinding: testManagedWorktreeBinding("different-owner", "mismatched"),
+      },
+      parentId,
+      parentGeneration: 1,
+      childGeneration: 90,
+      task: "Mismatch",
+      desiredOutcome: "Refuse",
+    })
+    controller.store.addDelegatedSession({
+      seed: {
+        id: "non-terminal-child",
+        providerKind: "codex",
+        title: "Non-terminal child",
+        cwd: `${CWD}/non-terminal`,
+        worktreeBinding: testManagedWorktreeBinding("non-terminal-child", "non-terminal"),
+      },
+      parentId,
+      parentGeneration: 1,
+      childGeneration: 91,
+      task: "Still active",
+      desiredOutcome: "Refuse",
+    })
+    expect(await controller.actions.cleanupManagedWorktree("mismatched-child")).toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+    expect(await controller.actions.cleanupManagedWorktree("non-terminal-child")).toEqual({
+      kind: "refused",
+      reason: "live_owned",
+    })
+
+    expect(await controller.closeConversation("live-terminal-child", "cancel")).toEqual({ outcome: "closed" })
+    expect(cleanupInputs).toHaveLength(0)
+
+    expect(await controller.actions.cleanupManagedWorktree("failed-review-child")).toEqual({
+      kind: "refused",
+      reason: "dirty",
+    })
+    expect(cleanupInputs).toHaveLength(1)
+    expect(controller.store.getState().sessions["failed-review-child"]?.worktreeBinding).toMatchObject({
+      availability: "cleanup_refused",
+      reason: "dirty",
+    })
+    expect(await controller.actions.cleanupManagedWorktree("failed-review-child")).toEqual({
+      kind: "failed",
+      reason: "git_failed",
+    })
+    expect(cleanupErrors.at(-1)).toEqual({
+      sessionId: "failed-review-child",
+      error: expect.objectContaining({ message: "cleanup exploded" }),
+    })
+    expect(controller.store.getState().sessions["failed-review-child"]?.worktreeBinding).toMatchObject({
+      availability: "cleanup_refused",
+      reason: "git_failed",
+    })
+    await controller.dispose()
   })
 
   it("treats unknown, ordinary, terminal, and stale delegated controls as fail-soft no-ops", async () => {
@@ -4613,7 +4983,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "controlled-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 55,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4659,7 +5030,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "generation-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       createAskUserBridge: bridge.factory,
       now: () => 99,
     })
@@ -4703,7 +5075,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "generation-child-only",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      resolveExploreCapability: (config) => testExploreCapability(config),
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       recorder: createTelemetryRecorder({
         enabled: true,
         sink: { write: (record) => records.push(record) },
@@ -4899,10 +5272,14 @@ describe("delegated action facade", () => {
       startDelegatedChild: async () => { throw new Error("start failed") },
       steerDelegatedChild: async () => { throw new Error("steer failed") },
       cancelDelegatedChild: async () => { throw new Error("cancel failed") },
+      cleanupManagedWorktree: async () => { throw new Error("cleanup failed") },
+      onError: (sessionId, error) => calls.push(`error:${sessionId}:${String(error)}`),
     })
     expect(await failing.startDelegatedChild({ parentId: "parent", task: "task", desiredOutcome: "outcome" })).toBeNull()
     expect(await failing.steerDelegatedChild("child", "direction")).toBeNull()
     expect(await failing.cancelDelegatedChild("child")).toBeUndefined()
+    expect(await failing.cleanupManagedWorktree("child")).toEqual({ kind: "failed", reason: "git_failed" })
+    expect(calls.at(-1)).toBe("error:child:Error: cleanup failed")
   })
 })
 

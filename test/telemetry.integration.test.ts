@@ -10,6 +10,7 @@ import {
   type AgentRuntimeState,
   type SessionController,
 } from "../src/app/controller.ts"
+import type { ManagedWorktreeProvisioner } from "../src/app/managedWorktree.ts"
 import { createHandoffEdits, createHandoffFlow } from "../src/app/handoff.ts"
 import {
   evaluateExplorePolicy,
@@ -753,6 +754,30 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         cwd: privateCwd,
         title: "PRIVATE_TITLE_SENTINEL",
       }]
+      const managedWorktreeProvisioner: ManagedWorktreeProvisioner = {
+        async provision({ ownerSessionId }) {
+          return {
+            kind: "provisioned",
+            binding: {
+              kind: "managed",
+              id: "kw-telemetry-integration",
+              repoRoot: privateCwd,
+              worktreePath: join(dir, "managed-child-worktree"),
+              branch: "kitten/kw-telemetry-integration",
+              baseBranch: "main",
+              baseSha: "a".repeat(40),
+              ownerSessionId,
+              availability: "available",
+            },
+          }
+        },
+        async reconcile(binding) {
+          return { kind: "available", binding }
+        },
+        async cleanup() {
+          return { kind: "removed" }
+        },
+      }
       const controller = await createSessionController({
         config,
         cwd: privateCwd,
@@ -783,6 +808,7 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         readBranch: async () => null,
         sendInitialTasks: false,
         recorder,
+        managedWorktreeProvisioner,
         resolveHarnessCapability: () => ({
           status: "supported",
           profileId: "telemetry-integration-profile",

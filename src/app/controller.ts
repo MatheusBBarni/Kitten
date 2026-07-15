@@ -40,7 +40,7 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ManagedWorktreeBinding, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { isDelegationSettled } from "../core/orchestration.ts"
@@ -106,6 +106,11 @@ import {
   type AskUserBridge,
   type AskUserBridgeOptions,
 } from "./askUserBridge.ts"
+import {
+  createManagedWorktreeProvisioner,
+  type CleanupManagedWorktreeResult,
+  type ManagedWorktreeProvisioner,
+} from "./managedWorktree.ts"
 
 export type { CloseChoice, CloseConversationResult } from "./actions.ts"
 
@@ -233,6 +238,8 @@ export interface SessionControllerOptions {
   readBranch?: (cwd: string) => Promise<string | null>
   /** Repository file discovery source. Defaults to the fail-soft production source. */
   repositoryFileSource?: RepositoryFileSource
+  /** Controller-owned managed child workspace lifecycle service. */
+  managedWorktreeProvisioner?: ManagedWorktreeProvisioner
   /** The telemetry recorder actions report navigation and switch outcomes to. */
   recorder?: ControllerTelemetry
   /** Optional output seam for the gated, content-free usage-emission debug log. */
@@ -661,6 +668,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
   const repositoryFileSource = options.repositoryFileSource ?? productionRepositoryFileSource
+  const managedWorktrees = options.managedWorktreeProvisioner ?? createManagedWorktreeProvisioner()
   const resolveDeliveryCapability = options.resolveHarnessCapability ?? defaultResolveHarnessCapability
   const scheduleClarificationTimeout = options.scheduleClarificationTimeout ?? defaultScheduleClarificationTimeout
   const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
@@ -1760,6 +1768,65 @@ export async function createSessionController(options: SessionControllerOptions)
     }
 
     const parentGeneration = parentRuntime.generation
+    let provisioned: ManagedWorktreeBinding
+    try {
+      const result = await managedWorktrees.provision({
+        parentCwd: parentSession.cwd,
+        ownerSessionId: childId,
+      })
+      if (result.kind === "failed") return denyBeforeRegistration("startup-failed")
+      provisioned = result.binding
+      if (
+        provisioned.kind !== "managed" ||
+        provisioned.ownerSessionId !== childId ||
+        provisioned.worktreePath === parentSession.cwd
+      ) {
+        onError(childId, new Error("Managed worktree provisioner returned an invalid binding"))
+        return denyBeforeRegistration("startup-failed")
+      }
+    } catch (error) {
+      onError(childId, error)
+      return denyBeforeRegistration("startup-failed")
+    }
+
+    const rollbackProvisioned = async (): Promise<void> => {
+      try {
+        const result = await managedWorktrees.cleanup({
+          binding: provisioned,
+          ownerTerminal: true,
+          ownerLive: false,
+        })
+        if (result.kind !== "removed") {
+          onError(childId, new Error(`Managed worktree rollback ${result.kind}`))
+        }
+      } catch (error) {
+        onError(childId, error)
+      }
+    }
+
+    const currentState = store.getState()
+    const currentParentRuntime = runtimes.get(input.parentId)
+    if (
+      disposed ||
+      currentState.workspace.selectedVisibleId !== input.parentId ||
+      currentState.sessions[input.parentId] !== parentSession ||
+      currentState.delegation.children[input.parentId] ||
+      currentState.delegation.parents[input.parentId]?.closeState === "closing" ||
+      currentParentRuntime !== parentRuntime ||
+      currentParentRuntime.generation !== parentGeneration ||
+      !currentParentRuntime.state.ready ||
+      !acceptsRuntimeEvents(currentParentRuntime) ||
+      currentState.workspace.conversations[childId] ||
+      runtimes.has(childId)
+    ) {
+      await rollbackProvisioned()
+      return denyBeforeRegistration(
+        currentState.delegation.parents[input.parentId]?.closeState === "closing"
+          ? "parent-closing"
+          : "parent-ineligible",
+      )
+    }
+
     const childGeneration = nextConnectionGeneration(childId, connectionGenerations)
     const identity: DelegatedChildIdentity = {
       parentId: input.parentId,
@@ -1771,7 +1838,8 @@ export async function createSessionController(options: SessionControllerOptions)
       id: childId,
       providerKind: parentSession.providerKind,
       title: `${capability.recipe.displayName} child`,
-      cwd: parentSession.cwd,
+      cwd: provisioned.worktreePath,
+      worktreeBinding: provisioned,
     }
     const admission = store.addDelegatedSession({
       seed,
@@ -1784,10 +1852,14 @@ export async function createSessionController(options: SessionControllerOptions)
       displayName: seed.title,
     })
     if (admission.kind === "denied") {
+      await rollbackProvisioned()
       options.recorder?.exploreCapacityDenied?.({ capacityScope: admission.scope, count: 1 })
       return { kind: "denied", reason: admission.reason, scope: admission.scope }
     }
-    if (admission.kind !== "accepted") return denyBeforeRegistration("parent-ineligible")
+    if (admission.kind !== "accepted") {
+      await rollbackProvisioned()
+      return denyBeforeRegistration("parent-ineligible")
+    }
     const lifecycleKey = delegatedTelemetryKey(identity)
     options.recorder?.exploreLaunchEligible?.(lifecycleKey, {
       policyVersion: EXPLORE_ATTESTATION_VERSION,
@@ -1796,15 +1868,8 @@ export async function createSessionController(options: SessionControllerOptions)
     })
     options.recorder?.delegatedLaunchRequested?.(lifecycleKey)
 
-    const releaseAdmission = (): void => {
-      store.publishDelegatedChildState({
-        ...identity,
-        status: "failed",
-        sessionStatus: "error",
-        at: now(),
-      })
-      store.removeDelegationChild(identity)
-    }
+    const childRuntime = registerRuntime(seed, capability.recipe, "explore")
+    childRuntime.generation = childGeneration
 
     let bridgeServer: import("../core/types.ts").McpServerConfig
     try {
@@ -1815,9 +1880,13 @@ export async function createSessionController(options: SessionControllerOptions)
         askUserBridge.cancelSession(childId, childGeneration, "connection_error")
       } catch (cleanupError) {
         onError(childId, cleanupError)
-      } finally {
-        releaseAdmission()
       }
+      store.publishDelegatedChildState({
+        ...identity,
+        status: "failed",
+        sessionStatus: "error",
+        at: now(),
+      })
       options.recorder?.exploreStartFailed?.(lifecycleKey, {
         failureCategory: "bridge-unavailable",
         count: 1,
@@ -1825,8 +1894,6 @@ export async function createSessionController(options: SessionControllerOptions)
       return { kind: "denied", reason: "bridge-unavailable" }
     }
 
-    const childRuntime = registerRuntime(seed, capability.recipe, "explore")
-    childRuntime.generation = childGeneration
     childRuntime.bridgeGeneration = childGeneration
     childRuntime.bridgeMcpServer = bridgeServer
     await startSession(seed, capability.recipe, childGeneration)
@@ -1834,12 +1901,7 @@ export async function createSessionController(options: SessionControllerOptions)
 
     if (!ownsDelegatedIdentity(identity)) return { kind: "denied", reason: "parent-closing" }
     if (!childRuntime.state.ready) {
-      runtimes.delete(childId)
-      releaseAdmission()
-      options.recorder?.exploreStartFailed?.(lifecycleKey, {
-        failureCategory: "session-start-failed",
-        count: 1,
-      })
+      publishDelegatedState({ ...identity, status: "failed", sessionStatus: "error", at: now() })
       return { kind: "denied", reason: "startup-failed" }
     }
 
@@ -1847,21 +1909,19 @@ export async function createSessionController(options: SessionControllerOptions)
     const prompt = `Task:\n${task}\n\nDesired outcome:\n${desiredOutcome}`
     const result = await actions.sendPrompt(prompt, childId)
     if (result === null || !ownsDelegatedIdentity(identity)) {
-      terminalizeHarnessDelivery(childRuntime, childGeneration)
-      invalidateBridge(childRuntime, childGeneration, "connection_error")
-      interactionCoordinator.cancelSession(childId, childGeneration, "connection_error")
-      childRuntime.acceptEvents = false
-      childRuntime.unsubscribe?.()
-      childRuntime.unsubscribe = null
-      await disposeQuietly(childRuntime.connection ?? undefined)
-      childRuntime.connection = null
-      childRuntime.acpSessionId = null
-      runtimes.delete(childId)
-      releaseAdmission()
-      options.recorder?.exploreStartFailed?.(lifecycleKey, {
-        failureCategory: "prompt-dispatch-failed",
-        count: 1,
-      })
+      if (ownsDelegatedIdentity(identity)) {
+        await failSession(
+          childRuntime,
+          childRuntime.connection ?? undefined,
+          "Initial child prompt failed",
+          "connection-failed",
+        )
+        publishDelegatedState({ ...identity, status: "failed", sessionStatus: "error", at: now() })
+        options.recorder?.exploreStartFailed?.(lifecycleKey, {
+          failureCategory: "prompt-dispatch-failed",
+          count: 1,
+        })
+      }
       return { kind: "denied", reason: "startup-failed" }
     }
     return { kind: "started", childId }
@@ -1870,6 +1930,45 @@ export async function createSessionController(options: SessionControllerOptions)
   async function startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null> {
     const result = await startExploreChild(input)
     return result.kind === "started" ? result.childId : null
+  }
+
+  async function cleanupManagedWorktree(childId: SessionId): Promise<CleanupManagedWorktreeResult> {
+    const state = store.getState()
+    const session = state.sessions[childId]
+    const child = state.delegation.children[childId]
+    const binding = session?.worktreeBinding
+    if (!session || !child || binding?.kind !== "managed" || binding.ownerSessionId !== childId) {
+      return { kind: "refused", reason: "not_managed" }
+    }
+    if (!child.terminal || getSession(childId)) {
+      return { kind: "refused", reason: "live_owned" }
+    }
+
+    let result: CleanupManagedWorktreeResult
+    try {
+      result = await managedWorktrees.cleanup({
+        binding,
+        ownerTerminal: true,
+        ownerLive: false,
+      })
+    } catch (error) {
+      onError(childId, error)
+      result = { kind: "failed", reason: "git_failed" }
+    }
+    if (result.kind === "removed") {
+      store.publishManagedWorktreeBinding(childId, {
+        ...binding,
+        availability: "unavailable",
+        reason: "missing",
+      })
+    } else {
+      store.publishManagedWorktreeBinding(childId, {
+        ...binding,
+        availability: "cleanup_refused",
+        reason: result.reason,
+      })
+    }
+    return result
   }
 
   async function steerDelegatedChild(childId: SessionId, text: string) {
@@ -2045,6 +2144,7 @@ export async function createSessionController(options: SessionControllerOptions)
     repositoryFileSource,
     createConversation,
     startDelegatedChild,
+    cleanupManagedWorktree,
     startExploreChild,
     exploreAvailability,
     steerDelegatedChild,
