@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto"
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { z } from "zod"
 
@@ -11,12 +9,18 @@ import type {
   ClarificationOutcome,
   ClarificationPayload,
 } from "../core/types.ts"
-import { KITTEN_VERSION } from "../version.ts"
+import {
+  createKittenMcpServer,
+  KITTEN_MCP_MODE_FLAG,
+  KITTEN_MCP_SERVER_NAME,
+  runKittenMcp,
+  type KittenMcpToolRegistrar,
+} from "./kittenMcp.ts"
 
 export const ASK_USER_MCP_ENDPOINT_ENV = "KITTEN_ASK_USER_ENDPOINT"
 export const ASK_USER_MCP_CAPABILITY_ENV = "KITTEN_ASK_USER_CAPABILITY"
-export const ASK_USER_MCP_MODE_FLAG = "--ask-user-mcp"
-export const ASK_USER_MCP_SERVER_NAME = "kitten-ask-user"
+export const ASK_USER_MCP_MODE_FLAG = KITTEN_MCP_MODE_FLAG
+export const ASK_USER_MCP_SERVER_NAME = KITTEN_MCP_SERVER_NAME
 export const ASK_USER_MCP_TOOL_NAME = "ask_user"
 
 /**
@@ -257,31 +261,38 @@ export async function forwardAskUserToBridge(
 export function createAskUserMcpServer(
   env: NodeJS.ProcessEnv,
   options: AskUserMcpServerOptions = {},
-): McpServer {
-  const server = new McpServer(
-    { name: ASK_USER_MCP_SERVER_NAME, version: KITTEN_VERSION },
-    { instructions: ASK_USER_MCP_INSTRUCTIONS },
-  )
-  const forward = options.forward ?? ((form) => forwardAskUserToBridge(form, env))
-
-  server.registerTool(ASK_USER_MCP_TOOL_NAME, {
-    title: "Ask the supervising user",
-    description: "Ask the supervising user a structured consequential-decision question in Kitten. Use this instead of writing a plain-text question when the user's answer determines the safe next step; wait for its submitted, skipped, timed-out, or cancelled outcome before continuing.",
-    inputSchema: askUserInputSchema,
-  }, async (input) => {
-    const parsed = askUserInputSchema.safeParse(input)
-    if (!parsed.success) return toolError(GENERIC_INVALID_REQUEST)
-    try {
-      const result = serializeAskUserOutcome(await forward(normalizeAskUserInput(parsed.data)))
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-        structuredContent: result,
-      }
-    } catch (error) {
-      return toolError(isGenericBridgeError(error) ? error.message : GENERIC_UNAVAILABLE)
-    }
+): ReturnType<typeof createKittenMcpServer> {
+  return createKittenMcpServer({
+    instructions: ASK_USER_MCP_INSTRUCTIONS,
+    registrars: [createAskUserMcpRegistrar(env, options)],
   })
-  return server
+}
+
+/** Create the standalone ask_user registrar used by the bundled child server. */
+export function createAskUserMcpRegistrar(
+  env: NodeJS.ProcessEnv,
+  options: AskUserMcpServerOptions = {},
+): KittenMcpToolRegistrar {
+  const forward = options.forward ?? ((form) => forwardAskUserToBridge(form, env))
+  return (server) => {
+    server.registerTool(ASK_USER_MCP_TOOL_NAME, {
+      title: "Ask the supervising user",
+      description: "Ask the supervising user a structured consequential-decision question in Kitten. Use this instead of writing a plain-text question when the user's answer determines the safe next step; wait for its submitted, skipped, timed-out, or cancelled outcome before continuing.",
+      inputSchema: askUserInputSchema,
+    }, async (input) => {
+      const parsed = askUserInputSchema.safeParse(input)
+      if (!parsed.success) return toolError(GENERIC_INVALID_REQUEST)
+      try {
+        const result = serializeAskUserOutcome(await forward(normalizeAskUserInput(parsed.data)))
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          structuredContent: result,
+        }
+      } catch (error) {
+        return toolError(isGenericBridgeError(error) ? error.message : GENERIC_UNAVAILABLE)
+      }
+    })
+  }
 }
 
 /** Run child mode until its provider-facing stdio transport closes. */
@@ -289,13 +300,11 @@ export async function runAskUserMcp(
   env: NodeJS.ProcessEnv = process.env,
   options: RunAskUserMcpOptions = {},
 ): Promise<void> {
-  const server = createAskUserMcpServer(env, options)
-  const transport = options.createTransport?.() ?? new StdioServerTransport()
-  const closed = new Promise<void>((resolve) => {
-    transport.onclose = resolve
+  await runKittenMcp({
+    instructions: ASK_USER_MCP_INSTRUCTIONS,
+    registrars: [createAskUserMcpRegistrar(env, options)],
+    ...(options.createTransport === undefined ? {} : { createTransport: options.createTransport }),
   })
-  await server.connect(transport)
-  await closed
 }
 
 function normalizeField(field: AskUserMcpInput["fields"][number]): ClarificationField {

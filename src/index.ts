@@ -16,7 +16,12 @@
 import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core"
 import { join } from "node:path"
 
-import { ASK_USER_MCP_MODE_FLAG, runAskUserMcp } from "./agent/askUserMcp.ts"
+import {
+  ASK_USER_MCP_INSTRUCTIONS,
+  ASK_USER_MCP_MODE_FLAG,
+  createAskUserMcpRegistrar,
+} from "./agent/askUserMcp.ts"
+import { runKittenMcp } from "./agent/kittenMcp.ts"
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
 import {
   formatMcpSelfCheckLine,
@@ -673,6 +678,32 @@ export function wantsAskUserMcp(argv: readonly string[]): boolean {
   return argv.includes(ASK_USER_MCP_MODE_FLAG)
 }
 
+export interface ReservedChildModeOptions {
+  readonly run?: () => Promise<void>
+  readonly writeError?: (output: string) => void
+  readonly exit?: (code: number) => void
+}
+
+/** Dispatch the reserved MCP child before any normal application boot gate. */
+export async function dispatchReservedChildMode(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  options: ReservedChildModeOptions = {},
+): Promise<boolean> {
+  if (!wantsAskUserMcp(argv)) return false
+  const run = options.run ?? (() => runKittenMcp({
+    instructions: ASK_USER_MCP_INSTRUCTIONS,
+    registrars: [createAskUserMcpRegistrar(env)],
+  }))
+  try {
+    await run()
+  } catch {
+    ;(options.writeError ?? ((output) => process.stderr.write(output)))("ASK_USER MCP FAILED: unavailable\n")
+    ;(options.exit ?? ((code) => process.exit(code)))(1)
+  }
+  return true
+}
+
 /** Whether the CLI was asked to print Kitten's release version. */
 export function wantsVersion(argv: readonly string[]): boolean {
   return argv.includes("--version")
@@ -736,14 +767,7 @@ export function wantsReloadProbe(argv: readonly string[]): boolean {
 }
 
 if (import.meta.main) {
-  if (wantsAskUserMcp(process.argv)) {
-    try {
-      await runAskUserMcp(process.env)
-    } catch {
-      process.stderr.write("ASK_USER MCP FAILED: unavailable\n")
-      process.exit(1)
-    }
-  } else {
+  if (!await dispatchReservedChildMode(process.argv, process.env)) {
     const cliFlagHandled = dispatchCliFlags(process.argv)
     if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
       try {
