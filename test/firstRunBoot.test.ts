@@ -277,6 +277,7 @@ describe("main() persistence disclosure", () => {
     expect(result).not.toBeNull()
     expect(result).not.toBeUndefined()
     expect(guidance.filter((line) => line.includes("remembers sessions for this project"))).toHaveLength(1)
+    expect(guidance.filter((line) => line.includes("loaded its built-in ask_user MCP bridge"))).toHaveLength(1)
     expect(guidance[0]).toContain("sessions")
     expect(guidance[0]).toContain("Ctrl+D")
     expect(markCalls).toBe(1)
@@ -484,6 +485,7 @@ describe("runSelfCheck", () => {
 
     const line = formatMcpSelfCheckLine(mcp[0]!)
     expect(line).toContain("unavailable")
+    expect(line).toContain("ask_user=attached")
     expect(line).toContain('command not found: "/definitely/not/a/kitten-mcp-server"')
     expect(line).not.toContain("literal-secret-is-never-reported")
   })

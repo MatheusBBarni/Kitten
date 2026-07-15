@@ -1111,7 +1111,7 @@ describe("createSessionController - startup", () => {
         cwd: CWD,
         ready: true,
         acpSessionId: "codex-session",
-        mcp: { loaded: [], skipped: [] },
+        mcp: { loaded: [], skipped: [], askUser: "attached" },
       },
       {
         sessionId: "claude-code",
@@ -1121,7 +1121,7 @@ describe("createSessionController - startup", () => {
         cwd: CWD,
         ready: true,
         acpSessionId: "claude-code-session",
-        mcp: { loaded: [], skipped: [] },
+        mcp: { loaded: [], skipped: [], askUser: "attached" },
       },
     ])
     expect(controller.isReady("claude-code")).toBe(true)
@@ -1147,8 +1147,8 @@ describe("createSessionController - startup", () => {
     expect(claudeServers.at(-1)).toMatchObject({ name: ASK_USER_MCP_SERVER_NAME })
     expect(codexServers.at(-1)).toMatchObject({ name: ASK_USER_MCP_SERVER_NAME })
     expect(claudeServers.at(-1)).not.toEqual(codexServers.at(-1))
-    expect(controller.runtime("claude-code")?.mcp).toEqual({ loaded: ["fixture"], skipped: [] })
-    expect(controller.runtime("codex")?.mcp).toEqual({ loaded: ["fixture"], skipped: [] })
+    expect(controller.runtime("claude-code")?.mcp).toEqual({ loaded: ["fixture"], skipped: [], askUser: "attached" })
+    expect(controller.runtime("codex")?.mcp).toEqual({ loaded: ["fixture"], skipped: [], askUser: "attached" })
     await controller.dispose()
   })
 
@@ -1166,6 +1166,7 @@ describe("createSessionController - startup", () => {
     const expected = {
       loaded: [],
       skipped: [{ name: "unavailable", reason: 'command not found: "/definitely/not/a/kitten-mcp-server"' }],
+      askUser: "attached" as const,
     }
     expect(connections["claude-code"].newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
       ASK_USER_MCP_SERVER_NAME,
@@ -2455,7 +2456,7 @@ describe("createSessionController - degraded startup", () => {
       cwd: CWD,
       ready: false,
       error: "not logged in",
-      mcp: { loaded: [], skipped: [] },
+      mcp: { loaded: [], skipped: [], askUser: "unavailable" },
     })
     expect(controller.isReady("claude-code")).toBe(false)
     expect(controller.isReady("codex")).toBe(true)

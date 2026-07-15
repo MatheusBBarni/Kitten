@@ -245,6 +245,8 @@ Provider defaults are restored only by the intentional provider-selection flow. 
 
 ### MCP servers
 
+Kitten automatically injects its local `kitten-ask-user` MCP server into every agent session. It exposes the `ask_user` tool for consequential decisions, so the agent can open Kitten's structured question dialog and continue with the submitted, skipped, timed-out, or cancelled outcome. It is not a user-configured server: do **not** add it to `mcpServers`. The status strip reports `ask_user attached` once Kitten has handed the declaration to the provider session; a dynamically started session reports `ask_user loading` while that happens.
+
 Declare shared MCP servers in the top-level `mcpServers` object. It is a name-keyed map: each key is the server name shown in Kitten's readouts, and each value is a stdio launch recipe with these fields:
 
 - `command` — the executable Kitten launches.
@@ -293,7 +295,7 @@ V1 supports stdio servers only. Remote HTTP/SSE entries such as this one are rej
 
 An unresolved `${VAR}` does not block startup: Kitten skips that server and shows a warning. Declared MCP servers are active in sessions launched by Kitten; writing them into Claude Code or Codex configuration for standalone use is deferred beyond V1.
 
-Run `bun run selfcheck` to see the loaded/skipped MCP readout without opening the cockpit. In the cockpit, the same per-session result appears in the status strip.
+Run `bun run selfcheck` to see the loaded/skipped MCP readout plus the built-in `ask_user` bridge status without opening the cockpit. In the cockpit, the same per-session result appears in the status strip.
 
 ## Development commands
 

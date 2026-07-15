@@ -54,7 +54,7 @@ export function MessageView({ role, text }: MessageViewProps): ReactNode {
 /**
  * The user's turn: no label, sitting on a tinted band.
  *
- * The band is a `backgroundColor` with one row of vertical padding and one cell of
+ * The band is a `backgroundColor` with one trailing row of vertical padding and one cell of
  * horizontal padding - no border - so even a short turn reads as a distinct block yet
  * never contributes a glyph to a copied selection. `text` (the brightest foreground)
  * rides the band for prominence; it clears contrast against `userMessageSurface` in
@@ -68,7 +68,7 @@ function UserMessage({ text }: { text: string }): ReactNode {
         flexDirection: "column",
         flexShrink: 0,
         marginBottom: 1,
-        paddingTop: 1,
+        paddingTop: 0,
         paddingBottom: 1,
         paddingLeft: 1,
         paddingRight: 1,

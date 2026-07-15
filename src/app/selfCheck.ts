@@ -272,10 +272,11 @@ export function reloadProbePassed(reports: readonly ReloadProbeResult[]): boolea
 /** Render one actionable, secret-free MCP provisioning line for the CLI self-check. */
 export function formatMcpSelfCheckLine(report: McpSelfCheckResult): string {
   const loaded = report.mcp.loaded.length > 0 ? report.mcp.loaded.join(", ") : "none"
+  const askUser = report.mcp.askUser ?? "unavailable"
   const skipped = report.mcp.skipped.length > 0
     ? report.mcp.skipped.map(({ name, reason }) => `${name} (${reason})`).join(", ")
     : "none"
-  return `[MCP] ${report.displayName} (${report.configuredSessionId}): loaded=${loaded}; skipped=${skipped}`
+  return `[MCP] ${report.displayName} (${report.configuredSessionId}): loaded=${loaded}; ask_user=${askUser}; skipped=${skipped}`
 }
 
 /**
@@ -387,13 +388,14 @@ export async function runSelfCheck(deps: SelfCheckDeps = {}): Promise<SelfCheckR
         ),
         reloadProbe,
         mcp: controller.runtimes().map((runtime) => {
-          const mcp = runtime.mcp ?? { loaded: [], skipped: [] }
+          const mcp = runtime.mcp ?? { loaded: [], skipped: [], askUser: "unavailable" as const }
           return {
             configuredSessionId: runtime.sessionId,
             displayName: runtime.displayName,
             mcp: {
               loaded: [...mcp.loaded],
               skipped: mcp.skipped.map((server) => ({ ...server })),
+              askUser: mcp.askUser,
             },
           }
         }),
