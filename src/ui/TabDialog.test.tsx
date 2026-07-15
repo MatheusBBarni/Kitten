@@ -333,6 +333,26 @@ describe("TabDialog close policy", () => {
     }
   })
 
+  it("uses the direct close outcome after all delegated child work settles", async () => {
+    const controller = createFakeController()
+    addDelegatedChild(controller, "claude-code", "settled-child", "finished")
+    const setup = await renderCockpit(controller)
+
+    try {
+      const opened = await openDialog(setup, controller, "close")
+      expect(opened).toContain(IDLE_CLOSE_LABEL)
+      expect(opened).not.toContain("active child task affected")
+      expect(opened).not.toContain(CANCEL_DELIBERATELY_LABEL)
+
+      await actAsync(() => setup.mockInput.pressEnter())
+      expect(controller.calls.closeConversation).toEqual([
+        { sessionId: "claude-code", choice: "close" },
+      ])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   for (const status of ["working", "awaiting_approval", "error", "finished"] as const) {
     it(`offers exactly the three explicit active choices for ${status}`, async () => {
       const controller = createFakeController()

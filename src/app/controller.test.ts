@@ -3996,6 +3996,63 @@ describe("createSessionController - dynamic conversation actions", () => {
     await controller.dispose()
   })
 
+  it("closes a settled idle delegated parent through the ordinary close policy", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "settled-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
+    created[2]!.emit({ kind: "status", status: "finished" })
+
+    expect(await controller.closeConversation(parentId, "close")).toEqual({ outcome: "closed" })
+    expect(created[2]!.cancels).toEqual([])
+    expect(controller.store.getState().sessions[parentId]).toBeUndefined()
+    expect(controller.store.getState().sessions["settled-child"]).toBeUndefined()
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    await controller.dispose()
+  })
+
+  it("removes a directly closed terminal child from its delegation ownership", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, { sessionId: `acp-${created.length}` })
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "terminal-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
+    created[2]!.emit({ kind: "status", status: "finished" })
+
+    expect(await controller.closeConversation("terminal-child", "cancel")).toEqual({ outcome: "closed" })
+    expect(created[2]!.cancels).toEqual([])
+    expect(controller.store.getState().sessions["terminal-child"]).toBeUndefined()
+    expect(controller.store.getState().workspace.conversations["terminal-child"]).toBeUndefined()
+    expect(controller.store.getState().sessions[parentId]).toBeDefined()
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    await controller.dispose()
+  })
+
   it("shares one parent close operation and tears down every owned child once", async () => {
     const childDisposal = deferred()
     const created: StubConnection[] = []

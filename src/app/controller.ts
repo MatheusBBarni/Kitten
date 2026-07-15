@@ -37,6 +37,7 @@ import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
+import { isDelegationSettled } from "../core/orchestration.ts"
 import {
   type HarnessDeliveryCheckpoint,
   migratePersistedRunV1,
@@ -1404,6 +1405,25 @@ export async function createSessionController(options: SessionControllerOptions)
       return Promise.resolve({ outcome: "ignored" })
     }
 
+    const delegatedChild = delegatedIdentity(sessionId)
+    if (delegatedChild) {
+      if (choice === "keep-open") return Promise.resolve({ outcome: "kept-open" })
+      if (choice === "background") {
+        store.backgroundConversation(sessionId)
+        return Promise.resolve({ outcome: "backgrounded" })
+      }
+      if ((choice === "close") !== (session.status === "idle")) {
+        return Promise.resolve({ outcome: "ignored" })
+      }
+
+      const promise = teardownConversation(runtime, session.status, delegatedChild)
+      closePromises.set(sessionId, promise)
+      void promise.finally(() => {
+        if (closePromises.get(sessionId) === promise) closePromises.delete(sessionId)
+      })
+      return promise
+    }
+
     const delegatedParent = state.delegation.parents[sessionId]
     if (delegatedParent) {
       if (choice === "keep-open") return Promise.resolve({ outcome: "kept-open" })
@@ -1411,7 +1431,10 @@ export async function createSessionController(options: SessionControllerOptions)
         store.backgroundConversation(sessionId)
         return Promise.resolve({ outcome: "backgrounded" })
       }
-      if (choice !== "cancel") return Promise.resolve({ outcome: "ignored" })
+      const settledIdleParent = choice === "close" &&
+        session.status === "idle" &&
+        isDelegationSettled(state.delegation, sessionId)
+      if (choice !== "cancel" && !settledIdleParent) return Promise.resolve({ outcome: "ignored" })
 
       const promise = teardownDelegatedParent(runtime, session.status)
       closePromises.set(sessionId, promise)
