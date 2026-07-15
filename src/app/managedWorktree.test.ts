@@ -1,10 +1,10 @@
 // Suite: managed worktree provisioning
 // Invariant: only a verified, contained, app-owned Git worktree may become a child binding.
 // Boundary IN: injected Git/fs/id seams and temporary real repositories.
-// Boundary OUT: controller registration, reconciliation, cleanup, persistence, and UI.
+// Boundary OUT: controller registration, persistence, and UI routing.
 
 import { describe, expect, it } from "bun:test"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -13,6 +13,7 @@ import {
   type ManagedWorktreeSpawn,
   type ManagedWorktreeSpawnOptions,
 } from "./managedWorktree.ts"
+import type { ManagedWorktreeBinding } from "../core/types.ts"
 
 const encoder = new TextEncoder()
 
@@ -260,11 +261,265 @@ describe("managed worktree provisioner", () => {
   })
 })
 
+describe("managed worktree reconciliation and cleanup", () => {
+  it("reconciles a retained binding only after fresh canonical Git verification", async () => {
+    const repository = await createRepository()
+    try {
+      const service = createManagedWorktreeProvisioner({ createId: () => "kw-reconcile01" })
+      const binding = await provisionBinding(service, repository.path)
+
+      expect(await service.reconcile({ ...binding, availability: "unverified" })).toEqual({
+        kind: "available",
+        binding,
+      })
+    } finally {
+      await repository.remove()
+    }
+  })
+
+  it("fails closed when persisted branch or base provenance no longer matches", async () => {
+    const repository = await createRepository()
+    try {
+      const service = createManagedWorktreeProvisioner({ createId: () => "kw-provenance1" })
+      const binding = await provisionBinding(service, repository.path)
+
+      expect(
+        await service.reconcile({ ...binding, branch: "kitten/kw-different" }),
+      ).toEqual({ kind: "unavailable", reason: "not_managed" })
+      expect(
+        await service.reconcile({ ...binding, baseSha: "0".repeat(40) }),
+      ).toEqual({ kind: "unavailable", reason: "verification_failed" })
+      expect(await pathExists(binding.worktreePath)).toBe(true)
+      expect(await branchExists(repository.path, binding.branch)).toBe(true)
+    } finally {
+      await repository.remove()
+    }
+  })
+
+  it("refuses missing, external, and unverifiable bindings without destructive commands", async () => {
+    const repository = await createRepository()
+    const commands: string[][] = []
+    const spawn = interceptSpawn((options) => {
+      commands.push(options.cmd)
+      return null
+    })
+    try {
+      const service = createManagedWorktreeProvisioner({
+        spawn,
+        createId: () => "kw-refusals01",
+      })
+      const binding = await provisionBinding(service, repository.path)
+
+      await runGit(repository.path, ["worktree", "remove", binding.worktreePath])
+      commands.length = 0
+      expect(await service.reconcile(binding)).toEqual({ kind: "unavailable", reason: "missing" })
+      expect(
+        await service.cleanup({ binding, ownerTerminal: true, ownerLive: false }),
+      ).toEqual({ kind: "refused", reason: "missing" })
+      expect(destructiveCommands(commands)).toEqual([])
+
+      await runGit(repository.path, ["worktree", "add", binding.worktreePath, binding.branch])
+      const external = await mkdtemp(join(tmpdir(), "kitten-external-worktree-"))
+      await runGit(repository.path, ["worktree", "remove", binding.worktreePath])
+      await symlink(external, binding.worktreePath)
+      commands.length = 0
+      expect(await service.reconcile(binding)).toEqual({
+        kind: "unavailable",
+        reason: "external",
+      })
+      expect(
+        await service.cleanup({ binding, ownerTerminal: true, ownerLive: false }),
+      ).toEqual({ kind: "refused", reason: "external" })
+      expect(destructiveCommands(commands)).toEqual([])
+      await rm(binding.worktreePath)
+      await rm(external, { recursive: true, force: true })
+
+      await runGit(repository.path, ["worktree", "add", binding.worktreePath, binding.branch])
+      const failingService = createManagedWorktreeProvisioner({
+        spawn: interceptSpawn((options) => {
+          commands.push(options.cmd)
+          if (options.cmd.slice(1).join(" ") === "worktree list --porcelain -z") {
+            return processResult("private git output", 1)
+          }
+          return null
+        }),
+      })
+      commands.length = 0
+      expect(await failingService.reconcile(binding)).toEqual({
+        kind: "unavailable",
+        reason: "verification_failed",
+      })
+      expect(
+        await failingService.cleanup({ binding, ownerTerminal: true, ownerLive: false }),
+      ).toEqual({ kind: "refused", reason: "verification_failed" })
+      expect(JSON.stringify(await failingService.reconcile(binding))).not.toContain(
+        "private git output",
+      )
+      expect(destructiveCommands(commands)).toEqual([])
+    } finally {
+      await repository.remove()
+    }
+  })
+
+  it("refuses not-managed, non-terminal, and live-owned cleanup before Git inspection", async () => {
+    const commands: string[][] = []
+    const service = createManagedWorktreeProvisioner({
+      spawn(options) {
+        commands.push(options.cmd)
+        return processResult("", 1)
+      },
+    })
+    const notManaged = { kind: "external" } as unknown as ManagedWorktreeBinding
+
+    expect(
+      await service.cleanup({ binding: notManaged, ownerTerminal: true, ownerLive: false }),
+    ).toEqual({ kind: "refused", reason: "not_managed" })
+    expect(
+      await service.cleanup({ binding: undefined, ownerTerminal: true, ownerLive: false }),
+    ).toEqual({ kind: "refused", reason: "not_managed" })
+
+    const binding = fakeBinding()
+    expect(
+      await service.cleanup({ binding, ownerTerminal: false, ownerLive: false }),
+    ).toEqual({ kind: "refused", reason: "live_owned" })
+    expect(
+      await service.cleanup({ binding, ownerTerminal: true, ownerLive: true }),
+    ).toEqual({ kind: "refused", reason: "live_owned" })
+    expect(commands).toEqual([])
+  })
+
+  it("keeps dirty and unmerged real worktrees and branches intact", async () => {
+    const repository = await createRepository()
+    try {
+      const ids = ["kw-dirtykeep1", "kw-unmerged01"]
+      let idIndex = 0
+      const service = createManagedWorktreeProvisioner({
+        createId: () => ids[idIndex++] ?? "kw-unexpected",
+      })
+      const dirty = await provisionBinding(service, repository.path, "dirty-child")
+      const unmerged = await provisionBinding(service, repository.path, "unmerged-child")
+
+      await writeFile(join(dirty.worktreePath, "dirty.txt"), "retain me\n")
+      expect(
+        await service.cleanup({ binding: dirty, ownerTerminal: true, ownerLive: false }),
+      ).toEqual({ kind: "refused", reason: "dirty" })
+      expect(await pathExists(dirty.worktreePath)).toBe(true)
+      expect(await branchExists(repository.path, dirty.branch)).toBe(true)
+
+      await writeFile(join(unmerged.worktreePath, "child.txt"), "unmerged work\n")
+      await runGit(unmerged.worktreePath, ["add", "child.txt"])
+      await commit(unmerged.worktreePath, "child change")
+      expect(
+        await service.cleanup({ binding: unmerged, ownerTerminal: true, ownerLive: false }),
+      ).toEqual({ kind: "refused", reason: "unmerged" })
+      expect(await pathExists(unmerged.worktreePath)).toBe(true)
+      expect(await branchExists(repository.path, unmerged.branch)).toBe(true)
+    } finally {
+      await repository.remove()
+    }
+  })
+
+  it("orders fresh verification before clean merged non-force removal and safe branch deletion", async () => {
+    const repository = await createRepository()
+    const commands: string[][] = []
+    const spawn = interceptSpawn((options) => {
+      commands.push(options.cmd)
+      return null
+    })
+    try {
+      const service = createManagedWorktreeProvisioner({
+        spawn,
+        createId: () => "kw-cleanup001",
+      })
+      const binding = await provisionBinding(service, repository.path)
+      await writeFile(join(binding.worktreePath, "merged-child.txt"), "reviewed work\n")
+      await runGit(binding.worktreePath, ["add", "merged-child.txt"])
+      await commit(binding.worktreePath, "merged child change")
+      await runGit(repository.path, ["merge", "--ff-only", binding.branch])
+      commands.length = 0
+
+      expect(
+        await service.cleanup({ binding, ownerTerminal: true, ownerLive: false }),
+      ).toEqual({ kind: "removed" })
+      expect(await pathExists(binding.worktreePath)).toBe(false)
+      expect(await branchExists(repository.path, binding.branch)).toBe(false)
+
+      const listIndex = commandIndex(commands, ["git", "worktree", "list", "--porcelain", "-z"])
+      const statusIndex = commandIndex(commands, [
+        "git",
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+      ])
+      const mergedIndex = commandIndex(commands, [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        binding.branch,
+        binding.baseBranch,
+      ])
+      const removeIndex = commandIndex(commands, [
+        "git",
+        "worktree",
+        "remove",
+        binding.worktreePath,
+      ])
+      const deleteIndex = commandIndex(commands, ["git", "branch", "-d", binding.branch])
+      expect(listIndex).toBeGreaterThanOrEqual(0)
+      expect(statusIndex).toBeGreaterThan(listIndex)
+      expect(mergedIndex).toBeGreaterThan(statusIndex)
+      expect(removeIndex).toBeGreaterThan(mergedIndex)
+      expect(deleteIndex).toBeGreaterThan(removeIndex)
+      expect(commands.flat()).not.toContain("--force")
+      expect(commands.flat()).not.toContain("-D")
+    } finally {
+      await repository.remove()
+    }
+  })
+})
+
 async function provision(path: string, id: string) {
   return createManagedWorktreeProvisioner({ createId: () => id }).provision({
     parentCwd: path,
     ownerSessionId: "child-1",
   })
+}
+
+async function provisionBinding(
+  service: ReturnType<typeof createManagedWorktreeProvisioner>,
+  path: string,
+  ownerSessionId = "child-1",
+): Promise<ManagedWorktreeBinding> {
+  const result = await service.provision({ parentCwd: path, ownerSessionId })
+  if (result.kind !== "provisioned") throw new Error(`fixture provision failed: ${result.reason}`)
+  return result.binding
+}
+
+function fakeBinding(): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: "kw-fakebind1",
+    repoRoot: "/repo",
+    worktreePath: "/repo/.kitten/worktrees/kw-fakebind1",
+    branch: "kitten/kw-fakebind1",
+    baseBranch: "main",
+    baseSha: "a".repeat(40),
+    ownerSessionId: "child-1",
+    availability: "available",
+  }
+}
+
+function destructiveCommands(commands: readonly string[][]): readonly string[][] {
+  return commands.filter(
+    (command) =>
+      (command[1] === "worktree" && command[2] === "remove") ||
+      (command[1] === "branch" && command[2] === "-d"),
+  )
+}
+
+function commandIndex(commands: readonly string[][], command: readonly string[]): number {
+  return commands.findIndex((candidate) => candidate.join("\0") === command.join("\0"))
 }
 
 function interceptSpawn(
@@ -333,7 +588,20 @@ async function branchExists(repository: string, branch: string): Promise<boolean
 }
 
 async function pathExists(path: string): Promise<boolean> {
-  return Bun.file(path).exists()
+  try {
+    await lstat(path)
+    return true
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return false
+    }
+    throw error
+  }
 }
 
 async function gitOutput(cwd: string, args: readonly string[]): Promise<string> {
@@ -369,6 +637,18 @@ async function runGit(cwd: string, args: readonly string[], allowFailure = false
   ])
   if (exitCode !== 0 && !allowFailure) throw new Error(`git failed: ${stderr.trim()}`)
   return exitCode === 0
+}
+
+async function commit(cwd: string, message: string): Promise<void> {
+  await runGit(cwd, [
+    "-c",
+    "user.name=Kitten Test",
+    "-c",
+    "user.email=kitten@example.test",
+    "commit",
+    "-m",
+    message,
+  ])
 }
 
 function processEnv(): Record<string, string | undefined> {

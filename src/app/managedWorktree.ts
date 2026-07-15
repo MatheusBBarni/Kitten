@@ -276,13 +276,11 @@ async function reconcileBinding(
 
   const managedRoot = resolve(binding.repoRoot, MANAGED_ROOT_RELATIVE)
   const expectedPath = resolve(managedRoot, binding.id)
-  if (
-    binding.branch !== `kitten/${binding.id}` ||
-    binding.worktreePath !== expectedPath ||
-    dirname(expectedPath) !== managedRoot ||
-    basename(expectedPath) !== binding.id
-  ) {
+  if (binding.branch !== `kitten/${binding.id}` || basename(expectedPath) !== binding.id) {
     return unavailable("not_managed")
+  }
+  if (binding.worktreePath !== expectedPath || dirname(expectedPath) !== managedRoot) {
+    return unavailable("external")
   }
 
   try {

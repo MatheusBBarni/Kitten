@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Reconcile bindings and safely clean retained worktrees
 type: backend
 complexity: high
@@ -28,11 +28,11 @@ Extend the managed Git service with reconciliation and explicit non-force cleanu
 </requirements>
 
 ## Subtasks
-- [ ] Define bounded reconciliation and cleanup result contracts.
-- [ ] Reconcile persisted binding identity against filesystem and Git state.
-- [ ] Revalidate safety conditions immediately before cleanup.
-- [ ] Remove only clean merged managed worktrees using normal Git commands.
-- [ ] Extend injected and real-Git safety coverage.
+- [x] Define bounded reconciliation and cleanup result contracts.
+- [x] Reconcile persisted binding identity against filesystem and Git state.
+- [x] Revalidate safety conditions immediately before cleanup.
+- [x] Remove only clean merged managed worktrees using normal Git commands.
+- [x] Extend injected and real-Git safety coverage.
 
 ## Implementation Details
 
@@ -60,13 +60,13 @@ Extend the service from the TechSpec Git lifecycle section. Keep controller live
 
 ## Tests
 - Unit tests:
-  - [ ] Reconciliation returns available only for matching canonical managed provenance.
-  - [ ] Missing, external, and verification-failed bindings produce no Git mutation.
-  - [ ] Dirty, unmerged, live-owned, and not-managed cleanup inputs issue no remove/delete command.
-  - [ ] Successful cleanup orders verification, non-force worktree removal, then safe branch deletion.
+  - [x] Reconciliation returns available only for matching canonical managed provenance.
+  - [x] Missing, external, and verification-failed bindings produce no Git mutation.
+  - [x] Dirty, unmerged, live-owned, and not-managed cleanup inputs issue no remove/delete command.
+  - [x] Successful cleanup orders verification, non-force worktree removal, then safe branch deletion.
 - Integration tests:
-  - [ ] A retained managed worktree in a temporary repository reconciles successfully.
-  - [ ] Clean merged cleanup succeeds while dirty and unmerged worktrees remain intact.
+  - [x] A retained managed worktree in a temporary repository reconciles successfully.
+  - [x] Clean merged cleanup succeeds while dirty and unmerged worktrees remain intact.
 - Test coverage target: >=80%
 - All tests must pass
 
