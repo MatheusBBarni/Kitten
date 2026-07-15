@@ -271,10 +271,17 @@ export function SessionCard({
         {`   ${PROVIDER_DISPLAY_NAMES[session.providerKind]}  ·  ${session.cwd}`}
       </text>
       {session.delegation?.kind === "child" ? (
-        <text fg={palette.muted}>
-          {`   ${session.delegation.lineageLabel}  ·  Delegated ${session.delegation.statusLabel}`}
-          {session.delegation.terminalTranscriptAvailable ? `  ·  ${OPEN_TRANSCRIPT_LABEL}` : ""}
-        </text>
+        <>
+          <text fg={palette.muted}>
+            {`   ${session.delegation.lineageLabel}  ·  Delegated ${session.delegation.statusLabel}`}
+            {session.delegation.terminalTranscriptAvailable ? `  ·  ${OPEN_TRANSCRIPT_LABEL}` : ""}
+          </text>
+          {session.delegation.explore ? (
+            <text fg={palette.muted} wrapMode="word">
+              {`   Role: ${session.delegation.explore.roleLabel}  ·  ${session.delegation.explore.restrictionSummary}`}
+            </text>
+          ) : null}
+        </>
       ) : session.delegation?.kind === "parent" ? (
         <text fg={palette.muted}>
           {`   ${session.delegation.groupLabel}  ·  ${session.delegation.childCount} ${session.delegation.childCount === 1 ? "child" : "children"}`}

@@ -5,9 +5,15 @@ import { testRender } from "@opentui/react/test-utils"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
+import { evaluateExplorePolicy, type ExplorePolicySnapshot } from "../core/explorePolicy.ts"
 import type { SessionSeed, SessionStatus } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
-import { selectVisibleTabs, type WorkspaceConversationView } from "../store/selectors.ts"
+import {
+  EXPLORE_RESTRICTION_SUMMARY,
+  selectVisibleTabs,
+  type ExplorePolicyPresentation,
+  type WorkspaceConversationView,
+} from "../store/selectors.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
@@ -49,6 +55,34 @@ function view(id: string, selected = false): WorkspaceConversationView {
   }
 }
 
+const EXPLORE_PRESENTATION: ExplorePolicyPresentation = {
+  role: "explore",
+  roleLabel: "explore",
+  compactLabel: "explore",
+  restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+  attestationVersion: "tab-ui-v1",
+  confirmed: { provider: "codex", model: "safe-model", effort: "medium" },
+}
+
+function acceptedExplorePolicy(): ExplorePolicySnapshot {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: {
+      filesystem: "read-only",
+      shell: false,
+      externalMcp: false,
+      agentControl: false,
+      askUser: true,
+      maxDepth: 0,
+    },
+    limits: { perParent: 2, global: 4 },
+    attestationVersion: "tab-ui-v1",
+    confirmed: { provider: "codex", model: "safe-model", effort: "medium" },
+  })
+  if (decision.kind !== "eligible") throw new Error("explore policy fixture must be eligible")
+  return decision.policy
+}
+
 function fleet(count: number, sameCwd = false): { seeds: SessionSeed[]; runtimes: AgentRuntimeState[] } {
   const seeds: SessionSeed[] = Array.from({ length: count }, (_, index) => ({
     id: `s${index + 1}`,
@@ -80,6 +114,22 @@ async function renderStrip(controller: FakeController, width = 120) {
 }
 
 describe("TabWorkspace presentation", () => {
+  it("adds only the selector-provided compact explore cue to an active child label", () => {
+    const child = view("child")
+    child.delegation = {
+      kind: "child",
+      parentId: "parent",
+      parentLabel: "Parent",
+      lineageLabel: "Child of Parent",
+      status: "running",
+      statusLabel: "Running",
+      terminalTranscriptAvailable: false,
+      explore: EXPLORE_PRESENTATION,
+    }
+
+    expect(tabItemLabel(child)).toBe("[tab] child · idle · Child of Parent · Running · explore")
+  })
+
   it.each([
     ["running", "Running", false],
     ["needs_input", "Needs input", false],
@@ -160,6 +210,37 @@ describe("TabWorkspace presentation", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("shows an active explore child in the mounted tab strip and preserves mouse focus movement", async () => {
+    const { seeds, runtimes } = fleet(1)
+    const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
+    controller.store.addDelegatedSession({
+      seed: { id: "child", providerKind: "codex", title: "Research", cwd: "/work/child" },
+      parentId: "s1",
+      parentGeneration: 1,
+      childGeneration: 1,
+      task: "Research the selector seam",
+      desiredOutcome: "Return the constraints",
+      policy: acceptedExplorePolicy(),
+    })
+    controller.store.publishDelegatedChildState({
+      parentId: "s1",
+      childId: "child",
+      parentGeneration: 1,
+      childGeneration: 1,
+      status: "running",
+      sessionStatus: "working",
+    })
+    controller.store.reopenConversation("child")
+    const setup = await renderStrip(controller, 180)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Child of Session 1 · Running · explore")
+    const point = pointOf(frame, `${TAB_MARKER} Session 1`)
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("s1")
+    await destroyMounted(setup.renderer)
+  })
+
   it("renders workspace order with selected and non-color status cues", async () => {
     const { seeds, runtimes } = fleet(5)
     const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
@@ -214,6 +295,25 @@ describe("TabWorkspace presentation", () => {
     expect(layout.overflowLabel).toContain(TAB_OVERFLOW_LABEL)
     expect(layout.overflowLabel).toContain("bg 1")
     expect(layout.newTabVisible).toBeFalse()
+  })
+
+  it("keeps selected and overflow reachability unchanged when an explore cue consumes width", () => {
+    const tabs = [view("one"), view("two", true), view("three")]
+    tabs[1]!.delegation = {
+      kind: "child",
+      parentId: "parent",
+      parentLabel: "Parent",
+      lineageLabel: "Child of Parent",
+      status: "running",
+      statusLabel: "Running",
+      terminalTranscriptAvailable: false,
+      explore: EXPLORE_PRESENTATION,
+    }
+
+    const layout = layoutTabStrip(tabs, 95, 1)
+    expect(layout.visible.some((tab) => tab.id === "two")).toBe(true)
+    expect(layout.overflowLabel).toContain(TAB_OVERFLOW_LABEL)
+    expect(layout.overflowLabel).toContain("bg 1")
   })
 
   it("does not publish a tab-list change when only transcript content streams", () => {

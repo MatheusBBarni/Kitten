@@ -52,7 +52,9 @@ export function tabItemLabel(tab: WorkspaceConversationView): string {
   const delegation = tab.delegation === null
     ? ""
     : tab.delegation.kind === "child"
-      ? ` · ${tab.delegation.lineageLabel} · ${tab.delegation.statusLabel}`
+      ? ` · ${tab.delegation.lineageLabel} · ${tab.delegation.statusLabel}${
+        tab.delegation.explore ? ` · ${tab.delegation.explore.compactLabel}` : ""
+      }`
       : ` · ${tab.delegation.groupLabel}`
   return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${delegation}${shared}`
 }
