@@ -1,10 +1,10 @@
 # Compozy Tasks Report
 
-Generated: 2026-07-14
+Generated: 2026-07-15
 
 Status of every PRD task packet under `.compozy/`. Completion is judged by the canonical
 `status:` field on each `task_NN.md` (cross-checked against the `_tasks.md` index). A feature is
-archived to `.compozy/tasks_done/` only when all of its tasks are `completed`.
+archived to `.compozy/tasks_done/` only when **all** of its tasks are `completed`.
 
 > Note: un-ticked `- [ ]` lines inside archived task files are embedded test/verification
 > checklists and `Deferred to task_NN` / `Not applicable` notes, not open work — the
@@ -14,76 +14,65 @@ archived to `.compozy/tasks_done/` only when all of its tasks are `completed`.
 
 | | Features | Task files |
 | --- | ---: | --- |
-| Remaining (`.compozy/tasks/`) | 0 | 0 pending + 0 not-yet-decomposed |
-| Archived (`.compozy/tasks_done/`) | 21 | 191 completed |
+| Remaining (`.compozy/tasks/`) | 1 | 0 pending + 1 not-yet-decomposed |
+| Archived (`.compozy/tasks_done/`) | 25 | 212 completed |
 
-- **Moved this run:** 4 features (32 completed tasks).
+- **Moved this run:** 4 features (21 tasks).
 
 ## Remaining — `.compozy/tasks/`
 
-No task packets remain. All active packets were classified DONE by the authoritative task-frontmatter scan.
+- `multi-agent-orchestration` — **EARLY-STAGE**. The folder currently has no planning artifacts or task files. It needs `cy-create-techspec` / `cy-create-tasks` before execution.
 
 ## Moved to `.compozy/tasks_done/` this run
 
-### `cursor-integration` — Cursor Integration
+### `ask-user-mcp-bridge` — PRD: Provider-Independent `ask_user` MCP Bridge
 
-All 8 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 8. The unchecked-item count is 11.
-
-| # | Title |
-| ---: | --- |
-| 01 | Add Cursor provider identity and runtime-profile config |
-| 02 | Add Cursor readiness preflight and recovery messages |
-| 03 | Authenticate certified Cursor profiles at the ACP boundary |
-| 04 | Extend runtime orchestration and content-free telemetry for Cursor |
-| 05 | Preserve fail-closed clarification and persistence behavior |
-| 06 | Render Cursor through shared provider metadata |
-| 07 | Add Cursor onboarding, docs, and reviewed-handoff regression coverage |
-| 08 | Add the opt-in Cursor contract and certify the production profile |
-
-### `default-models-per-provider` — Default Models per Provider
-
-All 8 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 8. The unchecked-item count is 21. Its PRD has no H1, so this title uses the packet/task-list title.
+All 7 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 7. The unchecked-item count is 74.
 
 | # | Title |
 | ---: | --- |
-| 01 | Add transitional provider-default config and core result contract |
-| 02 | Migrate the first typed-fixture group to the new config shape |
-| 03 | Complete fixture migration and make provider defaults required |
-| 04 | Expose the narrow per-session default-result selector |
-| 05 | Add controller-owned default application and content-free outcome telemetry |
-| 06 | Bridge valid config reloads without live-session mutation |
-| 07 | Apply defaults after explicit /model selection and render picker feedback |
-| 08 | Render confirmed default outcomes in the status strip |
+| 01 | Normalize clarification forms, outcomes, and ACP translation |
+| 02 | Add fixed timeout configuration and content-free telemetry outcomes |
+| 03 | Add coordinator request handles and exact timeout settlement |
+| 04 | Build the session-bound authenticated local IPC bridge |
+| 05 | Implement the same-binary stdio MCP child and bounded `ask_user` schema |
+| 06 | Provision the bridge per session and prove end-to-end lifecycle behavior |
+| 07 | Extend the clarification dialog for form metadata, custom answers, skip, and timeout |
 
-### `multi-language-syntax-highlighting` — Product Requirements Document: Multi-Language Syntax Highlighting
+### `harness-delivery` — Product Requirements Document: Harness Delivery for Fresh Conversations
 
-All 9 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 9. The unchecked-item count is 30.
-
-| # | Title |
-| ---: | --- |
-| 01 | Create parser manifest foundation and Markdown override assets |
-| 02 | Add Rust and Go grammar capabilities |
-| 03 | Add OCaml and ReScript grammar capabilities |
-| 04 | Add JSON and Bash grammar capabilities |
-| 05 | Add Python grammar capability |
-| 06 | Register syntax capabilities at boot and render entry points |
-| 07 | Add content-free diagnostics and safe fallback contracts |
-| 08 | Prove the support matrix in self-check and compiled artifacts |
-| 09 | Publish the supported-label contract |
-
-### `statusline-customization` — PRD: Conversational Statusline Customization (`/statusline`)
-
-All 7 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 7. The unchecked-item count is 0.
+All 5 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 5. The unchecked-item count is 62.
 
 | # | Title |
 | ---: | --- |
-| 01 | Add Pure Statusline Layout Contract and Renderer |
-| 02 | Add Strict Statusline Config and Symlink-Safe Persistence |
-| 03 | Add Reactive Statusline Preference and Modal State |
-| 04 | Wire Statusline Confirmation and External Reload Lifecycle |
-| 05 | Add Strict Focused-Agent Proposal Orchestration |
-| 06 | Build the Keyboard-First Statusline Command and Modal Workflow |
-| 07 | Render Saved Custom Layouts While Retaining the Legacy Footer |
+| 01 | Define Generation-Scoped Harness Delivery State |
+| 02 | Add Certified Runtime Profiles and Adapter Envelope |
+| 03 | Route First Prompts Through Controller-Owned Delivery |
+| 04 | Persist Content-Free Delivery Checkpoints Across Restore |
+| 05 | Add Degraded-Start Recovery UI Without Content Leakage |
+
+### `harness-prompt-contract` — PRD: Versioned Kitten Harness Prompt Contract
+
+All 1 task completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 1. The unchecked-item count is 16.
+
+| # | Title |
+| ---: | --- |
+| 01 | Add deterministic V1 harness prompt renderer |
+
+### `multi-agent-orchestration-registry` — PRD: Multi-Agent Orchestration Registry
+
+All 8 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task frontmatter records 8. The unchecked-item count is 91.
+
+| # | Title |
+| ---: | --- |
+| 01 | Add Pure Delegation State and Selectors |
+| 02 | Integrate Delegation State into AppStore |
+| 03 | Add Controller-Owned Delegated Child Launch |
+| 04 | Harden Delegated Lifecycle and Parent Teardown |
+| 05 | Build the Explicit Delegation Launch Dialog |
+| 06 | Surface Delegated Children in Workspace Views |
+| 07 | Add Delegated Parent Close Confirmation |
+| 08 | Enforce Delegation Persistence and Telemetry Boundaries |
 
 ## Previously archived (already in `.compozy/tasks_done/`)
 
@@ -92,11 +81,14 @@ All 7 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task 
 | `agent-usage-gauge` | PRD: Agent Usage Gauge | 7/7 |
 | `clarification-question-picker` | Product Requirements Document: Clarification Question Picker | 12/12 |
 | `claude-code-style-tui` | PRD: Claude Code-Style TUI Reskin | 11/11 |
+| `cursor-integration` | Cursor Integration | 8/8 |
+| `default-models-per-provider` | Default Models per Provider | 8/8 |
 | `file-selector-at` | Product Requirements Document: @ File Selector | 6/6 |
 | `integrated-shell` | PRD: Integrated Shell | 14/14 |
 | `kitten-agent-tui` | PRD: Kitten - Cross-Agent Hand-off Cockpit | 14/14 |
 | `kitten-showcase-site` | Product Requirements Document: Kitten Showcase Site | 8/8 |
 | `model-effort-selector` | PRD: Kitten - In-App Model & Reasoning-Effort Selector | 9/9 |
+| `multi-language-syntax-highlighting` | Product Requirements Document: Multi-Language Syntax Highlighting | 9/9 |
 | `multi-provider-agent-sessions` | PRD: Kitten Multi-Session Fleet | 9/9 |
 | `npm-and-github-release` | NPM and GitHub Release - PRD | 8/8 |
 | `prompt-history-navigation` | Prompt History Navigation | 4/4 |
@@ -104,6 +96,7 @@ All 7 tasks completed. Index drift: `_tasks.md` records 0 completed tasks; task 
 | `session-tabs` | Product Requirements Document: Session Tabs | 12/12 |
 | `settings-modal` | Settings Modal - PRD | 10/10 |
 | `slash-command-menu` | PRD: Slash-Command Menu (`/`) | 7/7 |
+| `statusline-customization` | PRD: Conversational Statusline Customization (`/statusline`) | 7/7 |
 | `streaming-markdown-rendering` | PRD: Elevated Markdown - The Trustworthy Hand-off Review Console | 6/6 |
 | `unified-mcp-config` | PRD: Unified MCP Configuration for Kitten | 9/9 |
 
@@ -114,14 +107,18 @@ The scanner observed status-index drift in these archived packets. This run did 
 | Feature | `_tasks.md` completed | Task frontmatter completed | Unchecked items |
 | --- | ---: | ---: | ---: |
 | `agent-usage-gauge` | 0 | 7 | 1 |
+| `ask-user-mcp-bridge` | 0 | 7 | 74 |
 | `clarification-question-picker` | 0 | 12 | 0 |
 | `claude-code-style-tui` | 0 | 11 | 89 |
 | `cursor-integration` | 0 | 8 | 11 |
 | `default-models-per-provider` | 0 | 8 | 21 |
 | `file-selector-at` | 0 | 6 | 11 |
+| `harness-delivery` | 0 | 5 | 62 |
+| `harness-prompt-contract` | 0 | 1 | 16 |
 | `integrated-shell` | 4 | 14 | 105 |
 | `kitten-showcase-site` | 0 | 8 | 16 |
 | `model-effort-selector` | 6 | 9 | 6 |
+| `multi-agent-orchestration-registry` | 0 | 8 | 91 |
 | `multi-language-syntax-highlighting` | 0 | 9 | 30 |
 | `npm-and-github-release` | 1 | 8 | 2 |
 | `prompt-history-navigation` | 0 | 4 | 0 |
