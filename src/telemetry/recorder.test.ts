@@ -135,6 +135,18 @@ describe("opt-in gating", () => {
     recorder.delegatedCascadeRequested("private-parent")
     recorder.delegatedCascadeCompleted("private-parent")
     recorder.delegatedTeardownFailed("private-child")
+    recorder.exploreLaunchEligible("private-explore", {
+      policyVersion: "explore-v1",
+      provider: "codex",
+      count: 1,
+    })
+    recorder.exploreLaunchDenied({ denialReason: "missing-attestation", count: 1 })
+    recorder.exploreCapacityDenied({ capacityScope: "global", count: 1 })
+    recorder.exploreStartFailed("private-explore", {
+      failureCategory: "session-start-failed",
+      count: 1,
+    })
+    recorder.exploreTerminal("private-explore", { terminalStatus: "finished", count: 1 })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -165,6 +177,142 @@ describe("opt-in gating", () => {
     recorder.delegatedCascadeRequested("private-parent")
     recorder.delegatedCascadeCompleted("private-parent")
     recorder.delegatedTeardownFailed("private-child")
+    recorder.exploreLaunchEligible("private-explore", {
+      policyVersion: "explore-v1",
+      provider: "claude-code",
+      count: 1,
+    })
+    recorder.exploreLaunchDenied({ denialReason: "stale-attestation", count: 1 })
+    recorder.exploreCapacityDenied({ capacityScope: "per-parent", count: 1 })
+    recorder.exploreStartFailed("private-explore", {
+      failureCategory: "bridge-unavailable",
+      count: 1,
+    })
+    recorder.exploreTerminal("private-explore", { terminalStatus: "cancelled", count: 1 })
+  })
+})
+
+describe("explore policy telemetry", () => {
+  it("records only exact closed payloads and keeps lifecycle identities private", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+    const privateKey = "TASK:OUTCOME:SESSION:ACP:/private/cwd:recipe:model:ATTESTATION_SENTINEL:MCP:raw-error"
+
+    recorder.exploreLaunchEligible(privateKey, {
+      policyVersion: "explore-v1",
+      provider: "codex",
+      count: 1,
+    })
+    recorder.exploreLaunchEligible(privateKey, {
+      policyVersion: "explore-v1",
+      provider: "codex",
+      count: 1,
+    })
+    recorder.exploreLaunchDenied({ denialReason: "missing-attestation", count: 1 })
+    recorder.exploreCapacityDenied({ capacityScope: "global", count: 1 })
+    recorder.exploreStartFailed(privateKey, {
+      failureCategory: "prompt-dispatch-failed",
+      count: 1,
+    })
+    recorder.exploreStartFailed(privateKey, {
+      failureCategory: "session-start-failed",
+      count: 1,
+    })
+    recorder.exploreTerminal(privateKey, { terminalStatus: "finished", count: 1 })
+    recorder.exploreTerminal(privateKey, { terminalStatus: "failed", count: 1 })
+
+    expect(sink.records).toEqual([
+      {
+        type: "explore_launch_eligible",
+        policyVersion: "explore-v1",
+        provider: "codex",
+        count: 1,
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      {
+        type: "explore_launch_denied",
+        denialReason: "missing-attestation",
+        count: 1,
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      {
+        type: "explore_capacity_denied",
+        capacityScope: "global",
+        count: 1,
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      {
+        type: "explore_start_failed",
+        failureCategory: "prompt-dispatch-failed",
+        count: 1,
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      {
+        type: "explore_terminal",
+        terminalStatus: "finished",
+        count: 1,
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+    ])
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of privateKey.split(":")) expect(serialized).not.toContain(sentinel)
+    expect(sink.records.every((record) => Object.keys(record).every((key) => [
+      "type",
+      "at",
+      "sessionRef",
+      "policyVersion",
+      "provider",
+      "denialReason",
+      "capacityScope",
+      "failureCategory",
+      "terminalStatus",
+      "count",
+    ].includes(key)))).toBe(true)
+  })
+
+  it("rejects unknown enum values, counters, and extra runtime fields", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+
+    recorder.exploreLaunchEligible("eligible", {
+      policyVersion: "explore-v2",
+      provider: "codex",
+      count: 1,
+    } as never)
+    recorder.exploreLaunchDenied({ denialReason: "raw-provider-error", count: 1 } as never)
+    recorder.exploreCapacityDenied({ capacityScope: "active-child-ids", count: 1 } as never)
+    recorder.exploreStartFailed("failed", {
+      failureCategory: "adapter said SECRET",
+      count: 1,
+    } as never)
+    recorder.exploreTerminal("terminal", { terminalStatus: "unknown", count: 1 } as never)
+    recorder.exploreLaunchDenied({
+      denialReason: "missing-attestation",
+      count: 1,
+      task: "forbidden",
+    } as never)
+    recorder.exploreTerminal("counter", { terminalStatus: "finished", count: 2 } as never)
+
+    expect(sink.records).toEqual([])
+
+    if (false) {
+      // @ts-expect-error closed denial vocabulary rejects unknown values
+      recorder.exploreLaunchDenied({ denialReason: "unknown", count: 1 })
+      // @ts-expect-error exact input type rejects content-bearing additions
+      recorder.exploreCapacityDenied({ capacityScope: "global", count: 1, childId: "private" })
+      // @ts-expect-error counters are fixed to one outcome per call
+      recorder.exploreTerminal("private", { terminalStatus: "finished", count: 2 })
+    }
   })
 })
 

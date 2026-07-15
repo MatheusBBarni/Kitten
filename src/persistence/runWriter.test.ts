@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import type { HandoffBundle } from "../core/types.ts"
+import { evaluateExplorePolicy, EXPLORE_RESTRICTIONS } from "../core/explorePolicy.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import type { PersistedRunRecordV3 } from "./runRecord.ts"
 import { createRunWriter } from "./runWriter.ts"
@@ -327,6 +328,18 @@ describe("createRunWriter", () => {
 
   it("persists delegated children only as ordinary conversations and omits all delegation ownership", () => {
     const { store, runStore, timer, writer } = writerHarness()
+    const policyDecision = evaluateExplorePolicy({
+      role: "explore",
+      restrictions: EXPLORE_RESTRICTIONS,
+      limits: { perParent: 2, global: 2 },
+      attestationVersion: "ATTESTATION_SENTINEL",
+      confirmed: {
+        provider: "claude-code",
+        model: "MODEL_SENTINEL",
+        effort: "EFFORT_SENTINEL",
+      },
+    })
+    if (policyDecision.kind !== "eligible") throw new Error("test policy must be eligible")
     store.addDelegatedSession({
       seed: { id: "running-child", providerKind: "claude-code", title: "Running child", cwd: "/work/kitten" },
       parentId: "claude",
@@ -334,6 +347,7 @@ describe("createRunWriter", () => {
       childGeneration: 8,
       task: "TASK_SENTINEL must remain ephemeral",
       desiredOutcome: "OUTCOME_SENTINEL must remain ephemeral",
+      policy: policyDecision.policy,
       displayName: "Ordinary running conversation",
     })
     store.startSession("running-child", "running-child-acp")
@@ -352,6 +366,7 @@ describe("createRunWriter", () => {
       childGeneration: 9,
       task: "SECOND_TASK_SENTINEL",
       desiredOutcome: "SECOND_OUTCOME_SENTINEL",
+      policy: policyDecision.policy,
       displayName: "Ordinary terminal conversation",
     })
     store.startSession("terminal-child", "terminal-child-acp")
@@ -388,6 +403,14 @@ describe("createRunWriter", () => {
       '"childGeneration"',
       '"closeState"',
       '"terminal"',
+      '"policy"',
+      '"restrictions"',
+      '"limits"',
+      '"attestationVersion"',
+      '"confirmed"',
+      "ATTESTATION_SENTINEL",
+      "MODEL_SENTINEL",
+      "EFFORT_SENTINEL",
     ]) {
       expect(serialized).not.toContain(forbidden)
     }

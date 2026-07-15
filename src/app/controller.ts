@@ -22,6 +22,7 @@ import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRe
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import {
+  EXPLORE_ATTESTATION_VERSION,
   resolveExploreCapability,
   type ExploreCapability,
 } from "../config/exploreCapability.ts"
@@ -41,6 +42,7 @@ import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
+import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { isDelegationSettled } from "../core/orchestration.ts"
 import {
   type HarnessDeliveryCheckpoint,
@@ -67,6 +69,11 @@ import {
   type TabRestoreInput,
   type ClarificationCapabilityDiagnostic,
   type ClarificationSessionLossReason,
+  type ExploreCapacityDeniedInput,
+  type ExploreLaunchDeniedInput,
+  type ExploreLaunchEligibleInput,
+  type ExploreStartFailedInput,
+  type ExploreTerminalInput,
   type UsageSeenSink,
   type ProviderReadinessOutcome,
 } from "../telemetry/recorder.ts"
@@ -144,6 +151,11 @@ export interface ControllerTelemetry extends ActionTelemetry {
   delegatedCascadeRequested?(lifecycleKey: string): void
   delegatedCascadeCompleted?(lifecycleKey: string): void
   delegatedTeardownFailed?(lifecycleKey: string): void
+  exploreLaunchEligible?(lifecycleKey: string, input: ExploreLaunchEligibleInput): void
+  exploreLaunchDenied?(input: ExploreLaunchDeniedInput): void
+  exploreCapacityDenied?(input: ExploreCapacityDeniedInput): void
+  exploreStartFailed?(lifecycleKey: string, input: ExploreStartFailedInput): void
+  exploreTerminal?(lifecycleKey: string, input: ExploreTerminalInput): void
 }
 
 /**
@@ -890,6 +902,17 @@ export async function createSessionController(options: SessionControllerOptions)
     if (after.terminal) {
       if (before.status === "starting" && after.terminal.status === "failed") {
         options.recorder?.delegatedLaunchFailed?.(lifecycleKey)
+        if (before.policy) {
+          options.recorder?.exploreStartFailed?.(lifecycleKey, {
+            failureCategory: "session-start-failed",
+            count: 1,
+          })
+        }
+      } else if (before.policy) {
+        options.recorder?.exploreTerminal?.(lifecycleKey, {
+          terminalStatus: after.terminal.status,
+          count: 1,
+        })
       }
       options.recorder?.delegatedChildTerminal?.(lifecycleKey, after.terminal.status)
     }
@@ -1692,10 +1715,15 @@ export async function createSessionController(options: SessionControllerOptions)
   }
 
   async function startExploreChild(input: StartDelegatedChildInput): Promise<ExploreLaunchResult> {
-    if (disposed) return { kind: "denied", reason: "parent-ineligible" }
+    const denyBeforeRegistration = (reason: ExploreDenialReason): ExploreLaunchResult => {
+      options.recorder?.exploreLaunchDenied?.({ denialReason: reason, count: 1 })
+      return { kind: "denied", reason }
+    }
+
+    if (disposed) return denyBeforeRegistration("parent-ineligible")
     const task = input.task.trim()
     const desiredOutcome = input.desiredOutcome.trim()
-    if (!task || !desiredOutcome) return { kind: "denied", reason: "parent-ineligible" }
+    if (!task || !desiredOutcome) return denyBeforeRegistration("parent-ineligible")
 
     const state = store.getState()
     const parentSession = state.sessions[input.parentId]
@@ -1710,23 +1738,22 @@ export async function createSessionController(options: SessionControllerOptions)
       !parentRuntime.state.ready ||
       !acceptsRuntimeEvents(parentRuntime)
     ) {
-      return {
-        kind: "denied",
-        reason: parentDelegation?.closeState === "closing" ? "parent-closing" : "parent-ineligible",
-      }
+      return denyBeforeRegistration(
+        parentDelegation?.closeState === "closing" ? "parent-closing" : "parent-ineligible",
+      )
     }
 
     // Authoritative re-attestation happens before allocating any child identity or
     // touching connection, bridge, ACP, store, reservation, or prompt state.
     const capability = attestExplore(parentRuntime.config)
     if (capability.status === "unsupported") {
-      return { kind: "denied", reason: capability.reason }
+      return denyBeforeRegistration(capability.reason)
     }
 
     const childId = newSessionId()
     if (state.workspace.conversations[childId] || runtimes.has(childId)) {
       onError(childId, new Error(`Conversation id already exists: ${childId}`))
-      return { kind: "denied", reason: "startup-failed" }
+      return denyBeforeRegistration("startup-failed")
     }
 
     const parentGeneration = parentRuntime.generation
@@ -1754,10 +1781,17 @@ export async function createSessionController(options: SessionControllerOptions)
       displayName: seed.title,
     })
     if (admission.kind === "denied") {
+      options.recorder?.exploreCapacityDenied?.({ capacityScope: admission.scope, count: 1 })
       return { kind: "denied", reason: admission.reason, scope: admission.scope }
     }
-    if (admission.kind !== "accepted") return { kind: "denied", reason: "parent-ineligible" }
-    options.recorder?.delegatedLaunchRequested?.(delegatedTelemetryKey(identity))
+    if (admission.kind !== "accepted") return denyBeforeRegistration("parent-ineligible")
+    const lifecycleKey = delegatedTelemetryKey(identity)
+    options.recorder?.exploreLaunchEligible?.(lifecycleKey, {
+      policyVersion: EXPLORE_ATTESTATION_VERSION,
+      provider: capability.policy.confirmed.provider,
+      count: 1,
+    })
+    options.recorder?.delegatedLaunchRequested?.(lifecycleKey)
 
     const releaseAdmission = (): void => {
       store.publishDelegatedChildState({
@@ -1781,6 +1815,10 @@ export async function createSessionController(options: SessionControllerOptions)
       } finally {
         releaseAdmission()
       }
+      options.recorder?.exploreStartFailed?.(lifecycleKey, {
+        failureCategory: "bridge-unavailable",
+        count: 1,
+      })
       return { kind: "denied", reason: "bridge-unavailable" }
     }
 
@@ -1795,6 +1833,10 @@ export async function createSessionController(options: SessionControllerOptions)
     if (!childRuntime.state.ready) {
       runtimes.delete(childId)
       releaseAdmission()
+      options.recorder?.exploreStartFailed?.(lifecycleKey, {
+        failureCategory: "session-start-failed",
+        count: 1,
+      })
       return { kind: "denied", reason: "startup-failed" }
     }
 
@@ -1813,6 +1855,10 @@ export async function createSessionController(options: SessionControllerOptions)
       childRuntime.acpSessionId = null
       runtimes.delete(childId)
       releaseAdmission()
+      options.recorder?.exploreStartFailed?.(lifecycleKey, {
+        failureCategory: "prompt-dispatch-failed",
+        count: 1,
+      })
       return { kind: "denied", reason: "startup-failed" }
     }
     return { kind: "started", childId }

@@ -239,6 +239,18 @@ describe("writer-produced run restore", () => {
     source.startSession("claude-code", "claude-persisted")
     source.startSession("codex", "codex-persisted")
     source.setFocus("claude-code")
+    const persistedPolicy = evaluateExplorePolicy({
+      role: "explore",
+      restrictions: EXPLORE_RESTRICTIONS,
+      limits: { perParent: 1, global: 1 },
+      attestationVersion: "RESTORE_ATTESTATION_SENTINEL",
+      confirmed: {
+        provider: "claude-code",
+        model: "RESTORE_MODEL_SENTINEL",
+        effort: "RESTORE_EFFORT_SENTINEL",
+      },
+    })
+    if (persistedPolicy.kind !== "eligible") throw new Error("test policy must be eligible")
     source.addDelegatedSession({
       seed: {
         id: "persisted-ordinary-child",
@@ -251,6 +263,7 @@ describe("writer-produced run restore", () => {
       childGeneration: 11,
       task: "Ephemeral delegated task",
       desiredOutcome: "Ephemeral delegated outcome",
+      policy: persistedPolicy.policy,
       displayName: "Persisted ordinary child",
     })
     source.startSession("persisted-ordinary-child", "persisted-child-acp")
@@ -273,6 +286,20 @@ describe("writer-produced run restore", () => {
     })
     writer.watch(source)
     writer.dispose()
+    const serializedRun = JSON.stringify(runStore.record)
+    for (const forbidden of [
+      '"delegation"',
+      '"policy"',
+      '"restrictions"',
+      '"limits"',
+      '"attestationVersion"',
+      '"confirmed"',
+      "RESTORE_ATTESTATION_SENTINEL",
+      "RESTORE_MODEL_SENTINEL",
+      "RESTORE_EFFORT_SENTINEL",
+      "Ephemeral delegated task",
+      "Ephemeral delegated outcome",
+    ]) expect(serializedRun).not.toContain(forbidden)
 
     const created: LifecycleRestoreConnection[] = []
     const controller = await createSessionController({

@@ -3847,6 +3847,7 @@ describe("createSessionController - per-conversation close", () => {
 describe("createSessionController - dynamic conversation actions", () => {
   it("denies production explore before allocating connection, bridge, ACP, store, reservation, or prompt state", async () => {
     const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
     const bridge = createRecordingBridge()
     let childIdsRequested = 0
     const controller = await createSessionController({
@@ -3864,6 +3865,11 @@ describe("createSessionController - dynamic conversation actions", () => {
         childIdsRequested += 1
         return "must-not-exist"
       },
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "denied-explore-run",
+      }),
       sendInitialTasks: false,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -3884,6 +3890,13 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
     expect(Object.keys(controller.store.getState().sessions)).not.toContain("must-not-exist")
     expect(created.flatMap((connection) => connection.prompts)).toEqual([])
+    expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
+      expect.objectContaining({
+        type: "explore_launch_denied",
+        denialReason: "missing-attestation",
+        count: 1,
+      }),
+    ])
     await controller.dispose()
   })
 
@@ -3953,6 +3966,7 @@ describe("createSessionController - dynamic conversation actions", () => {
 
   it("cleans an admitted reservation when scoped bridge provisioning fails", async () => {
     const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
     const bridge = createRecordingBridge()
     const controller = await createSessionController({
       config: APP_CONFIG,
@@ -3977,6 +3991,11 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "bridge-failure-child",
       sendInitialTasks: false,
       resolveExploreCapability: (config) => testExploreCapability(config),
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "bridge-failure-run",
+      }),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const initialConnections = created.length
@@ -3988,11 +4007,20 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(created).toHaveLength(initialConnections)
     expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
     expect(controller.store.getState().sessions["bridge-failure-child"]).toBeUndefined()
+    expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
+      expect.objectContaining({ type: "explore_launch_eligible", count: 1 }),
+      expect.objectContaining({
+        type: "explore_start_failed",
+        failureCategory: "bridge-unavailable",
+        count: 1,
+      }),
+    ])
     await controller.dispose()
   })
 
   it("denies capacity synchronously before a second bridge or connection is created", async () => {
     const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
     const bridge = createRecordingBridge()
     const ids = ["capacity-one", "capacity-two"]
     const controller = await createSessionController({
@@ -4010,6 +4038,11 @@ describe("createSessionController - dynamic conversation actions", () => {
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       resolveExploreCapability: (config) => testExploreCapability(config, { perParent: 1, global: 1 }),
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "capacity-explore-run",
+      }),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
 
@@ -4024,6 +4057,12 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(created).toHaveLength(connectionCount)
     expect(bridge.registrations).toHaveLength(bridgeCount)
     expect(controller.store.getState().sessions["capacity-two"]).toBeUndefined()
+    expect(records.filter((record) => record.type === "explore_capacity_denied")).toEqual([
+      expect.objectContaining({ capacityScope: "per-parent", count: 1 }),
+    ])
+    expect(records.filter((record) =>
+      record.type === "explore_launch_denied" && record.denialReason === "capacity-exhausted"
+    )).toEqual([])
     await controller.dispose()
   })
 
@@ -4119,6 +4158,15 @@ describe("createSessionController - dynamic conversation actions", () => {
     ])
     expect(delegatedRecords.find((record) => record.type === "delegated_visible_running_ms")?.durationMs).toBeGreaterThan(0)
     expect(delegatedRecords.find((record) => record.type === "delegated_child_terminal")?.delegatedStatus).toBe("finished")
+    expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
+      expect.objectContaining({
+        type: "explore_launch_eligible",
+        policyVersion: "explore-v1",
+        provider: "codex",
+        count: 1,
+      }),
+      expect.objectContaining({ type: "explore_terminal", terminalStatus: "finished", count: 1 }),
+    ])
     const serialized = JSON.stringify(delegatedRecords)
     expect(serialized).not.toContain("TASK_SENTINEL")
     expect(serialized).not.toContain("OUTCOME_SENTINEL")
@@ -4500,6 +4548,10 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(controller.store.getState().sessions["prompt-failure"]).toBeUndefined()
     expect(JSON.stringify(records)).not.toContain("Fail during startup")
     expect(JSON.stringify(records)).not.toContain("Fail during prompt")
+    expect(records.filter((record) => record.type === "explore_start_failed")).toEqual([
+      expect.objectContaining({ failureCategory: "session-start-failed", count: 1 }),
+      expect.objectContaining({ failureCategory: "prompt-dispatch-failed", count: 1 }),
+    ])
     expect(await controller.actions.steerDelegatedChild("healthy-child", "Check one more invariant")).toEqual({
       stopReason: "end_turn",
     })
@@ -4632,6 +4684,7 @@ describe("createSessionController - dynamic conversation actions", () => {
     replacement.emit({ kind: "status", status: "error" })
     expect(controller.store.getState().delegation.children[childId!]?.status).toBe("running")
     expect(records.filter((record) => record.type === "delegated_child_terminal")).toEqual([])
+    expect(records.filter((record) => record.type === "explore_terminal")).toEqual([])
     expect(await controller.actions.steerDelegatedChild(childId!, "stale steer")).toBeNull()
     await controller.actions.cancelDelegatedChild(childId!)
     expect(replacement.prompts).toEqual([])

@@ -34,6 +34,7 @@ import {
   EFFORT_CATEGORY,
   needsAttention,
   type ConfigOption,
+  type ExploreCapacityScope,
   type ProviderKind,
   type SessionId,
   type SessionStatus,
@@ -46,6 +47,10 @@ import {
   REEXPLANATION_CHAR_THRESHOLD,
   type EffortRetentionEvent,
 } from "../core/telemetryHeuristics.ts"
+import {
+  isExploreDenialReason,
+  type ExploreDenialReason,
+} from "../core/explorePolicy.ts"
 import type { AppStore, Unsubscribe } from "../store/appStore.ts"
 
 /** The exact content-free debug record used to validate adapter usage emission. */
@@ -147,6 +152,11 @@ export type TelemetryEventType =
   | "delegated_cascade_requested"
   | "delegated_cascade_completed"
   | "delegated_teardown_failed"
+  | "explore_launch_eligible"
+  | "explore_launch_denied"
+  | "explore_capacity_denied"
+  | "explore_start_failed"
+  | "explore_terminal"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
 export type ClarificationCapabilityStatus = "supported" | "unsupported"
@@ -213,6 +223,38 @@ export type TabAttentionStatus = "awaiting_approval" | "error" | "finished"
 export type TabLifecycle = "visible" | "background"
 export type ProviderDefaultOutcome = "none" | "applied" | "partial" | "unavailable"
 export type DelegatedTerminalStatus = "finished" | "failed" | "cancelled"
+export type ExplorePolicyVersion = "explore-v1"
+export type ExploreStartupFailureCategory =
+  | "bridge-unavailable"
+  | "session-start-failed"
+  | "prompt-dispatch-failed"
+export type ExploreTerminalStatus = DelegatedTerminalStatus
+
+export interface ExploreLaunchEligibleInput {
+  readonly policyVersion: ExplorePolicyVersion
+  readonly provider: ProviderKind
+  readonly count: 1
+}
+
+export interface ExploreLaunchDeniedInput {
+  readonly denialReason: ExploreDenialReason
+  readonly count: 1
+}
+
+export interface ExploreCapacityDeniedInput {
+  readonly capacityScope: ExploreCapacityScope
+  readonly count: 1
+}
+
+export interface ExploreStartFailedInput {
+  readonly failureCategory: ExploreStartupFailureCategory
+  readonly count: 1
+}
+
+export interface ExploreTerminalInput {
+  readonly terminalStatus: ExploreTerminalStatus
+  readonly count: 1
+}
 
 /** Exact restore facts accepted by the recorder before it reduces them to buckets. */
 export interface TabRestoreInput {
@@ -292,6 +334,16 @@ export interface TelemetryRecord {
   lifecycle?: TabLifecycle
   /** Closed delegated terminal state; never a task, outcome, identity, or provider error. */
   delegatedStatus?: DelegatedTerminalStatus
+  /** Fixed V1 policy contract label; never an attestation payload or runtime version. */
+  policyVersion?: ExplorePolicyVersion
+  /** Closed explore refusal reason; never provider output or user content. */
+  denialReason?: ExploreDenialReason
+  /** Which atomic reservation limit refused admission. */
+  capacityScope?: ExploreCapacityScope
+  /** Closed accepted-launch failure category; never a raw error. */
+  failureCategory?: ExploreStartupFailureCategory
+  /** Closed current-generation explore terminal state. */
+  terminalStatus?: ExploreTerminalStatus
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -436,6 +488,16 @@ export interface TelemetryRecorder {
   delegatedCascadeCompleted(lifecycleKey: string): void
   /** Emit one content-free teardown failure without serializing its cause. */
   delegatedTeardownFailed(lifecycleKey: string): void
+  /** Record one accepted V1 eligibility fact after atomic registration succeeds. */
+  exploreLaunchEligible(lifecycleKey: string, input: ExploreLaunchEligibleInput): void
+  /** Record one pre-registration typed refusal. */
+  exploreLaunchDenied(input: ExploreLaunchDeniedInput): void
+  /** Record only an atomic capacity-admission refusal. */
+  exploreCapacityDenied(input: ExploreCapacityDeniedInput): void
+  /** Record one accepted launch's fixed startup-failure category. */
+  exploreStartFailed(lifecycleKey: string, input: ExploreStartFailedInput): void
+  /** Record one terminal state for the current private lifecycle key. */
+  exploreTerminal(lifecycleKey: string, input: ExploreTerminalInput): void
   /** Start the picker-open-to-interactive clock before opening its store slot. */
   resumePickerOpened(): void
   /** Close the picker clock after its interactive tree commits. */
@@ -515,6 +577,11 @@ const NOOP_RECORDER: TelemetryRecorder = {
   delegatedCascadeRequested() {},
   delegatedCascadeCompleted() {},
   delegatedTeardownFailed() {},
+  exploreLaunchEligible() {},
+  exploreLaunchDenied() {},
+  exploreCapacityDenied() {},
+  exploreStartFailed() {},
+  exploreTerminal() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
   watch() {
@@ -593,6 +660,9 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly delegatedCascadeRequestedKeys = new Set<string>()
   private readonly delegatedCascadeCompletedKeys = new Set<string>()
   private readonly delegatedTeardownFailures = new Set<string>()
+  private readonly exploreEligibleKeys = new Set<string>()
+  private readonly exploreStartupFailureKeys = new Set<string>()
+  private readonly exploreTerminalKeys = new Set<string>()
   private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
@@ -903,6 +973,63 @@ class ActiveRecorder implements TelemetryRecorder {
     this.record({ type: "delegated_teardown_failed" })
   }
 
+  exploreLaunchEligible(lifecycleKey: string, input: ExploreLaunchEligibleInput): void {
+    if (
+      this.exploreEligibleKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["policyVersion", "provider", "count"]) ||
+      input.policyVersion !== "explore-v1" ||
+      !isProviderKind(input.provider) ||
+      input.count !== 1
+    ) return
+    this.exploreEligibleKeys.add(lifecycleKey)
+    this.record({
+      type: "explore_launch_eligible",
+      policyVersion: input.policyVersion,
+      provider: input.provider,
+      count: input.count,
+    })
+  }
+
+  exploreLaunchDenied(input: ExploreLaunchDeniedInput): void {
+    if (
+      !hasExactKeys(input, ["denialReason", "count"]) ||
+      !isExploreDenialReason(input.denialReason) ||
+      input.count !== 1
+    ) return
+    this.record({ type: "explore_launch_denied", ...input })
+  }
+
+  exploreCapacityDenied(input: ExploreCapacityDeniedInput): void {
+    if (
+      !hasExactKeys(input, ["capacityScope", "count"]) ||
+      (input.capacityScope !== "per-parent" && input.capacityScope !== "global") ||
+      input.count !== 1
+    ) return
+    this.record({ type: "explore_capacity_denied", ...input })
+  }
+
+  exploreStartFailed(lifecycleKey: string, input: ExploreStartFailedInput): void {
+    if (
+      this.exploreStartupFailureKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["failureCategory", "count"]) ||
+      !isExploreStartupFailureCategory(input.failureCategory) ||
+      input.count !== 1
+    ) return
+    this.exploreStartupFailureKeys.add(lifecycleKey)
+    this.record({ type: "explore_start_failed", ...input })
+  }
+
+  exploreTerminal(lifecycleKey: string, input: ExploreTerminalInput): void {
+    if (
+      this.exploreTerminalKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["terminalStatus", "count"]) ||
+      !isExploreTerminalStatus(input.terminalStatus) ||
+      input.count !== 1
+    ) return
+    this.exploreTerminalKeys.add(lifecycleKey)
+    this.record({ type: "explore_terminal", ...input })
+  }
+
   resumePickerOpened(): void {
     this.resumePickerOpenedAt = this.now()
   }
@@ -1117,6 +1244,26 @@ class ActiveRecorder implements TelemetryRecorder {
     if (effortChangeKept(events)) this.record({ type: "effort_change_kept", agent: sessionId })
     watch.effortRetention = null
   }
+}
+
+function hasExactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  return keys.length === expected.length && expected.every((key) => keys.includes(key))
+}
+
+function isProviderKind(value: unknown): value is ProviderKind {
+  return value === "claude-code" || value === "codex" || value === "cursor"
+}
+
+function isExploreStartupFailureCategory(value: unknown): value is ExploreStartupFailureCategory {
+  return value === "bridge-unavailable" ||
+    value === "session-start-failed" ||
+    value === "prompt-dispatch-failed"
+}
+
+function isExploreTerminalStatus(value: unknown): value is ExploreTerminalStatus {
+  return value === "finished" || value === "failed" || value === "cancelled"
 }
 
 function bucketClarificationDuration(durationMs: number): ClarificationDurationBucket {

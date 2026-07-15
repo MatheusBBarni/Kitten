@@ -793,8 +793,12 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
             role: "explore",
             restrictions: EXPLORE_RESTRICTIONS,
             limits: { perParent: 1, global: 1 },
-            attestationVersion: "telemetry-integration-v1",
-            confirmed: { provider: provider.id, model: "test-model", effort: "low" },
+            attestationVersion: "ATTESTATION_PAYLOAD_SENTINEL",
+            confirmed: {
+              provider: provider.id,
+              model: "MODEL_SENTINEL",
+              effort: "EFFORT_SENTINEL",
+            },
           })
           if (decision.kind !== "eligible") return { status: "unsupported", reason: decision.reason }
           return {
@@ -828,6 +832,31 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         "delegated_teardown_failed",
       ])
       expect(delegatedRecords.every((record) => record.agent === undefined)).toBe(true)
+      const exploreRecords = records.filter((record) => record.type.startsWith("explore_"))
+      expect(exploreRecords).toEqual([
+        expect.objectContaining({
+          type: "explore_launch_eligible",
+          policyVersion: "explore-v1",
+          provider: "claude-code",
+          count: 1,
+        }),
+        expect.objectContaining({ type: "explore_terminal", terminalStatus: "failed", count: 1 }),
+      ])
+      const allowedExploreKeys = new Set([
+        "type",
+        "at",
+        "sessionRef",
+        "policyVersion",
+        "provider",
+        "denialReason",
+        "capacityScope",
+        "failureCategory",
+        "terminalStatus",
+        "count",
+      ])
+      expect(exploreRecords.every((record) =>
+        Object.keys(record).every((key) => allowedExploreKeys.has(key))
+      )).toBe(true)
       const serialized = JSON.stringify(records)
       for (const forbidden of [
         "TASK_TEXT_SENTINEL",
@@ -836,11 +865,95 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         "ACP_SESSION_SENTINEL",
         "PRIVATE_CWD_SENTINEL",
         "PRIVATE_TITLE_SENTINEL",
+        "MODEL_SENTINEL",
+        "EFFORT_SENTINEL",
+        "ATTESTATION_PAYLOAD_SENTINEL",
         providerError,
       ]) {
         expect(serialized).not.toContain(forbidden)
       }
       await controller.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("serializes only fixed denial, capacity, startup, and terminal categories", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-explore-policy-telemetry-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => 700,
+        sessionRef: "anonymous-explore-run",
+      })
+      const privateKey = [
+        "TASK_SENTINEL",
+        "OUTCOME_SENTINEL",
+        "PROMPT_SENTINEL",
+        "TRANSCRIPT_SENTINEL",
+        "SESSION_SENTINEL",
+        "CHILD_SENTINEL",
+        "ACP_SENTINEL",
+        "TITLE_SENTINEL",
+        "CWD_SENTINEL",
+        "PATH_SENTINEL",
+        "RECIPE_SENTINEL",
+        "CONFIG_SENTINEL",
+        "MODEL_SENTINEL",
+        "EFFORT_SENTINEL",
+        "ATTESTATION_SENTINEL",
+        "MCP_SENTINEL",
+        "RAW_ERROR_SENTINEL",
+      ].join(":")
+
+      recorder.exploreLaunchDenied({ denialReason: "missing-attestation", count: 1 })
+      recorder.exploreLaunchDenied({ denialReason: "stale-attestation", count: 1 })
+      recorder.exploreCapacityDenied({ capacityScope: "per-parent", count: 1 })
+      recorder.exploreLaunchEligible(privateKey, {
+        policyVersion: "explore-v1",
+        provider: "codex",
+        count: 1,
+      })
+      recorder.exploreStartFailed(privateKey, {
+        failureCategory: "session-start-failed",
+        count: 1,
+      })
+      recorder.exploreTerminal(`${privateKey}:replacement`, {
+        terminalStatus: "cancelled",
+        count: 1,
+      })
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw.trimEnd().split("\n").map((line) => JSON.parse(line) as TelemetryRecord)
+      expect(records.map((record) => record.type)).toEqual([
+        "explore_launch_denied",
+        "explore_launch_denied",
+        "explore_capacity_denied",
+        "explore_launch_eligible",
+        "explore_start_failed",
+        "explore_terminal",
+      ])
+      expect(records.map(({ type, denialReason, capacityScope, failureCategory, terminalStatus }) => ({
+        type,
+        denialReason,
+        capacityScope,
+        failureCategory,
+        terminalStatus,
+      }))).toEqual([
+        expect.objectContaining({ type: "explore_launch_denied", denialReason: "missing-attestation" }),
+        expect.objectContaining({ type: "explore_launch_denied", denialReason: "stale-attestation" }),
+        expect.objectContaining({ type: "explore_capacity_denied", capacityScope: "per-parent" }),
+        expect.objectContaining({ type: "explore_launch_eligible" }),
+        expect.objectContaining({ type: "explore_start_failed", failureCategory: "session-start-failed" }),
+        expect.objectContaining({ type: "explore_terminal", terminalStatus: "cancelled" }),
+      ])
+      for (const sentinel of privateKey.split(":")) expect(raw).not.toContain(sentinel)
+      for (const record of records) {
+        expect(record.count).toBe(1)
+        expect(record.agent).toBeUndefined()
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
