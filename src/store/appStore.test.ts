@@ -1710,6 +1710,47 @@ describe("delegated session store integration", () => {
     expect(selectDelegatedChild(delegatedChildSeed.id)(inserted)?.policy).toBe(policy)
   })
 
+  it("atomically registers a child for a background parent without changing visible selection", () => {
+    const store = createAppStore({ selectedVisibleId: "codex" })
+    store.backgroundConversation("claude-code")
+    store.openSettings()
+    const before = store.getState()
+    const observed: Array<{ state: AppState; previous: AppState }> = []
+    store.subscribe((state, previous) => observed.push({ state, previous }))
+    const childSeed: SessionSeed = {
+      ...delegatedChildSeed,
+      providerKind: "claude-code",
+    }
+
+    const result = store.addDelegatedSession({
+      ...delegatedRegistration(),
+      seed: childSeed,
+    })
+
+    expect(result).toEqual({ kind: "accepted" })
+    expect(observed).toHaveLength(1)
+    expect(observed[0]?.previous).toBe(before)
+    const inserted = observed[0]!.state
+    expect(inserted.workspace.selectedVisibleId).toBe("codex")
+    expect(inserted.workspace.conversations[childSeed.id]).toMatchObject({
+      lifecycle: "background",
+      availability: { kind: "starting" },
+    })
+    expect(selectDelegatedChild(childSeed.id)(inserted)).toMatchObject({
+      childId: childSeed.id,
+      parentId: "claude-code",
+      parentGeneration: 4,
+      childGeneration: 1,
+      status: "starting",
+    })
+    expect(inserted.focusedPane).toBe(before.focusedPane)
+    expect(inserted.overlays).toBe(before.overlays)
+    for (const id of ["claude-code", "codex", "cursor"] as const) {
+      expect(inserted.sessions[id]).toBe(before.sessions[id])
+      expect(inserted.workspace.conversations[id]).toBe(before.workspace.conversations[id])
+    }
+  })
+
   it("retains parent focus and unrelated structural references during registration", () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     const before = store.getState()

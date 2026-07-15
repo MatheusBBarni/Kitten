@@ -633,12 +633,13 @@ class AppStoreImpl implements AppStore {
     if (
       !this.state.sessions[parentId] ||
       !this.state.workspace.conversations[parentId] ||
-      this.state.workspace.selectedVisibleId !== parentId ||
       this.state.sessions[seed.id] ||
       this.state.workspace.conversations[seed.id]
     ) {
       return { kind: "rejected" }
     }
+
+    const selectedVisibleId = this.state.workspace.selectedVisibleId
 
     const admission = registerDelegatedChild(this.state.delegation, {
       kind: "register_child",
@@ -670,10 +671,10 @@ class AppStoreImpl implements AppStore {
       sessionId: seed.id,
     })
     if (backgroundWorkspace === createdWorkspace) return { kind: "rejected" }
-    const workspace = backgroundWorkspace.selectedVisibleId === parentId
+    const workspace = backgroundWorkspace.selectedVisibleId === selectedVisibleId
       ? backgroundWorkspace
-      : { ...backgroundWorkspace, selectedVisibleId: parentId }
-    if (workspace.selectedVisibleId !== parentId) return { kind: "rejected" }
+      : { ...backgroundWorkspace, selectedVisibleId }
+    if (workspace.selectedVisibleId !== selectedVisibleId) return { kind: "rejected" }
 
     this.commit({
       ...this.state,
