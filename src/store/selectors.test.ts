@@ -47,6 +47,8 @@ import {
   selectExploreAvailabilityPresentation,
   selectDelegatedParentCloseSummary,
   selectFocusedPane,
+  selectExplorerVisible,
+  selectFocusedExplorerPosition,
   selectFocusedSessionId,
   selectFocusedSession,
   selectFocusedTranscriptProjection,
@@ -56,6 +58,7 @@ import {
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectIsFocused,
+  selectIsExplorerFocused,
   selectIsShellFocused,
   selectIsSessionsOpen,
   selectSessionPicker,
@@ -83,6 +86,8 @@ import {
   selectSessionSteeringRecovery,
   selectSessionSteeringRecoveryAvailable,
   selectSessionSteeringStatus,
+  selectSessionExplorerPosition,
+  selectVisibleExplorerPosition,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -316,6 +321,66 @@ describe("focus selectors", () => {
 
     store.setFocusedPane({ kind: "agent", sessionId: "codex" })
     expect(selectIsShellFocused(store.getState())).toBe(false)
+  })
+})
+
+describe("explorer selectors", () => {
+  it("projects hidden and uninitialized explorer state without allocating defaults", () => {
+    const store = createAppStore()
+    const state = store.getState()
+
+    expect(selectExplorerVisible(state)).toBe(false)
+    expect(selectIsExplorerFocused(state)).toBe(false)
+    expect(selectSessionExplorerPosition("claude-code")(state)).toBeNull()
+    expect(selectSessionExplorerPosition("missing")(state)).toBeNull()
+    expect(selectSessionExplorerPosition(null)(state)).toBeNull()
+    expect(selectFocusedExplorerPosition(state)).toBeNull()
+    expect(selectVisibleExplorerPosition(state)).toBeNull()
+  })
+
+  it("preserves an addressed session slice identity across unrelated explorer updates", () => {
+    const store = createAppStore()
+    store.setExplorerSelection("claude-code", "src/claude.ts")
+    store.setExplorerSelection("codex", "src/codex.ts")
+    const selectClaude = selectSessionExplorerPosition("claude-code")
+    const selected = selectClaude(store.getState())
+    const publications: unknown[] = []
+    store.subscribeSelector(selectClaude, (position) => publications.push(position))
+
+    store.setExplorerExpanded("codex", "src", true)
+    store.setExplorerScrollTop("codex", 12)
+    store.setExplorerNotice("codex", { code: "fallback-dispatched" })
+
+    expect(selectClaude(store.getState())).toBe(selected)
+    expect(publications).toEqual([])
+  })
+
+  it("restores each focused session's position without mutating the other", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.setExplorerSelection("claude-code", "src/claude.ts")
+    store.setExplorerExpanded("claude-code", "src", true)
+    store.setExplorerScrollTop("claude-code", 4)
+    store.setExplorerNotice("claude-code", { code: "refresh-complete" })
+    store.setExplorerSelection("codex", "test/codex.test.ts")
+    store.setExplorerExpanded("codex", "test", true)
+    store.setExplorerScrollTop("codex", 9)
+    store.setExplorerNotice("codex", { code: "launch-failed" })
+    const claude = selectFocusedExplorerPosition(store.getState())
+    const codex = selectSessionExplorerPosition("codex")(store.getState())
+
+    store.toggleExplorer("claude-code")
+    expect(selectExplorerVisible(store.getState())).toBe(true)
+    expect(selectIsExplorerFocused(store.getState())).toBe(true)
+    expect(selectVisibleExplorerPosition(store.getState())).toBe(claude)
+
+    store.setFocus("codex")
+    expect(selectFocusedExplorerPosition(store.getState())).toBe(codex)
+    expect(selectVisibleExplorerPosition(store.getState())).toBe(codex)
+    expect(selectIsExplorerFocused(store.getState())).toBe(false)
+
+    store.setFocus("claude-code")
+    expect(selectFocusedExplorerPosition(store.getState())).toBe(claude)
+    expect(selectSessionExplorerPosition("codex")(store.getState())).toBe(codex)
   })
 })
 

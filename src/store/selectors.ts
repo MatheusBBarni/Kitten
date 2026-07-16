@@ -73,6 +73,7 @@ import type {
   ApprovalOverlay,
   ClarificationOverlay,
   DelegationOverlay,
+  ExplorerPosition,
   FocusedPane,
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
@@ -420,6 +421,29 @@ export const selectKeyboardCapability: Selector<KeyboardCapability> = (state) =>
 
 /** The pane that currently owns keyboard input. */
 export const selectFocusedPane: Selector<FocusedPane> = (state) => state.focusedPane
+
+/** Whether the current-run explorer surface is revealed. */
+export const selectExplorerVisible: Selector<boolean> = (state) => state.explorer.visible
+
+/** Whether the selected session's explorer currently owns keyboard input. */
+export const selectIsExplorerFocused: Selector<boolean> = (state) =>
+  state.focusedPane.kind === "explorer"
+
+/** One session's lazy current-run explorer position, absent until first use. */
+export const selectSessionExplorerPosition =
+  (sessionId: SessionId | null): Selector<ExplorerPosition | null> =>
+  (state) =>
+    (sessionId ? state.explorer.positions[sessionId] : undefined) ?? null
+
+/** The selected conversation's current-run explorer position. */
+export const selectFocusedExplorerPosition: Selector<ExplorerPosition | null> = (state) => {
+  const sessionId = state.workspace.selectedVisibleId
+  return (sessionId ? state.explorer.positions[sessionId] : undefined) ?? null
+}
+
+/** The selected conversation's position only while the explorer is revealed. */
+export const selectVisibleExplorerPosition: Selector<ExplorerPosition | null> = (state) =>
+  state.explorer.visible ? selectFocusedExplorerPosition(state) : null
 
 /** The semantic shell slice. */
 export const selectShell: Selector<ShellState> = (state) => state.shell

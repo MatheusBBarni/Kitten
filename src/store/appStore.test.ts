@@ -2349,3 +2349,170 @@ describe("transcript window state", () => {
     })
   })
 })
+
+describe("session explorer state", () => {
+  it("starts hidden and creates independent positions lazily for each session", () => {
+    const store = createAppStore()
+
+    expect(store.getState().explorer).toEqual({ visible: false, positions: {} })
+
+    store.setExplorerSelection("claude-code", "src/claude.ts")
+    store.setExplorerExpanded("claude-code", "src", true)
+    store.setExplorerScrollTop("claude-code", 7)
+    store.setExplorerNotice("claude-code", { code: "refresh-complete" })
+    store.setExplorerSelection("codex", "test/codex.test.ts")
+    store.setExplorerExpanded("codex", "test", true)
+    store.setExplorerScrollTop("codex", 19)
+    store.setExplorerNotice("codex", { code: "launch-failed" })
+
+    const claude = store.getState().explorer.positions["claude-code"]!
+    const codex = store.getState().explorer.positions.codex!
+    expect(claude).toMatchObject({
+      expandedPaths: ["src"],
+      selectedPath: "src/claude.ts",
+      scrollTop: 7,
+      notice: { code: "refresh-complete" },
+      generation: 0,
+    })
+    expect(codex).toMatchObject({
+      expandedPaths: ["test"],
+      selectedPath: "test/codex.test.ts",
+      scrollTop: 19,
+      notice: { code: "launch-failed" },
+      generation: 0,
+    })
+    expect(claude).not.toBe(codex)
+    expect(claude.expandedPaths).not.toBe(codex.expandedPaths)
+  })
+
+  it("toggles visibility with explorer focus and returns focus to the composer", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+
+    store.setFocusedPane({ kind: "explorer", sessionId: "claude-code" })
+    expect(store.getState().focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
+
+    store.toggleExplorer("claude-code")
+    expect(store.getState().explorer.visible).toBe(true)
+    expect(store.getState().focusedPane).toEqual({ kind: "explorer", sessionId: "claude-code" })
+    expect(store.getState().explorer.positions["claude-code"]).toBeDefined()
+
+    store.setFocusedPane({ kind: "agent", sessionId: "claude-code" })
+    store.setFocusedPane({ kind: "explorer", sessionId: "claude-code" })
+    expect(store.getState().focusedPane).toEqual({ kind: "explorer", sessionId: "claude-code" })
+
+    store.toggleExplorer("claude-code")
+    expect(store.getState().explorer.visible).toBe(false)
+    expect(store.getState().focusedPane).toEqual({ kind: "agent", sessionId: "claude-code" })
+  })
+
+  it("generation-fences directory results by session and workspace root", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+    })
+    const firstGeneration = store.beginExplorerDirectoryRequest("a", "/work/a", "")!
+    const firstA = store.getState().explorer.positions.a!
+
+    expect(store.beginExplorerDirectoryRequest("a", "/wrong", "src")).toBeNull()
+    expect(store.getState().explorer.positions.a).toBe(firstA)
+    expect(store.commitExplorerDirectory("b", "/work/a", firstGeneration, "", {
+      kind: "ready",
+      entries: [],
+    })).toBe(false)
+    expect(store.commitExplorerDirectory("a", "/wrong", firstGeneration, "", {
+      kind: "ready",
+      entries: [],
+    })).toBe(false)
+
+    const refreshGeneration = store.beginExplorerDirectoryRequest("a", "/work/a", "", {
+      refresh: true,
+    })!
+    expect(refreshGeneration).toBe(firstGeneration + 1)
+    expect(store.commitExplorerDirectory("a", "/work/a", firstGeneration, "", {
+      kind: "ready",
+      entries: [{ relativePath: "stale.ts", name: "stale.ts", kind: "file" }],
+    })).toBe(false)
+    expect(store.commitExplorerDirectory("a", "/work/a", refreshGeneration, "", {
+      kind: "ready",
+      entries: [{ relativePath: "src", name: "src", kind: "directory" }],
+    })).toBe(true)
+    expect(store.getState().explorer.positions.a?.directories[""]).toEqual({
+      kind: "ready",
+      entries: [{ relativePath: "src", name: "src", kind: "directory" }],
+    })
+    expect(store.getState().explorer.positions.b).toBeUndefined()
+  })
+
+  it("invalidates pending work when session replacement changes the workspace root", () => {
+    const store = createAppStore({
+      seeds: [{ id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" }],
+    })
+    const generation = store.beginExplorerDirectoryRequest("a", "/work/a", "")!
+    store.setExplorerSelection("a", "src/old.ts")
+
+    store.replaceSessions(
+      [{
+        seed: { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/new" },
+        workspace: { sessionId: "a", displayName: "A" },
+      }],
+      "a",
+    )
+
+    expect(store.getState().explorer.positions.a).toBeUndefined()
+    expect(store.commitExplorerDirectory("a", "/work/a", generation, "", {
+      kind: "unavailable",
+      reason: "not-found",
+    })).toBe(false)
+  })
+
+  it("removes only the closed session's position and resets all positions on replacement", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.setExplorerSelection("claude-code", "src/keep.ts")
+    const removedGeneration = store.beginExplorerDirectoryRequest(
+      "codex",
+      store.getState().sessions.codex!.cwd,
+      "",
+    )!
+    const retained = store.getState().explorer.positions["claude-code"]
+
+    store.removeSession("codex")
+
+    expect(store.getState().explorer.positions.codex).toBeUndefined()
+    expect(store.getState().explorer.positions["claude-code"]).toBe(retained)
+    const removed = store.getState()
+    expect(store.commitExplorerDirectory("codex", removed.sessions["claude-code"]!.cwd, removedGeneration, "", {
+      kind: "ready",
+      entries: [],
+    })).toBe(false)
+    expect(store.getState()).toBe(removed)
+
+    const restored = seed("claude-code", "restored")
+    store.replaceSessions(
+      [{ seed: restored, workspace: { sessionId: restored.id, displayName: "Restored" } }],
+      restored.id,
+    )
+    expect(store.getState().explorer.positions).toEqual({})
+  })
+
+  it("keeps invalid and equivalent position transitions as state no-ops", () => {
+    const store = createAppStore()
+    store.setExplorerSelection("claude-code", "src/index.ts")
+    store.setExplorerExpanded("claude-code", "src", true)
+    store.setExplorerScrollTop("claude-code", 5)
+    store.setExplorerNotice("claude-code", { code: "custom-dispatched" })
+    const before = store.getState()
+
+    store.setExplorerSelection("missing", "nope")
+    store.setExplorerSelection("claude-code", "src/index.ts")
+    store.setExplorerExpanded("claude-code", "src", true)
+    store.setExplorerScrollTop("claude-code", -1)
+    store.setExplorerScrollTop("claude-code", Number.NaN)
+    store.setExplorerScrollTop("claude-code", 5)
+    store.setExplorerNotice("claude-code", { code: "custom-dispatched" })
+    store.toggleExplorer("codex")
+
+    expect(store.getState()).toBe(before)
+  })
+})
