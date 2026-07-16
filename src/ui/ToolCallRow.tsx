@@ -87,14 +87,14 @@ export const WAITING_FOR_TOOL_RESULT_LABEL = "Waiting for a tool result"
 /** The human-readable protocol label for a tool advertised by an MCP server. */
 export const MCP_TOOL_LABEL = "MCP"
 
-/** Separates the server and function in a compact MCP tool-call header. */
+/** Separates every server and function segment in a compact MCP tool-call header. */
 export const MCP_TOOL_PATH_SEPARATOR = " -> "
 
 /**
  * Turns ACP's technical MCP tool title into a compact, scan-friendly label.
  *
- * ACP identifies an MCP call as `mcp.<server>.<function>`. Keep the server name and
- * every remaining function segment intact; a malformed or non-MCP title falls back to
+ * ACP identifies an MCP call as `mcp.<server>.<function>`. Keep every path segment
+ * explicit; a malformed or non-MCP title falls back to
  * the ordinary `Run(title)` presentation instead of guessing at its structure.
  */
 export function formatMcpToolCallTitle(title: string): string | null {
@@ -108,7 +108,7 @@ export function formatMcpToolCallTitle(title: string): string | null {
     return null
   }
 
-  return `${MCP_TOOL_LABEL}(${[server, functionSegments.join(".")].join(MCP_TOOL_PATH_SEPARATOR)})`
+  return `${MCP_TOOL_LABEL}(${[server, ...functionSegments].join(MCP_TOOL_PATH_SEPARATOR)})`
 }
 
 /**

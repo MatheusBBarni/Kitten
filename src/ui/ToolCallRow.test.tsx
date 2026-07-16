@@ -63,25 +63,25 @@ describe("ToolCallRow activity labels", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("shows an MCP call as a compact protocol, server, and function label", async () => {
+  it("shows every MCP path segment as a compact, scan-friendly label", async () => {
     const controller = createFakeController()
     const setup = await testRender(
       <CockpitProvider controller={controller}>
-        <ToolCallRow record={toolRecord({ kind: "execute", title: "mcp.kitten-ask-user.ask_user" })} />
+        <ToolCallRow record={toolRecord({ kind: "execute", title: "mcp.codex_apps.github.create_issue" })} />
       </CockpitProvider>,
       { width: 64, height: 8 },
     )
 
-    const frame = await setup.waitForFrame((candidate) => candidate.includes("MCP(kitten-ask-user -> ask_user)"))
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("MCP(codex_apps -> github -> create_issue)"))
 
-    expect(frame).toContain("MCP(kitten-ask-user -> ask_user) · running")
-    expect(frame).not.toContain("Run(mcp.kitten-ask-user.ask_user)")
+    expect(frame).toContain("MCP(codex_apps -> github -> create_issue) · running")
+    expect(frame).not.toContain("Run(mcp.codex_apps.github.create_issue)")
     await destroyMounted(setup.renderer)
   })
 
   it("only formats complete MCP tool titles", () => {
     expect(formatMcpToolCallTitle("mcp.kitten-ask-user.ask_user")).toBe("MCP(kitten-ask-user -> ask_user)")
-    expect(formatMcpToolCallTitle("mcp.server.function.with.dots")).toBe("MCP(server -> function.with.dots)")
+    expect(formatMcpToolCallTitle("mcp.server.function.with.dots")).toBe("MCP(server -> function -> with -> dots)")
     expect(formatMcpToolCallTitle("mcp.kitten-ask-user")).toBeNull()
     expect(formatMcpToolCallTitle("git status")).toBeNull()
   })

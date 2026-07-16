@@ -62,6 +62,34 @@ _Avoid_: Shared application database, provider credential store
 The explicit, idempotent copy of Task Orchestrator data into Kitten Orchestrator-owned storage while leaving the source untouched.
 _Avoid_: In-place database upgrade, silent migration
 
+### Cockpit Personalization
+
+**Theme Preset**:
+A named, curated visual palette from a public upstream source that a Kitten Cockpit user can select and keep, faithful to its recognizable source with only necessary readability adjustments and a stable identity across catalog changes.
+_Avoid_: Custom theme, imported theme
+
+**Theme Family**:
+A recognizable external theme lineage whose official variants Kitten curates as Theme Presets.
+_Avoid_: Unrelated color collection, arbitrary user palette
+
+**Curated Theme Catalog**:
+The finite, currently 18-preset set of Theme Families and their Theme Presets that Kitten ships alongside Auto, Light, and Dark selection.
+_Avoid_: Theme marketplace, arbitrary palette collection
+
+**Theme Preference**:
+The user's persistent choice of Auto, Light, Dark, or one Theme Preset.
+_Avoid_: Terminal theme mode, temporary preview
+
+### Cockpit Session Control
+
+**Hard Stop**:
+A developer's explicit request to cancel the active Cockpit turn while retaining its ACP session.
+_Avoid_: Session reset, steering, conversation close
+
+**Post-Interrupt Continuation**:
+One developer message held after a Hard Stop and sent as the next ordinary turn once the interrupted turn settles in the same healthy Cockpit session.
+_Avoid_: Steering follow-up, automatic retry
+
 ### Context Engineering
 
 **Context Pack**:
@@ -253,6 +281,10 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 ## Relationships
 
 - The Kitten product family ships exactly two applications: **Kitten Cockpit** and **Kitten Orchestrator**
+- Every **Theme Preference** selects Auto, Light, Dark, or exactly one **Theme Preset** from the **Curated Theme Catalog**
+- A **Theme Family** contributes one or more **Theme Presets** to the **Curated Theme Catalog**
+- A **Hard Stop** cancels one active Cockpit turn without closing its Cockpit session
+- A **Post-Interrupt Continuation** belongs to one **Hard Stop** and becomes the next ordinary turn only after that interrupted turn settles
 - **Kitten Cockpit** and **Kitten Orchestrator** have separate user interfaces, controllers, stores, and entry points but consume common **Shared Capabilities**
 - Queue discovery, worktree execution, verification gates, and review governance belong only to **Kitten Orchestrator**
 - Every **Orchestrated Work** belongs to exactly one queued task, isolated worktree, branch, original baseline, and at most one pull request

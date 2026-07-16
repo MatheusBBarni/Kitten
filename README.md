@@ -225,6 +225,10 @@ Malformed config files fail fast. There is no silent fallback.
 
 Telemetry is disabled by default. When enabled, it writes local content-free JSONL counters only.
 
+### Theme catalog
+
+Settings applies a selected theme immediately and persists it to `config.json`. Kitten's built-in presets are a curated, source-attributed catalog; see the [Theme Catalog](docs/theme-catalog.md) for included families, variants, and license records.
+
 ### Experimental transcript windowing
 
 The bounded transcript view is a default-off experiment. To opt in, add the strict top-level boolean to
