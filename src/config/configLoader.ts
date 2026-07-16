@@ -98,6 +98,10 @@ export type CertifiedCursorRuntimeProfile = Extract<ProviderRuntimeProfile, { ki
  */
 const CERTIFIED_CURSOR_RUNTIME_PROFILES: readonly CertifiedCursorRuntimeProfile[] = []
 
+/** Certification accepts one complete semantic version, never a range or tag. */
+const EXACT_SEMANTIC_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/
+
 /** Telemetry is opt-in and off until the user says otherwise (PRD privacy stance). */
 const DEFAULT_TELEMETRY_ENABLED = false
 
@@ -502,6 +506,7 @@ export function resolveProviderRuntimeProfile(
   if (recipe.id !== "cursor") return { kind: "standard" }
   const certified = certifiedProfiles.find(
     (profile) =>
+      EXACT_SEMANTIC_VERSION.test(profile.certifiedVersion) &&
       recipe.command === profile.command &&
       sameOrderedValues(recipe.args, profile.args) &&
       sameEnvironment(recipe.env, profile.env),
@@ -525,6 +530,7 @@ export function matchCertifiedCursorRuntimeProfile(
   exactVersion: string,
   certifiedProfiles: readonly CertifiedCursorRuntimeProfile[] = CERTIFIED_CURSOR_RUNTIME_PROFILES,
 ): CertifiedCursorRuntimeProfile | undefined {
+  if (!EXACT_SEMANTIC_VERSION.test(exactVersion)) return undefined
   const profile = resolveProviderRuntimeProfile(recipe, certifiedProfiles)
   if (profile.kind !== "cursor-certified" || profile.certifiedVersion !== exactVersion) return undefined
   return profile

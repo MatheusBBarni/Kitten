@@ -464,6 +464,7 @@ describe("user overrides", () => {
     expect(resolveProviderRuntimeProfile({ ...base, args: ["acp", "--debug"] }, [certified])).toEqual({ kind: "standard" })
     expect(resolveProviderRuntimeProfile({ ...base, env: { CURSOR_HOME: "/tmp" } }, [certified])).toEqual({ kind: "standard" })
     expect(resolveProviderRuntimeProfile({ ...base, args: ["--debug", "acp"] }, [certified])).toEqual({ kind: "standard" })
+    expect(resolveProviderRuntimeProfile(base, [{ ...certified, certifiedVersion: "not-semver" }])).toEqual({ kind: "standard" })
     expect(defaultAppConfig().providers.cursor).not.toHaveProperty("runtimeProfile")
   })
 
@@ -486,6 +487,34 @@ describe("user overrides", () => {
     expect(matchCertifiedCursorRuntimeProfile({ ...native, args: ["acp", "--debug"] }, "1.2.3", [certified])).toBeUndefined()
     expect(matchCertifiedCursorRuntimeProfile({ ...native, args: ["--debug", "acp"] }, "1.2.3", [certified])).toBeUndefined()
     expect(matchCertifiedCursorRuntimeProfile({ ...native, env: { CURSOR_HOME: "/tmp" } }, "1.2.3", [certified])).toBeUndefined()
+    expect(matchCertifiedCursorRuntimeProfile(native, "not-semver", [{ ...certified, certifiedVersion: "not-semver" }])).toBeUndefined()
+  })
+
+  it("Should require every expected environment entry and reject every added entry", () => {
+    const certified = {
+      kind: "cursor-certified" as const,
+      command: "agent" as const,
+      args: ["acp"] as const,
+      env: { CURSOR_CHANNEL: "stable", CURSOR_MODE: "local" },
+      certifiedVersion: "1.2.3",
+      authenticationMethod: "cursor_login" as const,
+    }
+    const exact = {
+      id: "cursor" as const,
+      command: "agent",
+      args: ["acp"],
+      env: { CURSOR_MODE: "local", CURSOR_CHANNEL: "stable" },
+    }
+
+    expect(matchCertifiedCursorRuntimeProfile(exact, "1.2.3", [certified])).toEqual(certified)
+    expect(matchCertifiedCursorRuntimeProfile({ ...exact, env: { CURSOR_CHANNEL: "stable" } }, "1.2.3", [certified])).toBeUndefined()
+    expect(
+      matchCertifiedCursorRuntimeProfile(
+        { ...exact, env: { ...exact.env, CURSOR_HOME: "/tmp" } },
+        "1.2.3",
+        [certified],
+      ),
+    ).toBeUndefined()
   })
 })
 

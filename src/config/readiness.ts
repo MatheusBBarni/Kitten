@@ -130,13 +130,21 @@ export async function preflightAgentReadiness(
     return preflightNotReady(
       config,
       "uncertified_recipe",
-      "the configured recipe is not certified. Restore the built-in `agent acp` recipe, then restart Kitten.",
+      "this local Cursor profile has not been reviewed for support. " +
+        "This is not a local repair; use another ready provider until Kitten publishes a reviewed profile.",
     )
   }
 
   const binaryExists = options.binaryExists ?? defaultBinaryExists
   const command = config.runtimeProfile.kind === "cursor-certified" ? config.runtimeProfile.command : config.command
   if (!binaryExists(command)) {
+    if (config.id === "cursor") {
+      return preflightNotReady(
+        config,
+        "binary_not_found",
+        "the local Cursor CLI is not available. Install the Cursor CLI, then restart Kitten.",
+      )
+    }
     return preflightNotReady(
       config,
       "binary_not_found",
@@ -186,6 +194,9 @@ export async function checkAgentReadiness(
     connection = create(config)
     const state = await withTimeout(connection.connect(), timeoutMs)
     if (state === TIMED_OUT) {
+      if (config.id === "cursor") {
+        return connectionFailureVerdict(config, handshakeReadinessFailure(config))
+      }
       return notReady(
         config,
         "handshake_timeout",
@@ -196,6 +207,9 @@ export async function checkAgentReadiness(
     }
     return verdict(config, state)
   } catch (error) {
+    if (config.id === "cursor") {
+      return connectionFailureVerdict(config, handshakeReadinessFailure(config))
+    }
     return notReady(
       config,
       "handshake_failed",
@@ -214,12 +228,27 @@ export function connectionReadinessFailure(
   if (config.id === "cursor" && authenticationRequired(state)) {
     return {
       reason: "authentication_required",
-      message: `${config.displayName}: authentication is required: ${state.error}. Sign in to Cursor, then restart Kitten.`,
+      message: `${config.displayName}: authentication is required. Sign in with the Cursor CLI, then restart Kitten.`,
+    }
+  }
+  return handshakeReadinessFailure(config, state.error)
+}
+
+/** Normalize a thrown connection error without leaking raw Cursor runtime details. */
+export function handshakeReadinessFailure(
+  config: ResolvedAgentConfig,
+  detail?: string,
+): ConnectionReadinessFailure {
+  if (config.id === "cursor") {
+    return {
+      reason: "handshake_failed",
+      message: `${config.displayName}: the local ACP connection could not be established. ` +
+        "Restart Kitten; if it still fails, continue with another ready provider.",
     }
   }
   return {
     reason: "handshake_failed",
-    message: `${config.displayName}: the ACP \"initialize\" handshake failed: ${state.error}. ` +
+    message: `${config.displayName}: the ACP \"initialize\" handshake failed: ${detail ?? "unknown failure"}. ` +
       "The agent may need authentication, or its adapter version may be incompatible.",
   }
 }
@@ -247,16 +276,12 @@ export async function checkAllAgentsReadiness(
 /** Turn a completed `connect()` into a verdict, rejecting versions we cannot speak. */
 function verdict(config: ResolvedAgentConfig, state: ReadyState): AgentReadiness {
   if (!state.ready) {
-    const failure = connectionReadinessFailure(config, state)
-    return {
-      agentId: config.id,
-      displayName: config.displayName,
-      clarificationCapability: config.clarificationCapability,
-      ready: false,
-      ...failure,
-    }
+    return connectionFailureVerdict(config, connectionReadinessFailure(config, state))
   }
   if (state.protocolVersion !== SUPPORTED_PROTOCOL_VERSION) {
+    if (config.id === "cursor") {
+      return connectionFailureVerdict(config, handshakeReadinessFailure(config))
+    }
     return notReady(
       config,
       "capability_mismatch",
@@ -270,6 +295,19 @@ function verdict(config: ResolvedAgentConfig, state: ReadyState): AgentReadiness
     clarificationCapability: config.clarificationCapability,
     ready: true,
     protocolVersion: state.protocolVersion,
+  }
+}
+
+function connectionFailureVerdict(
+  config: ResolvedAgentConfig,
+  failure: ConnectionReadinessFailure,
+): AgentReadiness {
+  return {
+    agentId: config.id,
+    displayName: config.displayName,
+    clarificationCapability: config.clarificationCapability,
+    ready: false,
+    ...failure,
   }
 }
 
@@ -344,7 +382,8 @@ function cursorVersionMismatch(config: ResolvedAgentConfig): AgentReadinessPrefl
   return preflightNotReady(
     config,
     "version_mismatch",
-    "the installed CLI does not match Kitten's certified Cursor CLI version. Install the supported Cursor CLI, then restart Kitten.",
+    "the installed Cursor CLI version does not match Kitten's reviewed profile. " +
+      "Install the Cursor CLI version supported by this Kitten release, then restart Kitten.",
   )
 }
 

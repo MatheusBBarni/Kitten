@@ -2619,8 +2619,11 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
     expect(created).not.toContain("cursor")
     expect(controller.runtime("cursor")).toMatchObject({ ready: false, error: `Cursor recovery for ${reason}` })
     expect(controller.isReady("codex")).toBe(true)
+    expect(controller.isReady("claude-code")).toBe(true)
     expect(await controller.actions.sendPrompt("still usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("also usable", "claude-code")).toEqual({ stopReason: "end_turn" })
     expect(connections.get("codex")?.prompts).toHaveLength(1)
+    expect(connections.get("claude-code")?.prompts).toHaveLength(1)
     expect(sinkRecords).toContainEqual(expect.objectContaining({
       type: "provider_readiness",
       provider: "cursor",
@@ -2653,17 +2656,62 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
-    expect(controller.runtime("cursor")).toMatchObject({
+    const cursorRuntime = controller.runtime("cursor")
+    expect(cursorRuntime).toMatchObject({
       ready: false,
-      error: "Cursor: authentication is required: login rejected. Sign in to Cursor, then restart Kitten.",
+      error: "Cursor: authentication is required. Sign in with the Cursor CLI, then restart Kitten.",
     })
+    expect(cursorRuntime && !cursorRuntime.ready ? cursorRuntime.error : "").not.toContain("login rejected")
     expect(records).toContainEqual(expect.objectContaining({
       type: "provider_readiness",
       provider: "cursor",
       readinessOutcome: "authentication_required",
     }))
     expect(await controller.actions.sendPrompt("continue", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("continue", "codex")).toEqual({ stopReason: "end_turn" })
     expect(connections.get("claude-code")?.prompts).toHaveLength(1)
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it.each([
+    ["reported handshake failure", { ready: { ready: false, error: "/private/cursor handshake token" } }],
+    ["thrown session creation failure", { newSessionThrows: new Error("/private/cursor session token") }],
+  ] as const)("normalizes Cursor %s without disturbing ready siblings", async (_case, cursorOptions) => {
+    const records: TelemetryRecord[] = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+      }),
+      preflightAgentReadiness: async () => ({ ready: true }),
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, config.id === "cursor" ? cursorOptions : {})
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+
+    const cursorRuntime = controller.runtime("cursor")
+    expect(cursorRuntime).toMatchObject({
+      ready: false,
+      error: "Cursor: the local ACP connection could not be established. " +
+        "Restart Kitten; if it still fails, continue with another ready provider.",
+    })
+    expect(cursorRuntime && !cursorRuntime.ready ? cursorRuntime.error : "").not.toMatch(/private|token/i)
+    expect(records.filter((record) => record.type === "provider_readiness" && record.provider === "cursor"))
+      .toEqual([expect.objectContaining({ readinessOutcome: "handshake_failed" })])
+    expect(await controller.actions.sendPrompt("claude sibling", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex sibling", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("claude-code")?.prompts).toHaveLength(1)
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
     await controller.dispose()
   })
 

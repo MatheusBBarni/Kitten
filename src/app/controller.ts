@@ -34,6 +34,7 @@ import {
 } from "../config/harnessCapability.ts"
 import {
   connectionReadinessFailure,
+  handshakeReadinessFailure,
   preflightAgentReadiness,
   type AgentReadinessPreflight,
   type ReadinessPreflightOptions,
@@ -1269,8 +1270,10 @@ export async function createSessionController(options: SessionControllerOptions)
         await failSession(runtime, connection, failure.message, "connection-failed")
         return
       }
-      options.recorder?.providerReadiness?.(config.id, "ready")
-      readinessRecorded = true
+      if (config.id !== "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
       // The agent may advertise its current model/effort in the `session/new` response,
       // which the adapter emits as a `config_options` event *during* `newSession`. The
       // permanent subscription below is bound only after `startSession` resets the slice,
@@ -1312,6 +1315,10 @@ export async function createSessionController(options: SessionControllerOptions)
       runtime.acpSessionId = acpSessionId
       runtime.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
+      if (config.id === "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
     } catch (error) {
       if (!isCurrentGeneration(runtime, generation)) {
         if (runtime.connection === connection) await disposeQuietly(connection)
@@ -1319,7 +1326,10 @@ export async function createSessionController(options: SessionControllerOptions)
       }
       if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
       onError(seed.id, error)
-      await failSession(runtime, connection, errorMessage(error), "connection-failed")
+      const message = config.id === "cursor"
+        ? handshakeReadinessFailure(config).message
+        : errorMessage(error)
+      await failSession(runtime, connection, message, "connection-failed")
     }
   }
 
@@ -1469,9 +1479,10 @@ export async function createSessionController(options: SessionControllerOptions)
         await failSession(previous, connection, failure.message, "restore-unavailable")
         return false
       }
-      options.recorder?.providerReadiness?.(config.id, "ready")
-      readinessRecorded = true
-
+      if (config.id !== "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
       let acpSessionId: string
       // A zero-turn record has no history to restore. Some ACP adapters (including
       // Codex) do not make that just-created session durable until its first turn,
@@ -1539,6 +1550,10 @@ export async function createSessionController(options: SessionControllerOptions)
       previous.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
       restoreSteeringRecovery(seed.id, generation, steeringRecovery)
+      if (config.id === "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
       return true
     } catch (error) {
       if (!isCurrentGeneration(previous, generation)) {
@@ -1550,7 +1565,10 @@ export async function createSessionController(options: SessionControllerOptions)
       unsubscribe?.()
       store.setRestoration(seed.id, "unavailable")
       onError(seed.id, error)
-      await failSession(previous, connection, errorMessage(error), "restore-unavailable")
+      const message = config.id === "cursor"
+        ? handshakeReadinessFailure(config).message
+        : errorMessage(error)
+      await failSession(previous, connection, message, "restore-unavailable")
       return false
     }
   }
