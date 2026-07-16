@@ -506,6 +506,64 @@ describe("applyEvent", () => {
     expect(session.referencedFiles.get("src/parser.ts")).toBe("edited")
   })
 
+  it("preserves and explicitly clears a tool-call failure kind through the public store", () => {
+    const store = createAppStore()
+    store.setFocus("codex")
+
+    const events: DomainSessionEvent[] = [
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "capacity-1",
+          title: "Start delegated agent",
+          status: "failed",
+          locations: ["src/agent.ts"],
+          failureKind: "temporary_capacity",
+        },
+      },
+      {
+        kind: "tool_call",
+        call: { toolCallId: "capacity-1", status: "in_progress" },
+      },
+    ]
+
+    for (const event of events) store.applyEvent("codex", event)
+
+    const preserved = store.getState()
+    expect(preserved.workspace.selectedVisibleId).toBe("codex")
+    expect(selectSessionTurns("codex")(preserved)).toEqual([
+      {
+        kind: "tool_call",
+        record: {
+          toolCallId: "capacity-1",
+          kind: "other",
+          title: "Start delegated agent",
+          status: "in_progress",
+          locations: ["src/agent.ts"],
+          failureKind: "temporary_capacity",
+        },
+      },
+    ])
+
+    store.applyEvent("codex", {
+      kind: "tool_call",
+      call: { toolCallId: "capacity-1", status: "failed", failureKind: null },
+    })
+
+    expect(selectSessionTurns("codex")(store.getState())).toEqual([
+      {
+        kind: "tool_call",
+        record: {
+          toolCallId: "capacity-1",
+          kind: "other",
+          title: "Start delegated agent",
+          status: "failed",
+          locations: ["src/agent.ts"],
+        },
+      },
+    ])
+  })
+
   it("applies each already-coalesced event immediately, without re-batching content", () => {
     const store = createAppStore()
     const turns = trackSelector(store, selectSessionTurns("claude-code"))

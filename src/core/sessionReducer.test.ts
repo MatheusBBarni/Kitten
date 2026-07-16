@@ -1,7 +1,17 @@
 import { describe, expect, it } from "bun:test"
+import { readFileSync } from "node:fs"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { AvailableCommand, ConfigOption, DomainSessionEvent, ManagedWorktreeBinding, SessionState, ToolCallTurn } from "./types.ts"
+import type {
+  AvailableCommand,
+  ConfigOption,
+  DomainSessionEvent,
+  ManagedWorktreeBinding,
+  SessionState,
+  ToolCallFailureKind,
+  ToolCallTurn,
+  ToolCallUpdate,
+} from "./types.ts"
 import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
 
 /**
@@ -334,6 +344,147 @@ describe("user_message", () => {
 })
 
 describe("tool_call upsert semantics", () => {
+  it("stores the closed temporary-capacity failure kind on a new tool call", () => {
+    const state = fold([
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "capacity-1",
+          title: "Start delegated agent",
+          status: "failed",
+          failureKind: "temporary_capacity",
+        },
+      },
+    ])
+
+    expect(toolTurns(state)[0]!.record).toEqual({
+      toolCallId: "capacity-1",
+      kind: "other",
+      title: "Start delegated agent",
+      status: "failed",
+      locations: [],
+      failureKind: "temporary_capacity",
+    })
+  })
+
+  it("preserves an existing failure kind when an update omits it", () => {
+    const state = fold([
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "capacity-2",
+          kind: "edit",
+          title: "Patch config",
+          status: "pending",
+          locations: ["src/old.ts"],
+          failureKind: "temporary_capacity",
+          diff: { path: "src/old.ts", unified: "old diff" },
+        },
+      },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "capacity-2",
+          status: "failed",
+          locations: ["src/new.ts"],
+          diff: { path: "src/new.ts", unified: "new diff" },
+        },
+      },
+    ])
+
+    expect(toolTurns(state)[0]!.record).toEqual({
+      toolCallId: "capacity-2",
+      kind: "edit",
+      title: "Patch config",
+      status: "failed",
+      locations: ["src/new.ts"],
+      failureKind: "temporary_capacity",
+      diff: { path: "src/new.ts", unified: "new diff" },
+    })
+  })
+
+  it("clears only the failure kind when an update explicitly supplies null", () => {
+    const state = fold([
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "unavailable-1",
+          kind: "read",
+          title: "Read status",
+          status: "failed",
+          locations: ["src/status.ts"],
+          inputSummary: "{ target }",
+          failureKind: "unavailable",
+          diff: { path: "src/status.ts", unified: "status diff" },
+        },
+      },
+      {
+        kind: "tool_call",
+        call: { toolCallId: "unavailable-1", failureKind: null },
+      },
+    ])
+
+    expect(toolTurns(state)[0]!.record).toEqual({
+      toolCallId: "unavailable-1",
+      kind: "read",
+      title: "Read status",
+      status: "failed",
+      locations: ["src/status.ts"],
+      inputSummary: "{ target }",
+      diff: { path: "src/status.ts", unified: "status diff" },
+    })
+  })
+
+  it("keeps an unclassified failed tool call on the existing generic defaults", () => {
+    const state = fold([
+      { kind: "tool_call", call: { toolCallId: "generic-failure", status: "failed" } },
+    ])
+
+    expect(toolTurns(state)[0]!.record).toEqual({
+      toolCallId: "generic-failure",
+      kind: "other",
+      title: "",
+      status: "failed",
+      locations: [],
+    })
+    expect(toolTurns(state)[0]!.record).not.toHaveProperty("failureKind")
+  })
+
+  it("keeps the public failure vocabulary closed and protocol-free", () => {
+    const kinds: Record<ToolCallFailureKind, true> = {
+      temporary_capacity: true,
+      unavailable: true,
+    }
+    const update: ToolCallUpdate = {
+      toolCallId: "closed-contract",
+      failureKind: "unavailable",
+    }
+    const importLines = readFileSync(new URL("./types.ts", import.meta.url), "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("import "))
+      .join("\n")
+
+    expect(Object.keys(kinds)).toEqual(["temporary_capacity", "unavailable"])
+    expect(update).toEqual({ toolCallId: "closed-contract", failureKind: "unavailable" })
+    expect(importLines).not.toMatch(/@agentclientprotocol|@modelcontextprotocol|src\/agent|socket|endpoint/u)
+
+    const acceptUpdate = (_value: ToolCallUpdate): void => undefined
+    if (false) {
+      // @ts-expect-error The closed domain vocabulary does not admit transport-level busy.
+      acceptUpdate({ toolCallId: "invalid-kind", failureKind: "busy" })
+      // @ts-expect-error ACP source details do not belong in the public update shape.
+      acceptUpdate({ toolCallId: "private-acp", acpError: "private" })
+      // @ts-expect-error MCP source details do not belong in the public update shape.
+      acceptUpdate({ toolCallId: "private-mcp", mcpError: "private" })
+      // @ts-expect-error Socket and endpoint authority do not belong in the public update shape.
+      acceptUpdate({ toolCallId: "private-route", socket: "private", endpoint: "private" })
+      // @ts-expect-error Capability and user content do not belong in the public update shape.
+      acceptUpdate({ toolCallId: "private-content", capability: "private", user: "private" })
+      // @ts-expect-error Raw errors do not belong in the public update shape.
+      acceptUpdate({ toolCallId: "private-error", rawError: new Error("private") })
+    }
+  })
+
   it("merges an update by toolCallId, preserving omitted fields and clearing null fields", () => {
     const state = fold([
       {

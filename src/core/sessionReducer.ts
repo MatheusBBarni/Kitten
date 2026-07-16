@@ -228,7 +228,7 @@ function applyToolCall(turns: Turn[], update: ToolCallUpdate): Turn[] {
  *
  * - New record: start from conservative defaults, then apply provided fields.
  * - Existing record: an omitted (`undefined`) field preserves the prior value; a
- *   provided value replaces it; `diff` set to `null` explicitly clears the diff.
+ *   provided value replaces it; nullable fields explicitly clear on `null`.
  */
 function mergeToolCall(existing: ToolCallRecord | undefined, update: ToolCallUpdate): ToolCallRecord {
   const base: ToolCallRecord = existing ?? {
@@ -246,7 +246,14 @@ function mergeToolCall(existing: ToolCallRecord | undefined, update: ToolCallUpd
     status: update.status ?? base.status,
     locations: update.locations ?? base.locations,
     inputSummary: update.inputSummary ?? base.inputSummary,
+    ...(base.failureKind === undefined ? {} : { failureKind: base.failureKind }),
     diff: base.diff,
+  }
+
+  if (update.failureKind === null) {
+    delete merged.failureKind
+  } else if (update.failureKind !== undefined) {
+    merged.failureKind = update.failureKind
   }
 
   if (update.diff === null) {

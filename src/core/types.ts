@@ -420,6 +420,9 @@ export type ToolCallKind =
 /** Progress of a single tool call. `completed` means applied; `failed` is terminal. */
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed"
 
+/** Closed, protocol-free reason for a classified tool-call failure. */
+export type ToolCallFailureKind = "temporary_capacity" | "unavailable"
+
 /** A unified diff proposed or produced by a tool call, scoped to one file path. */
 export interface ToolCallDiff {
   path: string
@@ -438,6 +441,7 @@ export interface ToolCallRecord {
   locations: string[]
   /** Bounded, value-free description of ACP tool-call input retained for the transcript. */
   inputSummary?: string
+  failureKind?: ToolCallFailureKind
   diff?: ToolCallDiff
 }
 
@@ -447,10 +451,11 @@ export interface ToolCallRecord {
  * Both ACP `tool_call` and `tool_call_update` notifications translate to a single
  * domain `tool_call` event carrying this partial: `toolCallId` is always present,
  * every other field is optional. Omitting a field preserves the prior value on
- * upsert; setting `diff` to `null` clears the stored diff. `inputSummary` contains
- * only an adapter-derived, value-free input shape. This partial shape is what makes
- * the "omitted fields preserved, explicit nulls clear" merge semantics expressible
- * (a fully-populated {@link ToolCallRecord} cannot express omission).
+ * upsert; setting `failureKind` or `diff` to `null` clears that stored field.
+ * `inputSummary` contains only an adapter-derived, value-free input shape. This
+ * partial shape is what makes the "omitted fields preserved, explicit nulls clear"
+ * merge semantics expressible (a fully-populated {@link ToolCallRecord} cannot
+ * express omission).
  */
 export interface ToolCallUpdate {
   toolCallId: string
@@ -459,6 +464,7 @@ export interface ToolCallUpdate {
   status?: ToolCallStatus
   locations?: string[]
   inputSummary?: string
+  failureKind?: ToolCallFailureKind | null
   diff?: ToolCallDiff | null
 }
 
