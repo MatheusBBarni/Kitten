@@ -2139,6 +2139,14 @@ export async function createSessionController(options: SessionControllerOptions)
       },
     })
 
+    // `sendPrompt` normally invokes the callback inline, but this launch path is
+    // deliberately detached from the child turn rather than from dispatch
+    // acknowledgement. Yield exactly one microtask before classifying a missing
+    // acknowledgement as a rejected start. That keeps an async action wrapper
+    // from turning an accepted child prompt into a spurious startup failure,
+    // while still never waiting for the provider's turn to settle.
+    await Promise.resolve()
+
     const terminalizePromptFailure = (): void => {
       // `failSession` synchronously fences late runtime events before it awaits
       // disposal. Publish the terminal child state at that boundary: a detached

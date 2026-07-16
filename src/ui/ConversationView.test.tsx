@@ -5,7 +5,7 @@ import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@ope
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
-import { actAsync, destroyMounted, settleMountedHighlights } from "../../test/reactTui.ts"
+import { actAsync, destroyMounted, settleMountedHighlights, sleep } from "../../test/reactTui.ts"
 import { composeHandoffBlocks, createHandoffEdits } from "../app/handoff.ts"
 import { bannerVariant, type BannerVariant } from "../config/appState.ts"
 import type { HandoffBundle, ProviderKind, ToolCallKind, ToolCallUpdate } from "../core/types.ts"
@@ -217,7 +217,16 @@ describe("ConversationView turns", () => {
         userMessage(controller, "claude-code", `window-${index}`, `WINDOWED_TRANSCRIPT_TURN_${index}`)
       }
     })
-    await setup.waitForFrame((frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_127"))
+    // The view scrolls the newly coalesced tail in a zero-delay effect. Yield to
+    // that effect before reading frames so a fast test renderer does not exhaust
+    // its render-pass budget while the event loop has not run it yet.
+    await actAsync(async () => {
+      await sleep(0)
+    })
+    await setup.waitForFrame(
+      (frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_127"),
+      { maxPasses: 200 },
+    )
 
     const marker = setup.renderer.root.findDescendantById(TRANSCRIPT_HISTORY_MARKER_ID) as Renderable | undefined
     expect(marker).toBeDefined()
