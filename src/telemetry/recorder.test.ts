@@ -17,6 +17,7 @@ import {
   createUsageSeenJsonlFileSink,
   bucketTabRestoreCount,
   bucketTabSwitchLatency,
+  bucketSteeringDuration,
   logUsageSeen,
   recordReadiness,
   resolveTelemetryPath,
@@ -189,6 +190,137 @@ describe("opt-in gating", () => {
       count: 1,
     })
     recorder.exploreTerminal("private-explore", { terminalStatus: "cancelled", count: 1 })
+  })
+})
+
+describe("steering outcome telemetry", () => {
+  it("does not access or construct a sink when disabled", () => {
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled steering telemetry must not access a sink")
+      },
+    })
+
+    recorder.steeringOutcome("private-request", "queued", "fallback")
+    recorder.steeringOutcome("private-request", "delivered", "fallback")
+    recorder.steeringOutcome("private-request", "recovered", "native")
+    recorder.steeringOutcome("private-request", "timeout", "fallback")
+    recorder.steeringOutcome("private-request", "unavailable", "unavailable")
+  })
+
+  it("emits every allowlisted outcome with only closed content-free dimensions", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 1_000,
+      sessionRef: "safe-run",
+    })
+    const cases = [
+      ["queued", "fallback"],
+      ["delivered", "native"],
+      ["recovered", "fallback"],
+      ["timeout", "fallback"],
+      ["unavailable", "unavailable"],
+    ] as const
+
+    for (const [index, [outcome, capabilityClass]] of cases.entries()) {
+      recorder.steeringOutcome(`private-${index}`, outcome, capabilityClass)
+    }
+
+    expect(sink.records.map((record) => record.outcome)).toEqual(cases.map(([outcome]) => outcome))
+    for (const [index, record] of sink.records.entries()) {
+      expect(record).toEqual({
+        type: "steering_outcome",
+        at: 1_000,
+        sessionRef: "safe-run",
+        outcome: cases[index]![0],
+        capabilityClass: cases[index]![1],
+        durationBucket: "under_5s",
+      })
+      expect(Object.keys(record)).toEqual([
+        "type",
+        "outcome",
+        "capabilityClass",
+        "durationBucket",
+        "at",
+        "sessionRef",
+      ])
+    }
+  })
+
+  it("reduces exact lifecycle timing to stable named buckets", () => {
+    expect([
+      0,
+      4_999,
+      5_000,
+      29_999,
+      30_000,
+      119_999,
+      120_000,
+      Number.POSITIVE_INFINITY,
+      -1,
+    ].map(bucketSteeringDuration)).toEqual([
+      "under_5s",
+      "under_5s",
+      "5_to_30s",
+      "5_to_30s",
+      "30_to_120s",
+      "30_to_120s",
+      "over_120s",
+      "under_5s",
+      "under_5s",
+    ])
+
+    const sink = memorySink()
+    const clock = fakeClock()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: clock.now })
+    recorder.steeringOutcome("private-lifecycle", "queued", "fallback")
+    clock.advance(30_000)
+    recorder.steeringOutcome("private-lifecycle", "delivered", "fallback")
+
+    expect(sink.records.map((record) => record.durationBucket)).toEqual([
+      "under_5s",
+      "30_to_120s",
+    ])
+    expect(JSON.stringify(sink.records)).not.toContain("30000")
+  })
+
+  it("deduplicates repeated callbacks by private lifecycle key without exposing it", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, sessionRef: "safe-run" })
+
+    recorder.steeringOutcome("REQUEST_ID_SENTINEL", "queued", "fallback")
+    recorder.steeringOutcome("REQUEST_ID_SENTINEL", "queued", "fallback")
+    recorder.steeringOutcome("REQUEST_ID_SENTINEL", "delivered", "fallback")
+    recorder.steeringOutcome("REQUEST_ID_SENTINEL", "delivered", "fallback")
+
+    expect(sink.records).toHaveLength(2)
+    expect(sink.records.map((record) => record.outcome)).toEqual(["queued", "delivered"])
+    expect(JSON.stringify(sink.records)).not.toContain("REQUEST_ID_SENTINEL")
+  })
+
+  it("rejects unknown dimensions and never serializes private sentinels", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, sessionRef: "safe-run" })
+    const lifecycleKey = [
+      "PROMPT_BLOCK_SENTINEL",
+      "RECOVERY_TEXT_SENTINEL",
+      "REQUEST_ID_SENTINEL",
+      "ACP_ID_SENTINEL",
+      "/PRIVATE/PATH/SENTINEL",
+      "RAW_ERROR_SENTINEL",
+      "ADAPTER_CONFIG_SENTINEL",
+    ].join(":")
+
+    recorder.steeringOutcome(lifecycleKey, "queued", "fallback")
+    recorder.steeringOutcome(lifecycleKey, "not-allowlisted" as never, "fallback")
+    recorder.steeringOutcome(lifecycleKey, "delivered", "private-adapter" as never)
+
+    const serialized = JSON.stringify(sink.records)
+    expect(sink.records).toHaveLength(1)
+    for (const sentinel of lifecycleKey.split(":")) expect(serialized).not.toContain(sentinel)
   })
 })
 

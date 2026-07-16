@@ -157,6 +157,7 @@ export type TelemetryEventType =
   | "explore_capacity_denied"
   | "explore_start_failed"
   | "explore_terminal"
+  | "steering_outcome"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
 export type ClarificationCapabilityStatus = "supported" | "unsupported"
@@ -230,6 +231,26 @@ export type ExploreStartupFailureCategory =
   | "prompt-dispatch-failed"
 export type ExploreTerminalStatus = DelegatedTerminalStatus
 
+/** Closed, content-free dimensions for one steering lifecycle observation. */
+export type SteeringTelemetryOutcome =
+  | "queued"
+  | "delivered"
+  | "recovered"
+  | "timeout"
+  | "unavailable"
+export type SteeringCapabilityClass = "native" | "fallback" | "unavailable"
+export type SteeringDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+/** The exact steering record written locally; lifecycle identity never crosses this boundary. */
+export interface SteeringOutcomeRecord {
+  readonly type: "steering_outcome"
+  readonly at: number
+  readonly sessionRef: string
+  readonly outcome: SteeringTelemetryOutcome
+  readonly capabilityClass: SteeringCapabilityClass
+  readonly durationBucket: SteeringDurationBucket
+}
+
 export interface ExploreLaunchEligibleInput {
   readonly policyVersion: ExplorePolicyVersion
   readonly provider: ProviderKind
@@ -293,7 +314,7 @@ export interface TelemetryRecord {
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
   /** Fixed file-discovery outcome; never a source error, path, or query. */
-  outcome?: FileSelectorDiscoveryOutcome
+  outcome?: FileSelectorDiscoveryOutcome | SteeringTelemetryOutcome
   /** Fixed warm-query render state; never a candidate count or candidate content. */
   state?: FileSelectorRenderState
   /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
@@ -311,7 +332,7 @@ export interface TelemetryRecord {
   hasMulti?: boolean
   hasText?: boolean
   /** Coarse latency bucket; exact durations are not recorded. */
-  durationBucket?: ClarificationDurationBucket
+  durationBucket?: ClarificationDurationBucket | SteeringDurationBucket
   /** The closed kind of interaction suspended or resumed by clarification priority. */
   interactionKind?: ClarificationInteractionKind
   /** The closed lifecycle reason for terminal cancellation on session loss. */
@@ -344,6 +365,8 @@ export interface TelemetryRecord {
   failureCategory?: ExploreStartupFailureCategory
   /** Closed current-generation explore terminal state. */
   terminalStatus?: ExploreTerminalStatus
+  /** Closed steering transport class; never an adapter recipe or configuration. */
+  capabilityClass?: SteeringCapabilityClass
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -498,6 +521,12 @@ export interface TelemetryRecorder {
   exploreStartFailed(lifecycleKey: string, input: ExploreStartFailedInput): void
   /** Record one terminal state for the current private lifecycle key. */
   exploreTerminal(lifecycleKey: string, input: ExploreTerminalInput): void
+  /** Record one steering lifecycle outcome, deduplicated and timed by a private key. */
+  steeringOutcome(
+    lifecycleKey: string,
+    outcome: SteeringTelemetryOutcome,
+    capabilityClass: SteeringCapabilityClass,
+  ): void
   /** Start the picker-open-to-interactive clock before opening its store slot. */
   resumePickerOpened(): void
   /** Close the picker clock after its interactive tree commits. */
@@ -582,6 +611,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   exploreCapacityDenied() {},
   exploreStartFailed() {},
   exploreTerminal() {},
+  steeringOutcome() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
   watch() {
@@ -663,6 +693,8 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly exploreEligibleKeys = new Set<string>()
   private readonly exploreStartupFailureKeys = new Set<string>()
   private readonly exploreTerminalKeys = new Set<string>()
+  private readonly steeringLifecycleStarts = new Map<string, number>()
+  private readonly steeringLifecycleOutcomes = new Set<string>()
   private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
@@ -1030,6 +1062,28 @@ class ActiveRecorder implements TelemetryRecorder {
     this.record({ type: "explore_terminal", ...input })
   }
 
+  steeringOutcome(
+    lifecycleKey: string,
+    outcome: SteeringTelemetryOutcome,
+    capabilityClass: SteeringCapabilityClass,
+  ): void {
+    if (!isSteeringTelemetryOutcome(outcome) || !isSteeringCapabilityClass(capabilityClass)) return
+
+    const dedupeKey = `${lifecycleKey}\u0000${outcome}`
+    if (this.steeringLifecycleOutcomes.has(dedupeKey)) return
+
+    const at = this.now()
+    const startedAt = this.steeringLifecycleStarts.get(lifecycleKey) ?? at
+    this.steeringLifecycleStarts.set(lifecycleKey, startedAt)
+    this.steeringLifecycleOutcomes.add(dedupeKey)
+    this.record({
+      type: "steering_outcome",
+      outcome,
+      capabilityClass,
+      durationBucket: bucketSteeringDuration(at - startedAt),
+    }, at)
+  }
+
   resumePickerOpened(): void {
     this.resumePickerOpenedAt = this.now()
   }
@@ -1270,6 +1324,27 @@ function bucketClarificationDuration(durationMs: number): ClarificationDurationB
   if (durationMs < 5_000) return "under_5s"
   if (durationMs < 30_000) return "5_to_30s"
   if (durationMs < 120_000) return "30_to_120s"
+  return "over_120s"
+}
+
+function isSteeringTelemetryOutcome(value: unknown): value is SteeringTelemetryOutcome {
+  return value === "queued" ||
+    value === "delivered" ||
+    value === "recovered" ||
+    value === "timeout" ||
+    value === "unavailable"
+}
+
+function isSteeringCapabilityClass(value: unknown): value is SteeringCapabilityClass {
+  return value === "native" || value === "fallback" || value === "unavailable"
+}
+
+/** Reduce exact steering latency before any value reaches the local sink. */
+export function bucketSteeringDuration(durationMs: number): SteeringDurationBucket {
+  const normalized = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0
+  if (normalized < 5_000) return "under_5s"
+  if (normalized < 30_000) return "5_to_30s"
+  if (normalized < 120_000) return "30_to_120s"
   return "over_120s"
 }
 

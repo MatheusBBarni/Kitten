@@ -250,6 +250,47 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
+  it("keeps queued and recovered steering state entirely outside the V3 snapshot", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    const sentinels = [
+      "PROMPT_BLOCK_SENTINEL",
+      "RECOVERY_TEXT_SENTINEL",
+      "REQUEST_ID_SENTINEL",
+      "ACP_ID_SENTINEL",
+      "/PRIVATE/STEERING/PATH",
+      "RAW_STEERING_ERROR_SENTINEL",
+      "ADAPTER_CONFIG_SENTINEL",
+    ]
+    store.applyEvent("claude", {
+      kind: "steering_enqueue",
+      activeTurnId: "ACP_ID_SENTINEL",
+      requestId: "REQUEST_ID_SENTINEL",
+      generation: 1,
+      blocks: [{
+        type: "text",
+        text: "PROMPT_BLOCK_SENTINEL RECOVERY_TEXT_SENTINEL",
+        path: "/PRIVATE/STEERING/PATH",
+        rawError: "RAW_STEERING_ERROR_SENTINEL",
+        adapterConfig: "ADAPTER_CONFIG_SENTINEL",
+      } as never],
+    })
+    store.applyEvent("claude", {
+      kind: "steering_recover",
+      requestId: "REQUEST_ID_SENTINEL",
+      generation: 1,
+    })
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    const serialized = JSON.stringify(record)
+    expect(record.version).toBe(3)
+    expect(record.conversations.claude).not.toHaveProperty("steering")
+    expect(serialized).not.toContain("steering")
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel)
+    writer.dispose()
+  })
+
   it("keeps an internal request and its paired proposal out of resume eligibility", () => {
     const { store, runStore, timer, writer } = writerHarness()
     const request = "normal developer request"

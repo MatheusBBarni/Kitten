@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Privacy-Safe Steering Observability
 type: refactor
 complexity: medium
@@ -29,11 +29,11 @@ Add opt-in, local, content-free visibility into steering outcomes while proving 
 
 ## Subtasks
 
-- [ ] 4.1 Add a closed content-free steering outcome record and recorder facade surface.
-- [ ] 4.2 Keep any lifecycle identity and timing state private while reducing durations to named coarse buckets.
-- [ ] 4.3 Preserve no-op recorder behavior when telemetry is disabled.
-- [ ] 4.4 Retain the run writer’s whitelist projection without a schema version bump or steering field.
-- [ ] 4.5 Add explicit allowlist, dedupe, disabled-recorder, and serialized-sentinel exclusions.
+- [x] 4.1 Add a closed content-free steering outcome record and recorder facade surface.
+- [x] 4.2 Keep any lifecycle identity and timing state private while reducing durations to named coarse buckets.
+- [x] 4.3 Preserve no-op recorder behavior when telemetry is disabled.
+- [x] 4.4 Retain the run writer’s whitelist projection without a schema version bump or steering field.
+- [x] 4.5 Add explicit allowlist, dedupe, disabled-recorder, and serialized-sentinel exclusions.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Follow the TechSpec “Monitoring and Observability” section and ADR-004’s n
 ## Tests
 
 - Unit tests:
-  - [ ] A disabled recorder invokes steering APIs without constructing, reading, or writing a sink.
-  - [ ] Each allowlisted outcome emits only the approved keys, capability class, and coarse duration bucket.
-  - [ ] Duplicate lifecycle callbacks with the same private key produce one record without exposing that key.
-  - [ ] JSON telemetry never contains prompt, recovery, request-id, ACP-id, path, raw-error, or adapter-config sentinels.
-  - [ ] A run-writer snapshot seeded with steering queue/recovery/error sentinels omits every sentinel and all steering fields.
+  - [x] A disabled recorder invokes steering APIs without constructing, reading, or writing a sink.
+  - [x] Each allowlisted outcome emits only the approved keys, capability class, and coarse duration bucket.
+  - [x] Duplicate lifecycle callbacks with the same private key produce one record without exposing that key.
+  - [x] JSON telemetry never contains prompt, recovery, request-id, ACP-id, path, raw-error, or adapter-config sentinels.
+  - [x] A run-writer snapshot seeded with steering queue/recovery/error sentinels omits every sentinel and all steering fields.
 - Integration tests:
-  - [ ] An enabled local recorder writes a content-free steering outcome record while the associated persisted run snapshot remains free of steering content.
+  - [x] An enabled local recorder writes a content-free steering outcome record while the associated persisted run snapshot remains free of steering content.
 - Test coverage target: >=80%
 - All tests must pass
 
