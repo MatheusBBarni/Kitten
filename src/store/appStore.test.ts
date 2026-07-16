@@ -41,6 +41,8 @@ import {
   selectSessionPicker,
   selectShell,
   selectSessionPromptHistory,
+  selectSessionSteeringRecovery,
+  selectSessionSteeringStatus,
   selectSessionStatus,
   selectSessionTurns,
   selectTabDialogOverlay,
@@ -49,6 +51,118 @@ import {
   selectStatuslinePreference,
   selectThemePreference,
 } from "./selectors.ts"
+
+describe("steering store integration", () => {
+  it("routes enqueue and recovery acknowledgement through the reducer", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const untouched = before.sessions.codex
+    const workspace = before.workspace
+
+    store.applyEvent("claude-code", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-active",
+      requestId: "steer-1",
+      generation: 7,
+      blocks: [{ type: "text", text: "restore exactly" }],
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 7,
+    })
+
+    const failed = store.getState()
+    expect(failed.sessions.codex).toBe(untouched)
+    expect(failed.workspace).toBe(workspace)
+    expect(selectSessionSteeringRecovery("claude-code")(failed)).toEqual({
+      requestId: "steer-1",
+      blocks: [{ type: "text", text: "restore exactly" }],
+    })
+
+    store.acknowledgeSteeringRecovery("claude-code", "stale")
+    expect(store.getState()).toBe(failed)
+
+    store.acknowledgeSteeringRecovery("claude-code", "steer-1")
+    const acknowledged = store.getState()
+    expect(acknowledged.sessions["claude-code"]?.steering).toEqual({
+      activeTurnId: null,
+      queue: [],
+      recovery: null,
+    })
+    expect(acknowledged.sessions.codex).toBe(untouched)
+    expect(acknowledged.workspace).toBe(workspace)
+  })
+
+  it("keeps selected steering subscribers silent for tokens and other sessions", () => {
+    const store = createAppStore()
+    const selector = selectSessionSteeringStatus("claude-code")
+    const selected = selector(store.getState())
+    let notifications = 0
+    store.subscribeSelector(selector, () => {
+      notifications += 1
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    store.applyEvent("codex", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-other",
+      requestId: "steer-other",
+      generation: 2,
+      blocks: [{ type: "text", text: "other session" }],
+    })
+
+    expect(selector(store.getState())).toBe(selected)
+    expect(notifications).toBe(0)
+  })
+
+  it("publishes focused recovery only for target recovery and acknowledgement", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-active",
+      requestId: "steer-1",
+      generation: 7,
+      blocks: [{ type: "text", text: "recover me" }],
+    })
+    const selector = selectSessionSteeringRecovery("claude-code")
+    const publications: unknown[] = []
+    store.subscribeSelector(selector, (recovery) => {
+      publications.push(recovery)
+    })
+
+    store.applyEvent("codex", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-other",
+      requestId: "steer-other",
+      generation: 2,
+      blocks: [{ type: "text", text: "other session" }],
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 7,
+    })
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    store.acknowledgeSteeringRecovery("claude-code", "steer-1")
+
+    expect(publications).toEqual([
+      {
+        requestId: "steer-1",
+        blocks: [{ type: "text", text: "recover me" }],
+      },
+      null,
+    ])
+  })
+})
 
 /** A default-fleet seed for `id`, optionally bound to an ACP session id. */
 const seed = (id: SessionId, acpSessionId = ""): SessionSeed => ({

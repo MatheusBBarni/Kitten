@@ -74,6 +74,11 @@ import {
   MANAGED_WORKTREE_AVAILABILITY_LABELS,
   MANAGED_WORKTREE_REASON_LABELS,
   selectManagedWorktreeReview,
+  selectSessionSteeringPhase,
+  selectSessionSteeringQueueCount,
+  selectSessionSteeringRecovery,
+  selectSessionSteeringRecoveryAvailable,
+  selectSessionSteeringStatus,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -143,6 +148,132 @@ const STATUSLINE_LAYOUT: StatuslineLayout = {
   separator: " · ",
   line: ["FOLDER", "MODEL"],
 }
+
+const enqueueSteering = (
+  store: AppStore,
+  sessionId: "claude-code" | "codex",
+  requestId: string,
+  text: string,
+): void => {
+  store.applyEvent(sessionId, {
+    kind: "steering_enqueue",
+    activeTurnId: "turn-active",
+    requestId,
+    generation: 4,
+    blocks: [{ type: "text", text }],
+  })
+}
+
+describe("steering selectors", () => {
+  it("projects compact idle, queued, sending, and failed status", () => {
+    const store = createAppStore()
+    const selectStatus = selectSessionSteeringStatus("claude-code")
+
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "idle",
+      queueCount: 0,
+      recoveryAvailable: false,
+    })
+    expect(selectSessionSteeringPhase("claude-code")(store.getState())).toBe("idle")
+    expect(selectSessionSteeringQueueCount("claude-code")(store.getState())).toBe(0)
+    expect(selectSessionSteeringRecoveryAvailable("claude-code")(store.getState())).toBe(false)
+
+    enqueueSteering(store, "claude-code", "steer-1", "change direction")
+    enqueueSteering(store, "claude-code", "steer-2", "then preserve order")
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "queued",
+      queueCount: 2,
+      recoveryAvailable: false,
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "steering_cancel",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_settle",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_send",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "sending",
+      queueCount: 2,
+      recoveryAvailable: false,
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "failed",
+      queueCount: 2,
+      recoveryAvailable: true,
+    })
+    expect(selectSessionSteeringRecoveryAvailable("claude-code")(store.getState())).toBe(true)
+  })
+
+  it("uses stable safe fallbacks for null, unknown, idle, and no-recovery sessions", () => {
+    const state = createAppStore().getState()
+    const nullStatus = selectSessionSteeringStatus(null)(state)
+
+    expect(selectSessionSteeringStatus("missing")(state)).toBe(nullStatus)
+    expect(selectSessionSteeringStatus("claude-code")(state)).toBe(nullStatus)
+    expect(selectSessionSteeringRecovery(null)(state)).toBeNull()
+    expect(selectSessionSteeringRecovery("missing")(state)).toBeNull()
+    expect(selectSessionSteeringRecovery("claude-code")(state)).toBeNull()
+  })
+
+  it("keeps generic status content-free and reserves exact blocks for focused recovery", () => {
+    const store = createAppStore()
+    enqueueSteering(store, "claude-code", "steer-secret", "exact unsent text")
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-secret",
+      generation: 4,
+    })
+
+    const status = selectSessionSteeringStatus("claude-code")(store.getState())
+    expect(Object.keys(status).sort()).toEqual(["phase", "queueCount", "recoveryAvailable"])
+    expect(JSON.stringify(status)).not.toContain("exact unsent text")
+    expect(JSON.stringify(status)).not.toContain("steer-secret")
+    expect(selectSessionSteeringRecovery("claude-code")(store.getState())).toEqual({
+      requestId: "steer-secret",
+      blocks: [{ type: "text", text: "exact unsent text" }],
+    })
+  })
+
+  it("preserves projection identities across token and other-session updates", () => {
+    const store = createAppStore()
+    enqueueSteering(store, "claude-code", "steer-1", "recover me")
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    const selectStatus = selectSessionSteeringStatus("claude-code")
+    const selectRecovery = selectSessionSteeringRecovery("claude-code")
+    const status = selectStatus(store.getState())
+    const recovery = selectRecovery(store.getState())
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    enqueueSteering(store, "codex", "steer-other", "other session")
+
+    expect(selectStatus(store.getState())).toBe(status)
+    expect(selectRecovery(store.getState())).toBe(recovery)
+  })
+})
 
 describe("focus selectors", () => {
   it("project the focused agent and per-agent focus flags", () => {

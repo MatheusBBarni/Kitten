@@ -324,6 +324,8 @@ export interface AppStore {
 
   /** Apply one already-coalesced domain event to that session's slice. */
   applyEvent(sessionId: SessionId, event: DomainSessionEvent): void
+  /** Clear one reducer-owned recovery payload after the composer has copied it. */
+  acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
@@ -549,6 +551,17 @@ class AppStoreImpl implements AppStore {
       ...this.state,
       sessions: { ...this.state.sessions, [sessionId]: next },
       workspace,
+    })
+  }
+
+  acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void {
+    const steering = this.state.sessions[sessionId]?.steering
+    const current = steering?.queue[0]
+    if (!current || steering.recovery === null) return
+    this.applyEvent(sessionId, {
+      kind: "steering_acknowledge_recovery",
+      requestId,
+      generation: current.generation,
     })
   }
 

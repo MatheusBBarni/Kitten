@@ -43,10 +43,13 @@ import type {
   DelegationState,
   PendingDiff,
   PlanEntry,
+  PromptBlock,
   ProviderKind,
   SessionId,
   SessionState,
   SessionStatus,
+  SteeringPhase,
+  SteeringState,
   ShellState,
   ThemePreference,
   Turn,
@@ -93,6 +96,11 @@ const EMPTY_PENDING_DIFFS: PendingDiff[] = []
 const EMPTY_REFERENCED_FILES = new Map<string, "read" | "edited">()
 const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
 const EMPTY_PROMPT_HISTORY: PromptHistoryState = { entries: [], cursor: null }
+const EMPTY_STEERING_STATUS: SteeringStatus = Object.freeze({
+  phase: "idle",
+  queueCount: 0,
+  recoveryAvailable: false,
+})
 const UNKNOWN_CLARIFICATION_CAPABILITY: ClarificationCapability = {
   status: "unsupported",
   reason: "unknown_recipe",
@@ -438,6 +446,80 @@ export const selectSessionStatus =
   (sessionId: SessionId | null): Selector<SessionStatus> =>
   (state) =>
     (sessionId ? state.sessions[sessionId]?.status : undefined) ?? "idle"
+
+/** Content-free composer status for one session's reducer-owned steering lifecycle. */
+export interface SteeringStatus {
+  readonly phase: SteeringPhase
+  readonly queueCount: number
+  readonly recoveryAvailable: boolean
+}
+
+/** Focused recovery data copied once by the composer before acknowledgement. */
+export interface SteeringRecovery {
+  readonly requestId: string
+  readonly blocks: readonly PromptBlock[]
+}
+
+const steeringStatusCache = new WeakMap<SteeringState, SteeringStatus>()
+const steeringRecoveryCache = new WeakMap<SteeringState, SteeringRecovery>()
+
+function steeringStatus(state: SteeringState | undefined): SteeringStatus {
+  const current = state?.queue[0]
+  if (!state || (!current && state.recovery === null)) return EMPTY_STEERING_STATUS
+  const cached = steeringStatusCache.get(state)
+  if (cached) return cached
+  const status: SteeringStatus = Object.freeze({
+    phase: current?.phase ?? "idle",
+    queueCount: state.queue.length,
+    recoveryAvailable: state.recovery !== null,
+  })
+  steeringStatusCache.set(state, status)
+  return status
+}
+
+function steeringRecovery(state: SteeringState | undefined): SteeringRecovery | null {
+  const current = state?.queue[0]
+  if (!state || !current || state.recovery === null) return null
+  const cached = steeringRecoveryCache.get(state)
+  if (cached) return cached
+  const recovery: SteeringRecovery = Object.freeze({
+    requestId: current.id,
+    blocks: state.recovery,
+  })
+  steeringRecoveryCache.set(state, recovery)
+  return recovery
+}
+
+/** Stable compact steering projection; null and unknown sessions share the idle fallback. */
+export const selectSessionSteeringStatus =
+  (sessionId: SessionId | null): Selector<SteeringStatus> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined)
+
+/** One session's current steering phase, safely idle when it is absent. */
+export const selectSessionSteeringPhase =
+  (sessionId: SessionId | null): Selector<SteeringPhase> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined).phase
+
+/** Number of accepted steering requests still owned by one session's reducer state. */
+export const selectSessionSteeringQueueCount =
+  (sessionId: SessionId | null): Selector<number> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined).queueCount
+
+/** Whether the focused recovery path has one reducer-owned payload available to copy. */
+export const selectSessionSteeringRecoveryAvailable =
+  (sessionId: SessionId | null): Selector<boolean> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined)
+      .recoveryAvailable
+
+/** Exact one-time recovery data for the focused composer; generic status stays content-free. */
+export const selectSessionSteeringRecovery =
+  (sessionId: SessionId | null): Selector<SteeringRecovery | null> =>
+  (state) =>
+    steeringRecovery(sessionId ? state.sessions[sessionId]?.steering : undefined)
 
 /** One session's rounded remaining-context percentage, or `null` when unknown. */
 export const selectSessionHeadroom =
