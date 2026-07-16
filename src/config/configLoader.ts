@@ -39,12 +39,17 @@ import type {
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import { NATIVE_STEERING_ADAPTER_IMPLEMENTATIONS } from "../agent/nativeSteering.ts"
 import {
   normalizeStatuslineLayout,
   type StatuslineItem,
   type StatuslinePreference,
 } from "../core/statusline.ts"
 import { classifyClarificationCapability } from "./clarificationCapability.ts"
+import {
+  CERTIFIED_NATIVE_STEERING_RECIPES,
+  classifySteeringCapability,
+} from "./steeringCapability.ts"
 
 /**
  * The pinned ACP adapter packages the default config launches through `npx`.
@@ -470,6 +475,11 @@ export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAg
   return {
     ...resolved,
     clarificationCapability: classifyClarificationCapability(resolved),
+    steeringCapability: classifySteeringCapability(
+      resolved,
+      CERTIFIED_NATIVE_STEERING_RECIPES,
+      NATIVE_STEERING_ADAPTER_IMPLEMENTATIONS,
+    ),
     runtimeProfile: resolveProviderRuntimeProfile(resolved),
   }
 }

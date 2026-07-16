@@ -79,6 +79,7 @@ describe("defaults", () => {
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
     expect(findAgentConfig(config, "codex")).toEqual({
@@ -88,6 +89,7 @@ describe("defaults", () => {
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
     expect(findAgentConfig(config, "cursor")).toEqual({
@@ -97,6 +99,7 @@ describe("defaults", () => {
       args: ["acp"],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
   })
@@ -398,6 +401,9 @@ describe("user overrides", () => {
     expect(findAgentConfig(command, "codex")?.clarificationCapability.status).toBe("unsupported")
     expect(findAgentConfig(args, "codex")?.clarificationCapability.status).toBe("unsupported")
     expect(findAgentConfig(env, "codex")?.clarificationCapability.status).toBe("unsupported")
+    expect(findAgentConfig(command, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
+    expect(findAgentConfig(args, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
+    expect(findAgentConfig(env, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {

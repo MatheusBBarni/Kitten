@@ -88,6 +88,14 @@ export class UnsupportedHarnessProfileError extends Error {
   }
 }
 
+/** A fixed adapter-boundary rejection for attempted concurrent prompt entry. */
+export class ConcurrentPromptError extends Error {
+  constructor() {
+    super("An agent prompt is already in flight")
+    this.name = "ConcurrentPromptError"
+  }
+}
+
 /** Why a prompt turn stopped, normalized from the ACP stop reason. */
 export type PromptStopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled"
 
@@ -574,7 +582,7 @@ class AgentConnectionImpl implements AgentConnection {
 
   /** Start tracking a prompt before dispatching it, so synchronous ACP updates are observed. */
   private beginPrompt(sessionId: string): InFlightPrompt {
-    this.completePrompt(this.inFlightPrompt)
+    if (this.inFlightPrompt !== null) throw new ConcurrentPromptError()
     let resolveRecovery: (result: PromptResult) => void = () => {}
     const recovery = new Promise<PromptResult>((resolve) => {
       resolveRecovery = resolve

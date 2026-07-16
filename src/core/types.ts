@@ -805,6 +805,20 @@ export type ClarificationCapability =
       reason: "unknown_recipe" | "recipe_overridden" | "unverified_recipe"
     }
 
+/**
+ * Whether a fully resolved provider recipe may use an adapter-certified native
+ * steering path. The vocabulary is deliberately protocol-free and fail-closed;
+ * provider extension details remain inside `src/agent/`.
+ */
+export type SteeringCapability =
+  | { readonly status: "unavailable" }
+  | {
+      readonly status: "native"
+      readonly adapterId: string
+      readonly adapterPackage: string
+      readonly adapterVersion: string
+    }
+
 /** A protocol-free stdio MCP server declaration shared by every agent session. */
 export interface McpServerConfig {
   name: string
@@ -841,6 +855,7 @@ export type ProviderRuntimeProfile =
 /** A provider config after all runtime-only capability classification. */
 export interface ResolvedAgentConfig extends AgentConfig {
   clarificationCapability: ClarificationCapability
+  steeringCapability: SteeringCapability
   runtimeProfile: ProviderRuntimeProfile
 }
 
