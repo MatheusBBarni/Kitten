@@ -242,6 +242,9 @@ describe("ConversationView turns", () => {
       controller.store.setTranscriptDetached("claude-code", true)
       controller.store.captureTranscriptScrollTop("claude-code", 0)
     })
+    await actAsync(async () => {
+      await sleep(0)
+    })
     const markerFrame = await setup.waitForFrame((frame) => frame.includes("earlier turns hidden"))
     expect(markerFrame).toContain("WINDOWED_TRANSCRIPT_TURN_32")
 
