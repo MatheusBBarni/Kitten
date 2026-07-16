@@ -16,6 +16,7 @@ type Job = {
   needs?: string | string[]
   outputs?: Record<string, string>
   permissions?: Record<string, string>
+  env?: Record<string, string>
   strategy?: { matrix?: { include?: Array<Record<string, string>> } }
   steps?: Step[]
 }
@@ -135,8 +136,9 @@ describe("consolidated release workflow", () => {
     expect(source).not.toContain("${TAG_NAME#v}")
   })
 
-  it("uses job-scoped OIDC on a supported Node and npm toolchain without a registry secret", () => {
+  it("uses the scoped npm publish token while retaining OIDC provenance on a supported toolchain", () => {
     expect(publish.permissions).toEqual({ contents: "read", "id-token": "write" })
+    expect(publish.env).toEqual({ NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" })
 
     const setupNode = publish.steps?.find((step) => step.uses === "actions/setup-node@v4")
     expect(setupNode?.with).toMatchObject({
@@ -148,7 +150,7 @@ describe("consolidated release workflow", () => {
     expect(commands).toContain("npm install --global npm@11.5.1")
     expect(commands).toContain('gh api "repos/$GITHUB_REPOSITORY" --jq .visibility')
     expect(commands).toContain("npm provenance requires a public source repository")
-    expect(source).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN|secrets\./)
+    expect(source).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}")
   })
 
   it("smokes the published version and provenance on every platform without Bun", () => {
@@ -209,10 +211,10 @@ describe("consolidated release workflow", () => {
     expect(versionStep?.run).toContain('tag_version="${TAG_NAME#kitten-v}"')
   })
 
-  it("keeps ordinary pushes release-only and references no elevated or npm token", () => {
+  it("keeps ordinary pushes release-only and limits publish credentials to the npm token", () => {
     expect(Object.keys(workflow.jobs)).toEqual(["release_please", "build", "attach", "publish", "smoke"])
     expect(workflow.permissions).toEqual({ contents: "write", issues: "write", "pull-requests": "write" })
-    expect(source).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN|\bPAT\b|APP_TOKEN/i)
-    expect(source).not.toContain("secrets.")
+    expect(source).toContain("secrets.NPM_TOKEN")
+    expect(source).not.toMatch(/\bPAT\b|APP_TOKEN/i)
   })
 })

@@ -196,6 +196,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # Existing Kitten platform packages are published with the repository's
+    # granular npm token. Keep OIDC enabled so npm also records provenance.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
