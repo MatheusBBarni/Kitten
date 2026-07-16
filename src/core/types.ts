@@ -577,6 +577,64 @@ export interface ToolCallTurn {
 /** An ordered transcript entry: a message from either party or a tool call. */
 export type Turn = UserTurn | AgentTurn | ToolCallTurn
 
+/** One provider-neutral prompt fragment. V1 steering carries plain text only. */
+export interface PromptBlock {
+  readonly type: "text"
+  readonly text: string
+}
+
+/** Closed lifecycle vocabulary for one accepted steering request. */
+export type SteeringPhase =
+  | "idle"
+  | "queued"
+  | "waiting"
+  | "cancelling"
+  | "settling"
+  | "sending"
+  | "failed"
+
+/** One generation-fenced direction accepted during an active turn. */
+export interface SteeringRequest {
+  readonly id: string
+  readonly generation: number
+  readonly blocks: readonly PromptBlock[]
+  readonly phase: SteeringPhase
+}
+
+/** Live-only steering truth. Raw blocks are cleared only by delivery or acknowledgement. */
+export interface SteeringState {
+  readonly activeTurnId: string | null
+  readonly queue: readonly SteeringRequest[]
+  readonly recovery: readonly PromptBlock[] | null
+}
+
+/** Pure steering lifecycle events emitted by later controller work. */
+export type SteeringEvent =
+  | {
+      readonly kind: "steering_enqueue"
+      readonly activeTurnId: string
+      readonly requestId: string
+      readonly generation: number
+      readonly blocks: readonly PromptBlock[]
+    }
+  | {
+      readonly kind:
+        | "steering_wait"
+        | "steering_cancel"
+        | "steering_settle"
+        | "steering_send"
+        | "steering_recover"
+        | "steering_acknowledge_recovery"
+      readonly requestId: string
+      readonly generation: number
+    }
+  | {
+      readonly kind: "steering_deliver"
+      readonly requestId: string
+      readonly generation: number
+      readonly messageId: string
+    }
+
 /**
  * An edit diff that has been proposed but not yet applied/approved.
  * Derived from `edit`-kind tool calls that carry a diff and are not yet complete.
@@ -653,6 +711,8 @@ export interface SessionState {
   commands: AvailableCommand[]
   /** Current-run composer submissions and recall position, private to this session. */
   promptHistory: PromptHistoryState
+  /** Reducer-owned, live-only mid-turn steering lifecycle. */
+  steering: SteeringState
 }
 
 /** One semantically bounded shell command and its captured raw output. */
@@ -704,6 +764,7 @@ export type DomainSessionEvent =
   | { kind: "default_apply_result"; result: DefaultApplyResult }
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
   | PromptHistoryEvent
+  | SteeringEvent
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic
