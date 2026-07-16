@@ -6,7 +6,16 @@ import type {
   PermissionOutcome,
   PermissionRequest,
 } from "../src/agent/agentConnection.ts"
+import { createAgentConnection } from "../src/agent/agentConnection.ts"
+import { createInMemoryTransportPair } from "../src/agent/transport.ts"
 import { createSessionController } from "../src/app/controller.ts"
+import type {
+  AgentRunControl,
+  KittenMcpBridge,
+  KittenMcpBridgeOptions,
+} from "../src/app/kittenMcpBridge.ts"
+import type { ManagedWorktreeProvisioner } from "../src/app/managedWorktree.ts"
+import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../src/config/harnessCapability.ts"
 
 import {
   countOccupiedDelegatedChildren,
@@ -26,10 +35,15 @@ import type {
   ConfigOption,
   DelegationEvent,
   DomainSessionEvent,
+  ManagedWorktreeBinding,
   ProviderKind,
+  ResolvedAgentConfig,
+  SessionId,
   SessionSeed,
 } from "../src/core/types.ts"
+import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { createAppStore, type AppState } from "../src/store/appStore.ts"
+import { startMockAgent } from "./mockAgent.ts"
 
 interface InjectedConnection extends AgentConnection {
   readonly prompts: Array<{ sessionId: string; input: AgentPromptInput }>
@@ -82,6 +96,111 @@ function injectedConnection(id: ProviderKind, ordinal: number): InjectedConnecti
       return permission(request)
     },
   }
+}
+
+function captureAgentRunControl(): {
+  readonly factory: (options: KittenMcpBridgeOptions) => KittenMcpBridge
+  control(): AgentRunControl
+} {
+  let control: AgentRunControl | null = null
+  return {
+    factory(options) {
+      if (!options.agentRunControl) throw new Error("agent-run control missing")
+      control = options.agentRunControl
+      return {
+        register(input) {
+          return {
+            name: "kitten-ask-user",
+            command: "kitten-test-mcp",
+            args: [],
+            env: { KITTEN_TEST_ROUTE: `${input.sessionId}:${input.generation}` },
+          }
+        },
+        async ask() {
+          return { kind: "cancelled" }
+        },
+        cancelSession() {},
+        async dispose() {},
+      }
+    },
+    control() {
+      if (!control) throw new Error("agent-run control unavailable")
+      return control
+    },
+  }
+}
+
+function managedBinding(ownerSessionId: SessionId): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `kw-${ownerSessionId}`,
+    repoRoot: process.cwd(),
+    worktreePath: `${process.cwd()}/.kitten-test/${ownerSessionId}`,
+    branch: `kitten/${ownerSessionId}`,
+    baseBranch: "main",
+    baseSha: "a".repeat(40),
+    ownerSessionId,
+    availability: "available",
+  }
+}
+
+function inMemoryManagedWorktrees(): ManagedWorktreeProvisioner {
+  return {
+    async provision({ ownerSessionId }) {
+      return { kind: "provisioned", binding: managedBinding(ownerSessionId) }
+    },
+    async reconcile(binding) {
+      return { kind: "available", binding }
+    },
+    async cleanup() {
+      return { kind: "removed" }
+    },
+  }
+}
+
+function exploreCapability(config: ResolvedAgentConfig) {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: EXPLORE_RESTRICTIONS,
+    limits: { perParent: 4, global: 4 },
+    attestationVersion: "integration-agent-run-v1",
+    confirmed: { provider: config.id, model: "test-model", effort: "low" },
+  })
+  if (decision.kind !== "eligible") return { status: "unsupported" as const, reason: decision.reason }
+  return {
+    status: "supported" as const,
+    policy: decision.policy,
+    recipe: { ...config, args: [...config.args], env: { ...config.env } },
+  }
+}
+
+function certifiedHarnessProfile(config: ResolvedAgentConfig): CertifiedHarnessProfile {
+  return {
+    profileId: "orchestration-integration",
+    encoder: "codex-prompt-meta-v1",
+    sdkVersion: HARNESS_CONTRACT_SDK_VERSION,
+    recipe: {
+      providerKind: config.id,
+      command: config.command,
+      args: [...config.args],
+      env: { ...config.env },
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "0.13.0",
+    },
+  }
+}
+
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void
+  return { promise: new Promise<void>((done) => { resolve = done }), resolve: () => resolve() }
+}
+
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (predicate()) return
+    await Bun.sleep(10)
+  }
+  throw new Error(`timed out waiting for ${label}`)
 }
 
 describe("delegation pure consumer integration", () => {
@@ -294,4 +413,124 @@ describe("delegation pure consumer integration", () => {
 
     await controller.dispose()
   })
+
+  it("drives four fake-ACP children through visible mixed lifecycle polling and rejects a replaced route", async () => {
+    const config: AppConfig = {
+      providers: {
+        codex: { displayName: "Codex", command: "unused", args: [], env: {} },
+      } as unknown as AppConfig["providers"],
+      providerDefaults: {},
+      sessions: [],
+      mcpServers: [],
+      shell: { enabled: false, command: "/bin/sh", scrollback: 100 },
+      clarificationTimeoutSeconds: 300,
+      persistenceEnabled: false,
+      telemetryEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    }
+    const runningGate = deferred()
+    const pairs = Array.from({ length: 6 }, () => createInMemoryTransportPair())
+    const agents = [
+      startMockAgent(pairs[0]!.agent, { sessionId: "parent-acp" }),
+      startMockAgent(pairs[1]!.agent, {
+        sessionId: "running-acp",
+        onPrompt: async () => { await runningGate.promise },
+      }),
+      startMockAgent(pairs[2]!.agent, {
+        sessionId: "attention-acp",
+        onPrompt: async (_prompt, context) => {
+          await context.requestPermission(
+            { toolCallId: "attention-call", kind: "edit", title: "Review child change" },
+            [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          )
+        },
+      }),
+      startMockAgent(pairs[3]!.agent, { sessionId: "finished-acp" }),
+      startMockAgent(pairs[4]!.agent, {
+        sessionId: "failed-acp",
+        onPrompt: () => { throw new Error("scripted child failure") },
+      }),
+      startMockAgent(pairs[5]!.agent, { sessionId: "replacement-parent-acp" }),
+    ]
+    const bridge = captureAgentRunControl()
+    const childIds = ["running-child", "attention-child", "finished-child", "failed-child"]
+    let childIndex = 0
+    let connectionIndex = 0
+    const controller = await createSessionController({
+      config,
+      cwd: process.cwd(),
+      createConnection(resolved) {
+        const index = connectionIndex++
+        return createAgentConnection({
+          config: resolved,
+          transport: () => ({
+            stream: pairs[index]!.client,
+            onClose: () => {},
+            dispose: async () => {},
+          }),
+          scheduler: { schedule: (flush) => flush(), dispose: () => {} },
+          harnessProfiles: [certifiedHarnessProfile(resolved)],
+        })
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createInMemoryShellRuntimeFactory().factory,
+      managedWorktreeProvisioner: inMemoryManagedWorktrees(),
+      newSessionId: () => childIds[childIndex++]!,
+      now: () => 4242,
+      readBranch: async () => null,
+      resolveExploreCapability: exploreCapability,
+      resolveHarnessCapability: () => ({
+        status: "supported",
+        profileId: "orchestration-integration",
+        encoder: "codex-prompt-meta-v1",
+      }),
+      sendInitialTasks: false,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const route = { parentId, parentGeneration: 1 }
+    const control = bridge.control()
+    const launch = control.start(route, childIds.map((childId) => ({
+      task: `Run ${childId}`,
+      desiredOutcome: `Report ${childId}`,
+    })))
+
+    await waitUntil(() => {
+      const children = controller.store.getState().delegation.children
+      return children["running-child"]?.status === "running" &&
+        children["attention-child"]?.status === "needs_input" &&
+        children["finished-child"]?.status === "finished" &&
+        children["failed-child"]?.status === "failed"
+    }, "four mixed child lifecycle states")
+
+    expect(control.poll(route, childIds)).toEqual([
+      { childId: "running-child", status: "running" },
+      { childId: "attention-child", status: "needs_input" },
+      { childId: "finished-child", status: "finished", terminalAt: 4242 },
+      { childId: "failed-child", status: "failed", terminalAt: 4242 },
+    ])
+    expect(() => control.poll(route, ["not-owned"])).toThrow("unavailable")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
+    for (const childId of childIds) {
+      expect(controller.store.getState().workspace.conversations[childId]).toBeDefined()
+      expect(controller.store.getState().sessions[childId]).toBeDefined()
+    }
+
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    runningGate.resolve()
+    expect(await launch).toEqual([
+      { childId: "running-child", status: "finished", terminalAt: 4242 },
+      { childId: "attention-child", status: "finished", terminalAt: 4242 },
+      { childId: "finished-child", status: "finished", terminalAt: 4242 },
+      { childId: "failed-child", status: "failed", terminalAt: 4242 },
+    ])
+    expect(agents.slice(1, 5).every((agent) => agent.prompts.length === 1)).toBe(true)
+
+    await controller.actions.startFreshFromContext("replace the parent generation", parentId)
+    await expect(control.start(route, [{ task: "stale", desiredOutcome: "rejected" }])).rejects.toThrow()
+    expect(() => control.poll(route, ["finished-child"])).toThrow("unavailable")
+
+    await controller.dispose()
+  }, 15_000)
 })
