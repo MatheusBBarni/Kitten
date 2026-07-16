@@ -233,8 +233,17 @@ describe("ConversationView turns", () => {
     expect(marker!.focusable).toBe(true)
     const scrollbox = setup.renderer.root.findDescendantById(CONVERSATION_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
     expect(scrollbox).toBeDefined()
-    await actAsync(() => scrollbox!.scrollTo(0))
-    await setup.waitForFrame((frame) => frame.includes("earlier turns hidden"))
+
+    // `scrollTo` alone is a renderer operation, whereas the production wheel
+    // handler also persists the detached anchor before React's tail-follow timer
+    // runs. Mirror that user-visible state transition so this test cannot race a
+    // previously queued tail-follow effect on a busy CI runner.
+    await actAsync(() => {
+      controller.store.setTranscriptDetached("claude-code", true)
+      controller.store.captureTranscriptScrollTop("claude-code", 0)
+    })
+    const markerFrame = await setup.waitForFrame((frame) => frame.includes("earlier turns hidden"))
+    expect(markerFrame).toContain("WINDOWED_TRANSCRIPT_TURN_32")
 
     await actAsync(() => marker!.onKeyDown?.({
       name: "return",
