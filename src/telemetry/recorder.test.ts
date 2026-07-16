@@ -26,6 +26,7 @@ import {
   TELEMETRY_PATH_ENV_VAR,
   type TelemetryRecord,
   type TelemetrySink,
+  type ProviderReadinessOutcome,
 } from "./recorder.ts"
 
 /** A sink that keeps every record in memory so a test can read them back. */
@@ -1510,6 +1511,45 @@ describe("readiness events", () => {
         "type",
       ])
     }
+  })
+
+  it("discards casted raw provider and outcome sentinels at the recorder boundary", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    const sentinels = [
+      "agent acp --profile private-profile",
+      "/private/repository/path",
+      "raw provider error with credential",
+      "private prompt and code",
+      "model-option-id=secret-option-value",
+      "first-task-completed=1",
+    ]
+
+    for (const sentinel of sentinels) {
+      recorder.providerReadiness("cursor", sentinel as ProviderReadinessOutcome)
+      recorder.providerReadiness(sentinel as "cursor", "ready")
+    }
+
+    expect(sink.records).toHaveLength(0)
+    for (const sentinel of sentinels) {
+      expect(JSON.stringify(sink.records)).not.toContain(sentinel)
+    }
+  })
+
+  it("does not access the sink when disabled readiness is reported", () => {
+    let sinkAccesses = 0
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink() {
+        sinkAccesses += 1
+        return { write: () => { sinkAccesses += 1 } }
+      },
+    })
+
+    recorder.providerReadiness("cursor", "authentication_required")
+
+    expect(recorder.enabled).toBe(false)
+    expect(sinkAccesses).toBe(0)
   })
 
   it("records agent_ready and agent_unready from a runtimes snapshot", () => {

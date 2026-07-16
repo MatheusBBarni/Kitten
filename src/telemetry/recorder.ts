@@ -937,6 +937,7 @@ class ActiveRecorder implements TelemetryRecorder {
   }
 
   providerReadiness(provider: ProviderKind, readinessOutcome: ProviderReadinessOutcome): void {
+    if (!isProviderKind(provider) || !isProviderReadinessOutcome(readinessOutcome)) return
     this.record({ type: "provider_readiness", provider, readinessOutcome })
   }
 
@@ -1434,6 +1435,15 @@ function hasExactKeys(value: unknown, expected: readonly string[]): value is Rec
 
 function isProviderKind(value: unknown): value is ProviderKind {
   return value === "claude-code" || value === "codex" || value === "cursor"
+}
+
+function isProviderReadinessOutcome(value: unknown): value is ProviderReadinessOutcome {
+  return value === "ready" ||
+    value === "binary_missing" ||
+    value === "version_mismatch" ||
+    value === "uncertified_recipe" ||
+    value === "authentication_required" ||
+    value === "handshake_failed"
 }
 
 function isExploreStartupFailureCategory(value: unknown): value is ExploreStartupFailureCategory {
