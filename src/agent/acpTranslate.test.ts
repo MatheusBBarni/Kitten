@@ -392,7 +392,8 @@ describe("translateSessionUpdate: messages", () => {
 })
 
 describe("translateSessionUpdate: tool calls", () => {
-  it("maps a tool_call preserving kind, title, status and locations (as paths)", () => {
+  it("maps a tool_call preserving kind, title, status, locations, and a value-free input shape", () => {
+    const sensitiveInput = "sk-proj-this-must-not-reach-the-transcript-state"
     const update: SessionUpdate = {
       sessionUpdate: "tool_call",
       toolCallId: "t1",
@@ -400,14 +401,28 @@ describe("translateSessionUpdate: tool calls", () => {
       kind: "read",
       status: "pending",
       locations: [{ path: "/repo/a.ts", line: 3 }, { path: "/repo/b.ts" }],
+      rawInput: { libraryName: "Context7", query: sensitiveInput, "not a safe field name": "also hidden" },
     }
-    expect(asToolCall(translateSessionUpdate(update)).call).toEqual({
+    const call = asToolCall(translateSessionUpdate(update)).call
+
+    expect(call).toEqual({
       toolCallId: "t1",
       kind: "read",
       title: "Read config",
       status: "pending",
       locations: ["/repo/a.ts", "/repo/b.ts"],
+      inputSummary: "{ libraryName, query, field }",
     })
+    expect(JSON.stringify(call)).not.toContain(sensitiveInput)
+  })
+
+  it("bounds an input shape and preserves only its top-level field names", () => {
+    const call = translateToolCall({
+      toolCallId: "t1",
+      rawInput: { alpha: "one", beta: "two", gamma: "three", delta: "four", epsilon: "five" },
+    })
+
+    expect(call.inputSummary).toBe("{ alpha, beta, gamma, delta, … }")
   })
 
   it("maps a tool_call_update, extracting diff content as a unified diff", () => {

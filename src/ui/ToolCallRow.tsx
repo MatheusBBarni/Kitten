@@ -90,6 +90,9 @@ export const MCP_TOOL_LABEL = "MCP"
 /** Separates every server and function segment in a compact MCP tool-call header. */
 export const MCP_TOOL_PATH_SEPARATOR = " -> "
 
+/** Separates a tool label from its bounded, value-free input shape. */
+export const TOOL_CALL_INPUT_SEPARATOR = " -> "
+
 /**
  * Turns ACP's technical MCP tool title into a compact, scan-friendly label.
  *
@@ -145,7 +148,7 @@ export interface ToolCallRowProps {
 /** A tool call: its one-line header, plus the detail it left behind. */
 export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCallRowProps): ReactNode {
   const palette = usePalette()
-  const { kind, title, status, locations, diff } = record
+  const { kind, title, status, locations, inputSummary, diff } = record
   const genericWait = kind === "other" && title.trim().toLocaleLowerCase() === GENERIC_WAIT_TITLE
   const mcpToolTitle = formatMcpToolCallTitle(title)
 
@@ -163,6 +166,7 @@ export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCa
             <span fg={palette.muted}>{")"}</span>
           </>
         )}
+        {inputSummary === undefined ? null : <span fg={palette.muted}>{`${TOOL_CALL_INPUT_SEPARATOR}${inputSummary}`}</span>}
         <span fg={palette.muted}>{` · ${TOOL_STATUS_LABELS[status]}`}</span>
       </text>
 

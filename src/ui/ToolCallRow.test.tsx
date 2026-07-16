@@ -67,14 +67,18 @@ describe("ToolCallRow activity labels", () => {
     const controller = createFakeController()
     const setup = await testRender(
       <CockpitProvider controller={controller}>
-        <ToolCallRow record={toolRecord({ kind: "execute", title: "mcp.codex_apps.github.create_issue" })} />
+        <ToolCallRow record={toolRecord({
+          kind: "execute",
+          title: "mcp.codex_apps.github.create_issue",
+          inputSummary: "{ repository_full_name, title }",
+        })} />
       </CockpitProvider>,
-      { width: 64, height: 8 },
+      { width: 100, height: 8 },
     )
 
-    const frame = await setup.waitForFrame((candidate) => candidate.includes("MCP(codex_apps -> github -> create_issue)"))
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("MCP(codex_apps -> github -> create_issue) -> { repository_full_name, title }"))
 
-    expect(frame).toContain("MCP(codex_apps -> github -> create_issue) · running")
+    expect(frame).toContain("MCP(codex_apps -> github -> create_issue) -> { repository_full_name, title } · running")
     expect(frame).not.toContain("Run(mcp.codex_apps.github.create_issue)")
     await destroyMounted(setup.renderer)
   })

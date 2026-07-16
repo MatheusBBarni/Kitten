@@ -14,6 +14,18 @@ _Avoid_: Kitten Orchestrator, desktop mode
 The planned Kitten product for governing unattended coding-agent tasks from discovery through isolated execution, verification, and review.
 _Avoid_: Task Orchestrator, sibling repository
 
+**Grok Build**:
+xAI's terminal coding agent and CLI, which can run interactive, headless, or ACP sessions.
+_Avoid_: Grok API, generic xAI model
+
+**Grok Build ACP Profile**:
+The exact Grok Build npx package release and credential-free launch recipe that an operator explicitly configures and Kitten verifies before opening an ACP session through Kitten's approval flow.
+_Avoid_: Generic Grok adapter, unverified Grok configuration
+
+**Uncertified Grok Build Session**:
+A Grok Build ACP session launched from a user-modified recipe that may use only generic ACP behavior and has no provider-specific capability claim.
+_Avoid_: Certified profile, full Grok Build parity
+
 **Task Orchestrator**:
 The predecessor product whose capabilities are migrated into Kitten Orchestrator before the predecessor is retired.
 _Avoid_: Permanent companion app, long-lived fork
@@ -43,7 +55,7 @@ The selected runtime path for a Run Attempt: a certified direct ACP profile or t
 _Avoid_: Task source, model, provider-specific SDK
 
 **Direct ACP Route**:
-An Execution Route in which Kitten Orchestrator directly hosts a certified Claude, Codex, or Cursor ACP session.
+An Execution Route in which Kitten Orchestrator directly hosts a certified Claude, Codex, Cursor, or opt-in Grok Build ACP session.
 _Avoid_: Claude Agent SDK, generic ACP compatibility
 
 **Compozy Route**:
@@ -292,7 +304,11 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - Review feedback creates a new Run Attempt in the same Orchestrated Work without replacing prior attempts
 - Every Run Attempt starts a fresh ACP session and receives one exact **Run Context** before agent execution begins
 - Every Run Attempt selects exactly one **Execution Route**
-- A **Direct ACP Route** selects exactly one certified Claude, Codex, or Cursor profile
+- A **Direct ACP Route** selects exactly one certified Claude, Codex, Cursor, or opt-in Grok Build profile
+- A **Grok Build ACP Profile** begins with baseline ACP behavior; advanced capabilities remain unavailable until separately certified
+- An **Uncertified Grok Build Session** may run generic ACP behavior but never receives profile-specific certification
+- A **Grok Build ACP Profile** never carries credentials or changes Grok Build's provider-owned data policy
+- An unavailable Grok Build authentication prerequisite produces fixed remediation rather than persisted credentials or raw diagnostics
 - A **Compozy Route** remains subject to the same worktree, budget, permission, verification, and review policy as a Direct ACP Route
 - A **Cross-App Handoff** starts a new recipient session and never transfers or shares ownership of the source session
 - No live agent session is concurrently owned by Kitten Cockpit and Kitten Orchestrator
@@ -412,6 +428,7 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - "run" was used for both the task's end-to-end review lineage and one agent execution — resolved: **Orchestrated Work** is the lineage and **Run Attempt** is one execution.
 - "reuse the engine" was also ambiguous about discarding the predecessor UI and persistence — resolved: the existing desktop product is the parity baseline, then shared Kitten capabilities replace its internals incrementally.
 - "engine" was used for both a provider transport and the Compozy workflow — resolved: **Execution Route** distinguishes direct ACP profiles from the higher-level **Compozy Route**.
+- "grok" could mean the executable or the provider — resolved: **Grok Build** uses the `grok-build` provider identity, while `grok` names only the external CLI.
 - "shared session" was ambiguous between portable context and shared runtime ownership — resolved: applications exchange an explicitly reviewed **Cross-App Handoff**, and the recipient creates a new owned session.
 - "shared core" was ambiguous about a shared database — resolved: the applications share the **Agent Profile Registry** and code contracts, while all product data remains app-owned.
 - "orchestration" did not imply first-release parallelism — resolved: V1 preserves one globally active Orchestrated Work and defers autonomous child delegation.

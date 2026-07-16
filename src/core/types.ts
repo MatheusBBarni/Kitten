@@ -436,6 +436,8 @@ export interface ToolCallRecord {
   title: string
   status: ToolCallStatus
   locations: string[]
+  /** Bounded, value-free description of ACP tool-call input retained for the transcript. */
+  inputSummary?: string
   diff?: ToolCallDiff
 }
 
@@ -445,9 +447,10 @@ export interface ToolCallRecord {
  * Both ACP `tool_call` and `tool_call_update` notifications translate to a single
  * domain `tool_call` event carrying this partial: `toolCallId` is always present,
  * every other field is optional. Omitting a field preserves the prior value on
- * upsert; setting `diff` to `null` clears the stored diff. This partial shape is
- * what makes the "omitted fields preserved, explicit nulls clear" merge semantics
- * expressible (a fully-populated {@link ToolCallRecord} cannot express omission).
+ * upsert; setting `diff` to `null` clears the stored diff. `inputSummary` contains
+ * only an adapter-derived, value-free input shape. This partial shape is what makes
+ * the "omitted fields preserved, explicit nulls clear" merge semantics expressible
+ * (a fully-populated {@link ToolCallRecord} cannot express omission).
  */
 export interface ToolCallUpdate {
   toolCallId: string
@@ -455,6 +458,7 @@ export interface ToolCallUpdate {
   title?: string
   status?: ToolCallStatus
   locations?: string[]
+  inputSummary?: string
   diff?: ToolCallDiff | null
 }
 

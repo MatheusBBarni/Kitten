@@ -321,9 +321,38 @@ export function translateToolCall(tc: ToolCall | AcpToolCallUpdate): ToolCallUpd
   if (tc.title != null) call.title = tc.title
   if (tc.status != null) call.status = tc.status
   if (tc.locations != null) call.locations = tc.locations.map((l) => l.path)
+  if (tc.rawInput !== undefined) call.inputSummary = summarizeToolCallInput(tc.rawInput)
   const diff = translateDiff(tc.content)
   if (diff !== undefined) call.diff = diff
   return call
+}
+
+/** The longest input shape the transcript will show before collapsing the remaining fields. */
+const TOOL_CALL_INPUT_FIELD_LIMIT = 4
+
+/** Parameter identifiers that are safe to show without retaining caller-provided values. */
+const SAFE_TOOL_CALL_INPUT_FIELD = /^[A-Za-z][A-Za-z0-9_]{0,31}$/
+
+/**
+ * Produce a compact, value-free description of ACP's opaque `rawInput`.
+ *
+ * ACP gives clients the full raw value, but retaining it in the transcript could
+ * expose prompts, paths, or credentials. Keep only a bounded top-level object
+ * shape so the UI can explain an MCP invocation without moving raw ACP data past
+ * this adapter boundary.
+ */
+function summarizeToolCallInput(rawInput: unknown): string {
+  if (Array.isArray(rawInput)) return `[${rawInput.length} item${rawInput.length === 1 ? "" : "s"}]`
+  if (!isRecord(rawInput)) return `<${rawInput === null ? "null" : typeof rawInput}>`
+
+  const fields = Object.keys(rawInput)
+  if (fields.length === 0) return "{}"
+
+  const visible = fields.slice(0, TOOL_CALL_INPUT_FIELD_LIMIT).map((field) =>
+    SAFE_TOOL_CALL_INPUT_FIELD.test(field) ? field : "field",
+  )
+  if (fields.length > TOOL_CALL_INPUT_FIELD_LIMIT) visible.push("…")
+  return `{ ${visible.join(", ")} }`
 }
 
 /** Map an ACP `ToolKind` onto the narrower domain {@link ToolCallKind}. */

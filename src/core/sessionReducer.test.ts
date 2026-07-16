@@ -390,6 +390,25 @@ describe("tool_call upsert semantics", () => {
     ])
     expect(toolTurns(state)[0]!.record.status).toBe("failed")
   })
+
+  it("preserves a prior input summary when a later update omits it", () => {
+    const state = fold([
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "t1",
+          title: "MCP search",
+          inputSummary: "{ libraryName, query }",
+        },
+      },
+      { kind: "tool_call", call: { toolCallId: "t1", status: "completed" } },
+    ])
+
+    expect(toolTurns(state)[0]!.record).toMatchObject({
+      status: "completed",
+      inputSummary: "{ libraryName, query }",
+    })
+  })
 })
 
 describe("referencedFiles derivation", () => {

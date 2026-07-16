@@ -245,6 +245,7 @@ function mergeToolCall(existing: ToolCallRecord | undefined, update: ToolCallUpd
     title: update.title ?? base.title,
     status: update.status ?? base.status,
     locations: update.locations ?? base.locations,
+    inputSummary: update.inputSummary ?? base.inputSummary,
     diff: base.diff,
   }
 
