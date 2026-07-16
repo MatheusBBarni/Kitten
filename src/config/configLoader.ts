@@ -28,6 +28,7 @@ import { z } from "zod"
 import type {
   AgentConfig,
   AppConfig,
+  EditorPreference,
   McpServerConfig,
   ProviderKind,
   ProviderRecipe,
@@ -260,6 +261,35 @@ const STATUSLINE_CONFIG_SCHEMA = z
     }
   })
 
+const CUSTOM_EDITOR_PREFERENCE_SCHEMA = z
+  .object({
+    kind: z.literal("custom"),
+    executable: z.string().min(1).refine((value) => value.trim().length > 0, {
+      message: "executable must not be blank",
+    }),
+    args: z.array(z.string()),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const fullPlaceholders = value.args.filter((argument) => argument === "{file}").length
+    const partialPlaceholder = value.args.some(
+      (argument) => argument !== "{file}" && argument.includes("{file}"),
+    )
+    if (fullPlaceholders !== 1 || partialPlaceholder) {
+      context.addIssue({
+        code: "custom",
+        path: ["args"],
+        message: "args must contain exactly one full {file} placeholder",
+      })
+    }
+  })
+
+/** Strict persisted preference shared by loading, writing, and later Settings validation. */
+export const EDITOR_PREFERENCE_SCHEMA = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("system-default") }).strict(),
+  CUSTOM_EDITOR_PREFERENCE_SCHEMA,
+])
+
 /**
  * The shape of the on-disk config file. Every field is optional: the file only ever
  * expresses deltas from {@link defaultAppConfig}. `strict()` rejects unknown keys so
@@ -274,6 +304,7 @@ export const USER_CONFIG_SCHEMA = z
     telemetryEnabled: z.boolean().optional(),
     transcriptWindowingEnabled: z.boolean().optional(),
     theme: z.enum(THEME_PREFERENCES).optional(),
+    editor: EDITOR_PREFERENCE_SCHEMA.optional(),
     welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
     providerDefaults: PROVIDER_DEFAULTS_SCHEMA.optional(),
@@ -317,6 +348,7 @@ export function defaultAppConfig(): AppConfig {
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
     transcriptWindowingEnabled: DEFAULT_TRANSCRIPT_WINDOWING_ENABLED,
     theme: DEFAULT_THEME,
+    editor: defaultEditorPreference(),
     welcomeBanner: DEFAULT_WELCOME_BANNER,
     statusline: defaultStatuslinePreference(),
   }
@@ -362,9 +394,19 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     transcriptWindowingEnabled: user.transcriptWindowingEnabled ?? config.transcriptWindowingEnabled,
     theme: user.theme ?? config.theme,
+    editor: mergeEditorPreference(user.editor),
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
     statusline: mergeStatuslinePreference(user.statusline),
   }
+}
+
+function defaultEditorPreference(): EditorPreference {
+  return { kind: "system-default" }
+}
+
+function mergeEditorPreference(editor: UserConfig["editor"]): EditorPreference {
+  if (!editor || editor.kind === "system-default") return defaultEditorPreference()
+  return { kind: "custom", executable: editor.executable, args: [...editor.args] }
 }
 
 function defaultStatuslinePreference(): StatuslinePreference {

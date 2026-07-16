@@ -555,6 +555,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
@@ -671,6 +672,7 @@ describe("integration - two sessions of the same provider requesting permission 
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }

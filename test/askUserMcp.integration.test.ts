@@ -185,6 +185,7 @@ describe("ask_user same-binary child", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "off",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -359,6 +360,7 @@ describe("ask_user same-binary child", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "off",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }

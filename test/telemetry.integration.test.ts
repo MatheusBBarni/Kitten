@@ -149,6 +149,7 @@ function clarificationAppConfig(dir: string, telemetryEnabled: boolean): AppConf
     telemetryEnabled,
     transcriptWindowingEnabled: false,
     theme: "auto",
+    editor: { kind: "system-default" },
     welcomeBanner: "auto",
     statusline: { llmDisclosureAcknowledged: false, layout: null },
   }

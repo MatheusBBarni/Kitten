@@ -117,6 +117,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
@@ -865,6 +866,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
@@ -2985,6 +2987,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -3019,6 +3022,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -3058,6 +3062,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -3140,6 +3145,7 @@ describe("actions - sendPrompt", () => {
         telemetryEnabled: false,
         transcriptWindowingEnabled: false,
         theme: "auto",
+        editor: { kind: "system-default" },
         welcomeBanner: "auto",
         statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
@@ -6341,6 +6347,7 @@ describe("createSessionController - dispose", () => {
         telemetryEnabled: false,
         transcriptWindowingEnabled: false,
         theme: "auto",
+        editor: { kind: "system-default" },
         welcomeBanner: "auto",
         statusline: { llmDisclosureAcknowledged: false, layout: null },
       },

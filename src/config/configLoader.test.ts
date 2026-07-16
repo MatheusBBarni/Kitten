@@ -137,6 +137,61 @@ describe("defaults", () => {
   })
 })
 
+describe("editor preference", () => {
+  it("Should resolve an absent editor block to a fresh system-default preference", async () => {
+    expect(defaultAppConfig().editor).toEqual({ kind: "system-default" })
+    expect(parseAppConfig("{}").editor).toEqual({ kind: "system-default" })
+    expect(parseAppConfig('{"editor":{"kind":"system-default"}}').editor).toEqual({ kind: "system-default" })
+
+    const path = join(await makeTempDir(), "missing.json")
+    await expect(loadAppConfig({ path })).resolves.toMatchObject({
+      editor: { kind: "system-default" },
+    })
+  })
+
+  it("Should load a strict custom executable with exactly one full file placeholder", async () => {
+    const editor = {
+      kind: "custom" as const,
+      executable: "/opt/bin/code",
+      args: ["--wait", "{file}"],
+    }
+    const path = await writeConfig(JSON.stringify({ editor }))
+
+    expect((await loadAppConfig({ path })).editor).toEqual(editor)
+  })
+
+  it("Should defensively copy custom arguments while resolving application config", () => {
+    const editor = {
+      kind: "custom" as const,
+      executable: "/opt/bin/code",
+      args: ["--wait", "{file}"],
+    }
+
+    const config = mergeAppConfig({ editor })
+
+    expect(config.editor).toEqual(editor)
+    expect(config.editor).not.toBe(editor)
+    if (config.editor.kind !== "custom") throw new Error("expected custom editor preference")
+    expect(config.editor.args).not.toBe(editor.args)
+    editor.args[0] = "--mutated"
+    expect(config.editor.args).toEqual(["--wait", "{file}"])
+  })
+
+  it.each([
+    ["a missing placeholder", { kind: "custom", executable: "code", args: ["--wait"] }],
+    ["repeated placeholders", { kind: "custom", executable: "code", args: ["{file}", "{file}"] }],
+    ["a partial placeholder", { kind: "custom", executable: "code", args: ["--goto={file}"] }],
+    ["a blank executable", { kind: "custom", executable: "   ", args: ["{file}"] }],
+    ["an unknown custom key", { kind: "custom", executable: "code", args: ["{file}"], shell: true }],
+    ["an unknown system-default key", { kind: "system-default", args: ["{file}"] }],
+  ])("Should reject %s as a hard config error", (_case, editor) => {
+    const parse = () => parseAppConfig(JSON.stringify({ editor }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/editor/)
+  })
+})
+
 describe("statusline config", () => {
   it("Should preserve the legacy footer and require no disclosure acknowledgement when omitted", async () => {
     expect(defaultAppConfig().statusline).toEqual({ llmDisclosureAcknowledged: false, layout: null })

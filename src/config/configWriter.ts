@@ -83,6 +83,13 @@ function mergeUserConfig(current: UserConfig, patch: Partial<UserConfig>): UserC
   } else {
     merged.statusline = { ...current.statusline, ...patch.statusline }
   }
+  if (patch.editor === undefined) {
+    merged.editor = current.editor
+  } else {
+    merged.editor = patch.editor.kind === "system-default"
+      ? { kind: "system-default" }
+      : { ...patch.editor, args: [...patch.editor.args] }
+  }
   return merged
 }
 

@@ -888,6 +888,15 @@ export type ThemePresetId = "catppuccin-mocha" | "catppuccin-latte"
 /** The user's persisted theme choice; `auto` follows the terminal-reported mode. */
 export type ThemePreference = "auto" | "light" | "dark" | ThemePresetId
 
+/** Shell-free external-editor invocation persisted as one closed preference. */
+export type EditorPreference =
+  | { readonly kind: "system-default" }
+  | {
+      readonly kind: "custom"
+      readonly executable: string
+      readonly args: readonly string[]
+    }
+
 /** Whether the welcome banner follows first-run state, always expands, or stays hidden. */
 export type WelcomeBannerPreference = "auto" | "always" | "off"
 
@@ -916,6 +925,7 @@ export interface AppConfig {
   /** Default-off gate for the bounded live-run transcript projection experiment. */
   transcriptWindowingEnabled: boolean
   theme: ThemePreference
+  editor: EditorPreference
   welcomeBanner: WelcomeBannerPreference
   statusline: StatuslinePreference
 }
