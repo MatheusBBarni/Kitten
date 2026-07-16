@@ -243,6 +243,7 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - Inspecting or steering a **Run Attempt** does not change unattended execution into the default workflow
 - **Kitten Orchestrator** succeeds **Task Orchestrator** inside the Kitten product family
 - **Task Orchestrator** is retired only after its desktop behavior, stored data, security boundaries, and verification evidence have a passing Kitten Orchestrator replacement
+- Retiring **Task Orchestrator** means importing relevant history, publishing a relocation notice, and archiving its repository read-only
 - A **Context Pack** belongs to exactly one **Session Workspace**
 - Each session retains at most one Draft Context Pack and one current Sealed Context Pack in V1
 - Sealing a new pack replaces the session's current sealed-pack pointer without rewriting a Handoff Bundle that already embeds an older pack
@@ -343,6 +344,7 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - "reuse context" was ambiguous between automatic run assembly and auto-sending a curated Context Pack — resolved: ordinary tasks receive a **Run Context**, while Context Packs remain optional and explicitly reviewed.
 - "run" was used for both the task's end-to-end review lineage and one agent execution — resolved: **Orchestrated Work** is the lineage and **Run Attempt** is one execution.
 - "reuse the engine" was also ambiguous about discarding the predecessor UI and persistence — resolved: the existing desktop product is the parity baseline, then shared Kitten capabilities replace its internals incrementally.
+- "kill the Task Orchestrator repo" was ambiguous between deletion and retirement — resolved: import relevant history into Kitten, then archive the predecessor repository read-only with a relocation notice.
 - "context" was used for both an agent's context window and a curated reusable artifact — resolved: the reusable artifact is a **Context Pack**.
 - "similar to RepoPrompt" could mean matching its workflow or cloning its codemap platform — resolved for V1: match the curated-selection workflow with full files, described slices, and diffs; defer codemaps and automatic dependency graphs.
 - "explore" was used for both general investigation and Context Pack Curation — resolved: general delegation remains `explore`, while an explicitly requested **Context Build** curates the pack.
