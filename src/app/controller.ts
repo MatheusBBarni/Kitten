@@ -989,6 +989,41 @@ export async function createSessionController(options: SessionControllerOptions)
     return true
   }
 
+  /**
+   * A delegated child has one bounded task, unlike an ordinary conversation that
+   * may accept another prompt after a turn finishes. Keep its terminal snapshot
+   * registered for polling and review, but release the completed ACP transport so
+   * its managed worktree is no longer considered live-owned.
+   */
+  function releaseCompletedDelegatedRuntime(runtime: AgentRuntime): void {
+    const connection = runtime.connection
+    terminalizeSteering(runtime.seed.id)
+    abandonPromptLifecycle(runtime.seed.id)
+    terminalizeHarnessDelivery(runtime)
+    invalidateBridge(runtime, runtime.generation, "conversation_closed")
+    interactionCoordinator.cancelSession(
+      runtime.seed.id,
+      runtime.generation,
+      "conversation_closed",
+    )
+    runtime.acceptEvents = false
+    runtime.unsubscribe?.()
+    runtime.unsubscribe = null
+    runtime.connection = null
+    runtime.acpSessionId = null
+    runtime.state = {
+      sessionId: runtime.seed.id,
+      providerKind: runtime.seed.providerKind,
+      displayName: runtime.config?.displayName ?? runtime.seed.title,
+      title: runtime.seed.title,
+      cwd: runtime.seed.cwd,
+      ready: false,
+      error: "Completed",
+      mcp: runtimeMcpReadout(runtime, "unavailable"),
+    }
+    void disposeQuietly(connection ?? undefined)
+  }
+
   function publishDelegatedRuntimeStatus(runtime: AgentRuntime, status: SessionStatus): void {
     const identity = delegatedIdentity(runtime.seed.id)
     if (!identity || runtimes.get(runtime.seed.id) !== runtime) return
@@ -998,6 +1033,7 @@ export async function createSessionController(options: SessionControllerOptions)
       publishDelegatedState({ ...identity, status: "needs_input", sessionStatus: status })
     } else if (status === "finished") {
       publishDelegatedState({ ...identity, status: "finished", sessionStatus: "finished", at: now() })
+      releaseCompletedDelegatedRuntime(runtime)
     } else if (status === "error") {
       publishDelegatedState({ ...identity, status: "failed", sessionStatus: "error", at: now() })
     }

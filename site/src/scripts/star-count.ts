@@ -9,6 +9,7 @@ export type StarState = {
 export type StarCopy = {
   readonly repositoryName: string;
   readonly loadingText: string;
+  readonly loadingAccessibleLabel: string;
   readonly fallbackText: string;
   readonly fallbackAccessibleLabel: string;
 };
@@ -45,12 +46,11 @@ export function mapStarState(
   if (status === "ready" && stars !== null) {
     const formattedCount = numberFormatter.format(stars);
     const noun = stars === 1 ? "star" : "stars";
-    const text = `${formattedCount} ${noun} on GitHub`;
 
     return {
       status,
-      text,
-      accessibleLabel: `Star ${copy.repositoryName} on GitHub. ${text}.`,
+      text: formattedCount,
+      accessibleLabel: `Star ${copy.repositoryName} on GitHub. ${formattedCount} ${noun}.`,
     };
   }
 
@@ -58,7 +58,7 @@ export function mapStarState(
     return {
       status,
       text: copy.loadingText,
-      accessibleLabel: `Star ${copy.repositoryName} on GitHub. ${copy.loadingText}`,
+      accessibleLabel: copy.loadingAccessibleLabel,
     };
   }
 
@@ -115,6 +115,7 @@ function starCopyFrom(control: HTMLElement): StarCopy | null {
   const {
     repoName,
     starLoadingText,
+    starLoadingLabel,
     starFallbackText,
     starFallbackLabel,
   } = control.dataset;
@@ -122,6 +123,7 @@ function starCopyFrom(control: HTMLElement): StarCopy | null {
   if (
     !repoName ||
     !starLoadingText ||
+    !starLoadingLabel ||
     !starFallbackText ||
     !starFallbackLabel
   ) {
@@ -131,6 +133,7 @@ function starCopyFrom(control: HTMLElement): StarCopy | null {
   return {
     repositoryName: repoName,
     loadingText: starLoadingText,
+    loadingAccessibleLabel: starLoadingLabel,
     fallbackText: starFallbackText,
     fallbackAccessibleLabel: starFallbackLabel,
   };

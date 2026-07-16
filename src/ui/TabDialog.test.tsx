@@ -9,7 +9,7 @@ import type { DelegatedChildStatus, SessionId, SessionStatus } from "../core/typ
 import { createInMemoryShellRuntimeFactory } from "../shell/shellRuntime.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { TAB_CLOSE_HINT, TAB_RENAME_HINT } from "./keymap.ts"
-import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
+import { PROMPT_PLACEHOLDER, PROMPT_STEERING_PLACEHOLDER } from "./PromptEditor.tsx"
 import {
   BACKGROUND_LABEL,
   CANCEL_DELIBERATELY_LABEL,
@@ -23,6 +23,10 @@ import {
 
 const DRAFT_MARKER = "zzq-dialog-leak"
 
+function hasMountedPrompt(frame: string): boolean {
+  return frame.includes(PROMPT_PLACEHOLDER) || frame.includes(PROMPT_STEERING_PLACEHOLDER)
+}
+
 async function renderCockpit(controller: FakeController): Promise<TestRendererSetup> {
   const setup = await testRender(<CockpitApp controller={controller} />, {
     width: 100,
@@ -30,7 +34,7 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     kittyKeyboard: true,
     exitOnCtrlC: false,
   })
-  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
+  await setup.waitForFrame(hasMountedPrompt)
   return setup
 }
 
@@ -466,7 +470,7 @@ describe("TabDialog modal integration", () => {
 
       await actAsync(() => setup.mockInput.pressEscape())
       const closed = await setup.waitForFrame((frame) => !frame.includes(TAB_CLOSE_HINT))
-      expect(closed).toContain(PROMPT_PLACEHOLDER)
+      expect(closed).toContain(PROMPT_STEERING_PLACEHOLDER)
       expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
     } finally {
       await destroyMounted(setup.renderer)

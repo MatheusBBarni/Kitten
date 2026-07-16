@@ -5524,12 +5524,13 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(await controller.actions.sendPrompt("Parent remains usable", parentId)).toEqual({ stopReason: "end_turn" })
   })
 
-  it("gates cleanup to managed terminal non-live children and publishes bounded refusal state", async () => {
+  it("releases completed managed children for cleanup and publishes bounded refusal state", async () => {
     const created: StubConnection[] = []
     const records: TelemetryRecord[] = []
     const cleanupInputs: CleanupManagedWorktreeInput[] = []
     const cleanupErrors: Array<{ sessionId: SessionId; error: unknown }> = []
     const ids = ["failed-review-child", "live-terminal-child"]
+    let failedReviewCleanupAttempts = 0
     const controller = await createSessionController({
       config: APP_CONFIG,
       cwd: CWD,
@@ -5549,7 +5550,10 @@ describe("createSessionController - dynamic conversation actions", () => {
       managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
         cleanup: async (input) => {
           cleanupInputs.push(input)
-          if (cleanupInputs.length === 2) throw new Error("cleanup exploded")
+          if (input.binding?.ownerSessionId === "failed-review-child") {
+            failedReviewCleanupAttempts += 1
+            if (failedReviewCleanupAttempts === 2) throw new Error("cleanup exploded")
+          }
           return { kind: "refused", reason: "dirty" }
         },
       }),
@@ -5581,16 +5585,26 @@ describe("createSessionController - dynamic conversation actions", () => {
 
     expect(await controller.actions.startDelegatedChild({
       parentId,
-      task: "Finish while ACP remains live",
-      desiredOutcome: "Refuse live cleanup",
+      task: "Finish and release the ACP runtime",
+      desiredOutcome: "Allow terminal cleanup",
     })).toBe("live-terminal-child")
     created.at(-1)!.emit({ kind: "status", status: "finished" })
     expect(await controller.actions.cleanupManagedWorktree("live-terminal-child")).toEqual({
       kind: "refused",
-      reason: "live_owned",
+      reason: "dirty",
     })
-    expect(cleanupInputs).toHaveLength(0)
-    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toEqual([])
+    expect(created.at(-1)!.disposeCalls()).toBe(1)
+    expect(created.at(-1)!.subscriberCount()).toBe(0)
+    expect(controller.isReady("live-terminal-child")).toBe(false)
+    expect(cleanupInputs).toEqual([
+      expect.objectContaining({ ownerTerminal: true, ownerLive: false }),
+    ])
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toEqual([
+      expect.objectContaining({
+        type: "managed_worktree_cleanup_refused",
+        managedWorktreeReason: "dirty",
+      }),
+    ])
 
     controller.store.addDelegatedSession({
       seed: {
@@ -5630,18 +5644,22 @@ describe("createSessionController - dynamic conversation actions", () => {
     })
 
     expect(await controller.closeConversation("live-terminal-child", "cancel")).toEqual({ outcome: "closed" })
-    expect(cleanupInputs).toHaveLength(0)
+    expect(cleanupInputs).toHaveLength(1)
 
     expect(await controller.actions.cleanupManagedWorktree("failed-review-child")).toEqual({
       kind: "refused",
       reason: "dirty",
     })
-    expect(cleanupInputs).toHaveLength(1)
+    expect(cleanupInputs).toHaveLength(2)
     expect(controller.store.getState().sessions["failed-review-child"]?.worktreeBinding).toMatchObject({
       availability: "cleanup_refused",
       reason: "dirty",
     })
     expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toEqual([
+      expect.objectContaining({
+        type: "managed_worktree_cleanup_refused",
+        managedWorktreeReason: "dirty",
+      }),
       expect.objectContaining({
         type: "managed_worktree_cleanup_refused",
         managedWorktreeReason: "dirty",
@@ -5659,7 +5677,7 @@ describe("createSessionController - dynamic conversation actions", () => {
       availability: "cleanup_refused",
       reason: "git_failed",
     })
-    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toHaveLength(1)
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toHaveLength(2)
     await controller.dispose()
   })
 

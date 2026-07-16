@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { showcaseConfig } from "../src/config/showcase-config.ts";
@@ -81,25 +81,16 @@ describe("showcase accessibility and motion", () => {
     expect(sectionOffsets).toEqual(
       [...sectionOffsets].sort((left, right) => left - right),
     );
-    expect(renderedHtml).not.toContain('tabindex="-1"');
+    expect(renderedHtml).toMatch(
+      /aria-selected="false"[^>]*tabindex="-1"[^>]*data-install-tab/,
+    );
   });
 
-  test("keeps proof explanation visible without forced playback", () => {
-    expect(renderedHtml).toContain("data-proof-media");
-    expect(renderedHtml).toContain('data-motion-preference="standard"');
-    expect(renderedHtml).toContain("data-proof-motion-note");
-    expect(renderedHtml).toContain("data-proof-poster");
-    expect(renderedHtml).toContain(`alt="${showcaseConfig.proof.posterAlt}"`);
-    expect(renderedHtml).toContain(showcaseConfig.proof.fallbackLabel);
+  test("keeps proof steps visible without placeholder media", () => {
     expect(renderedHtml).toContain(showcaseConfig.proof.accessibleDescription);
-    expect(renderedHtml).not.toContain(" autoplay");
-  });
-
-  test("ships the configured fallback poster asset", async () => {
-    expect(showcaseConfig.proof.posterUrl).not.toBeNull();
-    const posterPath = showcaseConfig.proof.posterUrl?.replace(/^\.\//, "");
-    expect(posterPath).toBeTruthy();
-    await access(new URL(`../public/${posterPath}`, import.meta.url));
+    expect(renderedHtml).toContain("data-proof-step");
+    expect(renderedHtml).not.toContain("data-proof-media");
+    expect(renderedHtml).not.toContain("data-proof-poster");
   });
 
   test("defines narrow-layout, focus, contrast, and reduced-motion safeguards", () => {
@@ -113,12 +104,12 @@ describe("showcase accessibility and motion", () => {
 
   test("keeps dark and light text pairs above WCAG AA contrast", () => {
     const contrastPairs = [
-      ["#f7f2e8", "#0b0d10"],
-      ["#bbb3a6", "#14181e"],
-      ["#18140b", "#f4c95d"],
-      ["#181a1d", "#f5f2e9"],
-      ["#545b64", "#fffdf8"],
-      ["#ffffff", "#704900"],
+      ["#f9fafb", "#0a0e14"],
+      ["#b7c1d1", "#121923"],
+      ["#17120a", "#ffc83d"],
+      ["#171d27", "#f7f8fb"],
+      ["#526071", "#ffffff"],
+      ["#ffffff", "#855500"],
     ] as const;
 
     for (const [foreground, background] of contrastPairs) {
@@ -130,7 +121,9 @@ describe("showcase accessibility and motion", () => {
 
   test("keeps mobile CTA text present and wrapped safely", () => {
     expect(renderedHtml).toContain(showcaseConfig.hero.primaryCtaLabel);
-    expect(renderedHtml).toContain(showcaseConfig.install.primaryCtaLabel);
+    for (const command of showcaseConfig.install.commands) {
+      expect(renderedHtml).toContain(command.copyCtaLabel);
+    }
     expect(stylesheet).toMatch(/\.button\s*\{[^}]*overflow-wrap: anywhere/s);
     expect(stylesheet).toMatch(
       /\.install-command pre\s*\{[^}]*max-inline-size: 100%/s,
