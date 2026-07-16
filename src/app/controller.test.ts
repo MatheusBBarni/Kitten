@@ -51,6 +51,7 @@ import { selectAgentModel } from "../store/selectors.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import {
   createTelemetryRecorder,
+  type McpBridgeFailureCategory,
   type TelemetryRecord,
   type TelemetryRecorder,
   type UsageSeenRecord,
@@ -79,6 +80,7 @@ import {
   type AgentRunControl,
   type AgentRunRoute,
   type KittenMcpBridge,
+  type KittenMcpBridgeFailureReason,
   type KittenMcpBridgeOptions,
   type BridgeRegistration,
 } from "./kittenMcpBridge.ts"
@@ -392,6 +394,54 @@ describe("interaction coordinator", () => {
     expect(await submissionWins.outcome).toEqual(submitted)
   })
 
+  it("cancels only the exact active or suspended clarification and keeps late settlement inert", async () => {
+    const ids = ["suspended", "active", "resumed", "replacement"]
+    const active: Array<ActiveAgentInteraction | null> = []
+    const settled: Array<{ requestId: string; outcome: ClarificationOutcome; reason?: string }> = []
+    const coordinator = createInteractionCoordinator({
+      newRequestId: () => ids.shift()!,
+      onActiveChanged: (interaction) => active.push(interaction),
+      onClarificationSettled: (interaction, outcome, reason) => {
+        settled.push({ requestId: interaction.requestId, outcome, ...(reason ? { reason } : {}) })
+      },
+    })
+    const suspended = coordinator.enqueueClarification("alpha", 1, CLARIFICATION_PAYLOAD)
+    const current = coordinator.enqueueClarification("alpha", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Keep this clarification active",
+    })
+
+    expect(suspended.cancel("connection_error")).toBe(true)
+    expect(await suspended.outcome).toEqual({ kind: "cancelled" })
+    expect(active.at(-1)?.requestId).toBe(current.requestId)
+    expect(suspended.cancel("connection_error")).toBe(false)
+    expect(suspended.timeout()).toBe(false)
+    expect(coordinator.resolveActive(suspended.requestId, 1, { kind: "skipped" })).toBe(false)
+
+    const resumed = coordinator.enqueueClarification("alpha", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Resume after exact active cancellation",
+    })
+    const replacement = coordinator.enqueueClarification("alpha", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Cancel only this active clarification",
+    })
+    expect(replacement.cancel("connection_error")).toBe(true)
+    expect(await replacement.outcome).toEqual({ kind: "cancelled" })
+    expect(active.at(-1)?.requestId).toBe(resumed.requestId)
+    expect(current.timeout()).toBe(true)
+    expect(active.at(-1)?.requestId).toBe(resumed.requestId)
+    expect(coordinator.resolveActive(resumed.requestId, 1, { kind: "skipped" })).toBe(true)
+    expect(await resumed.outcome).toEqual({ kind: "skipped" })
+    expect(await current.outcome).toEqual({ kind: "timed_out" })
+    expect(settled.filter(({ requestId }) => requestId === suspended.requestId)).toEqual([
+      { requestId: suspended.requestId, outcome: { kind: "cancelled" }, reason: "connection_error" },
+    ])
+    expect(settled.filter(({ requestId }) => requestId === replacement.requestId)).toEqual([
+      { requestId: replacement.requestId, outcome: { kind: "cancelled" }, reason: "connection_error" },
+    ])
+  })
+
   it("times out a suspended clarification without reviving it before the prior permission", async () => {
     const { coordinator, active } = setupCoordinator()
     const permission = coordinator.enqueuePermission("alpha", 1, PERMISSION_REQUEST)
@@ -654,6 +704,8 @@ interface RecordingBridge {
   readonly cancellations: Array<BridgeRegistration & { reason: string }>
   readonly declarations: McpServerConfig[]
   request(sessionId: SessionId, generation: number, payload: ClarificationPayload): Promise<ClarificationOutcome>
+  requestHandle(sessionId: SessionId, generation: number, payload: ClarificationPayload): ReturnType<KittenMcpBridgeOptions["requestClarification"]>
+  fail(reason: KittenMcpBridgeFailureReason): void
   agentRunControl(): AgentRunControl
   disposeCalls(): number
 }
@@ -714,6 +766,14 @@ function createRecordingBridge(): RecordingBridge {
     request(sessionId, generation, payload) {
       if (!callbacks) throw new Error("bridge not created")
       return callbacks.requestClarification(sessionId, generation, payload).outcome
+    },
+    requestHandle(sessionId, generation, payload) {
+      if (!callbacks) throw new Error("bridge not created")
+      return callbacks.requestClarification(sessionId, generation, payload)
+    },
+    fail(reason) {
+      if (!callbacks) throw new Error("bridge not created")
+      callbacks.onFailure?.(reason)
     },
     agentRunControl() {
       if (!callbacks?.agentRunControl) throw new Error("agent-run control not created")
@@ -1532,6 +1592,41 @@ describe("createSessionController - startup", () => {
       reason: "controller_disposed",
     })
 
+    await controller.dispose()
+  })
+
+  it("keeps generation-wide replacement cancellation after one clarification is cancelled by handle", async () => {
+    const { controller, bridge } = await controllerWithStubs()
+    const first = bridge.requestHandle("codex", 1, CLARIFICATION_PAYLOAD)
+    const targeted = bridge.requestHandle("codex", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Cancel this exact request",
+    })
+    const last = bridge.requestHandle("codex", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Replacement must cancel this request",
+    })
+    const settlementCounts = new Map<string, number>()
+    for (const handle of [first, targeted, last]) {
+      void handle.outcome.then(() => {
+        settlementCounts.set(handle.requestId, (settlementCounts.get(handle.requestId) ?? 0) + 1)
+      })
+    }
+
+    expect(targeted.cancel("connection_error")).toBe(true)
+    expect(await targeted.outcome).toEqual({ kind: "cancelled" })
+
+    await controller.actions.startFreshFromContext("saved context", "codex")
+
+    expect(await first.outcome).toEqual({ kind: "cancelled" })
+    expect(await last.outcome).toEqual({ kind: "cancelled" })
+    await Bun.sleep(0)
+    expect([...settlementCounts.values()]).toEqual([1, 1, 1])
+    expect(bridge.cancellations).toContainEqual({
+      sessionId: "codex",
+      generation: 1,
+      reason: "session_replaced",
+    })
     await controller.dispose()
   })
 
@@ -4112,6 +4207,108 @@ describe("createSessionController - per-conversation close", () => {
 })
 
 describe("createSessionController - route-authorized agent runs", () => {
+  it("maps every injected bridge failure to one closed content-free recorder category", async () => {
+    const bridge = createRecordingBridge()
+    const records: TelemetryRecord[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        now: () => 91,
+        sessionRef: "anonymous-bridge-run",
+      }),
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const cases: ReadonlyArray<readonly [KittenMcpBridgeFailureReason, McpBridgeFailureCategory]> = [
+      ["connection_concurrency_limit", "capacity_limited"],
+      ["connection_call_limit", "capacity_limited"],
+      ["connection_stream_limit", "capacity_limited"],
+      ["connection_frame_too_large", "invalid_request"],
+      ["connection_malformed_frame", "invalid_request"],
+      ["connection_invalid_request", "invalid_request"],
+      ["connection_duplicate_call_id", "invalid_request"],
+      ["registration_endpoint_failed", "unavailable"],
+      ["registration_capability_failed", "unavailable"],
+      ["registration_listen_failed", "unavailable"],
+      ["connection_unauthorized", "unavailable"],
+      ["connection_io_error", "unavailable"],
+      ["connection_request_failed", "unavailable"],
+    ]
+
+    for (const [reason] of cases) bridge.fail(reason)
+
+    const bridgeRecords = records.filter((record) => record.type === "kitten_mcp_bridge_failure")
+    expect(bridgeRecords).toEqual(cases.map(([, category]) => ({
+      type: "kitten_mcp_bridge_failure",
+      at: 91,
+      sessionRef: "anonymous-bridge-run",
+      mcpBridgeFailureCategory: category,
+    })))
+    expect(bridgeRecords.every((record) => Object.keys(record).every((key) =>
+      ["type", "at", "sessionRef", "mcpBridgeFailureCategory"].includes(key)
+    ))).toBe(true)
+    const serialized = JSON.stringify(bridgeRecords)
+    for (const forbidden of [
+      "connection_", "registration_", "prompt", "task", "route", "capability", "endpoint",
+      "callId", "sessionId", "raw error",
+    ]) expect(serialized).not.toContain(forbidden)
+    await controller.dispose()
+  })
+
+  it("projects concurrent starts as busy and stale routes as unavailable with typed bridge errors", async () => {
+    const bridge = createRecordingBridge()
+    const launchEntered = deferred()
+    const releaseLaunch = deferred()
+    let childOrdinal = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => `typed-child-${++childOrdinal}`,
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async (input) => {
+          launchEntered.resolve()
+          await releaseLaunch.promise
+          return { kind: "provisioned", binding: testManagedWorktreeBinding(input.ownerSessionId) }
+        },
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const route = recordedAgentRunRoute(bridge, parentId)
+    const control = bridge.agentRunControl()
+    const first = control.start(route, [{ task: "First", desiredOutcome: "Running" }])
+    await launchEntered.promise
+
+    await expect(control.start(route, [{ task: "Second", desiredOutcome: "Busy" }])).rejects.toMatchObject({
+      name: "KittenMcpBridgeError",
+      code: "busy",
+    })
+    await expect(control.start(
+      { ...route, parentGeneration: route.parentGeneration + 1 },
+      [{ task: "Stale", desiredOutcome: "Unavailable" }],
+    )).rejects.toMatchObject({
+      name: "KittenMcpBridgeError",
+      code: "unavailable",
+    })
+
+    releaseLaunch.resolve()
+    expect(await first).toHaveLength(1)
+    await controller.dispose()
+  })
+
   it("records only settled operation outcomes, bounded sizes, and controller duration", async () => {
     const bridge = createRecordingBridge()
     const records: TelemetryRecord[] = []

@@ -79,6 +79,7 @@ import {
   type UsageSeenSink,
   type ProviderReadinessOutcome,
   type AgentRunTelemetryInput,
+  type McpBridgeFailureCategory,
   type SteeringCapabilityClass,
   type SteeringTelemetryOutcome,
 } from "../telemetry/recorder.ts"
@@ -109,12 +110,14 @@ import {
   type RepositoryFileSource,
 } from "./fileDiscovery.ts"
 import {
+  KittenMcpBridgeError,
   createKittenMcpBridge as createRealKittenMcpBridge,
   type AgentRunControl,
   type AgentRunRoute,
   type AgentRunSnapshot,
   type AgentRunTask,
   type KittenMcpBridge,
+  type KittenMcpBridgeFailureReason,
   type KittenMcpBridgeOptions,
 } from "./kittenMcpBridge.ts"
 import {
@@ -179,6 +182,7 @@ export interface ControllerTelemetry extends ActionTelemetry {
   managedWorktreeCleanupRefused?(reason: ManagedWorktreeReason): void
   managedWorktreeCleaned?(): void
   agentRunControl?(input: AgentRunTelemetryInput): void
+  mcpBridgeFailure?(category: McpBridgeFailureCategory): void
   steeringOutcome?(
     lifecycleKey: string,
     outcome: SteeringTelemetryOutcome,
@@ -337,6 +341,8 @@ export type AgentInteractionOutcome = PermissionOutcome | ClarificationOutcome
 export interface ClarificationRequestHandle {
   readonly requestId: string
   readonly outcome: Promise<ClarificationOutcome>
+  /** Cancel only this request for an explicit session-loss reason. */
+  cancel(reason: ClarificationSessionLossReason): boolean
   /** Settle this exact request as timed out; late or duplicate attempts are inert. */
   timeout(): boolean
 }
@@ -504,6 +510,7 @@ export function createInteractionCoordinator(
   function settleExact(
     entry: PendingInteraction,
     outcome: AgentInteractionOutcome,
+    lossReason?: ClarificationSessionLossReason,
   ): boolean {
     if (entry.lifecycle === "terminal") return false
     if ((entry.kind === "permission") !== ("outcome" in outcome)) return false
@@ -511,7 +518,7 @@ export function createInteractionCoordinator(
     if (wasActive) active = null
     else if (!removeExact(queued, entry) && !removeExact(suspended, entry)) return false
 
-    if (!terminalize(entry, outcome)) return false
+    if (!terminalize(entry, outcome, lossReason)) return false
     if (wasActive) advance()
     return true
   }
@@ -584,6 +591,7 @@ export function createInteractionCoordinator(
         return {
           requestId,
           outcome: Promise.resolve({ kind: "cancelled" }),
+          cancel: () => false,
           timeout: () => false,
         }
       }
@@ -611,6 +619,7 @@ export function createInteractionCoordinator(
       return {
         requestId,
         outcome,
+        cancel: (reason) => settleExact(entry, { kind: "cancelled" }, reason),
         timeout: () => settleExact(entry, { kind: "timed_out" }),
       }
     },
@@ -813,6 +822,9 @@ export async function createSessionController(options: SessionControllerOptions)
     },
     cancelClarifications(sessionId, generation, reason) {
       interactionCoordinator.cancelSession(sessionId, generation, reason)
+    },
+    onFailure(reason) {
+      options.recorder?.mcpBridgeFailure?.(mcpBridgeFailureCategory(reason))
     },
   })
   let disposed = false
@@ -1081,7 +1093,12 @@ export async function createSessionController(options: SessionControllerOptions)
         publishDelegatedRuntimeStatus(runtime, "working")
       }
     })
-    return { requestId: handle.requestId, outcome, timeout: handle.timeout }
+    return {
+      requestId: handle.requestId,
+      outcome,
+      cancel: handle.cancel,
+      timeout: handle.timeout,
+    }
   }
 
   async function enqueueClarification(
@@ -2257,10 +2274,10 @@ export async function createSessionController(options: SessionControllerOptions)
     const routeKey = `${route.parentId}\u0000${route.parentGeneration}`
     let ownsStartGuard = false
     try {
-      if (activeAgentRunStarts.has(routeKey)) throw new Error("Agent-run start is busy")
+      if (activeAgentRunStarts.has(routeKey)) throw new KittenMcpBridgeError("busy")
       if (!agentRunRouteAvailable(route)) {
         telemetryOutcome = "unavailable"
-        throw new Error("Agent-run route is unavailable")
+        throw new KittenMcpBridgeError("unavailable")
       }
       activeAgentRunStarts.add(routeKey)
       ownsStartGuard = true
@@ -2278,6 +2295,7 @@ export async function createSessionController(options: SessionControllerOptions)
     } catch (error) {
       if (telemetryOutcome !== "unavailable" && !agentRunRouteAvailable(route)) {
         telemetryOutcome = "unavailable"
+        throw new KittenMcpBridgeError("unavailable")
       }
       throw error
     } finally {
@@ -2962,7 +2980,29 @@ function cancelledClarificationHandle(requestId: string): ClarificationRequestHa
   return {
     requestId,
     outcome: Promise.resolve({ kind: "cancelled" }),
+    cancel: () => false,
     timeout: () => false,
+  }
+}
+
+function mcpBridgeFailureCategory(reason: KittenMcpBridgeFailureReason): McpBridgeFailureCategory {
+  switch (reason) {
+    case "connection_concurrency_limit":
+    case "connection_call_limit":
+    case "connection_stream_limit":
+      return "capacity_limited"
+    case "connection_frame_too_large":
+    case "connection_malformed_frame":
+    case "connection_invalid_request":
+    case "connection_duplicate_call_id":
+      return "invalid_request"
+    case "registration_endpoint_failed":
+    case "registration_capability_failed":
+    case "registration_listen_failed":
+    case "connection_unauthorized":
+    case "connection_io_error":
+    case "connection_request_failed":
+      return "unavailable"
   }
 }
 

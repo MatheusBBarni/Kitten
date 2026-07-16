@@ -72,7 +72,7 @@ function createCoordinatorFake() {
         settle = resolve
       })
       pending.push({ sessionId, generation, form, requestId, settle })
-      return { requestId, outcome, timeout: () => false }
+      return { requestId, outcome, cancel: () => false, timeout: () => false }
     },
     cancelClarifications(sessionId: SessionId, generation: number, reason: string): void {
       cancellations.push({ sessionId, generation, reason })

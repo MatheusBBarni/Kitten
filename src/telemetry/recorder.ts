@@ -165,6 +165,7 @@ export type TelemetryEventType =
   | "managed_worktree_cleanup_refused"
   | "managed_worktree_cleaned"
   | "agent_run_control"
+  | "kitten_mcp_bridge_failure"
   | "steering_outcome"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
@@ -247,6 +248,8 @@ export type AgentRunDurationBucket =
   | "100_to_499ms"
   | "500_to_1999ms"
   | "2s_or_more"
+/** Closed bridge outcome categories; no transport reason or identity crosses this boundary. */
+export type McpBridgeFailureCategory = "capacity_limited" | "unavailable" | "invalid_request"
 
 /** Closed, content-free dimensions for one steering lifecycle observation. */
 export type SteeringTelemetryOutcome =
@@ -395,6 +398,8 @@ export interface TelemetryRecord {
   operation?: AgentRunOperation
   /** Bounded request cardinality; never a raw task or child list length. */
   batchSizeBucket?: AgentRunBatchSizeBucket
+  /** Closed bridge failure category; never a route, call, transport reason, or error. */
+  mcpBridgeFailureCategory?: McpBridgeFailureCategory
   /** Closed steering transport class; never an adapter recipe or configuration. */
   capabilityClass?: SteeringCapabilityClass
 }
@@ -565,6 +570,8 @@ export interface TelemetryRecorder {
   managedWorktreeCleaned(): void
   /** Record one settled route-authorized control using only approved closed dimensions. */
   agentRunControl(input: AgentRunTelemetryInput): void
+  /** Record one bridge failure using only its closed semantic category. */
+  mcpBridgeFailure(category: McpBridgeFailureCategory): void
   /** Record one steering lifecycle outcome, deduplicated and timed by a private key. */
   steeringOutcome(
     lifecycleKey: string,
@@ -662,6 +669,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   managedWorktreeCleanupRefused() {},
   managedWorktreeCleaned() {},
   agentRunControl() {},
+  mcpBridgeFailure() {},
   steeringOutcome() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
@@ -1172,6 +1180,14 @@ class ActiveRecorder implements TelemetryRecorder {
     })
   }
 
+  mcpBridgeFailure(category: McpBridgeFailureCategory): void {
+    if (!isMcpBridgeFailureCategory(category)) return
+    this.record({
+      type: "kitten_mcp_bridge_failure",
+      mcpBridgeFailureCategory: category,
+    })
+  }
+
   steeringOutcome(
     lifecycleKey: string,
     outcome: SteeringTelemetryOutcome,
@@ -1459,6 +1475,10 @@ function isSteeringTelemetryOutcome(value: unknown): value is SteeringTelemetryO
     value === "recovered" ||
     value === "timeout" ||
     value === "unavailable"
+}
+
+function isMcpBridgeFailureCategory(value: unknown): value is McpBridgeFailureCategory {
+  return value === "capacity_limited" || value === "unavailable" || value === "invalid_request"
 }
 
 function isSteeringCapabilityClass(value: unknown): value is SteeringCapabilityClass {

@@ -156,6 +156,7 @@ describe("opt-in gating", () => {
       batchSizeBucket: "one",
       durationBucket: "under_100ms",
     })
+    recorder.mcpBridgeFailure("capacity_limited")
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -204,6 +205,7 @@ describe("opt-in gating", () => {
       batchSizeBucket: "five_or_more",
       durationBucket: "2s_or_more",
     })
+    recorder.mcpBridgeFailure("unavailable")
   })
 })
 
@@ -335,6 +337,75 @@ describe("steering outcome telemetry", () => {
     const serialized = JSON.stringify(sink.records)
     expect(sink.records).toHaveLength(1)
     for (const sentinel of lifecycleKey.split(":")) expect(serialized).not.toContain(sentinel)
+  })
+})
+
+describe("Kitten MCP bridge failure telemetry", () => {
+  it("serializes only the exact closed category and ignores invalid runtime input", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+
+    recorder.mcpBridgeFailure("capacity_limited")
+    recorder.mcpBridgeFailure("unavailable")
+    recorder.mcpBridgeFailure("invalid_request")
+    recorder.mcpBridgeFailure("RAW_ERROR_SENTINEL" as never)
+
+    expect(sink.records).toEqual([
+      {
+        type: "kitten_mcp_bridge_failure",
+        at: 42,
+        sessionRef: "anonymous-run",
+        mcpBridgeFailureCategory: "capacity_limited",
+      },
+      {
+        type: "kitten_mcp_bridge_failure",
+        at: 42,
+        sessionRef: "anonymous-run",
+        mcpBridgeFailureCategory: "unavailable",
+      },
+      {
+        type: "kitten_mcp_bridge_failure",
+        at: 42,
+        sessionRef: "anonymous-run",
+        mcpBridgeFailureCategory: "invalid_request",
+      },
+    ])
+    expect(sink.records.every((record) => Object.keys(record).every((key) =>
+      ["type", "at", "sessionRef", "mcpBridgeFailureCategory"].includes(key)
+    ))).toBe(true)
+
+    if (false) {
+      // @ts-expect-error bridge telemetry accepts no prompt, task, route, capability, endpoint, id, or error fields
+      recorder.mcpBridgeFailure({ category: "unavailable", prompt: "private" })
+    }
+  })
+
+  it("cannot serialize prompts, tasks, transport identity, call identity, or raw errors", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, sessionRef: "anonymous-run" })
+    const sentinels = [
+      "PROMPT_SENTINEL",
+      "TASK_SENTINEL",
+      "ROUTE_SENTINEL",
+      "CAPABILITY_SENTINEL",
+      "ENDPOINT_SENTINEL",
+      "CALL_ID_SENTINEL",
+      "SESSION_ID_SENTINEL",
+      "RAW_ERROR_SENTINEL",
+    ]
+
+    recorder.mcpBridgeFailure("invalid_request")
+
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel)
+    for (const forbiddenKey of [
+      "prompt", "task", "route", "capability", "endpoint", "callId", "sessionId", "error",
+    ]) expect(sink.records[0]).not.toHaveProperty(forbiddenKey)
   })
 })
 
