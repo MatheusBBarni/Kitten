@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { CodeRenderable, type BaseRenderable } from "@opentui/core"
+import { CodeRenderable, RGBA, type BaseRenderable } from "@opentui/core"
 import { createMockMouse } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -10,6 +10,7 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import { formatMcpToolCallTitle, ToolCallDiffView, ToolCallRow } from "./ToolCallRow.tsx"
 import type { ToolCallRecord } from "../core/types.ts"
 import type { SyntaxDiagnostic } from "./syntaxParsers.ts"
+import { DARK_PALETTE } from "./theme.ts"
 
 function collectCodeRenderables(root: BaseRenderable): CodeRenderable[] {
   const codes = root instanceof CodeRenderable ? [root] : []
@@ -88,6 +89,153 @@ describe("ToolCallRow activity labels", () => {
     expect(formatMcpToolCallTitle("mcp.server.function.with.dots")).toBe("MCP(server -> function -> with -> dots)")
     expect(formatMcpToolCallTitle("mcp.kitten-ask-user")).toBeNull()
     expect(formatMcpToolCallTitle("git status")).toBeNull()
+  })
+})
+
+describe("ToolCallRow classified failures", () => {
+  it("renders temporary capacity with manual guidance gated on a known terminal outcome", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow
+          record={toolRecord({
+            toolCallId: "PRIVATE_CALL_ID_SENTINEL",
+            kind: "execute",
+            title: "mcp.kitten-ask-user.agent_run",
+            status: "failed",
+            failureKind: "temporary_capacity",
+          })}
+        />
+      </CockpitProvider>,
+      { width: 120, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("temporary capacity"))
+
+    expect(frame).toContain("MCP(kitten-ask-user -> agent_run)")
+    expect(frame).toContain("Wait for a known terminal outcome before trying again manually.")
+    expect(frame).not.toContain("PRIVATE_CALL_ID_SENTINEL")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders unavailable distinctly without implying that retry is safe", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow
+          record={toolRecord({
+            kind: "execute",
+            title: "mcp.kitten-ask-user.ask_user",
+            status: "failed",
+            failureKind: "unavailable",
+          })}
+        />
+      </CockpitProvider>,
+      { width: 100, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("unavailable"))
+
+    expect(frame).toContain("MCP(kitten-ask-user -> ask_user) · unavailable")
+    expect(frame).toContain("This action cannot be completed.")
+    expect(frame).not.toContain("try again")
+    expect(frame).not.toContain("retry")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps unclassified and non-MCP failed rows generic", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow
+          record={toolRecord({
+            kind: "execute",
+            title: "git status",
+            status: "failed",
+          })}
+        />
+      </CockpitProvider>,
+      { width: 72, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("Run(git status) · failed"))
+
+    expect(frame).not.toContain("temporary capacity")
+    expect(frame).not.toContain("unavailable")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("preserves classified locations while ignoring undeclared private diagnostics and controls", async () => {
+    const controller = createFakeController()
+    const record = {
+      ...toolRecord({
+        kind: "search",
+        title: "symbols",
+        status: "failed",
+        failureKind: "unavailable",
+        locations: ["src/app.ts", "src/main.ts"],
+      }),
+      route: "PRIVATE_ROUTE_SENTINEL",
+      endpoint: "PRIVATE_ENDPOINT_SENTINEL",
+      capability: "PRIVATE_CAPABILITY_SENTINEL",
+      rawError: "RAW_ERROR_SENTINEL",
+      prompt: "PRIVATE_PROMPT_SENTINEL",
+      task: "PRIVATE_TASK_SENTINEL",
+      retryControl: "RETRY_CONTROL_SENTINEL",
+    } as ToolCallRecord
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow record={record} />
+      </CockpitProvider>,
+      { width: 100, height: 8 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("src/main.ts"))
+
+    expect(frame).toContain("Search(symbols) · unavailable")
+    expect(frame).toContain("src/app.ts, src/main.ts")
+    for (const sentinel of [
+      "PRIVATE_ROUTE_SENTINEL",
+      "PRIVATE_ENDPOINT_SENTINEL",
+      "PRIVATE_CAPABILITY_SENTINEL",
+      "RAW_ERROR_SENTINEL",
+      "PRIVATE_PROMPT_SENTINEL",
+      "PRIVATE_TASK_SENTINEL",
+      "RETRY_CONTROL_SENTINEL",
+    ]) {
+      expect(frame).not.toContain(sentinel)
+    }
+    await destroyMounted(setup.renderer)
+  })
+
+  it("preserves classified edit diffs and the failed palette convention", async () => {
+    const controller = createFakeController()
+    const setup = await testRender(
+      <CockpitProvider controller={controller}>
+        <ToolCallRow
+          record={toolRecord({
+            kind: "edit",
+            title: "Update app.ts",
+            status: "failed",
+            failureKind: "unavailable",
+            diff: { path: "src/app.ts", unified: unified("src/app.ts", "old value", "new value") },
+          })}
+        />
+      </CockpitProvider>,
+      { width: 100, height: 12 },
+    )
+
+    const frame = await setup.waitForFrame((candidate) => candidate.includes("new value"))
+    const bullet = setup.captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((span) => span.text.includes("●"))
+
+    expect(frame).toContain("Edit(Update app.ts) · unavailable")
+    expect(frame).toContain("src/app.ts")
+    expect(frame).toContain("old value")
+    expect(frame).toContain("new value")
+    expect(bullet?.fg?.toString()).toBe(RGBA.fromHex(DARK_PALETTE.tool.failed).toString())
+    await destroyMounted(setup.renderer)
   })
 })
 

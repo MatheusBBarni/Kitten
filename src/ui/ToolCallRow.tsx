@@ -78,6 +78,18 @@ export const TOOL_STATUS_LABELS: Readonly<Record<ToolCallRecord["status"], strin
   failed: "failed",
 }
 
+/** Bounded, protocol-free labels for the two classified failed-tool outcomes. */
+export const TOOL_FAILURE_LABELS = {
+  temporary_capacity: "temporary capacity",
+  unavailable: "unavailable",
+} as const satisfies Readonly<Record<NonNullable<ToolCallRecord["failureKind"]>, string>>
+
+/** Manual-only guidance shown after a classified failure; neither path adds an action. */
+export const TOOL_FAILURE_GUIDANCE = {
+  temporary_capacity: "Wait for a known terminal outcome before trying again manually.",
+  unavailable: "This action cannot be completed.",
+} as const satisfies Readonly<Record<NonNullable<ToolCallRecord["failureKind"]>, string>>
+
 /** A generic Codex `wait` call carries no safe detail about the operation it is awaiting. */
 export const GENERIC_WAIT_TITLE = "wait"
 
@@ -148,9 +160,11 @@ export interface ToolCallRowProps {
 /** A tool call: its one-line header, plus the detail it left behind. */
 export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCallRowProps): ReactNode {
   const palette = usePalette()
-  const { kind, title, status, locations, inputSummary, diff } = record
+  const { kind, title, status, locations, inputSummary, failureKind, diff } = record
   const genericWait = kind === "other" && title.trim().toLocaleLowerCase() === GENERIC_WAIT_TITLE
   const mcpToolTitle = formatMcpToolCallTitle(title)
+  const classifiedFailure = status === "failed" ? failureKind : undefined
+  const statusLabel = classifiedFailure ? TOOL_FAILURE_LABELS[classifiedFailure] : TOOL_STATUS_LABELS[status]
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
@@ -167,8 +181,12 @@ export function ToolCallRow({ record, diagnosticReporter, parserStatus }: ToolCa
           </>
         )}
         {inputSummary === undefined ? null : <span fg={palette.muted}>{`${TOOL_CALL_INPUT_SEPARATOR}${inputSummary}`}</span>}
-        <span fg={palette.muted}>{` · ${TOOL_STATUS_LABELS[status]}`}</span>
+        <span fg={palette.muted}>{` · ${statusLabel}`}</span>
       </text>
+
+      {classifiedFailure ? (
+        <text fg={palette.muted}>{`${CONNECTOR}${TOOL_FAILURE_GUIDANCE[classifiedFailure]}`}</text>
+      ) : null}
 
       {kind === "edit" && diff ? (
         <ToolCallDiffConnector diff={diff} diagnosticReporter={diagnosticReporter} parserStatus={parserStatus} />

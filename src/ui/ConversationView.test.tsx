@@ -655,6 +655,46 @@ describe("ConversationView streaming", () => {
 })
 
 describe("ConversationView tool calls", () => {
+  it("renders classified outcomes in transcript order without changing focus or surrounding messages", async () => {
+    const controller = createFakeController()
+    await actAsync(() => {
+      userMessage(controller, "claude-code", "before", "BEFORE_CLASSIFIED_TOOLS")
+      toolCall(controller, "claude-code", {
+        toolCallId: "capacity",
+        kind: "execute",
+        title: "mcp.kitten-ask-user.agent_run",
+        status: "failed",
+        failureKind: "temporary_capacity",
+      })
+      toolCall(controller, "claude-code", {
+        toolCallId: "unavailable",
+        kind: "execute",
+        title: "mcp.kitten-ask-user.ask_user",
+        status: "failed",
+        failureKind: "unavailable",
+      })
+      agentDelta(controller, "claude-code", "after", "AFTER_CLASSIFIED_TOOLS")
+      agentDelta(controller, "codex", "background", "UNFOCUSED_TRANSCRIPT_SENTINEL")
+    })
+
+    const { renderer, waitForFrame } = await renderConversation(controller, 120, 28)
+    const frame = await waitForFrame((candidate) => candidate.includes("AFTER_CLASSIFIED_TOOLS"))
+    const before = frame.indexOf("BEFORE_CLASSIFIED_TOOLS")
+    const capacity = frame.indexOf("temporary capacity")
+    const unavailable = frame.indexOf("This action cannot be completed.")
+    const after = frame.indexOf("AFTER_CLASSIFIED_TOOLS")
+
+    expect(before).toBeGreaterThanOrEqual(0)
+    expect(capacity).toBeGreaterThan(before)
+    expect(unavailable).toBeGreaterThan(capacity)
+    expect(after).toBeGreaterThan(unavailable)
+    expect(frame).toContain("Wait for a known terminal outcome before trying again manually.")
+    expect(frame).toContain("[selected] Claude Code")
+    expect(frame).not.toContain("UNFOCUSED_TRANSCRIPT_SENTINEL")
+
+    await destroyMounted(renderer)
+  })
+
   it("heads the row with `● Name(title) · status`, using both text and color for progress", async () => {
     const controller = createFakeController()
     const { renderer, waitForFrame, waitFor, captureSpans, captureCharFrame } = await renderConversation(controller)
