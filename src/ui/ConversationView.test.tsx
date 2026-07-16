@@ -244,8 +244,17 @@ describe("ConversationView turns", () => {
     expect(controller.store.getState().transcriptWindows["claude-code"]?.revealedTurnCount).toBe(48)
     expect(setup.renderer.root.findDescendantById(TRANSCRIPT_HISTORY_MARKER_ID)).toBeUndefined()
 
+    // Revealing prepends rows and restores the prior anchor on a timer. Let that
+    // restoration settle before moving to the top; otherwise its later scroll
+    // can overwrite the test's requested historical position.
+    await actAsync(async () => {
+      await sleep(0)
+    })
     await actAsync(() => scrollbox!.scrollTo(0))
-    const historical = await setup.waitForFrame((frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_0"))
+    const historical = await setup.waitForFrame(
+      (frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_0"),
+      { maxPasses: 200 },
+    )
     expect(historical).not.toContain("earlier turns hidden")
 
     await destroyMounted(setup.renderer)

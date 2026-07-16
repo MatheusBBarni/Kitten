@@ -369,6 +369,10 @@ describe("delegation pure consumer integration", () => {
       newSessionId: () => "integration-child",
       readBranch: async () => null,
       sendInitialTasks: false,
+      // This test owns controller launch and interaction behavior, not Git
+      // worktree provisioning. Keep it independent of a checkout's branch and
+      // worktree support so the injected child connection is always reached.
+      managedWorktreeProvisioner: inMemoryManagedWorktrees(),
       resolveHarnessCapability: () => ({
         status: "supported",
         profileId: "integration-profile",

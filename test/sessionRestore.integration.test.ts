@@ -15,6 +15,7 @@ import {
   composeHandoffBlocks,
   createHandoffEdits,
 } from "../src/app/handoff.ts"
+import type { ManagedWorktreeProvisioner } from "../src/app/managedWorktree.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
 import {
   evaluateExplorePolicy,
@@ -25,7 +26,9 @@ import type {
   ClarificationPayload,
   DomainSessionEvent,
   HandoffBundle,
+  ManagedWorktreeBinding,
   ProviderKind,
+  SessionId,
 } from "../src/core/types.ts"
 import {
   selectDelegationAggregateStatus,
@@ -134,6 +137,32 @@ function lifecycleRestoreConnection(id: ProviderKind, ordinal: number): Lifecycl
       return clarification(payload)
     },
     disposeCalls: () => disposals,
+  }
+}
+
+/** Keep controller restore coverage independent of the CI checkout's Git state. */
+function inMemoryManagedWorktrees(): ManagedWorktreeProvisioner {
+  return {
+    async provision({ parentCwd, ownerSessionId }) {
+      const binding: ManagedWorktreeBinding = {
+        kind: "managed",
+        id: `kw-${ownerSessionId}`,
+        repoRoot: parentCwd,
+        worktreePath: `${parentCwd}/.kitten-test/${ownerSessionId}`,
+        branch: `kitten/${ownerSessionId}`,
+        baseBranch: "main",
+        baseSha: "a".repeat(40),
+        ownerSessionId,
+        availability: "available",
+      }
+      return { kind: "provisioned", binding }
+    },
+    async reconcile(binding) {
+      return { kind: "available", binding }
+    },
+    async cleanup() {
+      return { kind: "removed" }
+    },
   }
 }
 
@@ -313,6 +342,7 @@ describe("writer-produced run restore", () => {
       newSessionId: () => "restore-owned-child",
       readBranch: async () => null,
       sendInitialTasks: false,
+      managedWorktreeProvisioner: inMemoryManagedWorktrees(),
       resolveHarnessCapability: () => ({
         status: "supported",
         profileId: "restore-lifecycle-test",
