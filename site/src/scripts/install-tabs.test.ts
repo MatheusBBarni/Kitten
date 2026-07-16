@@ -3,12 +3,12 @@ import { describe, expect, test } from "bun:test";
 import { activateInstallTab, bindInstallTabs } from "./install-tabs.ts";
 
 type TabHarness = HTMLButtonElement & {
-  readonly listeners: Record<string, () => void>;
+  readonly listeners: Record<string, (event?: KeyboardEvent) => void>;
 };
 
 function createTab(id: string, panelId: string): TabHarness {
   const attributes = new Map<string, string>([["aria-controls", panelId]]);
-  const listeners: Record<string, () => void> = {};
+  const listeners: Record<string, (event?: KeyboardEvent) => void> = {};
 
   return {
     id,
@@ -21,7 +21,7 @@ function createTab(id: string, panelId: string): TabHarness {
     setAttribute(name: string, value: string) {
       attributes.set(name, value);
     },
-    addEventListener(name: string, listener: () => void) {
+    addEventListener(name: string, listener: (event?: KeyboardEvent) => void) {
       listeners[name] = listener;
     },
     focus() {},
@@ -79,5 +79,66 @@ describe("install method tabs", () => {
     pnpm.listeners.click?.();
     expect(pnpm.getAttribute("aria-selected")).toBe("true");
     expect(panels[1]?.hidden).toBe(false);
+  });
+
+  test("moves focus and selection with every supported keyboard navigation key", () => {
+    const npm = createTab("npm-tab", "npm-panel");
+    const pnpm = createTab("pnpm-tab", "pnpm-panel");
+    const panels = [createPanel("npm-panel"), createPanel("pnpm-panel")];
+    const tabset = {
+      querySelectorAll(selector: string) {
+        if (selector === "[data-install-tab]") return [npm, pnpm];
+        if (selector === "[data-install-panel]") return panels;
+        return [];
+      },
+    };
+    const root = {
+      querySelectorAll: () => [tabset],
+    } as unknown as ParentNode;
+    const focused: string[] = [];
+    npm.focus = () => focused.push(npm.id);
+    pnpm.focus = () => focused.push(pnpm.id);
+    const event = (key: string) => {
+      let prevented = false;
+      return {
+        event: { key, preventDefault: () => { prevented = true; } } as KeyboardEvent,
+        wasPrevented: () => prevented,
+      };
+    };
+
+    bindInstallTabs(root);
+
+    for (const [tab, key, target] of [
+      [npm, "ArrowRight", pnpm],
+      [pnpm, "ArrowLeft", npm],
+      [pnpm, "Home", npm],
+      [npm, "End", pnpm],
+    ] as const) {
+      const navigation = event(key);
+      tab.listeners.keydown?.(navigation.event);
+      expect(navigation.wasPrevented()).toBe(true);
+      expect(focused.at(-1)).toBe(target.id);
+      expect(target.getAttribute("aria-selected")).toBe("true");
+    }
+  });
+
+  test("ignores unsupported keyboard input without preventing it", () => {
+    const npm = createTab("npm-tab", "npm-panel");
+    const panel = createPanel("npm-panel");
+    const tabset = {
+      querySelectorAll(selector: string) {
+        if (selector === "[data-install-tab]") return [npm];
+        if (selector === "[data-install-panel]") return [panel];
+        return [];
+      },
+    };
+    const root = { querySelectorAll: () => [tabset] } as unknown as ParentNode;
+    let prevented = false;
+
+    bindInstallTabs(root);
+    npm.listeners.keydown?.({ key: "PageDown", preventDefault: () => { prevented = true; } } as KeyboardEvent);
+
+    expect(prevented).toBe(false);
+    expect(panel.hidden).toBe(true);
   });
 });
