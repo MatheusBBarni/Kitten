@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.4.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.3.0...kitten-v0.4.0) (2026-07-16)
+
+
+### Features
+
+* add content-free explore telemetry ([f6ecb0e](https://github.com/MatheusBBarni/Kitten/commit/f6ecb0e4b13773e51989434ddeffc5e1173e1cdb))
+* add managed worktree review cleanup flow ([6ef4825](https://github.com/MatheusBBarni/Kitten/commit/6ef48250f7b2d2b072670fa9184c457b86b163a2))
+* add MCP orchestration, mid-turn steering, and transcript windowing ([a8fe010](https://github.com/MatheusBBarni/Kitten/commit/a8fe010ef40ad24439a8c1079d45d59f8bf5297d))
+* add safe explore handling to delegation dialog ([3d945c8](https://github.com/MatheusBBarni/Kitten/commit/3d945c8e5b7c43eed071b33d02fa7005a450c70c))
+* add strict agent_run MCP contract ([9a422c3](https://github.com/MatheusBBarni/Kitten/commit/9a422c37f7c9d8738ea1bc8bf3899c789908b003))
+* attest explore child launches ([3830a83](https://github.com/MatheusBBarni/Kitten/commit/3830a83a85db41131d29b346ddfcf6ac996b1f23))
+* clarify Ask User MCP status ([7af1c6b](https://github.com/MatheusBBarni/Kitten/commit/7af1c6b54b66937f974dc3fa0f89243bcf837f33))
+* compose bundled Kitten MCP child server ([8b7d032](https://github.com/MatheusBBarni/Kitten/commit/8b7d0321fbae728a56aa6fec59b6e0becbe26dc8))
+* disclose managed child launch and tab review identity ([7a5b2cd](https://github.com/MatheusBBarni/Kitten/commit/7a5b2cde542e4026a7d60d84458a42ab1bc723c0))
+* document Task Orchestrator archive and release plan ([ad5e83d](https://github.com/MatheusBBarni/Kitten/commit/ad5e83d721a1deebfdc5c93ba8e0112574d0a26e))
+* expose ask_user bridge and compact user messages ([#22](https://github.com/MatheusBBarni/Kitten/issues/22)) ([6bf52e8](https://github.com/MatheusBBarni/Kitten/commit/6bf52e88c59e3bee1d0431989dc3b2f58bf7052c))
+* harden managed worktree reconciliation and cleanup ([a419921](https://github.com/MatheusBBarni/Kitten/commit/a419921265f4b3e4e70a034784620aadaa7e7a60))
+* make delegated child launch transactional ([44737cc](https://github.com/MatheusBBarni/Kitten/commit/44737cc068f84080cfe8cb206f1334462c987524))
+* render active explore policy in session surfaces ([ab0b0b3](https://github.com/MatheusBBarni/Kitten/commit/ab0b0b38eb30f159bffb752994b744a84bb2ac4e))
+* reserve delegated explore capacity atomically ([886893d](https://github.com/MatheusBBarni/Kitten/commit/886893dcc93e37e52e8e9594c0646da5996ec726))
+
+
+### Fixes
+
+* await transcript anchor restoration ([f29af6c](https://github.com/MatheusBBarni/Kitten/commit/f29af6c488aaf65ca40bc2df0c4f925acfafe1ce))
+* certify harness delivery and preserve ask_user routes ([ed4f041](https://github.com/MatheusBBarni/Kitten/commit/ed4f0413abc444db23c04270a9bc7a9041584669))
+* complete showcase and delegated child cleanup ([5184a71](https://github.com/MatheusBBarni/Kitten/commit/5184a71a71fc2d5a466a886d840175ffb82878bc))
+* cover install tab keyboard branches ([6bc1dd7](https://github.com/MatheusBBarni/Kitten/commit/6bc1dd71a80df053f0dadb03fe6173a46329ffde))
+* enforce ask_user MCP prompts ([ce52df3](https://github.com/MatheusBBarni/Kitten/commit/ce52df34e599eb05aa716a32161266de1e9669b7))
+* improve clarification and tool activity feedback ([0a2e5a3](https://github.com/MatheusBBarni/Kitten/commit/0a2e5a3defdbcaed21509e7788bc8e0d5145e8be))
+* isolate CI integration fixtures ([d6f88f6](https://github.com/MatheusBBarni/Kitten/commit/d6f88f60e2a6b9150fdb17492a61096b47c32f18))
+* persist model defaults and improve MCP and clarification UI ([902a013](https://github.com/MatheusBBarni/Kitten/commit/902a013bf19e3f58ceeca78e0cf30a81ef3717a6))
+* polish cockpit UI and document ACP harness features ([21595b2](https://github.com/MatheusBBarni/Kitten/commit/21595b20a7c7cb647ee151c777d7018c65ea8e0f))
+* **release:** authenticate npm publishing ([d577e0b](https://github.com/MatheusBBarni/Kitten/commit/d577e0bcdb2540f11e31663e90dfa3c7cfb2663a))
+* **release:** include repository metadata for provenance ([fa5ac0c](https://github.com/MatheusBBarni/Kitten/commit/fa5ac0c3d20cda6afcf6c5611a3b3530c36655b9))
+* **release:** use repaired source for recovery ([535f10f](https://github.com/MatheusBBarni/Kitten/commit/535f10fad8d7ebf1cd914768a480466e1759906e))
+* repair delegated launches and transcript windowing ([3f618ed](https://github.com/MatheusBBarni/Kitten/commit/3f618ed34205ce6a862ed951998127fa86c3d285))
+* repair delegated launches and transcript windowing ([000e268](https://github.com/MatheusBBarni/Kitten/commit/000e26827bd320c6e433bd0fa4a3c82f2f36e3a9))
+* stabilize delegated launch and transcript test ([40a282f](https://github.com/MatheusBBarni/Kitten/commit/40a282f7e4dcb73fcddca92a3d9896c64515b2d7))
+* stabilize windowed transcript test in CI ([35f80e5](https://github.com/MatheusBBarni/Kitten/commit/35f80e566703ffa92d994475b89a407a2923f30e))
+
 ## [0.3.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.2.1...kitten-v0.3.0) (2026-07-14)
 
 
