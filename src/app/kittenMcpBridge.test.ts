@@ -13,6 +13,8 @@ import {
   ASK_USER_MCP_MODE_FLAG,
   ASK_USER_MCP_SERVER_NAME,
   createKittenMcpBridge,
+  KittenMcpBridgeError,
+  MAX_KITTEN_MCP_CALLS_PER_ROUTE,
   MAX_KITTEN_MCP_CONCURRENT_CALLS,
   MAX_ASK_USER_FRAME_BYTES,
   MAX_ASK_USER_TEXT_BYTES,
@@ -55,6 +57,7 @@ interface PendingClarification {
   readonly generation: number
   readonly form: ClarificationPayload
   readonly requestId: string
+  readonly targetedCancellations: string[]
   settle(outcome: ClarificationOutcome): void
 }
 
@@ -71,8 +74,25 @@ function createCoordinatorFake() {
       const outcome = new Promise<ClarificationOutcome>((resolve) => {
         settle = resolve
       })
-      pending.push({ sessionId, generation, form, requestId, settle })
-      return { requestId, outcome, cancel: () => false, timeout: () => false }
+      let settled = false
+      const targetedCancellations: string[] = []
+      const settleOnce = (result: ClarificationOutcome): boolean => {
+        if (settled) return false
+        settled = true
+        settle(result)
+        return true
+      }
+      pending.push({ sessionId, generation, form, requestId, targetedCancellations, settle: settleOnce })
+      return {
+        requestId,
+        outcome,
+        cancel(reason) {
+          if (!settleOnce({ kind: "cancelled" })) return false
+          targetedCancellations.push(reason)
+          return true
+        },
+        timeout: () => settleOnce({ kind: "timed_out" }),
+      }
     },
     cancelClarifications(sessionId: SessionId, generation: number, reason: string): void {
       cancellations.push({ sessionId, generation, reason })
@@ -213,6 +233,14 @@ async function waitForPending(
     await Bun.sleep(5)
   }
   throw new Error(`Timed out waiting for ${count} bridge clarification request(s)`)
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return
+    await Bun.sleep(5)
+  }
+  throw new Error("Timed out waiting for bridge state")
 }
 
 describe("KittenMcpBridge registration", () => {
@@ -393,7 +421,7 @@ describe("KittenMcpBridge authenticated local IPC", () => {
     }
   })
 
-  it("rejects a competing stream before dispatching its tool family", async () => {
+  it("admits distinct same-route sockets for a pending agent run and ask", async () => {
     let release!: () => void
     const pending = new Promise<void>((resolve) => {
       release = resolve
@@ -417,24 +445,37 @@ describe("KittenMcpBridge authenticated local IPC", () => {
     })
     const server = bridge.register({ sessionId: "alpha", generation: 1 })
     const first = await connectClient(endpointOf(server))
-    const competing = await connectClient(endpointOf(server))
+    const ask = await connectClient(endpointOf(server))
     try {
       first.send(agentRunFrame(server, "active-agent"))
       await Bun.sleep(0)
-      competing.send(routeFrame(server, "competing-ask"))
-      expect(await competing.next()).toEqual({
-        kind: "error",
-        callId: "competing-ask",
-        error: "busy",
-      })
+      ask.send(routeFrame(server, "concurrent-ask"))
+      await waitForPending(fake, 1)
       expect(agentCalls).toEqual(["start"])
-      expect(fake.pending).toEqual([])
-      expect(failures).toContain("connection_stream_limit")
+      expect(fake.pending).toHaveLength(1)
+
+      fake.pending[0]!.settle({ kind: "skipped" })
+      expect(await ask.next()).toEqual({
+        kind: "result",
+        callId: "concurrent-ask",
+        outcome: { kind: "skipped" },
+      })
       release()
-      await first.next()
+      expect(await first.next()).toEqual({
+        kind: "agent_run_result",
+        callId: "active-agent",
+        result: {
+          operation: "start",
+          children: [
+            { child_id: "child-1", status: "starting" },
+            { child_id: "child-2", status: "starting" },
+          ],
+        },
+      })
+      expect(failures).toEqual([])
     } finally {
       first.close()
-      competing.close()
+      ask.close()
       await bridge.dispose()
     }
   })
@@ -474,6 +515,33 @@ describe("KittenMcpBridge authenticated local IPC", () => {
       expect(failures).toContain("connection_duplicate_call_id")
       release()
       await client.next()
+    } finally {
+      client.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("preserves an authoritative controller busy outcome without matching error text", async () => {
+    const { bridge, failures } = createBridge({
+      agentRunControl: {
+        async start() {
+          throw new KittenMcpBridgeError("busy")
+        },
+        poll() {
+          return []
+        },
+      },
+    })
+    const server = bridge.register({ sessionId: "alpha", generation: 1 })
+    const client = await connectClient(endpointOf(server))
+    try {
+      client.send(agentRunFrame(server, "controller-busy"))
+      expect(await client.next()).toEqual({
+        kind: "error",
+        callId: "controller-busy",
+        error: "busy",
+      })
+      expect(failures).toContain("connection_concurrency_limit")
     } finally {
       client.close()
       await bridge.dispose()
@@ -598,23 +666,46 @@ describe("KittenMcpBridge authenticated local IPC", () => {
     }
   })
 
-  it("bounds concurrent calls without queueing the excess form", async () => {
+  it("admits four distinct sockets, rejects a fifth without queueing, and recovers capacity", async () => {
     const { bridge, fake, failures } = createBridge()
     const server = bridge.register({ sessionId: "alpha", generation: 1 })
-    const client = await connectClient(endpointOf(server))
+    const clients = await Promise.all(Array.from(
+      { length: MAX_KITTEN_MCP_CONCURRENT_CALLS + 1 },
+      () => connectClient(endpointOf(server)),
+    ))
     try {
-      for (let index = 0; index <= MAX_KITTEN_MCP_CONCURRENT_CALLS; index += 1) {
-        client.send(routeFrame(server, `call-${index}`))
+      for (let index = 0; index < MAX_KITTEN_MCP_CONCURRENT_CALLS; index += 1) {
+        clients[index]!.send(routeFrame(server, `call-${index}`))
       }
-      expect(await client.next()).toEqual({
+      await waitForPending(fake, MAX_KITTEN_MCP_CONCURRENT_CALLS)
+
+      const excess = clients[MAX_KITTEN_MCP_CONCURRENT_CALLS]!
+      excess.send(routeFrame(server, "call-excess"))
+      expect(await excess.next()).toEqual({
         kind: "error",
-        callId: `call-${MAX_KITTEN_MCP_CONCURRENT_CALLS}`,
+        callId: "call-excess",
         error: "busy",
       })
       expect(fake.pending).toHaveLength(MAX_KITTEN_MCP_CONCURRENT_CALLS)
       expect(failures).toContain("connection_concurrency_limit")
+
+      fake.pending[0]!.settle({ kind: "skipped" })
+      expect(await clients[0]!.next()).toEqual({
+        kind: "result",
+        callId: "call-0",
+        outcome: { kind: "skipped" },
+      })
+
+      excess.send(routeFrame(server, "call-after-settlement"))
+      await waitForPending(fake, MAX_KITTEN_MCP_CONCURRENT_CALLS + 1)
+      fake.pending.at(-1)!.settle({ kind: "timed_out" })
+      expect(await excess.next()).toEqual({
+        kind: "result",
+        callId: "call-after-settlement",
+        outcome: { kind: "timed_out" },
+      })
     } finally {
-      client.close()
+      for (const client of clients) client.close()
       await bridge.dispose()
     }
   })
@@ -665,6 +756,56 @@ describe("KittenMcpBridge authenticated local IPC", () => {
     } finally {
       alpha.close()
       beta.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("rejects a socket that attempts to switch routes without affecting the target route", async () => {
+    const { bridge, fake } = createBridge()
+    const alphaServer = bridge.register({ sessionId: "alpha", generation: 1 })
+    const betaServer = bridge.register({ sessionId: "beta", generation: 1 })
+    const switching = await connectClient(endpointOf(alphaServer))
+    const beta = await connectClient(endpointOf(betaServer))
+    try {
+      switching.send(routeFrame(alphaServer, "alpha-pending"))
+      await waitForPending(fake, 1)
+      switching.send(routeFrame(betaServer, "cross-route"))
+      expect(await switching.next()).toEqual({
+        kind: "error",
+        callId: "cross-route",
+        error: "unavailable",
+      })
+      await waitUntil(() => fake.pending[0]!.targetedCancellations.length === 1)
+
+      beta.send(routeFrame(betaServer, "beta-live"))
+      await waitForPending(fake, 2)
+      fake.pending[1]!.settle({ kind: "skipped" })
+      expect(await beta.next()).toEqual({
+        kind: "result",
+        callId: "beta-live",
+        outcome: { kind: "skipped" },
+      })
+    } finally {
+      switching.close()
+      beta.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("retains the 256-call route lifetime bound", async () => {
+    let callId = 0
+    const { bridge, fake } = createBridge({ newCallId: () => `lifetime-${++callId}` })
+    const server = bridge.register({ sessionId: "alpha", generation: 1 })
+    const capability = server.env[ASK_USER_MCP_CAPABILITY_ENV]!
+    try {
+      for (let index = 0; index < MAX_KITTEN_MCP_CALLS_PER_ROUTE; index += 1) {
+        const outcome = bridge.ask(capability, FORM)
+        fake.pending[index]!.settle({ kind: "skipped" })
+        expect(await outcome).toEqual({ kind: "skipped" })
+      }
+      await expect(bridge.ask(capability, FORM)).rejects.toMatchObject({ code: "busy" })
+      expect(fake.pending).toHaveLength(MAX_KITTEN_MCP_CALLS_PER_ROUTE)
+    } finally {
       await bridge.dispose()
     }
   })
@@ -741,23 +882,170 @@ describe("KittenMcpBridge lifecycle and diagnostics", () => {
     for (const client of clients) client.close()
   })
 
-  it("treats an authenticated child disconnect as provider failure", async () => {
-    const { bridge, fake } = createBridge()
+  it("cancels only a disconnected socket's ask and keeps other same-route work live", async () => {
+    let releaseAgent!: () => void
+    const agentPending = new Promise<void>((resolve) => {
+      releaseAgent = resolve
+    })
+    const { bridge, fake } = createBridge({
+      agentRunControl: {
+        async start() {
+          await agentPending
+          return [
+            { childId: "child-1", status: "starting" },
+            { childId: "child-2", status: "starting" },
+          ]
+        },
+        poll() {
+          return []
+        },
+      },
+    })
     const server = bridge.register({ sessionId: "alpha", generation: 6 })
     const endpoint = endpointOf(server)
-    const client = await connectClient(endpoint)
-    client.send(routeFrame(server, "pending"))
-    await Bun.sleep(0)
-    client.close()
-    await Bun.sleep(10)
-    expect(fake.cancellations).toContainEqual({
-      sessionId: "alpha",
-      generation: 6,
-      reason: "connection_error",
+    const agent = await connectClient(endpoint)
+    const ask = await connectClient(endpoint)
+    const later = await connectClient(endpoint)
+    try {
+      agent.send(agentRunFrame(server, "pending-agent"))
+      ask.send(routeFrame(server, "pending-ask"))
+      await waitForPending(fake, 1)
+
+      ask.close()
+      await waitUntil(() => fake.pending[0]!.targetedCancellations.length === 1)
+      expect(fake.pending[0]!.targetedCancellations).toEqual(["connection_error"])
+      expect(fake.cancellations).toEqual([])
+      expect(existsSync(endpoint)).toBe(true)
+
+      later.send(routeFrame(server, "later-ask"))
+      await waitForPending(fake, 2)
+      fake.pending[1]!.settle({ kind: "skipped" })
+      expect(await later.next()).toEqual({
+        kind: "result",
+        callId: "later-ask",
+        outcome: { kind: "skipped" },
+      })
+
+      releaseAgent()
+      expect(await agent.next()).toMatchObject({ kind: "agent_run_result", callId: "pending-agent" })
+    } finally {
+      releaseAgent()
+      agent.close()
+      ask.close()
+      later.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("isolates a socket error to that socket's pending clarification", async () => {
+    let handlers: KittenMcpBridgeListenerHandlers | undefined
+    const { bridge, fake } = createBridge({
+      platform: "win32",
+      listen(_endpoint, received) {
+        handlers = received
+        return { stop() {} }
+      },
     })
-    expect(existsSync(endpoint)).toBe(false)
-    await expect(forwardAgentRunToBridge(START_REQUEST, server.env)).rejects.toThrow("unavailable")
-    await bridge.dispose()
+    const server = bridge.register({ sessionId: "alpha", generation: 7 })
+    const writes = new Map<object, string[]>()
+    const makeSocket = () => {
+      const socket = {
+        write(data: string) {
+          writes.get(socket)!.push(data)
+          return data.length
+        },
+        end() {},
+      }
+      writes.set(socket, [])
+      handlers!.open(socket)
+      return socket
+    }
+    const failed = makeSocket()
+    const unaffected = makeSocket()
+    const later = makeSocket()
+    try {
+      handlers!.data(failed, new TextEncoder().encode(`${JSON.stringify(routeFrame(server, "failed-ask"))}\n`))
+      handlers!.data(unaffected, new TextEncoder().encode(`${JSON.stringify(routeFrame(server, "live-ask"))}\n`))
+      expect(fake.pending).toHaveLength(2)
+
+      handlers!.error(failed)
+      expect(fake.pending[0]!.targetedCancellations).toEqual(["connection_error"])
+      expect(fake.pending[1]!.targetedCancellations).toEqual([])
+      expect(fake.cancellations).toEqual([])
+
+      handlers!.data(later, new TextEncoder().encode(`${JSON.stringify(routeFrame(server, "later-ask"))}\n`))
+      expect(fake.pending).toHaveLength(3)
+      fake.pending[1]!.settle({ kind: "skipped" })
+      fake.pending[2]!.settle({ kind: "timed_out" })
+      await Bun.sleep(0)
+      expect(writes.get(unaffected)!.map((frame) => JSON.parse(frame))).toEqual([{
+        kind: "result",
+        callId: "live-ask",
+        outcome: { kind: "skipped" },
+      }])
+      expect(writes.get(later)!.map((frame) => JSON.parse(frame))).toEqual([{
+        kind: "result",
+        callId: "later-ask",
+        outcome: { kind: "timed_out" },
+      }])
+    } finally {
+      await bridge.dispose()
+    }
+  })
+
+  it("does not close the route or replay agent_run.start after its socket disconnects", async () => {
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let starts = 0
+    const { bridge } = createBridge({
+      agentRunControl: {
+        async start() {
+          starts += 1
+          await pending
+          return [
+            { childId: "child-1", status: "starting" },
+            { childId: "child-2", status: "starting" },
+          ]
+        },
+        poll(_route, childIds) {
+          return childIds.map((childId) => ({ childId, status: "running" as const }))
+        },
+      },
+    })
+    const server = bridge.register({ sessionId: "alpha", generation: 8 })
+    const endpoint = endpointOf(server)
+    const starting = await connectClient(endpoint)
+    const later = await connectClient(endpoint)
+    try {
+      starting.send(agentRunFrame(server, "start-on-lost-socket"))
+      await waitUntil(() => starts === 1)
+      starting.close()
+      await Bun.sleep(10)
+      release()
+      await Bun.sleep(0)
+
+      later.send(agentRunFrame(server, "later-poll", POLL_REQUEST))
+      expect(await later.next()).toEqual({
+        kind: "agent_run_result",
+        callId: "later-poll",
+        result: {
+          operation: "poll",
+          children: [
+            { child_id: "child-2", status: "running" },
+            { child_id: "child-1", status: "running" },
+          ],
+        },
+      })
+      expect(starts).toBe(1)
+      expect(existsSync(endpoint)).toBe(true)
+    } finally {
+      release()
+      starting.close()
+      later.close()
+      await bridge.dispose()
+    }
   })
 
   it("emits only bounded reason enums for registration and connection failures", async () => {

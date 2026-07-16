@@ -4230,7 +4230,6 @@ describe("createSessionController - route-authorized agent runs", () => {
     const cases: ReadonlyArray<readonly [KittenMcpBridgeFailureReason, McpBridgeFailureCategory]> = [
       ["connection_concurrency_limit", "capacity_limited"],
       ["connection_call_limit", "capacity_limited"],
-      ["connection_stream_limit", "capacity_limited"],
       ["connection_frame_too_large", "invalid_request"],
       ["connection_malformed_frame", "invalid_request"],
       ["connection_invalid_request", "invalid_request"],

@@ -191,6 +191,7 @@ describe("ask_user same-binary child", () => {
     const pair = createInMemoryTransportPair()
     let agent!: MockAgentHandle
     let continuedOutcome: unknown
+    let delegatedOutcome: unknown
     agent = startMockAgent(pair.agent, {
       sessionId: "fake-acp-session",
       onPrompt: async (_prompt, ctx) => {
@@ -214,21 +215,31 @@ describe("ask_user same-binary child", () => {
         const client = new Client({ name: "fake-acp-agent", version: "1.0.0" })
         await client.connect(transport)
         try {
-          const response = await client.callTool({
-            name: ASK_USER_MCP_TOOL_NAME,
-            arguments: {
-              title: "Deployment choice",
-              fields: [{
-                id: "strategy",
-                question: "Which deployment strategy should this turn use?",
-                options: [
-                  { id: "safe", label: "Safe rollout" },
-                  { id: "fast", label: "Fast rollout" },
-                ],
-              }],
-            },
-          })
+          const [response, agentRunResponse] = await Promise.all([
+            client.callTool({
+              name: ASK_USER_MCP_TOOL_NAME,
+              arguments: {
+                title: "Deployment choice",
+                fields: [{
+                  id: "strategy",
+                  question: "Which deployment strategy should this turn use?",
+                  options: [
+                    { id: "safe", label: "Safe rollout" },
+                    { id: "fast", label: "Fast rollout" },
+                  ],
+                }],
+              },
+            }),
+            client.callTool({
+              name: AGENT_RUN_MCP_TOOL_NAME,
+              arguments: {
+                operation: "start",
+                tasks: [{ task: "Inspect concurrency", desired_outcome: "Return mixed-call evidence" }],
+              },
+            }),
+          ])
           continuedOutcome = response.structuredContent
+          delegatedOutcome = agentRunResponse.structuredContent
           const outcome = response.structuredContent as { outcome?: unknown } | undefined
           await ctx.update({
             sessionUpdate: "agent_message_chunk",
@@ -241,10 +252,13 @@ describe("ask_user same-binary child", () => {
     })
 
     let connection: AgentConnection | null = null
+    let parentConnectionCreated = false
     const controller = await createSessionController({
       config,
       cwd: process.cwd(),
       createConnection(resolved) {
+        if (parentConnectionCreated) return passiveAgentConnection(resolved.id)
+        parentConnectionCreated = true
         connection = createAgentConnection({
           config: resolved,
           transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
@@ -254,7 +268,10 @@ describe("ask_user same-binary child", () => {
         return connection
       },
       createShellRuntime: createInMemoryShellRuntimeFactory().factory,
+      managedWorktreeProvisioner: inMemoryManagedWorktrees(),
+      newSessionId: () => "mixed-call-child",
       readBranch: async () => null,
+      resolveExploreCapability: integrationExploreCapability,
       resolveHarnessCapability: () => ({
         status: "supported",
         profileId: "ask-user-integration",
@@ -271,6 +288,7 @@ describe("ask_user same-binary child", () => {
       height: 28,
       kittyKeyboard: true,
     })
+    let disposed = false
 
     try {
       const prompt = controller.actions.sendPrompt("ask before continuing", "codex")
@@ -295,14 +313,27 @@ describe("ask_user same-binary child", () => {
           },
         },
       })
+      expect(delegatedOutcome).toEqual({
+        operation: "start",
+        children: [{ child_id: "mixed-call-child", status: "running" }],
+      })
       expect(controller.store.getState().sessions.codex?.turns.at(-1)).toMatchObject({
         kind: "agent",
         text: "continued:submitted",
       })
       expect(connection).not.toBeNull()
+
+      await controller.dispose()
+      disposed = true
+      const lateAfterDispose = await callGeneratedAgentRun(agent, {
+        operation: "poll",
+        child_ids: ["mixed-call-child"],
+      })
+      expect(lateAfterDispose.isError).toBe(true)
+      expect(lateAfterDispose.structuredContent).toBeUndefined()
     } finally {
       await destroyMounted(setup.renderer)
-      await controller.dispose()
+      if (!disposed) await controller.dispose()
     }
   })
 
@@ -337,6 +368,7 @@ describe("ask_user same-binary child", () => {
     }
     const agents = {} as Record<"claude-code" | "codex", MockAgentHandle>
     const outcomes = {} as Record<"claude-code" | "codex", unknown>
+    const delegatedStarts = {} as Record<"claude-code" | "codex", Awaited<ReturnType<typeof callGeneratedAgentRun>>>
     const parentConnections = new Set<"claude-code" | "codex">()
     let childOrdinal = 0
     for (const provider of ["claude-code", "codex"] as const) {
@@ -345,13 +377,21 @@ describe("ask_user same-binary child", () => {
       agents[provider] = startMockAgent(pairs[provider].agent, {
         sessionId: `${provider}-fake-session`,
         onPrompt: async (_prompt, ctx) => {
-          outcomes[provider] = await callGeneratedAskUser(agents[provider], {
-            fields: [{
-              id: fieldId,
-              question: `Question for ${provider}`,
-              options: [{ id: optionId, label: `Answer for ${provider}` }],
-            }],
-          })
+          const [askOutcome, delegatedStart] = await Promise.all([
+            callGeneratedAskUser(agents[provider], {
+              fields: [{
+                id: fieldId,
+                question: `Question for ${provider}`,
+                options: [{ id: optionId, label: `Answer for ${provider}` }],
+              }],
+            }),
+            callGeneratedAgentRun(agents[provider], {
+              operation: "start",
+              tasks: [{ task: `Inspect ${provider}`, desired_outcome: `Report ${provider}` }],
+            }),
+          ])
+          outcomes[provider] = askOutcome
+          delegatedStarts[provider] = delegatedStart
           await ctx.update({
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: `continued:${provider}` },
@@ -447,13 +487,8 @@ describe("ask_user same-binary child", () => {
         })
       }
 
-      const starts = await Promise.all((["claude-code", "codex"] as const).map((provider) =>
-        callGeneratedAgentRun(agents[provider], {
-          operation: "start",
-          tasks: [{ task: `Inspect ${provider}`, desired_outcome: `Report ${provider}` }],
-        })
-      ))
-      const childIds = starts.map((result) => {
+      const childIds = (["claude-code", "codex"] as const).map((provider) => {
+        const result = delegatedStarts[provider]
         expect(result.isError).not.toBe(true)
         const content = result.structuredContent as { children: Array<{ child_id: string }> }
         return content.children[0]!.child_id
@@ -489,6 +524,14 @@ describe("ask_user same-binary child", () => {
       expect(codexCross.isError).toBe(true)
       expect(claudeCross.structuredContent).toBeUndefined()
       expect(codexCross.structuredContent).toBeUndefined()
+
+      await controller.actions.startNewRun()
+      const staleAfterReplacement = await callGeneratedAgentRun(agents["claude-code"], {
+        operation: "poll",
+        child_ids: [childIds[0]],
+      })
+      expect(staleAfterReplacement.isError).toBe(true)
+      expect(staleAfterReplacement.structuredContent).toBeUndefined()
     } finally {
       await controller.dispose()
     }
@@ -561,7 +604,7 @@ async function callGeneratedAgentRun(
   }
 }
 
-function passiveAgentConnection(id: "claude-code" | "codex"): AgentConnection {
+function passiveAgentConnection(id: AgentConnection["id"]): AgentConnection {
   return {
     id,
     async connect() {

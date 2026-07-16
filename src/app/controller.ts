@@ -2989,7 +2989,6 @@ function mcpBridgeFailureCategory(reason: KittenMcpBridgeFailureReason): McpBrid
   switch (reason) {
     case "connection_concurrency_limit":
     case "connection_call_limit":
-    case "connection_stream_limit":
       return "capacity_limited"
     case "connection_frame_too_large":
     case "connection_malformed_frame":
