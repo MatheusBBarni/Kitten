@@ -26,6 +26,10 @@ import {
 import type { StatuslinePreference } from "../core/statusline.ts"
 import { attentionConversationIds } from "../core/workspace.ts"
 import type { PromptHistoryState } from "../core/promptHistory.ts"
+import {
+  projectTranscript,
+  type TranscriptProjection,
+} from "../core/transcriptProjection.ts"
 import type {
   ExploreDenialReason,
   ExplorePolicySnapshot,
@@ -79,6 +83,7 @@ import type {
   Selector,
   StatuslineOverlay,
   TabDialogOverlay,
+  TranscriptWindowState,
 } from "./appStore.ts"
 
 /**
@@ -96,6 +101,12 @@ const EMPTY_PENDING_DIFFS: PendingDiff[] = []
 const EMPTY_REFERENCED_FILES = new Map<string, "read" | "edited">()
 const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
 const EMPTY_PROMPT_HISTORY: PromptHistoryState = { entries: [], cursor: null }
+const EMPTY_ACTIVE_TOOL_CALL_IDS: readonly string[] = []
+const DEFAULT_TRANSCRIPT_WINDOW: TranscriptWindowState = Object.freeze({
+  revealedTurnCount: 0,
+  detachedFromLive: false,
+  scrollTop: null,
+})
 const EMPTY_STEERING_STATUS: SteeringStatus = Object.freeze({
   phase: "idle",
   queueCount: 0,
@@ -439,6 +450,101 @@ export const selectSessionState =
 export const selectFocusedSession: Selector<SessionState | null> = (state) => {
   const sessionId = state.workspace.selectedVisibleId
   return sessionId ? (state.sessions[sessionId] ?? null) : null
+}
+
+/** Fixed policy inputs supplied by the resolved experiment configuration. */
+export interface TranscriptProjectionOptions {
+  readonly enabled: boolean
+  readonly tailTurnCount: number
+}
+
+/** One session's ephemeral transcript presentation state. */
+export const selectSessionTranscriptWindow =
+  (sessionId: SessionId | null): Selector<TranscriptWindowState> =>
+  (state) =>
+    (sessionId ? state.transcriptWindows[sessionId] : undefined) ?? DEFAULT_TRANSCRIPT_WINDOW
+
+/** The selected session's ephemeral transcript presentation state. */
+export const selectFocusedTranscriptWindow: Selector<TranscriptWindowState> = (state) => {
+  const sessionId = state.workspace.selectedVisibleId
+  return (sessionId ? state.transcriptWindows[sessionId] : undefined) ?? DEFAULT_TRANSCRIPT_WINDOW
+}
+
+/**
+ * Memoized projection for one addressed session. Unrelated sessions, focus changes,
+ * and overlays without a matching approval tool preserve the result reference.
+ */
+export const selectSessionTranscriptProjection = (
+  sessionId: SessionId | null,
+  options: TranscriptProjectionOptions,
+): Selector<TranscriptProjection> =>
+  createTranscriptProjectionSelector(() => sessionId, options)
+
+/**
+ * Memoized projection for the selected conversation. A background stream leaves
+ * every selected-session input unchanged, so focused subscribers remain silent.
+ */
+export const selectFocusedTranscriptProjection = (
+  options: TranscriptProjectionOptions,
+): Selector<TranscriptProjection> =>
+  createTranscriptProjectionSelector((state) => state.workspace.selectedVisibleId, options)
+
+function createTranscriptProjectionSelector(
+  resolveSessionId: (state: AppState) => SessionId | null,
+  options: TranscriptProjectionOptions,
+): Selector<TranscriptProjection> {
+  let previousTurns: readonly Turn[] | undefined
+  let previousStatus: SessionStatus | undefined
+  let previousRevealedTurnCount: number | undefined
+  let previousApprovalToolCallId: string | null | undefined
+  let previousProjection: TranscriptProjection | undefined
+
+  return (state) => {
+    const sessionId = resolveSessionId(state)
+    const session = sessionId ? state.sessions[sessionId] : undefined
+    const turns = session?.turns ?? EMPTY_TURNS
+    const transcriptWindow = sessionId
+      ? (state.transcriptWindows[sessionId] ?? DEFAULT_TRANSCRIPT_WINDOW)
+      : DEFAULT_TRANSCRIPT_WINDOW
+    const approval = state.overlays.approval
+    const status = options.enabled ? (session?.status ?? "idle") : "idle"
+    const revealedTurnCount = options.enabled ? transcriptWindow.revealedTurnCount : 0
+    const approvalToolCallId = options.enabled && approval?.sessionId === sessionId
+      ? approval.request.toolCall.toolCallId
+      : null
+
+    if (
+      previousProjection &&
+      previousTurns === turns &&
+      previousStatus === status &&
+      previousRevealedTurnCount === revealedTurnCount &&
+      previousApprovalToolCallId === approvalToolCallId
+    ) {
+      return previousProjection
+    }
+
+    previousTurns = turns
+    previousStatus = status
+    previousRevealedTurnCount = revealedTurnCount
+    previousApprovalToolCallId = approvalToolCallId
+    previousProjection = projectTranscript({
+      turns,
+      enabled: options.enabled,
+      revealedTurnCount,
+      protection: {
+        tailTurnCount: options.tailTurnCount,
+        activeStreamingMessageId: status === "working" ? streamingTailMessageId(turns) : null,
+        activeToolCallIds: EMPTY_ACTIVE_TOOL_CALL_IDS,
+        approvalToolCallId,
+      },
+    })
+    return previousProjection
+  }
+}
+
+function streamingTailMessageId(turns: readonly Turn[]): string | null {
+  const tail = turns[turns.length - 1]
+  return tail?.kind === "agent" ? tail.messageId : null
 }
 
 /** One session's lifecycle status. The status strip subscribes to this per session. */

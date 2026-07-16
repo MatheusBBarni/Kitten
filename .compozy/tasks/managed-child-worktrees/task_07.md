@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Disclose managed launch semantics and tab identity
 type: frontend
 complexity: medium
@@ -27,11 +27,11 @@ Explain the committed-base contract in the delegation dialog and add one compact
 </requirements>
 
 ## Subtasks
-- [ ] Add committed-base and dirty-work exclusion disclosure to child launch.
-- [ ] Preserve fail-soft dialog behavior around provisioning outcomes.
-- [ ] Render compact managed/review tab identity from the selector presentation.
-- [ ] Preserve narrow-layout overflow and ordinary child labeling.
-- [ ] Add mounted dialog and tab coverage.
+- [x] Add committed-base and dirty-work exclusion disclosure to child launch.
+- [x] Preserve fail-soft dialog behavior around provisioning outcomes.
+- [x] Render compact managed/review tab identity from the selector presentation.
+- [x] Preserve narrow-layout overflow and ordinary child labeling.
+- [x] Add mounted dialog and tab coverage.
 
 ## Implementation Details
 
@@ -58,11 +58,11 @@ Consume existing `ControllerActions` and the shared selector presentation descri
 
 ## Tests
 - Unit tests:
-  - [ ] Launch dialog visibly discloses committed HEAD and dirty-work exclusion.
-  - [ ] Existing validation, pending, and generic failure behavior remains unchanged.
-  - [ ] Managed/review tab cue is readable without color and ordinary tabs remain unchanged.
+  - [x] Launch dialog visibly discloses committed HEAD and dirty-work exclusion.
+  - [x] Existing validation, pending, and generic failure behavior remains unchanged.
+  - [x] Managed/review tab cue is readable without color and ordinary tabs remain unchanged.
 - Integration tests:
-  - [ ] Terminal and unavailable selector states render compactly while Sessions remains discoverable in narrow layouts.
+  - [x] Terminal and unavailable selector states render compactly while Sessions remains discoverable in narrow layouts.
 - Test coverage target: >=80%
 - All tests must pass
 

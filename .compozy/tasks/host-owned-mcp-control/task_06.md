@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Wire agent_run lifecycle composition and end-to-end coverage
 type: backend
 complexity: high
@@ -28,10 +28,10 @@ Complete lifecycle wiring for the generalized generated MCP declaration and prov
 
 ## Subtasks
 
-- [ ] 6.1 Complete generalized bridge/control composition in every controller lifecycle path.
-- [ ] 6.2 Preserve declaration caching, user-server order, and generation-specific capabilities.
-- [ ] 6.3 Expand same-binary stdio integration for both bundled MCP tools.
-- [ ] 6.4 Exercise multi-provider fake-ACP child lifecycle and route invalidation behavior.
+- [x] 6.1 Complete generalized bridge/control composition in every controller lifecycle path.
+- [x] 6.2 Preserve declaration caching, user-server order, and generation-specific capabilities.
+- [x] 6.3 Expand same-binary stdio integration for both bundled MCP tools.
+- [x] 6.4 Exercise multi-provider fake-ACP child lifecycle and route invalidation behavior.
 
 ## Implementation Details
 
@@ -64,13 +64,13 @@ Follow the TechSpec “Integration Points,” “Testing Approach,” and “Tec
 ## Tests
 
 - Unit tests:
-  - [ ] Fresh, dynamic, and restored generations each receive one generated declaration after all configured user MCP declarations.
-  - [ ] Replacement, close, provider error, restore reset, and disposal invalidate only their matching routes and settle no stale callback.
+  - [x] Fresh, dynamic, and restored generations each receive one generated declaration after all configured user MCP declarations.
+  - [x] Replacement, close, provider error, restore reset, and disposal invalidate only their matching routes and settle no stale callback.
 - Integration tests:
-  - [ ] A real stdio child lists `ask_user` and `agent_run`, executes an authenticated agent-run call, and produces protocol-only stdout.
-  - [ ] Two concurrent provider sessions retain distinct capabilities, preserve user-server ordering, and cannot poll each other’s child IDs.
-  - [ ] Fake ACP drives a four-child start through running, `needs_input`, finished, and failed snapshots visible in the normal workspace projection.
-  - [ ] Replacing a parent generation makes the former route unavailable for both start and poll.
+  - [x] A real stdio child lists `ask_user` and `agent_run`, executes an authenticated agent-run call, and produces protocol-only stdout.
+  - [x] Two concurrent provider sessions retain distinct capabilities, preserve user-server ordering, and cannot poll each other’s child IDs.
+  - [x] Fake ACP drives a four-child start through running, `needs_input`, finished, and failed snapshots visible in the normal workspace projection.
+  - [x] Replacing a parent generation makes the former route unavailable for both start and poll.
 - Test coverage target: >=80%
 - All tests must pass
 

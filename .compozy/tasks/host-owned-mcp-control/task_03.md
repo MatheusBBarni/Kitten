@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Generalize the authenticated Kitten MCP bridge
 type: backend
 complexity: high

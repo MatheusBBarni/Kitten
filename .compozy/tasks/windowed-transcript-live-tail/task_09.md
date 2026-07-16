@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Register Canonical History Commands
 type: frontend
 complexity: medium

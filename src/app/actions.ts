@@ -28,6 +28,7 @@ import {
   type ProviderKind,
   type ProviderModelDefault,
   type SessionId,
+  type PromptBlock as CorePromptBlock,
 } from "../core/types.ts"
 import type { StatuslineLayout } from "../core/statusline.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
@@ -72,6 +73,16 @@ export interface AgentSession {
 /** A controller-authorized prompt invocation prepared before visible recording. */
 export interface PreparedPromptDispatch {
   invoke(): Promise<PromptResult>
+}
+
+/** Closed, fail-soft result of one primary-session steering submission. */
+export type SteeringResult =
+  | { readonly kind: "queued"; readonly requestId: string }
+  | { readonly kind: "unavailable"; readonly reason: "empty" | "session" | "inactive" | "recovering" }
+
+/** Captured controller seam that binds steering to one live turn generation. */
+export interface SteeringEnqueue {
+  (sessionId: SessionId, blocks: readonly CorePromptBlock[]): SteeringResult
 }
 
 /**
@@ -191,6 +202,10 @@ export interface ActionDeps {
   ) => PreparedPromptDispatch | null
   /** Settle a possibly invoked first delivery before cancellation reaches transport. */
   terminalizePromptDispatch?: (sessionId: SessionId) => void
+  /** Enqueue against one controller-captured active turn and start its coordinator. */
+  enqueueSteering?: SteeringEnqueue
+  /** Terminalize steering before explicit transport cancellation begins. */
+  terminalizeSteering?: (sessionId: SessionId) => void
   /** Read the latest controller-owned default for one configured session. */
   getProviderDefault?: (sessionId: SessionId) => ProviderModelDefault | undefined
   /** Settle the permission request currently shown in the approval overlay. */
@@ -289,6 +304,10 @@ export interface ControllerActions {
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
   sendPrompt(input: PromptInput, sessionId?: SessionId, options?: PromptSendOptions): Promise<PromptResult | null>
+  /** Queue non-empty direction for the captured active turn without creating a prompt. */
+  steer(input: PromptInput, sessionId?: SessionId): SteeringResult
+  /** Clear one exact recovery payload only after the composer has copied it. */
+  acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void
   /** Record one accepted plain-composer submission in the addressed session. */
   recordPromptHistory(text: string, sessionId?: SessionId): void
   /** Navigate the addressed session's history and return the post-reducer selection. */
@@ -403,6 +422,8 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     if (!sessionId) return null
     const blocks = composePromptBlocks(input)
     if (blocks.length === 0) return null
+    const state = store.getState().sessions[sessionId]
+    if (state && isActiveTurnStatus(state.status)) return null
     const dispatch = preparePromptDispatch(sessionId, blocks)
     if (!dispatch) {
       if (store.getState().harnessDeliveryNotices[sessionId]) {
@@ -752,6 +773,29 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
     sendPrompt,
 
+    steer(input, requestedSessionId): SteeringResult {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return { kind: "unavailable", reason: "session" }
+      const blocks = composePromptBlocks(input)
+      if (blocks.length === 0) return { kind: "unavailable", reason: "empty" }
+      const session = store.getState().sessions[sessionId]
+      if (!session || !getSession(sessionId)) return { kind: "unavailable", reason: "session" }
+      if (session.steering.recovery !== null) {
+        return { kind: "unavailable", reason: "recovering" }
+      }
+      if (!isActiveTurnStatus(session.status)) {
+        return { kind: "unavailable", reason: "inactive" }
+      }
+      return deps.enqueueSteering?.(sessionId, blocks) ?? {
+        kind: "unavailable",
+        reason: "session",
+      }
+    },
+
+    acknowledgeSteeringRecovery(sessionId, requestId): void {
+      store.acknowledgeSteeringRecovery(sessionId, requestId)
+    },
+
     recordPromptHistory: recordComposerPrompt,
 
     navigatePromptHistory: navigateComposerHistory,
@@ -762,6 +806,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       const session = getSession(sessionId)
       if (!session) return
       try {
+        deps.terminalizeSteering?.(sessionId)
         deps.terminalizePromptDispatch?.(sessionId)
         await session.connection.cancel(session.acpSessionId)
       } catch (error) {
@@ -907,4 +952,8 @@ function effortUnavailable(model: string | undefined): DefaultApplyResult {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function isActiveTurnStatus(status: import("../core/types.ts").SessionStatus): boolean {
+  return status === "working" || status === "awaiting_approval" || status === "awaiting_clarification"
 }

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { forwardAgentRunToBridge, type AgentRunRequest } from "../agent/agentRunMcp.ts"
 import { forwardAskUserToBridge } from "../agent/askUserMcp.ts"
 import type { ClarificationOutcome, ClarificationPayload, SessionId } from "../core/types.ts"
 import type { ClarificationRequestHandle } from "./controller.ts"
@@ -11,14 +12,15 @@ import {
   ASK_USER_MCP_ENDPOINT_ENV,
   ASK_USER_MCP_MODE_FLAG,
   ASK_USER_MCP_SERVER_NAME,
-  createAskUserBridge,
-  MAX_ASK_USER_CONCURRENT_CALLS,
+  createKittenMcpBridge,
+  MAX_KITTEN_MCP_CONCURRENT_CALLS,
   MAX_ASK_USER_FRAME_BYTES,
   MAX_ASK_USER_TEXT_BYTES,
-  type AskUserBridge,
-  type AskUserBridgeFailureReason,
-  type AskUserBridgeListenerHandlers,
-} from "./askUserBridge.ts"
+  type KittenMcpBridge,
+  type KittenMcpBridgeFailureReason,
+  type KittenMcpBridgeListenerHandlers,
+  type AgentRunControl,
+} from "./kittenMcpBridge.ts"
 
 const FORM: ClarificationPayload = {
   title: "Migration choice",
@@ -33,6 +35,19 @@ const FORM: ClarificationPayload = {
     allowsCustom: true,
     options: [{ id: "safe", label: "Safe" }],
   }],
+}
+
+const START_REQUEST: AgentRunRequest = {
+  operation: "start",
+  tasks: [
+    { task: "Inspect the bridge", desired_outcome: "Report its route invariants" },
+    { task: "Review the tests", desired_outcome: "Identify missing rejection coverage" },
+  ],
+}
+
+const POLL_REQUEST: AgentRunRequest = {
+  operation: "poll",
+  child_ids: ["child-2", "child-1"],
 }
 
 interface PendingClarification {
@@ -71,14 +86,14 @@ function createCoordinatorFake() {
 }
 
 function createBridge(
-  overrides: Partial<Parameters<typeof createAskUserBridge>[0]> = {},
-): { bridge: AskUserBridge; fake: ReturnType<typeof createCoordinatorFake>; failures: AskUserBridgeFailureReason[] } {
+  overrides: Partial<Parameters<typeof createKittenMcpBridge>[0]> = {},
+): { bridge: KittenMcpBridge; fake: ReturnType<typeof createCoordinatorFake>; failures: KittenMcpBridgeFailureReason[] } {
   const fake = createCoordinatorFake()
-  const failures: AskUserBridgeFailureReason[] = []
+  const failures: KittenMcpBridgeFailureReason[] = []
   return {
     fake,
     failures,
-    bridge: createAskUserBridge({
+    bridge: createKittenMcpBridge({
       executablePath: "/kitten/bin/kitten",
       requestClarification: fake.requestClarification,
       cancelClarifications: fake.cancelClarifications,
@@ -163,7 +178,7 @@ function concat(left: Uint8Array, right: Uint8Array): Uint8Array {
   return result
 }
 
-function routeFrame(server: ReturnType<AskUserBridge["register"]>, callId: string, form = FORM) {
+function routeFrame(server: ReturnType<KittenMcpBridge["register"]>, callId: string, form = FORM) {
   return {
     kind: "ask",
     callId,
@@ -172,7 +187,20 @@ function routeFrame(server: ReturnType<AskUserBridge["register"]>, callId: strin
   }
 }
 
-function endpointOf(server: ReturnType<AskUserBridge["register"]>): string {
+function agentRunFrame(
+  server: ReturnType<KittenMcpBridge["register"]>,
+  callId: string,
+  request: AgentRunRequest = START_REQUEST,
+) {
+  return {
+    kind: "agent_run",
+    callId,
+    capability: server.env[ASK_USER_MCP_CAPABILITY_ENV],
+    request,
+  }
+}
+
+function endpointOf(server: ReturnType<KittenMcpBridge["register"]>): string {
   return server.env[ASK_USER_MCP_ENDPOINT_ENV]!
 }
 
@@ -187,7 +215,7 @@ async function waitForPending(
   throw new Error(`Timed out waiting for ${count} bridge clarification request(s)`)
 }
 
-describe("AskUserBridge registration", () => {
+describe("KittenMcpBridge registration", () => {
   it("creates an isolated POSIX route and a declaration containing no caller-selectable identity", async () => {
     const { bridge } = createBridge()
     try {
@@ -226,8 +254,8 @@ describe("AskUserBridge registration", () => {
       bridge.register({ sessionId: "alpha", generation: 1 })
       bridge.register({ sessionId: "beta", generation: 1 })
       expect(endpoints).toHaveLength(2)
-      expect(endpoints[0]).toStartWith("\\\\.\\pipe\\kitten-ask-user-")
-      expect(endpoints[1]).toStartWith("\\\\.\\pipe\\kitten-ask-user-")
+      expect(endpoints[0]).toStartWith("\\\\.\\pipe\\kitten-mcp-")
+      expect(endpoints[1]).toStartWith("\\\\.\\pipe\\kitten-mcp-")
       expect(endpoints[0]).not.toBe(endpoints[1])
     } finally {
       await bridge.dispose()
@@ -235,7 +263,223 @@ describe("AskUserBridge registration", () => {
   })
 })
 
-describe("AskUserBridge authenticated local IPC", () => {
+describe("KittenMcpBridge authenticated local IPC", () => {
+  it("dispatches start and poll through capability-derived authority and serializes ordered snapshots", async () => {
+    const starts: Array<{ route: unknown; tasks: unknown }> = []
+    const polls: Array<{ route: unknown; childIds: unknown }> = []
+    const control: AgentRunControl = {
+      async start(route, tasks) {
+        starts.push({ route, tasks })
+        return [
+          { childId: "child-1", status: "starting" },
+          { childId: "child-2", status: "failed", terminalAt: 42 },
+        ]
+      },
+      poll(route, childIds) {
+        polls.push({ route, childIds })
+        return [
+          { childId: "child-2", status: "failed", terminalAt: 42 },
+          { childId: "child-1", status: "running" },
+        ]
+      },
+    }
+    const { bridge } = createBridge({ agentRunControl: control })
+    const server = bridge.register({ sessionId: "private-parent", generation: 17 })
+    const client = await connectClient(endpointOf(server))
+    try {
+      client.send(agentRunFrame(server, "start-1"))
+      expect(await client.next()).toEqual({
+        kind: "agent_run_result",
+        callId: "start-1",
+        result: {
+          operation: "start",
+          children: [
+            { child_id: "child-1", status: "starting" },
+            { child_id: "child-2", status: "failed", terminal_at: 42 },
+          ],
+        },
+      })
+      client.send(agentRunFrame(server, "poll-1", POLL_REQUEST))
+      expect(await client.next()).toEqual({
+        kind: "agent_run_result",
+        callId: "poll-1",
+        result: {
+          operation: "poll",
+          children: [
+            { child_id: "child-2", status: "failed", terminal_at: 42 },
+            { child_id: "child-1", status: "running" },
+          ],
+        },
+      })
+      expect(starts).toEqual([{
+        route: { parentId: "private-parent", parentGeneration: 17 },
+        tasks: [
+          { task: "Inspect the bridge", desiredOutcome: "Report its route invariants" },
+          { task: "Review the tests", desiredOutcome: "Identify missing rejection coverage" },
+        ],
+      }])
+      expect(polls).toEqual([{
+        route: { parentId: "private-parent", parentGeneration: 17 },
+        childIds: ["child-2", "child-1"],
+      }])
+    } finally {
+      client.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("keeps ask_user available while agent_run has no controller control yet", async () => {
+    const { bridge, fake } = createBridge()
+    const server = bridge.register({ sessionId: "alpha", generation: 1 })
+    const agent = await connectClient(endpointOf(server))
+    try {
+      agent.send(agentRunFrame(server, "unavailable-agent"))
+      expect(await agent.next()).toEqual({
+        kind: "error",
+        callId: "unavailable-agent",
+        error: "unavailable",
+      })
+      agent.close()
+      await Bun.sleep(10)
+
+      const ask = forwardAskUserToBridge(FORM, server.env, { newCallId: () => "preserved-ask" })
+      await waitForPending(fake, 1)
+      fake.pending[0]!.settle({ kind: "skipped" })
+      expect(await ask).toEqual({ kind: "skipped" })
+    } finally {
+      agent.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("rejects malformed agent frames and caller-owned authority before control invocation or disclosure", async () => {
+    const calls: string[] = []
+    const control: AgentRunControl = {
+      async start() {
+        calls.push("start")
+        return []
+      },
+      poll() {
+        calls.push("poll")
+        return []
+      },
+    }
+    const { bridge } = createBridge({ agentRunControl: control })
+    const server = bridge.register({ sessionId: "secret-parent", generation: 29 })
+    const endpoint = endpointOf(server)
+    const capability = server.env[ASK_USER_MCP_CAPABILITY_ENV]!
+    const attempts = [
+      { ...agentRunFrame(server, "identity"), sessionId: "caller-parent", generation: 88 },
+      { kind: "agent_run", callId: "unknown-operation", capability, request: { operation: "wait" } },
+      { kind: "agent_run", callId: "wrong-shape", capability, request: { operation: "poll", child_ids: [] } },
+      { kind: "agent_run", callId: "wrong-kind", capability, form: FORM },
+      { kind: "agent_run", callId: "bad-capability", capability: "x".repeat(40), request: START_REQUEST },
+    ]
+    try {
+      for (const attempt of attempts) {
+        const client = await connectClient(endpoint)
+        client.send(attempt)
+        const response = await client.next()
+        const serialized = JSON.stringify(response)
+        expect(response).toMatchObject({ kind: "error" })
+        expect(serialized).not.toContain("secret-parent")
+        expect(serialized).not.toContain(capability)
+        expect(serialized).not.toContain("Inspect the bridge")
+        client.close()
+      }
+      expect(calls).toEqual([])
+    } finally {
+      await bridge.dispose()
+    }
+  })
+
+  it("rejects a competing stream before dispatching its tool family", async () => {
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const agentCalls: string[] = []
+    const { bridge, fake, failures } = createBridge({
+      agentRunControl: {
+        async start() {
+          agentCalls.push("start")
+          await pending
+          return [
+            { childId: "child-1", status: "starting" },
+            { childId: "child-2", status: "starting" },
+          ]
+        },
+        poll() {
+          agentCalls.push("poll")
+          return []
+        },
+      },
+    })
+    const server = bridge.register({ sessionId: "alpha", generation: 1 })
+    const first = await connectClient(endpointOf(server))
+    const competing = await connectClient(endpointOf(server))
+    try {
+      first.send(agentRunFrame(server, "active-agent"))
+      await Bun.sleep(0)
+      competing.send(routeFrame(server, "competing-ask"))
+      expect(await competing.next()).toEqual({
+        kind: "error",
+        callId: "competing-ask",
+        error: "busy",
+      })
+      expect(agentCalls).toEqual(["start"])
+      expect(fake.pending).toEqual([])
+      expect(failures).toContain("connection_stream_limit")
+      release()
+      await first.next()
+    } finally {
+      first.close()
+      competing.close()
+      await bridge.dispose()
+    }
+  })
+
+  it("rejects a duplicate agent call ID without a second control invocation", async () => {
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let starts = 0
+    const { bridge, failures } = createBridge({
+      agentRunControl: {
+        async start() {
+          starts += 1
+          await pending
+          return [
+            { childId: "child-1", status: "starting" },
+            { childId: "child-2", status: "starting" },
+          ]
+        },
+        poll() {
+          return []
+        },
+      },
+    })
+    const server = bridge.register({ sessionId: "alpha", generation: 1 })
+    const client = await connectClient(endpointOf(server))
+    try {
+      client.send(agentRunFrame(server, "duplicate-agent"))
+      client.send(agentRunFrame(server, "duplicate-agent"))
+      expect(await client.next()).toEqual({
+        kind: "error",
+        callId: "duplicate-agent",
+        error: "invalid_request",
+      })
+      expect(starts).toBe(1)
+      expect(failures).toContain("connection_duplicate_call_id")
+      release()
+      await client.next()
+    } finally {
+      client.close()
+      await bridge.dispose()
+    }
+  })
+
   it("keeps a route available for a second child-mode call after the first child closes", async () => {
     const { bridge, fake } = createBridge()
     const server = bridge.register({ sessionId: "alpha", generation: 3 })
@@ -325,7 +569,7 @@ describe("AskUserBridge authenticated local IPC", () => {
       expect(fake.pending).toHaveLength(1)
       expect(failures).toContain("connection_duplicate_call_id")
 
-      let handlers: AskUserBridgeListenerHandlers | undefined
+      let handlers: KittenMcpBridgeListenerHandlers | undefined
       const oversizedWrites: string[] = []
       const oversized = createBridge({
         platform: "win32",
@@ -359,15 +603,15 @@ describe("AskUserBridge authenticated local IPC", () => {
     const server = bridge.register({ sessionId: "alpha", generation: 1 })
     const client = await connectClient(endpointOf(server))
     try {
-      for (let index = 0; index <= MAX_ASK_USER_CONCURRENT_CALLS; index += 1) {
+      for (let index = 0; index <= MAX_KITTEN_MCP_CONCURRENT_CALLS; index += 1) {
         client.send(routeFrame(server, `call-${index}`))
       }
       expect(await client.next()).toEqual({
         kind: "error",
-        callId: `call-${MAX_ASK_USER_CONCURRENT_CALLS}`,
+        callId: `call-${MAX_KITTEN_MCP_CONCURRENT_CALLS}`,
         error: "busy",
       })
-      expect(fake.pending).toHaveLength(MAX_ASK_USER_CONCURRENT_CALLS)
+      expect(fake.pending).toHaveLength(MAX_KITTEN_MCP_CONCURRENT_CALLS)
       expect(failures).toContain("connection_concurrency_limit")
     } finally {
       client.close()
@@ -426,7 +670,7 @@ describe("AskUserBridge authenticated local IPC", () => {
   })
 })
 
-describe("AskUserBridge lifecycle and diagnostics", () => {
+describe("KittenMcpBridge lifecycle and diagnostics", () => {
   it("fences a stale generation after replacement, cancels its pending call, and removes its endpoint", async () => {
     const { bridge, fake } = createBridge()
     const stale = bridge.register({ sessionId: "alpha", generation: 1 })
@@ -445,6 +689,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
       await expect(bridge.ask(stale.env[ASK_USER_MCP_CAPABILITY_ENV]!, FORM)).rejects.toMatchObject({
         code: "unavailable",
       })
+      await expect(forwardAgentRunToBridge(START_REQUEST, stale.env)).rejects.toThrow("unavailable")
       const ask = bridge.ask(live.env[ASK_USER_MCP_CAPABILITY_ENV]!, FORM)
       await Bun.sleep(0)
       fake.pending.at(-1)!.settle({ kind: "cancelled" })
@@ -469,6 +714,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
       bridge.cancelSession("alpha", 4, reason)
       expect(fake.cancellations).toContainEqual({ sessionId: "alpha", generation: 4, reason })
       expect(existsSync(endpoint)).toBe(false)
+      await expect(forwardAgentRunToBridge(START_REQUEST, server.env)).rejects.toThrow("unavailable")
     } finally {
       client.close()
       await bridge.dispose()
@@ -490,6 +736,8 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
       { sessionId: "beta", generation: 8, reason: "controller_disposed" },
     ])
     expect(endpoints.every((endpoint) => !existsSync(endpoint))).toBe(true)
+    await expect(forwardAgentRunToBridge(START_REQUEST, first.env)).rejects.toThrow("unavailable")
+    await expect(forwardAgentRunToBridge(START_REQUEST, second.env)).rejects.toThrow("unavailable")
     for (const client of clients) client.close()
   })
 
@@ -508,6 +756,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
       reason: "connection_error",
     })
     expect(existsSync(endpoint)).toBe(false)
+    await expect(forwardAgentRunToBridge(START_REQUEST, server.env)).rejects.toThrow("unavailable")
     await bridge.dispose()
   })
 
@@ -519,7 +768,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
       session: "session-secret",
       form: "form-secret",
     }
-    const registrationFailures: AskUserBridgeFailureReason[] = []
+    const registrationFailures: KittenMcpBridgeFailureReason[] = []
     const registration = createBridge({
       createEndpoint() {
         throw new Error(JSON.stringify(leaked))
@@ -530,7 +779,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
     expect(registrationFailures).toEqual(["registration_endpoint_failed"])
     expect(JSON.stringify(registrationFailures)).not.toContain("secret")
 
-    const failures: AskUserBridgeFailureReason[] = []
+    const failures: KittenMcpBridgeFailureReason[] = []
     const { bridge } = createBridge({ onFailure: (reason) => failures.push(reason) })
     const server = bridge.register({ sessionId: leaked.session, generation: 1 })
     const client = await connectClient(endpointOf(server))
@@ -551,7 +800,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
   it("cleans an allocated endpoint when listener registration fails", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kitten-ask-user-listen-failure-"))
     const endpoint = join(directory, "private.sock")
-    const failures: AskUserBridgeFailureReason[] = []
+    const failures: KittenMcpBridgeFailureReason[] = []
     const { bridge } = createBridge({
       createEndpoint: () => ({ endpoint, directory }),
       listen() {
@@ -566,7 +815,7 @@ describe("AskUserBridge lifecycle and diagnostics", () => {
   })
 
   it("passes only the endpoint string and fixed callbacks through the injected listener seam", async () => {
-    let handlers: AskUserBridgeListenerHandlers | undefined
+    let handlers: KittenMcpBridgeListenerHandlers | undefined
     const { bridge } = createBridge({
       platform: "win32",
       listen(_endpoint, received) {

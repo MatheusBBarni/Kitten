@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Core Steering Lifecycle
 type: refactor
 complexity: high
@@ -29,11 +29,11 @@ Define the reducer-owned, protocol-free lifecycle that makes an accepted steerin
 
 ## Subtasks
 
-- [ ] 1.1 Establish the protocol-free prompt-block, request, phase, and state vocabulary described by the TechSpec Core Interfaces section.
-- [ ] 1.2 Add pure lifecycle transitions for enqueue, safe-boundary wait, cancellation, settlement, send, delivery, recovery, and acknowledgement.
-- [ ] 1.3 Extend session events and the pure reducer so steering state is initialized and changed only through reducer events.
-- [ ] 1.4 Preserve transcript ordering and all unrelated derived session fields during steering-only transitions.
-- [ ] 1.5 Add exhaustive lifecycle, stale-settlement, coalescing, and recovery-clear coverage.
+- [x] 1.1 Establish the protocol-free prompt-block, request, phase, and state vocabulary described by the TechSpec Core Interfaces section.
+- [x] 1.2 Add pure lifecycle transitions for enqueue, safe-boundary wait, cancellation, settlement, send, delivery, recovery, and acknowledgement.
+- [x] 1.3 Extend session events and the pure reducer so steering state is initialized and changed only through reducer events.
+- [x] 1.4 Preserve transcript ordering and all unrelated derived session fields during steering-only transitions.
+- [x] 1.5 Add exhaustive lifecycle, stale-settlement, coalescing, and recovery-clear coverage.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Implement the model and reducer wiring described in the TechSpec “Core Interfa
 ## Tests
 
 - Unit tests:
-  - [ ] Each legal phase transition accepts the current request id and generation and produces the documented phase.
-  - [ ] A stale request id, stale generation, invalid phase transition, or duplicate terminal settlement returns the identical state reference.
-  - [ ] Multiple accepted directions retain chronological block order and coalesce into exactly one delivered user turn.
-  - [ ] Recovery retains exact ordered blocks until acknowledgement and acknowledgement clears the raw queue and recovery payload.
-  - [ ] Steering-only events preserve transcript-derived referenced-file and pending-diff references.
+  - [x] Each legal phase transition accepts the current request id and generation and produces the documented phase.
+  - [x] A stale request id, stale generation, invalid phase transition, or duplicate terminal settlement returns the identical state reference.
+  - [x] Multiple accepted directions retain chronological block order and coalesce into exactly one delivered user turn.
+  - [x] Recovery retains exact ordered blocks until acknowledgement and acknowledgement clears the raw queue and recovery payload.
+  - [x] Steering-only events preserve transcript-derived referenced-file and pending-diff references.
 - Integration tests:
-  - [ ] A folded `DomainSessionEvent` sequence initializes, queues, delivers, and acknowledges recovery through `sessionReducer` without ACP imports or a duplicate user turn.
+  - [x] A folded `DomainSessionEvent` sequence initializes, queues, delivers, and acknowledges recovery through `sessionReducer` without ACP imports or a duplicate user turn.
 - Test coverage target: >=80%
 - All tests must pass
 

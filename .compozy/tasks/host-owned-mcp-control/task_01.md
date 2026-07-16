@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Compose the bundled Kitten MCP child server
 type: backend
 complexity: medium
@@ -28,10 +28,10 @@ Create a reusable Kitten-owned MCP child-server composition point while preservi
 
 ## Subtasks
 
-- [ ] 1.1 Establish a bundled MCP server composition point for tool registrars.
-- [ ] 1.2 Preserve the standalone `ask_user` registrar and compatibility wrapper behavior.
-- [ ] 1.3 Route the existing reserved child flag through the generalized child runner.
-- [ ] 1.4 Prove child transport close behavior and normal boot isolation.
+- [x] 1.1 Establish a bundled MCP server composition point for tool registrars.
+- [x] 1.2 Preserve the standalone `ask_user` registrar and compatibility wrapper behavior.
+- [x] 1.3 Route the existing reserved child flag through the generalized child runner.
+- [x] 1.4 Prove child transport close behavior and normal boot isolation.
 
 ## Implementation Details
 
@@ -63,12 +63,12 @@ Follow the TechSpec “System Architecture,” “Integration Points,” and fir
 ## Tests
 
 - Unit tests:
-  - [ ] An in-memory bundled server lists the existing `ask_user` tool with its unchanged name and schema behavior.
-  - [ ] Closing the child transport settles the generalized runner without emitting non-protocol stdout.
-  - [ ] The compatibility wrapper still creates a server exposing only `ask_user` before the second tool is registered.
+  - [x] An in-memory bundled server lists the existing `ask_user` tool with its unchanged name and schema behavior.
+  - [x] Closing the child transport settles the generalized runner without emitting non-protocol stdout.
+  - [x] The compatibility wrapper still creates a server exposing only `ask_user` before the second tool is registered.
 - Integration tests:
-  - [ ] Running with `--ask-user-mcp` enters the child path before the repository and readiness gates.
-  - [ ] Running without the reserved flag keeps the normal first-run boot behavior unchanged.
+  - [x] Running with `--ask-user-mcp` enters the child path before the repository and readiness gates.
+  - [x] Running without the reserved flag keeps the normal first-run boot behavior unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

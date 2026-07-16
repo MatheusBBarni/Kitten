@@ -38,6 +38,8 @@ import {
   selectSessionHeadroom,
   selectSessionStatus,
   selectSessionTurns,
+  selectSessionTranscriptProjection,
+  selectSessionTranscriptWindow,
   selectApprovalOverlay,
   selectClarificationCapability,
   selectClarificationOverlay,
@@ -47,6 +49,8 @@ import {
   selectFocusedPane,
   selectFocusedSessionId,
   selectFocusedSession,
+  selectFocusedTranscriptProjection,
+  selectFocusedTranscriptWindow,
   selectHandoffPreview,
   selectHasOpenOverlay,
   selectIsApprovalOpen,
@@ -1527,5 +1531,133 @@ describe("workspace view selectors", () => {
     })
     expect(selectActiveModal(store.getState())).toEqual({ kind: "approval", sessionId: "c" })
     expect(selectTabDialogOverlay(store.getState())?.sessionId).toBe("b")
+  })
+})
+
+describe("transcript projection selectors", () => {
+  const addProjectionFixture = (store: AppStore, sessionId: "claude-code" | "codex") => {
+    store.applyEvent(sessionId, { kind: "user_message", messageId: "u0", text: "zero" })
+    store.applyEvent(sessionId, {
+      kind: "tool_call",
+      call: {
+        toolCallId: "historical-tool",
+        kind: "edit",
+        title: "Historical edit",
+        status: "completed",
+        locations: [],
+      },
+    })
+    store.applyEvent(sessionId, { kind: "user_message", messageId: "u2", text: "two" })
+    store.applyEvent(sessionId, { kind: "agent_message", messageId: "a3", textDelta: "three" })
+    store.applyEvent(sessionId, { kind: "user_message", messageId: "u4", text: "four" })
+    store.applyEvent(sessionId, { kind: "agent_message", messageId: "a5", textDelta: "five" })
+  }
+
+  it("projects stable per-session windows and complete disabled presentations", () => {
+    const store = createAppStore()
+    addProjectionFixture(store, "claude-code")
+    const selectWindow = selectSessionTranscriptWindow("claude-code")
+    const selectProjection = selectSessionTranscriptProjection("claude-code", {
+      enabled: false,
+      tailTurnCount: 2,
+    })
+    const window = selectWindow(store.getState())
+    const projection = selectProjection(store.getState())
+
+    expect(window).toEqual({ revealedTurnCount: 0, detachedFromLive: false, scrollTop: null })
+    expect(projection.hiddenTurnCount).toBe(0)
+    expect(projection.rows).toHaveLength(6)
+    expect(projection.rows.every((row) => row.kind === "turn")).toBe(true)
+
+    store.setTranscriptDetached("claude-code", true)
+    store.captureTranscriptScrollTop("claude-code", 4)
+    store.revealTranscriptHistory("claude-code", 2)
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+    expect(selectProjection(store.getState())).toBe(projection)
+
+    store.applyEvent("codex", { kind: "agent_message", messageId: "other", textDelta: "token" })
+    expect(selectWindow(store.getState())).not.toBe(window)
+    expect(selectProjection(store.getState())).toBe(projection)
+  })
+
+  it("protects only a matching approval tool and gives clarification no transcript ownership", () => {
+    const store = createAppStore()
+    addProjectionFixture(store, "claude-code")
+    const selectProjection = selectSessionTranscriptProjection("claude-code", {
+      enabled: true,
+      tailTurnCount: 2,
+    })
+    const collapsed = selectProjection(store.getState())
+    expect(collapsed.hiddenTurnCount).toBe(4)
+
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/work",
+      request: { sessionId: "acp-codex", toolCall: { toolCallId: "historical-tool" }, options: [] },
+    })
+    expect(selectProjection(store.getState())).toBe(collapsed)
+
+    store.openApproval({
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: "/work",
+      request: { sessionId: "acp-claude", toolCall: { toolCallId: "historical-tool" }, options: [] },
+    })
+    expect(selectProjection(store.getState()).hiddenTurnCount).toBe(1)
+
+    store.closeApproval()
+    const withoutApproval = selectProjection(store.getState())
+    expect(withoutApproval.hiddenTurnCount).toBe(4)
+    store.openClarification({
+      requestId: "clarification-projection",
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: "/work",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    expect(selectProjection(store.getState())).toBe(withoutApproval)
+  })
+
+  it("keeps a focused projection subscription silent for background streams", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    addProjectionFixture(store, "claude-code")
+    const selectProjection = selectFocusedTranscriptProjection({ enabled: true, tailTurnCount: 2 })
+    const focusedWindow = selectFocusedTranscriptWindow(store.getState())
+    const before = selectProjection(store.getState())
+    const notifications: unknown[] = []
+    store.subscribeSelector(selectProjection, (projection) => notifications.push(projection))
+
+    store.applyEvent("codex", { kind: "agent_message", messageId: "background", textDelta: "token" })
+
+    expect(selectProjection(store.getState())).toBe(before)
+    expect(selectFocusedTranscriptWindow(store.getState())).toBe(focusedWindow)
+    expect(notifications).toEqual([])
+  })
+
+  it("re-projects only the addressed session when history is revealed", () => {
+    const store = createAppStore()
+    addProjectionFixture(store, "claude-code")
+    addProjectionFixture(store, "codex")
+    const selectClaude = selectSessionTranscriptProjection("claude-code", {
+      enabled: true,
+      tailTurnCount: 2,
+    })
+    const selectCodex = selectSessionTranscriptProjection("codex", {
+      enabled: true,
+      tailTurnCount: 2,
+    })
+    const codexBefore = selectCodex(store.getState())
+    const claudeBefore = selectClaude(store.getState())
+
+    store.setTranscriptDetached("claude-code", true)
+    store.captureTranscriptScrollTop("claude-code", 3)
+    expect(selectClaude(store.getState())).toBe(claudeBefore)
+
+    store.revealTranscriptHistory("claude-code", 2)
+
+    expect(selectClaude(store.getState()).hiddenTurnCount).toBe(2)
+    expect(selectCodex(store.getState())).toBe(codexBefore)
   })
 })

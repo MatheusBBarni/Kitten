@@ -155,6 +155,25 @@ describe("persistUserConfig", () => {
 })
 
 describe("writer-loader integration", () => {
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("round-trips transcript windowing %s and preserves it through an unrelated root patch", async (_label, value) => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+
+    await persistUserConfig({ transcriptWindowingEnabled: value }, { path })
+    expect((await loadAppConfig({ path })).transcriptWindowingEnabled).toBe(value)
+
+    await persistUserConfig({ theme: "dark" }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      transcriptWindowingEnabled: value,
+      theme: "dark",
+    })
+    expect((await loadAppConfig({ path })).transcriptWindowingEnabled).toBe(value)
+  })
+
   it("round-trips a theme delta through a real temp file", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")

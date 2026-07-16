@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Migrate Runtime Integration Config Fixtures
 type: test
 complexity: low

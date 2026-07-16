@@ -77,6 +77,33 @@ afterAll(async () => {
 })
 
 describe("boot config persistence integration", () => {
+  it("atomically preserves the transcript windowing delta with unrelated preferences", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kitten-transcript-windowing-config-"))
+    tempDirs.push(dir)
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      telemetryEnabled: true,
+      theme: "light",
+      welcomeBanner: "always",
+    }))
+
+    await persistUserConfig({ transcriptWindowingEnabled: true }, { path })
+    await persistUserConfig({ theme: "dark" }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      telemetryEnabled: true,
+      theme: "dark",
+      welcomeBanner: "always",
+      transcriptWindowingEnabled: true,
+    })
+    await expect(loadAppConfig({ path })).resolves.toMatchObject({
+      telemetryEnabled: true,
+      theme: "dark",
+      welcomeBanner: "always",
+      transcriptWindowingEnabled: true,
+    })
+  })
+
   it("saves confirmed model and reasoning per provider for a subsequent cockpit", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-provider-defaults-config-"))
     tempDirs.push(dir)

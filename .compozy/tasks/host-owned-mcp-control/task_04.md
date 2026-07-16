@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Make delegated-session registration selection-neutral
 type: refactor
 complexity: medium
@@ -28,10 +28,10 @@ Remove the UI-only focus policy from the shared delegated-session store registra
 
 ## Subtasks
 
-- [ ] 4.1 Remove the shared registration primitive’s selected-parent rejection.
-- [ ] 4.2 Preserve the pre-registration visible conversation through background child creation.
-- [ ] 4.3 Retain all existing registration and delegation invariants.
-- [ ] 4.4 Add an atomic background-parent regression test.
+- [x] 4.1 Remove the shared registration primitive’s selected-parent rejection.
+- [x] 4.2 Preserve the pre-registration visible conversation through background child creation.
+- [x] 4.3 Retain all existing registration and delegation invariants.
+- [x] 4.4 Add an atomic background-parent regression test.
 
 ## Implementation Details
 
@@ -60,13 +60,13 @@ Follow the TechSpec “Controller Behavior” and amended Impact Analysis. The w
 ## Tests
 
 - Unit tests:
-  - [ ] A selected `codex` conversation remains selected when a background `claude-code` parent registers a delegated child.
-  - [ ] The accepted child is backgrounded, `starting`, and owned by the requested parent and generation.
-  - [ ] Existing sessions, conversations, focused pane, and overlays retain their expected identities after registration.
-  - [ ] A subscription observes one atomic store commit for the accepted registration.
-  - [ ] Missing parents, duplicate child IDs, and invalid delegation registration remain rejected without mutation.
+  - [x] A selected `codex` conversation remains selected when a background `claude-code` parent registers a delegated child.
+  - [x] The accepted child is backgrounded, `starting`, and owned by the requested parent and generation.
+  - [x] Existing sessions, conversations, focused pane, and overlays retain their expected identities after registration.
+  - [x] A subscription observes one atomic store commit for the accepted registration.
+  - [x] Missing parents, duplicate child IDs, and invalid delegation registration remain rejected without mutation.
 - Integration tests:
-  - [ ] The existing controller UI launch path still rejects a non-selected parent after the store change.
+  - [x] The existing controller UI launch path still rejects a non-selected parent after the store change.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Fail-Closed Capability and Adapter Guard
 type: refactor
 complexity: high
@@ -29,11 +29,11 @@ Make the adapter boundary uphold the one-active-prompt invariant even when a cal
 
 ## Subtasks
 
-- [ ] 3.1 Define the closed, protocol-free steering capability vocabulary and exact certification classifier.
-- [ ] 3.2 Resolve the capability only after the final provider recipe is fully merged and validated.
-- [ ] 3.3 Enforce a reject-before-replacement guard around adapter prompt entry.
-- [ ] 3.4 Preserve current single-prompt completion and error behavior for the original call.
-- [ ] 3.5 Add exact-recipe and in-memory transport regressions for default, override, and concurrent-prompt cases.
+- [x] 3.1 Define the closed, protocol-free steering capability vocabulary and exact certification classifier.
+- [x] 3.2 Resolve the capability only after the final provider recipe is fully merged and validated.
+- [x] 3.3 Enforce a reject-before-replacement guard around adapter prompt entry.
+- [x] 3.4 Preserve current single-prompt completion and error behavior for the original call.
+- [x] 3.5 Add exact-recipe and in-memory transport regressions for default, override, and concurrent-prompt cases.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ Use the TechSpec “Integration Points,” “Technical Dependencies,” and Bui
 ## Tests
 
 - Unit tests:
-  - [ ] Every default, unknown, floating-version, custom, and overridden provider recipe resolves steering capability to unavailable.
-  - [ ] Only a complete exact command, ordered-argument, environment, and certified-adapter match can classify as native-capable.
-  - [ ] A bare `AgentConfig` cannot grant native capability.
-  - [ ] A second prompt entered while a deferred first prompt is active rejects before dispatch and leaves the original in-flight record intact.
-  - [ ] Releasing the original deferred prompt yields its ordinary result and terminal status after the rejection.
+  - [x] Every default, unknown, floating-version, custom, and overridden provider recipe resolves steering capability to unavailable.
+  - [x] Only a complete exact command, ordered-argument, environment, and certified-adapter match can classify as native-capable.
+  - [x] A bare `AgentConfig` cannot grant native capability.
+  - [x] A second prompt entered while a deferred first prompt is active rejects before dispatch and leaves the original in-flight record intact.
+  - [x] Releasing the original deferred prompt yields its ordinary result and terminal status after the rejection.
 - Integration tests:
-  - [ ] An in-memory ACP mock receives exactly one prompt when two concurrent calls are attempted, and the first call settles normally.
+  - [x] An in-memory ACP mock receives exactly one prompt when two concurrent calls are attempted, and the first call settles normally.
 - Test coverage target: >=80%
 - All tests must pass
 

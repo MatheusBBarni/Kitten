@@ -1,8 +1,42 @@
-# Kitten Workspace Navigation
+# Kitten
 
-This context defines the user-facing workspace concepts used when navigating project files from a Kitten conversation. It keeps a conversation's file context aligned with its working directory.
+This context defines the user-facing concepts shared by Kitten's interactive agent work, governed unattended execution, and portable context workflows.
 
 ## Language
+
+### Product Family
+
+**Kitten Cockpit**:
+The terminal application for developer-led live agent sessions, steering, delegation, and hand-off.
+_Avoid_: Kitten Orchestrator, desktop mode
+
+**Kitten Orchestrator**:
+The planned Kitten product for governing unattended coding-agent tasks from discovery through isolated execution, verification, and review.
+_Avoid_: Task Orchestrator, sibling repository
+
+**Task Orchestrator**:
+The predecessor product whose capabilities are migrated into Kitten Orchestrator before the predecessor is retired.
+_Avoid_: Permanent companion app, long-lived fork
+
+**Shared Capability**:
+A reusable agent, session, context, or policy building block that does not own either application's workflow or user interface.
+_Avoid_: Universal engine, shared app controller
+
+**Orchestrated Work**:
+The durable lifecycle that carries one queued task through isolated attempts, verification, review, and final disposition.
+_Avoid_: Run, session, queue row
+
+**Run Attempt**:
+One agent session that acts on an Orchestrated Work's shared worktree using one exact Run Context.
+_Avoid_: Retry of hidden session state, entire task lifecycle
+
+**Attention Blocker**:
+A bounded task or domain clarification that pauses a Run Attempt until the developer answers or the request settles safely.
+_Avoid_: Permission prompt, arbitrary agent question
+
+**Run Context**:
+The immutable, auditable input assembled automatically for one Run Attempt from trusted task, repository, and prior-review evidence.
+_Avoid_: Context Pack, hidden prompt, agent-generated plan
 
 ### Context Engineering
 
@@ -194,6 +228,21 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 
 ## Relationships
 
+- The Kitten product family ships exactly two applications: **Kitten Cockpit** and **Kitten Orchestrator**
+- **Kitten Cockpit** and **Kitten Orchestrator** have separate user interfaces, controllers, stores, and entry points but consume common **Shared Capabilities**
+- Queue discovery, worktree execution, verification gates, and review governance belong only to **Kitten Orchestrator**
+- Every **Orchestrated Work** belongs to exactly one queued task, isolated worktree, branch, original baseline, and at most one pull request
+- An Orchestrated Work contains one or more sequential **Run Attempts**
+- Review feedback creates a new Run Attempt in the same Orchestrated Work without replacing prior attempts
+- Every Run Attempt starts a fresh ACP session and receives one exact **Run Context** before agent execution begins
+- A Run Context may include a **Sealed Context Pack**, but it never creates, seals, trims, or rewrites that pack
+- A Context Pack remains optional for Run Attempts and retains the same explicit review requirement as in Kitten Cockpit
+- A **Run Attempt** progresses without supervision unless it reaches a policy-defined blocker
+- Only an **Attention Blocker** may pause a Run Attempt for reactive user input
+- Permission requests within host guardrails are approved automatically; requests beyond them are denied automatically and never become Attention Blockers
+- Inspecting or steering a **Run Attempt** does not change unattended execution into the default workflow
+- **Kitten Orchestrator** succeeds **Task Orchestrator** inside the Kitten product family
+- **Task Orchestrator** is retired only after its desktop behavior, stored data, security boundaries, and verification evidence have a passing Kitten Orchestrator replacement
 - A **Context Pack** belongs to exactly one **Session Workspace**
 - Each session retains at most one Draft Context Pack and one current Sealed Context Pack in V1
 - Sealing a new pack replaces the session's current sealed-pack pointer without rewriting a Handoff Bundle that already embeds an older pack
@@ -287,6 +336,13 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 
 ## Flagged ambiguities
 
+- "transform Task Orchestrator" initially suggested evolving its repository in place — resolved: Kitten becomes the destination monorepo and **Task Orchestrator** is the retiring predecessor.
+- "reuse the engine" was ambiguous between one application controller and reusable runtime capabilities — resolved: the applications retain separate lifecycles and consume **Shared Capabilities** beneath them.
+- "desktop app" was ambiguous between an opaque task runner and an interactive cockpit — resolved: a **Run Attempt** is unattended by default but its durable session is inspectable and steerable on demand.
+- "blocker" was ambiguous between a task clarification and an agent permission request — resolved: only a bounded clarification is an **Attention Blocker**; permissions remain host-policy decisions.
+- "reuse context" was ambiguous between automatic run assembly and auto-sending a curated Context Pack — resolved: ordinary tasks receive a **Run Context**, while Context Packs remain optional and explicitly reviewed.
+- "run" was used for both the task's end-to-end review lineage and one agent execution — resolved: **Orchestrated Work** is the lineage and **Run Attempt** is one execution.
+- "reuse the engine" was also ambiguous about discarding the predecessor UI and persistence — resolved: the existing desktop product is the parity baseline, then shared Kitten capabilities replace its internals incrementally.
 - "context" was used for both an agent's context window and a curated reusable artifact — resolved: the reusable artifact is a **Context Pack**.
 - "similar to RepoPrompt" could mean matching its workflow or cloning its codemap platform — resolved for V1: match the curated-selection workflow with full files, described slices, and diffs; defer codemaps and automatic dependency graphs.
 - "explore" was used for both general investigation and Context Pack Curation — resolved: general delegation remains `explore`, while an explicitly requested **Context Build** curates the pack.

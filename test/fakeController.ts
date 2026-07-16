@@ -24,6 +24,7 @@ import {
   type PromptInput,
   type StartDelegatedChildInput,
   type StatuslineWriteResult,
+  type SteeringResult,
   type SwitchFocusOptions,
 } from "../src/app/actions.ts"
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
@@ -61,6 +62,8 @@ export interface RecordedCalls {
   fileSelectorSelected: { sessionId: SessionId; durationMs: number }[]
   fileSelectorCorrected: SessionId[]
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
+  steer: { input: PromptInput; sessionId: SessionId | undefined }[]
+  acknowledgeSteeringRecovery: { sessionId: SessionId; requestId: string }[]
   recordPromptHistory: { text: string; sessionId: SessionId | undefined }[]
   navigatePromptHistory: { direction: PromptHistoryDirection; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
@@ -199,6 +202,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     fileSelectorSelected: [],
     fileSelectorCorrected: [],
     sendPrompt: [],
+    steer: [],
+    acknowledgeSteeringRecovery: [],
     recordPromptHistory: [],
     navigatePromptHistory: [],
     cancel: [],
@@ -221,6 +226,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
 
   const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
   let created = 0
+  let steeringRequests = 0
   const rejectedFreshPrompts = new Map<SessionId, PromptInput>()
 
   async function closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult> {
@@ -403,6 +409,33 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
           rejectedFreshPrompts.set(target, input)
         }
         return result
+      },
+      steer(input: PromptInput, sessionId?: SessionId): SteeringResult {
+        calls.steer.push({ input, sessionId })
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (!target) return { kind: "unavailable", reason: "session" }
+        const blocks = (typeof input === "string" ? [{ type: "text" as const, text: input }] : input)
+          .filter((block) => block.text.trim().length > 0)
+        if (blocks.length === 0) return { kind: "unavailable", reason: "empty" }
+        const session = store.getState().sessions[target]
+        if (!session) return { kind: "unavailable", reason: "session" }
+        if (session.status !== "working" && session.status !== "awaiting_approval" && session.status !== "awaiting_clarification") {
+          return { kind: "unavailable", reason: "inactive" }
+        }
+        steeringRequests += 1
+        const requestId = `fake-steering-${steeringRequests}`
+        store.applyEvent(target, {
+          kind: "steering_enqueue",
+          activeTurnId: session.steering.activeTurnId ?? "fake-active-turn",
+          requestId,
+          generation: 1,
+          blocks,
+        })
+        return { kind: "queued", requestId }
+      },
+      acknowledgeSteeringRecovery(sessionId, requestId): void {
+        calls.acknowledgeSteeringRecovery.push({ sessionId, requestId })
+        store.acknowledgeSteeringRecovery(sessionId, requestId)
       },
       recordPromptHistory(text: string, sessionId?: SessionId): void {
         calls.recordPromptHistory.push({ text, sessionId })

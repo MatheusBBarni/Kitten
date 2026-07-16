@@ -16,7 +16,7 @@ import type { AgentRuntimeState } from "../app/controller.ts"
 import type { RepositoryFileList } from "../app/fileDiscovery.ts"
 import type { HandoffBundle } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
-import { selectHasOpenOverlay } from "../store/selectors.ts"
+import { selectHasOpenOverlay, selectSessionSteeringRecovery } from "../store/selectors.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
 import {
@@ -28,6 +28,7 @@ import {
   PROMPT_DISABLED_PLACEHOLDER,
   PROMPT_CHEVRON,
   PROMPT_PLACEHOLDER,
+  PROMPT_STEERING_PLACEHOLDER,
   PROMPT_WORKSPACE_TITLE,
   MAX_EDITOR_ROWS,
   MAX_SLASH_MENU_ROWS,
@@ -70,6 +71,7 @@ async function renderEditor(
   )
   await setup.waitForFrame((frame) =>
     frame.includes(PROMPT_PLACEHOLDER) ||
+    frame.includes(PROMPT_STEERING_PLACEHOLDER) ||
     frame.includes(PROMPT_DISABLED_PLACEHOLDER) ||
     frame.includes(PROMPT_WORKSPACE_TITLE),
   )
@@ -250,6 +252,27 @@ describe("PromptEditor submit", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("routes an active-turn submission to steering without dispatching a competing prompt", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await type(setup, "keep the public API stable")
+    await pressEnter(setup)
+
+    expect(controller.calls.steer).toEqual([{
+      input: "keep the public API stable",
+      sessionId: undefined,
+    }])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.recordPromptHistory).toEqual([{
+      text: "keep the public API stable",
+      sessionId: "claude-code",
+    }])
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("ignores Enter on a whitespace-only draft", async () => {
     const controller = createFakeController()
     const setup = await renderEditor(controller)
@@ -344,6 +367,97 @@ describe("PromptEditor interrupt", () => {
   })
 })
 
+describe("PromptEditor steering status and recovery", () => {
+  it("renders explicit queued and sending phases near the active composer", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await type(setup, "preserve ordering")
+    await pressEnter(setup)
+    expect(await frameWith(setup, "Steering queued (1)")).toContain("Steering queued")
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "steering_cancel",
+        requestId: "fake-steering-1",
+        generation: 1,
+      })
+      controller.store.applyEvent("claude-code", {
+        kind: "steering_settle",
+        requestId: "fake-steering-1",
+        generation: 1,
+      })
+      controller.store.applyEvent("claude-code", {
+        kind: "steering_send",
+        requestId: "fake-steering-1",
+        generation: 1,
+      })
+    })
+    expect(await frameWith(setup, "Steering sending (1)")).toContain("Steering sending")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("restores exact failed steering text into an empty editor and acknowledges once", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await type(setup, "first exact line")
+    await pressEnter(setup, { shift: true })
+    await type(setup, "second exact line")
+    await pressEnter(setup)
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "steering_recover",
+        requestId: "fake-steering-1",
+        generation: 1,
+      })
+    })
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("first exact line\nsecond exact line")
+    expect(await frameWith(setup, "Steering failed · draft restored", "first exact line", "second exact line"))
+      .toContain("draft restored")
+    expect(controller.calls.acknowledgeSteeringRecovery).toEqual([{
+      sessionId: "claude-code",
+      requestId: "fake-steering-1",
+    }])
+    expect(selectSessionSteeringRecovery("claude-code")(controller.store.getState())).toBeNull()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("preserves a changed draft, shows recovery guidance, and keeps Escape as hard cancel", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await type(setup, "recover this direction")
+    await pressEnter(setup)
+    await type(setup, "my newer changed draft")
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "steering_recover",
+        requestId: "fake-steering-1",
+        generation: 1,
+      })
+    })
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("my newer changed draft")
+    expect(await frameWith(setup, "Steering failed", "clear editor to restore", "my newer changed draft"))
+      .toContain("recovery waiting")
+    expect(controller.calls.acknowledgeSteeringRecovery).toEqual([])
+
+    await pressEscape(setup)
+    expect(controller.calls.cancel).toEqual([undefined])
+    expect(controller.calls.steer).toHaveLength(1)
+    expect(controller.calls.sendPrompt).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
 describe("PromptEditor slash commands", () => {
   const agentCommands = [
     { name: "review", description: "Review the current diff", hint: "[scope]" },
@@ -369,6 +483,10 @@ describe("PromptEditor slash commands", () => {
     expect(cockpitCommandForDraft("/clear", 6)).toBe("clear-run")
     expect(cockpitCommandForDraft("/model ", 7)).toBe("model-select")
     expect(cockpitCommandForDraft("/statusline", 11)).toBe("statusline")
+    expect(cockpitCommandForDraft("/history", 8)).toBe("reveal-history")
+    expect(cockpitCommandForDraft("/latest", 7)).toBe("return-to-live")
+    expect(cockpitCommandForDraft("/history now", 12)).toBeNull()
+    expect(cockpitCommandForDraft("/latest now", 11)).toBeNull()
     expect(cockpitCommandForDraft("/statusline describe compact", 28)).toBeNull()
     expect(cockpitCommandForDraft("/review", 7)).toBeNull()
     expect(cockpitCommandForDraft("/sessions now", 13)).toBeNull()
@@ -473,6 +591,26 @@ describe("PromptEditor slash commands", () => {
 
     await destroyMounted(setup.renderer)
   })
+
+  for (const [name, command] of [
+    ["history", "reveal-history"],
+    ["latest", "return-to-live"],
+  ] as const) {
+    it(`shows and activates /${name} without sending a prompt`, async () => {
+      const controller = createFakeController()
+      const dispatched: CockpitCommand[] = []
+      const setup = await renderEditor(controller, 32, (intent) => dispatched.push(intent), true)
+
+      await type(setup, `/${name}`)
+      expect(await frameWith(setup, "Commands", `/${name}`)).toContain(`/${name}`)
+      await pressEnter(setup)
+
+      await setup.waitFor(() => dispatched.length === 1)
+      expect(dispatched).toEqual([command])
+      expect(controller.calls.sendPrompt).toEqual([])
+      await destroyMounted(setup.renderer)
+    })
+  }
 
   it("runs a complete cockpit draft through the same submission path as an armed menu", async () => {
     const controller = createFakeController()

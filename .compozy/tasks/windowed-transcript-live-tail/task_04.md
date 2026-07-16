@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Migrate Controller and Boot Config Fixtures
 type: test
 complexity: low

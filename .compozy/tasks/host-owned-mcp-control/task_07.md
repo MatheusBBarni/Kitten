@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Record content-free agent_run telemetry
 type: backend
 complexity: medium
@@ -28,10 +28,10 @@ Add opt-in local telemetry for whether bounded agent-run control is used and how
 
 ## Subtasks
 
-- [ ] 7.1 Extend the recorder’s closed agent-run event vocabulary and no-op implementation.
-- [ ] 7.2 Emit bounded operation outcomes from the controller-owned control path.
-- [ ] 7.3 Bucket batch size and control duration without retaining raw content or identity.
-- [ ] 7.4 Add allowlist, no-op, and sentinel-leakage regression coverage.
+- [x] 7.1 Extend the recorder’s closed agent-run event vocabulary and no-op implementation.
+- [x] 7.2 Emit bounded operation outcomes from the controller-owned control path.
+- [x] 7.3 Bucket batch size and control duration without retaining raw content or identity.
+- [x] 7.4 Add allowlist, no-op, and sentinel-leakage regression coverage.
 
 ## Implementation Details
 
@@ -62,13 +62,13 @@ Follow the TechSpec “Monitoring and Observability” section, applying the str
 ## Tests
 
 - Unit tests:
-  - [ ] Accepted start and poll records contain only the approved operation, outcome, batch-size bucket, and duration bucket fields.
-  - [ ] Rejected and unavailable operations use only fixed allowed outcome values and omit raw error details.
-  - [ ] Task, outcome, child ID, parent ID, capability, endpoint, path, provider, prompt, transcript, and status sentinels never serialize.
-  - [ ] A disabled recorder creates no sink access and emits no record.
-  - [ ] Boundary batch sizes and control durations map to the documented bounded buckets.
+  - [x] Accepted start and poll records contain only the approved operation, outcome, batch-size bucket, and duration bucket fields.
+  - [x] Rejected and unavailable operations use only fixed allowed outcome values and omit raw error details.
+  - [x] Task, outcome, child ID, parent ID, capability, endpoint, path, provider, prompt, transcript, and status sentinels never serialize.
+  - [x] A disabled recorder creates no sink access and emits no record.
+  - [x] Boundary batch sizes and control durations map to the documented bounded buckets.
 - Integration tests:
-  - [ ] An opt-in local telemetry run records accepted and rejected agent-run control operations without content or identity leakage.
+  - [x] An opt-in local telemetry run records accepted and rejected agent-run control operations without content or identity leakage.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -2153,3 +2153,141 @@ describe("delegated session store integration", () => {
     expect(selectDelegatedChild("delegated-child")(state)).toBeNull()
   })
 })
+
+describe("transcript window state", () => {
+  it("seeds an independent attached window for every live session", () => {
+    const state = createAppStore().getState()
+
+    expect(state.transcriptWindows).toEqual({
+      "claude-code": { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+      codex: { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+      cursor: { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+    })
+    expect(state.transcriptWindows["claude-code"]).not.toBe(state.transcriptWindows.codex)
+  })
+
+  it("updates only the addressed window and retains it through focus changes", () => {
+    const store = createAppStore()
+    const sibling = store.getState().transcriptWindows.codex
+
+    store.revealTranscriptHistory("claude-code", 12)
+    store.setTranscriptDetached("claude-code", true)
+    store.captureTranscriptScrollTop("claude-code", 7)
+    store.setFocus("codex")
+    store.setFocus("claude-code")
+
+    expect(store.getState().transcriptWindows["claude-code"]).toEqual({
+      revealedTurnCount: 12,
+      detachedFromLive: true,
+      scrollTop: 7,
+    })
+    expect(store.getState().transcriptWindows.codex).toBe(sibling)
+
+    store.returnTranscriptToLive("claude-code")
+    expect(store.getState().transcriptWindows["claude-code"]).toEqual({
+      revealedTurnCount: 12,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+  })
+
+  it("keeps unknown, invalid, and equivalent actions as notification-free state no-ops", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    store.revealTranscriptHistory("missing", 10)
+    store.revealTranscriptHistory("claude-code", 0)
+    store.revealTranscriptHistory("claude-code", Number.NaN)
+    store.setTranscriptDetached("missing", true)
+    store.setTranscriptDetached("claude-code", false)
+    store.captureTranscriptScrollTop("missing", 3)
+    store.captureTranscriptScrollTop("claude-code", -1)
+    store.captureTranscriptScrollTop("claude-code", null)
+    store.returnTranscriptToLive("missing")
+    store.returnTranscriptToLive("claude-code")
+
+    expect(store.getState()).toBe(initial)
+    expect(observed).toEqual([])
+  })
+
+  it("retains unaffected entries across streams and overlays", () => {
+    const store = createAppStore()
+    const claudeWindow = store.getState().transcriptWindows["claude-code"]
+    const codexWindow = store.getState().transcriptWindows.codex
+
+    store.applyEvent("claude-code", message("stream", "token"))
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/work",
+      request: APPROVAL_REQUEST,
+    })
+    store.openClarification({
+      requestId: "clarification-window",
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: "/work",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+
+    expect(store.getState().transcriptWindows["claude-code"]).toBe(claudeWindow)
+    expect(store.getState().transcriptWindows.codex).toBe(codexWindow)
+  })
+
+  it("resets or discards only the correct lifecycle entries", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.revealTranscriptHistory("codex", 5)
+    const claudeWindow = store.getState().transcriptWindows["claude-code"]
+
+    store.startSession("codex", "new-acp")
+    expect(store.getState().transcriptWindows.codex).toEqual({
+      revealedTurnCount: 0,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+    expect(store.getState().transcriptWindows["claude-code"]).toBe(claudeWindow)
+
+    const dynamic: SessionSeed = {
+      id: "dynamic-window",
+      providerKind: "codex",
+      title: "Dynamic",
+      cwd: "/work/dynamic",
+    }
+    store.addSession(dynamic)
+    expect(store.getState().transcriptWindows[dynamic.id]).toEqual({
+      revealedTurnCount: 0,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+    store.removeSession(dynamic.id)
+    expect(store.getState().transcriptWindows[dynamic.id]).toBeUndefined()
+
+    store.addDelegatedSession(delegatedRegistration())
+    store.revealTranscriptHistory("delegated-child", 3)
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 1,
+    })
+    store.removeDelegationChild(delegatedIdentity)
+    expect(store.getState().transcriptWindows["delegated-child"]).toBeUndefined()
+
+    const restored = seed("codex", "restored")
+    store.replaceSessions(
+      [{ seed: restored, workspace: { sessionId: restored.id, displayName: "Restored" } }],
+      restored.id,
+    )
+    expect(store.getState().transcriptWindows).toEqual({
+      codex: { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+    })
+  })
+})

@@ -17,6 +17,8 @@ import {
   createUsageSeenJsonlFileSink,
   bucketTabRestoreCount,
   bucketTabSwitchLatency,
+  bucketAgentRunBatchSize,
+  bucketAgentRunDuration,
   bucketSteeringDuration,
   logUsageSeen,
   recordReadiness,
@@ -148,6 +150,12 @@ describe("opt-in gating", () => {
       count: 1,
     })
     recorder.exploreTerminal("private-explore", { terminalStatus: "finished", count: 1 })
+    recorder.agentRunControl({
+      operation: "start",
+      outcome: "accepted",
+      batchSizeBucket: "one",
+      durationBucket: "under_100ms",
+    })
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -190,6 +198,12 @@ describe("opt-in gating", () => {
       count: 1,
     })
     recorder.exploreTerminal("private-explore", { terminalStatus: "cancelled", count: 1 })
+    recorder.agentRunControl({
+      operation: "poll",
+      outcome: "unavailable",
+      batchSizeBucket: "five_or_more",
+      durationBucket: "2s_or_more",
+    })
   })
 })
 
@@ -321,6 +335,143 @@ describe("steering outcome telemetry", () => {
     const serialized = JSON.stringify(sink.records)
     expect(sink.records).toHaveLength(1)
     for (const sentinel of lifecycleKey.split(":")) expect(serialized).not.toContain(sentinel)
+  })
+})
+
+describe("agent_run control telemetry", () => {
+  it("serializes only the exact closed control dimensions", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+
+    recorder.agentRunControl({
+      operation: "start",
+      outcome: "accepted",
+      batchSizeBucket: "three_to_four",
+      durationBucket: "500_to_1999ms",
+    })
+    recorder.agentRunControl({
+      operation: "poll",
+      outcome: "rejected",
+      batchSizeBucket: "one",
+      durationBucket: "under_100ms",
+    })
+    recorder.agentRunControl({
+      operation: "poll",
+      outcome: "unavailable",
+      batchSizeBucket: "five_or_more",
+      durationBucket: "2s_or_more",
+    })
+
+    expect(sink.records).toEqual([
+      {
+        type: "agent_run_control",
+        at: 42,
+        sessionRef: "anonymous-run",
+        operation: "start",
+        outcome: "accepted",
+        batchSizeBucket: "three_to_four",
+        durationBucket: "500_to_1999ms",
+      },
+      {
+        type: "agent_run_control",
+        at: 42,
+        sessionRef: "anonymous-run",
+        operation: "poll",
+        outcome: "rejected",
+        batchSizeBucket: "one",
+        durationBucket: "under_100ms",
+      },
+      {
+        type: "agent_run_control",
+        at: 42,
+        sessionRef: "anonymous-run",
+        operation: "poll",
+        outcome: "unavailable",
+        batchSizeBucket: "five_or_more",
+        durationBucket: "2s_or_more",
+      },
+    ])
+    const allowed = new Set([
+      "type",
+      "at",
+      "sessionRef",
+      "operation",
+      "outcome",
+      "batchSizeBucket",
+      "durationBucket",
+    ])
+    expect(sink.records.every((record) => Object.keys(record).every((key) => allowed.has(key)))).toBe(true)
+
+    if (false) {
+      // @ts-expect-error operation vocabulary is closed
+      recorder.agentRunControl({ operation: "wait", outcome: "accepted", batchSizeBucket: "one", durationBucket: "under_100ms" })
+      // @ts-expect-error raw errors cannot cross the recorder API
+      recorder.agentRunControl({ operation: "start", outcome: "rejected", batchSizeBucket: "one", durationBucket: "under_100ms", error: "private" })
+    }
+  })
+
+  it("maps every batch-size and operation-duration boundary to bounded buckets", () => {
+    expect([0, 1, 2, 3, 4, 5, 99].map(bucketAgentRunBatchSize)).toEqual([
+      "zero",
+      "one",
+      "two",
+      "three_to_four",
+      "three_to_four",
+      "five_or_more",
+      "five_or_more",
+    ])
+    expect([-1, 0, 99, 100, 499, 500, 1_999, 2_000].map(bucketAgentRunDuration)).toEqual([
+      "under_100ms",
+      "under_100ms",
+      "under_100ms",
+      "100_to_499ms",
+      "100_to_499ms",
+      "500_to_1999ms",
+      "500_to_1999ms",
+      "2s_or_more",
+    ])
+  })
+
+  it("cannot serialize content, identities, routes, lifecycle, or raw errors", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, sessionRef: "anonymous-run" })
+    const sentinels = [
+      "TASK_SENTINEL",
+      "DESIRED_OUTCOME_SENTINEL",
+      "CHILD_ID_SENTINEL",
+      "PARENT_ID_SENTINEL",
+      "GENERATION_SENTINEL",
+      "PROVIDER_SENTINEL",
+      "CAPABILITY_SENTINEL",
+      "ROUTE_SENTINEL",
+      "ENDPOINT_SENTINEL",
+      "/private/path/SENTINEL",
+      "PROMPT_SENTINEL",
+      "TRANSCRIPT_SENTINEL",
+      "RAW_ERROR_SENTINEL",
+      "LIFECYCLE_STATUS_SENTINEL",
+    ]
+
+    recorder.agentRunControl({
+      operation: "start",
+      outcome: "rejected",
+      batchSizeBucket: "two",
+      durationBucket: "100_to_499ms",
+    })
+
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel)
+    for (const forbiddenKey of [
+      "task", "desiredOutcome", "childId", "parentId", "generation", "provider",
+      "capability", "route", "endpoint", "path", "prompt", "transcript", "error", "status",
+    ]) {
+      expect(sink.records[0]).not.toHaveProperty(forbiddenKey)
+    }
   })
 })
 
@@ -523,6 +674,121 @@ describe("delegated lifecycle telemetry", () => {
       { type: "delegated_launch_requested", at: 42, sessionRef: "run" },
       { type: "delegated_launch_failed", at: 42, sessionRef: "run" },
     ])
+  })
+})
+
+describe("managed worktree lifecycle telemetry", () => {
+  it("serializes exactly the six allowlisted categories with only bounded reasons", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+    const privateSuccessKey = [
+      "BINDING_ID_SENTINEL",
+      "CHILD_ID_SENTINEL",
+      "/repo/root/PATH_SENTINEL",
+      "BRANCH_SENTINEL",
+      "SHA_SENTINEL",
+      "TASK_SENTINEL",
+      "PROMPT_SENTINEL",
+      "RAW_ERROR_SENTINEL",
+      "PROVIDER_SENTINEL",
+      "AGENT_SENTINEL",
+    ].join(":")
+
+    recorder.managedWorktreeRequested(privateSuccessKey)
+    recorder.managedWorktreeProvisioned(privateSuccessKey)
+    recorder.managedWorktreeRequested("PRIVATE_FAILED_ATTEMPT")
+    recorder.managedWorktreeProvisionFailed("PRIVATE_FAILED_ATTEMPT", "verification_failed")
+    recorder.managedWorktreeReconciled("missing")
+    recorder.managedWorktreeCleanupRefused("dirty")
+    recorder.managedWorktreeCleaned()
+
+    expect(sink.records).toEqual([
+      { type: "managed_worktree_requested", at: 42, sessionRef: "anonymous-run" },
+      { type: "managed_worktree_provisioned", at: 42, sessionRef: "anonymous-run" },
+      { type: "managed_worktree_requested", at: 42, sessionRef: "anonymous-run" },
+      {
+        type: "managed_worktree_provision_failed",
+        managedWorktreeReason: "verification_failed",
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      {
+        type: "managed_worktree_reconciled",
+        managedWorktreeReason: "missing",
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      {
+        type: "managed_worktree_cleanup_refused",
+        managedWorktreeReason: "dirty",
+        at: 42,
+        sessionRef: "anonymous-run",
+      },
+      { type: "managed_worktree_cleaned", at: 42, sessionRef: "anonymous-run" },
+    ])
+    expect(new Set(sink.records.map((record) => record.type))).toEqual(new Set([
+      "managed_worktree_requested",
+      "managed_worktree_provisioned",
+      "managed_worktree_provision_failed",
+      "managed_worktree_reconciled",
+      "managed_worktree_cleanup_refused",
+      "managed_worktree_cleaned",
+    ]))
+    expect(sink.records.every((record) => Object.keys(record).every((key) =>
+      ["type", "at", "sessionRef", "managedWorktreeReason"].includes(key),
+    ))).toBe(true)
+    const serialized = JSON.stringify(sink.records)
+    for (const forbidden of privateSuccessKey.split(":")) expect(serialized).not.toContain(forbidden)
+    expect(serialized).not.toContain("PRIVATE_FAILED_ATTEMPT")
+    expect(serialized).not.toContain('"provider"')
+    expect(serialized).not.toContain('"agent"')
+  })
+
+  it("settles each private provision attempt with exactly one result", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 7, sessionRef: "run" })
+
+    recorder.managedWorktreeProvisioned("missing-request")
+    recorder.managedWorktreeProvisionFailed("missing-request", "git_failed")
+    recorder.managedWorktreeRequested("one-attempt")
+    recorder.managedWorktreeRequested("one-attempt")
+    recorder.managedWorktreeProvisioned("one-attempt")
+    recorder.managedWorktreeProvisionFailed("one-attempt", "git_failed")
+    recorder.managedWorktreeProvisioned("one-attempt")
+
+    expect(sink.records.map((record) => record.type)).toEqual([
+      "managed_worktree_requested",
+      "managed_worktree_provisioned",
+    ])
+  })
+
+  it("rejects unbounded reasons and never accesses a disabled sink", () => {
+    const sink = memorySink()
+    const active = createTelemetryRecorder({ enabled: true, sink })
+    active.managedWorktreeRequested("invalid-reason-attempt")
+    active.managedWorktreeProvisionFailed("invalid-reason-attempt", "RAW_ERROR_SENTINEL" as never)
+    active.managedWorktreeReconciled("PATH_SENTINEL" as never)
+    active.managedWorktreeCleanupRefused("BRANCH_SENTINEL" as never)
+    expect(sink.records.map((record) => record.type)).toEqual(["managed_worktree_requested"])
+
+    const disabled = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled managed-worktree telemetry must not access a sink")
+      },
+    })
+    disabled.managedWorktreeRequested("private")
+    disabled.managedWorktreeProvisioned("private")
+    disabled.managedWorktreeProvisionFailed("private", "git_failed")
+    disabled.managedWorktreeReconciled("missing")
+    disabled.managedWorktreeCleanupRefused("dirty")
+    disabled.managedWorktreeCleaned()
+    expect(disabled.enabled).toBe(false)
   })
 })
 

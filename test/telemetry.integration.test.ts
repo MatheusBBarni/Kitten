@@ -11,6 +11,11 @@ import {
   type SessionController,
 } from "../src/app/controller.ts"
 import type { ManagedWorktreeProvisioner } from "../src/app/managedWorktree.ts"
+import type {
+  AgentRunControl,
+  AgentRunRoute,
+  KittenMcpBridgeOptions,
+} from "../src/app/kittenMcpBridge.ts"
 import { createHandoffEdits, createHandoffFlow } from "../src/app/handoff.ts"
 import {
   evaluateExplorePolicy,
@@ -141,6 +146,7 @@ function clarificationAppConfig(dir: string, telemetryEnabled: boolean): AppConf
     clarificationTimeoutSeconds: 300,
     persistenceEnabled: false,
     telemetryEnabled,
+    transcriptWindowingEnabled: false,
     theme: "auto",
     welcomeBanner: "auto",
     statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -741,6 +747,8 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
       mkdirSync(privateCwd)
       const events: Array<(event: DomainSessionEvent) => void> = []
       let connectionIndex = 0
+      let agentRunControl: AgentRunControl | undefined
+      let parentRoute: AgentRunRoute | undefined
       const providerError = "PROVIDER_ERROR_SENTINEL"
       const recorder = createTelemetryRecorder({
         enabled: true,
@@ -804,6 +812,25 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
             },
           } as AgentConnection
         },
+        createKittenMcpBridge(options: KittenMcpBridgeOptions) {
+          agentRunControl = options.agentRunControl
+          return {
+            register(input) {
+              parentRoute ??= { parentId: input.sessionId, parentGeneration: input.generation }
+              return {
+                name: "kitten-telemetry-test",
+                command: "kitten-test",
+                args: [],
+                env: {},
+              }
+            },
+            async ask() {
+              return { kind: "cancelled" }
+            },
+            cancelSession() {},
+            async dispose() {},
+          }
+        },
         newSessionId: () => "SESSION_ID_SENTINEL",
         readBranch: async () => null,
         sendInitialTasks: false,
@@ -835,11 +862,16 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         },
       })
       const parentId = controller.store.getState().workspace.selectedVisibleId!
-      await controller.actions.startDelegatedChild({
-        parentId,
+      if (!agentRunControl || !parentRoute) throw new Error("agent-run integration route missing")
+      const accepted = await agentRunControl.start(parentRoute, [{
         task: "TASK_TEXT_SENTINEL",
         desiredOutcome: "OUTCOME_TEXT_SENTINEL",
-      })
+      }])
+      await expect(agentRunControl.start(parentRoute, [{
+        task: "REJECTED_TASK_TEXT_SENTINEL",
+        desiredOutcome: "REJECTED_OUTCOME_TEXT_SENTINEL",
+      }])).rejects.toThrow()
+      expect(agentRunControl.poll(parentRoute, accepted.map((snapshot) => snapshot.childId))).toHaveLength(1)
 
       expect(await controller.closeConversation(parentId, "cancel")).toEqual({ outcome: "teardown-failed" })
       events[1]?.({ kind: "status", status: "finished" })
@@ -858,6 +890,17 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         "delegated_teardown_failed",
       ])
       expect(delegatedRecords.every((record) => record.agent === undefined)).toBe(true)
+      const managedWorktreeRecords = records.filter((record) => record.type.startsWith("managed_worktree_"))
+      expect(managedWorktreeRecords).toEqual([
+        expect.objectContaining({ type: "managed_worktree_requested" }),
+        expect.objectContaining({ type: "managed_worktree_provisioned" }),
+      ])
+      expect(managedWorktreeRecords.every((record) => Object.keys(record).every((key) =>
+        ["type", "at", "sessionRef", "managedWorktreeReason"].includes(key)
+      ))).toBe(true)
+      expect(managedWorktreeRecords.every((record) =>
+        record.agent === undefined && record.provider === undefined
+      )).toBe(true)
       const exploreRecords = records.filter((record) => record.type.startsWith("explore_"))
       expect(exploreRecords).toEqual([
         expect.objectContaining({
@@ -883,10 +926,33 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
       expect(exploreRecords.every((record) =>
         Object.keys(record).every((key) => allowedExploreKeys.has(key))
       )).toBe(true)
+      const agentRunRecords = records.filter((record) => record.type === "agent_run_control")
+      expect(agentRunRecords).toEqual([
+        expect.objectContaining({
+          operation: "start",
+          outcome: "accepted",
+          batchSizeBucket: "one",
+        }),
+        expect.objectContaining({
+          operation: "start",
+          outcome: "rejected",
+          batchSizeBucket: "one",
+        }),
+        expect.objectContaining({
+          operation: "poll",
+          outcome: "accepted",
+          batchSizeBucket: "one",
+        }),
+      ])
+      expect(agentRunRecords.every((record) => Object.keys(record).every((key) => [
+        "type", "at", "sessionRef", "operation", "outcome", "batchSizeBucket", "durationBucket",
+      ].includes(key)))).toBe(true)
       const serialized = JSON.stringify(records)
       for (const forbidden of [
         "TASK_TEXT_SENTINEL",
         "OUTCOME_TEXT_SENTINEL",
+        "REJECTED_TASK_TEXT_SENTINEL",
+        "REJECTED_OUTCOME_TEXT_SENTINEL",
         "SESSION_ID_SENTINEL",
         "ACP_SESSION_SENTINEL",
         "PRIVATE_CWD_SENTINEL",
@@ -894,6 +960,9 @@ describe("delegated lifecycle telemetry over the local JSONL sink", () => {
         "MODEL_SENTINEL",
         "EFFORT_SENTINEL",
         "ATTESTATION_PAYLOAD_SENTINEL",
+        "kw-telemetry-integration",
+        "kitten/kw-telemetry-integration",
+        "a".repeat(40),
         providerError,
       ]) {
         expect(serialized).not.toContain(forbidden)

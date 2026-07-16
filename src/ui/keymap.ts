@@ -56,6 +56,8 @@ export type CockpitCommand =
   | "clear-run"
   | "model-select"
   | "statusline"
+  | "reveal-history"
+  | "return-to-live"
   | "open-settings"
   | "toggle-help"
   | "close-help"
@@ -219,6 +221,8 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
   { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
   { command: "statusline", name: "statusline", description: "Describe and review your personal statusline" },
+  { command: "reveal-history", name: "history", description: "Load earlier history for this conversation" },
+  { command: "return-to-live", name: "latest", description: "Return this conversation to live activity" },
   { command: "open-settings", name: "settings", description: "Open Kitten settings" },
   { command: "toggle-help", name: "help", description: "Show every Kitten command" },
 ]

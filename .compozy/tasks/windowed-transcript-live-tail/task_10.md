@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Emit Content-Free Experiment Telemetry
 type: frontend
 complexity: high

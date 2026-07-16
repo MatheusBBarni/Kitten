@@ -203,6 +203,8 @@ describe("COCKPIT_COMMANDS", () => {
       ["clear-run", "clear"],
       ["model-select", "model"],
       ["statusline", "statusline"],
+      ["reveal-history", "history"],
+      ["return-to-live", "latest"],
       ["open-settings", "settings"],
       ["toggle-help", "help"],
     ])
@@ -214,6 +216,12 @@ describe("COCKPIT_COMMANDS", () => {
       expect(command.name).not.toContain("/")
       expect(command.description.length).toBeGreaterThan(0)
     }
+  })
+
+  it("adds no global chord for transcript history commands", () => {
+    expect(COCKPIT_KEYMAP.some(({ command }) =>
+      command === "reveal-history" || command === "return-to-live"
+    )).toBeFalse()
   })
 })
 

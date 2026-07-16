@@ -220,6 +220,25 @@ Malformed config files fail fast. There is no silent fallback.
 
 Telemetry is disabled by default. When enabled, it writes local content-free JSONL counters only.
 
+### Experimental transcript windowing
+
+The bounded transcript view is a default-off experiment. To opt in, add the strict top-level boolean to
+`config.json`:
+
+<!-- transcript-windowing-example:start -->
+```json
+{
+  "transcriptWindowingEnabled": true
+}
+```
+<!-- transcript-windowing-example:end -->
+
+This changes presentation only: Kitten keeps the complete transcript available in memory for the current
+live run and collapses older rows behind an explicit history control. It does not persist transcript content
+across restarts, add a transcript archive, or change telemetry's local content-free privacy boundary. There
+is no Settings toggle or environment override for this experiment; remove the field or set it to `false` to
+return to the full-transcript view.
+
 ### Provider model defaults
 
 You can declare a default model, reasoning effort, or both for each provider. These are personal, declarative preferences: only `model` and `effort` are accepted, and Kitten never creates or rewrites them. Manual changes made in a live session also remain session-local.

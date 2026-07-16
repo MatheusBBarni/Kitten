@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Render the Projected Conversation and Preserve Anchors
 type: frontend
 complexity: high

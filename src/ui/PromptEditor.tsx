@@ -2,8 +2,8 @@
  * The composer: where the developer writes to whichever agent has focus.
  *
  * Everything the editor does reaches an agent through `controller.actions` and
- * nothing else (ADR-003). Submitting calls `sendPrompt`; Escape, while that agent is
- * mid-turn, calls `cancel`. The editor holds no draft in React state - the textarea's
+ * nothing else (ADR-003). Submitting calls `sendPrompt` while idle or `steer` during
+ * an active turn; Escape remains the distinct hard-stop action. The editor holds no draft in React state - the textarea's
  * own edit buffer is the draft, read once on submit - so a keystroke repaints the
  * renderable without waking the reconciler.
  *
@@ -38,6 +38,8 @@ import {
   selectRestorationBundle,
   selectSessionCommands,
   selectSessionPromptHistory,
+  selectSessionSteeringRecovery,
+  selectSessionSteeringStatus,
   selectSessionStatus,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
@@ -71,6 +73,9 @@ export const PROMPT_HISTORY_TITLE = "History"
 
 /** The empty-editor hint while the focused agent is ready. */
 export const PROMPT_PLACEHOLDER = "Enter sends, Shift+Enter adds a line, Esc interrupts"
+
+/** The empty-editor hint that distinguishes active steering from a hard stop. */
+export const PROMPT_STEERING_PLACEHOLDER = "Enter steers active task, Esc stops it"
 
 /** The empty-editor hint while the focused agent is not ready. */
 export const PROMPT_DISABLED_PLACEHOLDER = "Switch to a ready agent to send a prompt"
@@ -319,6 +324,19 @@ function SelectedPromptEditor({
   const agentCommands = useAppSelector(commandsSelector)
   const historySelector = useMemo(() => selectSessionPromptHistory(focusedSessionId), [focusedSessionId])
   const promptHistory = useAppSelector(historySelector)
+  const steeringStatusSelector = useMemo(
+    () => selectSessionSteeringStatus(focusedSessionId),
+    [focusedSessionId],
+  )
+  const steeringStatus = useAppSelector(steeringStatusSelector)
+  const steeringRecoverySelector = useMemo(
+    () => selectSessionSteeringRecovery(focusedSessionId),
+    [focusedSessionId],
+  )
+  const steeringRecovery = useAppSelector(steeringRecoverySelector)
+  const activeTurn = status === "working"
+    || status === "awaiting_approval"
+    || status === "awaiting_clarification"
 
   // Readiness is a boot-time fact about the connection, not a store slice: a session
   // whose handshake failed has no ACP session, so nothing may be sent to it.
@@ -339,6 +357,7 @@ function SelectedPromptEditor({
   const focusedSession = useRef(focusedSessionId)
   focusedSession.current = focusedSessionId
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
+  const [recoveryNotice, setRecoveryNotice] = useState<"restored" | "waiting" | null>(null)
   const [completion, setCompletion] = useState<PromptCompletion>(null)
   const completionRef = useRef<PromptCompletion>(null)
   const fileCache = useRef<FilePathCache | null>(null)
@@ -350,6 +369,7 @@ function SelectedPromptEditor({
   const pendingFileReferences = useRef<readonly PendingFileReference[]>([])
   const previousDraft = useRef("")
   const acceptingFileReference = useRef(false)
+  const applyingSteeringRecovery = useRef(false)
   const pendingQueryRenderMetric = useRef<PendingQueryRenderMetric | null>(null)
 
   const commitCompletion = useCallback((next: PromptCompletion): void => {
@@ -375,6 +395,32 @@ function SelectedPromptEditor({
     const next = editorRows(Math.max(editor.lineCount, editor.virtualLineCount))
     setRows((current) => (current === next ? current : next))
   }, [])
+
+  const restoreSteeringRecovery = useCallback((): boolean => {
+    const editor = textarea.current
+    if (!editor || !steeringRecovery) return false
+    if (editor.plainText.length > 0) {
+      setRecoveryNotice("waiting")
+      return false
+    }
+
+    const recoveredText = steeringRecovery.blocks.map((block) => block.text).join("\n")
+    applyingSteeringRecovery.current = true
+    acceptingFileReference.current = true
+    editor.setText(recoveredText)
+    previousDraft.current = recoveredText
+    acceptingFileReference.current = false
+    recalledSession.current = null
+    pendingFileReferences.current = []
+    activeFileInteraction.current = null
+    fileSuppression.current = null
+    pendingQueryRenderMetric.current = null
+    commitCompletion(null)
+    syncRows(editor)
+    controller.actions.acknowledgeSteeringRecovery(focusedSessionId, steeringRecovery.requestId)
+    setRecoveryNotice("restored")
+    return true
+  }, [commitCompletion, controller, focusedSessionId, steeringRecovery, syncRows])
 
   const renderCachedFileToken = useCallback((
     token: FileToken,
@@ -598,6 +644,7 @@ function SelectedPromptEditor({
   useEffect(() => {
     if (previousSession.current === focusedSessionId) return
     previousSession.current = focusedSessionId
+    setRecoveryNotice(null)
     fileRequestGeneration.current += 1
     fileCache.current = null
     fileLoad.current = null
@@ -623,6 +670,12 @@ function SelectedPromptEditor({
       syncRows(editor)
     }
   }, [commitCompletion, focusedSessionId, promptHistory, syncRows])
+
+  // Recovery is an external-store payload that must be copied into OpenTUI's native
+  // edit buffer exactly once before the controller is allowed to acknowledge it.
+  useEffect(() => {
+    if (steeringRecovery) restoreSteeringRecovery()
+  }, [restoreSteeringRecovery, steeringRecovery])
 
   useEffect(() => () => {
     fileRequestGeneration.current += 1
@@ -652,6 +705,18 @@ function SelectedPromptEditor({
     // A stray Enter on an empty or whitespace-only buffer must not start a turn.
     if (text.trim().length === 0) return
 
+    // A pending recovery owns its exact payload until the editor can copy it. Never
+    // clear or dispatch a changed draft while that lossless hand-off is unresolved.
+    if (steeringRecovery !== null) {
+      setRecoveryNotice("waiting")
+      return
+    }
+
+    if (activeTurn) {
+      const result = controller.actions.steer(text)
+      if (result.kind !== "queued") return
+    }
+
     // Local acceptance owns history even if the asynchronous agent call later fails.
     controller.actions.recordPromptHistory(text, focusedSessionId)
     recalledSession.current = null
@@ -661,15 +726,24 @@ function SelectedPromptEditor({
     pendingQueryRenderMetric.current = null
     commitCompletion(null)
 
-    // Clear before awaiting: `sendPrompt` records the user's turn synchronously, so
-    // the transcript already shows the message the composer just gave up.
+    // Clear only after local acceptance. Active steering is accepted synchronously;
+    // ordinary sending keeps the existing transcript-first asynchronous path.
     acceptingFileReference.current = true
     editor.clear()
     previousDraft.current = ""
     acceptingFileReference.current = false
     setRows(MIN_EDITOR_ROWS)
-    void controller.actions.sendPrompt(text)
-  }, [commitCompletion, controller, focusedSessionId, onRunCommand, ready, restorationContextOpen])
+    if (!activeTurn) void controller.actions.sendPrompt(text)
+  }, [
+    activeTurn,
+    commitCompletion,
+    controller,
+    focusedSessionId,
+    onRunCommand,
+    ready,
+    restorationContextOpen,
+    steeringRecovery,
+  ])
 
   const selectSlashMenuRow = useCallback((selectedRow?: MenuRow): void => {
     const editor = textarea.current
@@ -825,10 +899,24 @@ function SelectedPromptEditor({
     if (!editor) return
     const text = editor.plainText
 
+    if (applyingSteeringRecovery.current) {
+      applyingSteeringRecovery.current = false
+      previousDraft.current = text
+      syncRows(editor)
+      return
+    }
+
     if (acceptingFileReference.current) {
       previousDraft.current = text
       syncRows(editor)
       return
+    }
+
+    if (steeringRecovery !== null) {
+      if (text.length === 0 && restoreSteeringRecovery()) return
+      setRecoveryNotice("waiting")
+    } else if (recoveryNotice === "restored") {
+      setRecoveryNotice(null)
     }
 
     const priorPending = pendingFileReferences.current
@@ -873,7 +961,17 @@ function SelectedPromptEditor({
       return
     }
     commitCompletion({ kind: "slash", token: slashToken, selected: 0 })
-  }, [agentCommands, beginFileCompletion, commitCompletion, controller, onRunCommand, syncRows])
+  }, [
+    agentCommands,
+    beginFileCompletion,
+    commitCompletion,
+    controller,
+    onRunCommand,
+    recoveryNotice,
+    restoreSteeringRecovery,
+    steeringRecovery,
+    syncRows,
+  ])
 
   const onCursorChange = useCallback((): void => {
     const editor = textarea.current
@@ -903,6 +1001,26 @@ function SelectedPromptEditor({
     [syncRows],
   )
 
+  const steeringTitle = recoveryNotice === "restored"
+    ? "Steering failed · draft restored"
+    : recoveryNotice === "waiting"
+      ? "Steering failed · recovery waiting; clear editor to restore"
+      : steeringStatus.phase === "failed"
+        ? "Steering failed · recovery ready"
+        : steeringStatus.phase === "sending"
+          ? `Steering sending (${steeringStatus.queueCount})`
+          : steeringStatus.phase === "waiting"
+            ? `Steering queued (${steeringStatus.queueCount}) · waiting for interaction`
+            : steeringStatus.phase === "cancelling" || steeringStatus.phase === "settling"
+              ? `Steering queued (${steeringStatus.queueCount}) · redirecting`
+              : steeringStatus.phase === "queued"
+                ? `Steering queued (${steeringStatus.queueCount})`
+                : null
+  const historyTitle = ready && promptHistory.cursor !== null
+    ? `${PROMPT_HISTORY_TITLE} ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
+    : null
+  const composerTitle = [historyTitle, steeringTitle].filter(Boolean).join(" · ") || undefined
+
   return (
     <box
       borderStyle="rounded"
@@ -920,12 +1038,8 @@ function SelectedPromptEditor({
         paddingBottom: 0,
         overflow: "visible",
       }}
-      title={
-        ready && promptHistory.cursor !== null
-          ? `${PROMPT_HISTORY_TITLE} ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
-          : undefined
-      }
-      titleColor={palette.accent}
+      title={composerTitle}
+      titleColor={steeringTitle?.startsWith("Steering failed") ? palette.status.error : palette.accent}
     >
       {armedSlashMenu ? (
         <box style={{ position: "absolute", left: 0, right: 0, bottom: rows + 2, zIndex: 1 }}>
@@ -967,7 +1081,7 @@ function SelectedPromptEditor({
           cursorColor: palette.accent,
           placeholderColor: palette.muted,
         }}
-        placeholder={ready ? PROMPT_PLACEHOLDER : PROMPT_DISABLED_PLACEHOLDER}
+        placeholder={ready ? (activeTurn ? PROMPT_STEERING_PLACEHOLDER : PROMPT_PLACEHOLDER) : PROMPT_DISABLED_PLACEHOLDER}
         keyBindings={PROMPT_KEY_BINDINGS}
         onSubmit={submit}
         onKeyDown={onKeyDown}

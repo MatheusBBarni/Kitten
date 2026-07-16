@@ -903,6 +903,8 @@ export interface AppConfig {
   clarificationTimeoutSeconds: number
   persistenceEnabled: boolean
   telemetryEnabled: boolean
+  /** Default-off gate for the bounded live-run transcript projection experiment. */
+  transcriptWindowingEnabled: boolean
   theme: ThemePreference
   welcomeBanner: WelcomeBannerPreference
   statusline: StatuslinePreference

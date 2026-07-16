@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Steering Store Projection and Selectors
 type: refactor
 complexity: medium
@@ -29,11 +29,11 @@ Expose the reducer-owned steering lifecycle to focused consumers without creatin
 
 ## Subtasks
 
-- [ ] 2.1 Add the minimal store action surface required to acknowledge an already reducer-owned recovery payload.
-- [ ] 2.2 Add narrow per-session steering status and recovery selectors with stable empty fallbacks.
-- [ ] 2.3 Keep generic projections content-free while reserving raw blocks for the focused acknowledgement path.
-- [ ] 2.4 Verify reducer-routed updates preserve other sessions, workspace state, and unrelated selector identities.
-- [ ] 2.5 Cover phase, count, recovery availability, missing-session, and subscription-stability behavior.
+- [x] 2.1 Add the minimal store action surface required to acknowledge an already reducer-owned recovery payload.
+- [x] 2.2 Add narrow per-session steering status and recovery selectors with stable empty fallbacks.
+- [x] 2.3 Keep generic projections content-free while reserving raw blocks for the focused acknowledgement path.
+- [x] 2.4 Verify reducer-routed updates preserve other sessions, workspace state, and unrelated selector identities.
+- [x] 2.5 Cover phase, count, recovery availability, missing-session, and subscription-stability behavior.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Follow the TechSpec “System Architecture,” “Data Models,” and Build Orde
 ## Tests
 
 - Unit tests:
-  - [ ] Phase, queue count, and recovery-availability selectors return the expected values for idle, queued, sending, and failed states.
-  - [ ] Null, missing, and no-recovery sessions return stable documented fallback values.
-  - [ ] A generic steering projection never includes raw blocks, request ids, or raw failure details.
-  - [ ] An unrelated token update and another session’s steering event do not change a selected session’s selector reference or notify its subscriber.
-  - [ ] Recovery access changes only when the addressed session receives its steering events or acknowledgement.
+  - [x] Phase, queue count, and recovery-availability selectors return the expected values for idle, queued, sending, and failed states.
+  - [x] Null, missing, and no-recovery sessions return stable documented fallback values.
+  - [x] A generic steering projection never includes raw blocks, request ids, or raw failure details.
+  - [x] An unrelated token update and another session’s steering event do not change a selected session’s selector reference or notify its subscriber.
+  - [x] Recovery access changes only when the addressed session receives its steering events or acknowledgement.
 - Integration tests:
-  - [ ] The real app store applies enqueue and acknowledgement events through `sessionReducer`, preserving untouched session and workspace references.
+  - [x] The real app store applies enqueue and acknowledgement events through `sessionReducer`, preserving untouched session and workspace references.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -39,7 +39,7 @@ const tempDirs: string[] = []
 const README_PATH = join(import.meta.dir, "..", "..", "README.md")
 
 async function readReadmeJsonExample(
-  name: "mcp-config-example" | "mcp-remote-example" | "provider-defaults-example",
+  name: "mcp-config-example" | "mcp-remote-example" | "provider-defaults-example" | "transcript-windowing-example",
 ): Promise<string> {
   const readme = await Bun.file(README_PATH).text()
   const match = readme.match(new RegExp(`<!-- ${name}:start -->\\s*\`\`\`json\\s*([\\s\\S]*?)\\s*\`\`\`\\s*<!-- ${name}:end -->`))
@@ -652,6 +652,44 @@ describe("telemetry opt-in", () => {
 
   it("Should honor an explicit telemetry opt-out", () => {
     expect(parseAppConfig(JSON.stringify({ telemetryEnabled: false })).telemetryEnabled).toBe(false)
+  })
+})
+
+describe("transcript windowing experiment", () => {
+  it("Should default to disabled when the config is absent or omits the field", async () => {
+    const missing = join(await makeTempDir(), "missing.json")
+
+    expect(defaultAppConfig().transcriptWindowingEnabled).toBe(false)
+    expect(parseAppConfig("{}").transcriptWindowingEnabled).toBe(false)
+    expect((await loadAppConfig({ path: missing })).transcriptWindowingEnabled).toBe(false)
+  })
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("Should preserve an explicit %s through parsing, merging, and file loading", async (_label, value) => {
+    const source = JSON.stringify({ transcriptWindowingEnabled: value })
+    const path = await writeConfig(source)
+
+    expect(parseAppConfig(source).transcriptWindowingEnabled).toBe(value)
+    expect(mergeAppConfig({ transcriptWindowingEnabled: value }).transcriptWindowingEnabled).toBe(value)
+    expect((await loadAppConfig({ path })).transcriptWindowingEnabled).toBe(value)
+  })
+
+  it.each([
+    ["string", "true"],
+    ["number", 1],
+    ["null", null],
+  ])("Should reject a %s value with a field-naming ConfigError", (_label, value) => {
+    const parse = () => parseAppConfig(JSON.stringify({ transcriptWindowingEnabled: value }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/transcriptWindowingEnabled/)
+  })
+
+  it("Should load the documented JSON opt-in through the strict schema", async () => {
+    expect(parseAppConfig(await readReadmeJsonExample("transcript-windowing-example")).transcriptWindowingEnabled)
+      .toBe(true)
   })
 })
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the Pure Transcript Projection
 type: refactor
 complexity: medium
