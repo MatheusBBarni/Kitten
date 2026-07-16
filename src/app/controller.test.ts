@@ -4412,13 +4412,57 @@ describe("createSessionController - route-authorized agent runs", () => {
     expect(snapshots).toEqual([
       { childId: "healthy-child", status: "running" },
       { childId: "startup-failed-child", status: "failed", terminalAt: 4242 },
-      { childId: "prompt-failed-child", status: "failed", terminalAt: 4242 },
+      { childId: "prompt-failed-child", status: "running" },
     ])
+    await waitFor(
+      () => controller.store.getState().delegation.children["prompt-failed-child"]?.status === "failed",
+      "the asynchronously rejected child prompt to terminalize",
+    )
     for (const id of ids) {
       expect(controller.store.getState().workspace.conversations[id]).toBeDefined()
       expect(controller.store.getState().sessions[id]?.worktreeBinding).toMatchObject({ ownerSessionId: id })
     }
     expect(controller.store.getState().delegation.children["healthy-child"]?.terminal).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it("returns agent-run snapshots after dispatch rather than waiting for child turns", async () => {
+    const bridge = createRecordingBridge()
+    const childTurn = deferred()
+    const ids = ["detached-child"]
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length >= 2
+          ? { promptWait: childTurn.promise }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const snapshots = await bridge.agentRunControl().start(
+      recordedAgentRunRoute(bridge, parentId),
+      [{ task: "Long-running child task", desiredOutcome: "Remain pollable" }],
+    )
+
+    expect(snapshots).toEqual([{ childId: "detached-child", status: "running" }])
+    expect(created[2]!.prompts).toHaveLength(1)
+    expect(bridge.agentRunControl().poll(recordedAgentRunRoute(bridge, parentId), ["detached-child"])).toEqual([
+      { childId: "detached-child", status: "running" },
+    ])
+
+    childTurn.resolve()
     await controller.dispose()
   })
 
@@ -5440,7 +5484,11 @@ describe("createSessionController - dynamic conversation actions", () => {
       parentId,
       task: "Fail during prompt",
       desiredOutcome: "Inspectable prompt failure",
-    })).toEqual({ kind: "denied", reason: "startup-failed" })
+    })).toEqual({ kind: "started", childId: "prompt-failure" })
+    await waitFor(
+      () => controller.store.getState().delegation.children["prompt-failure"]?.status === "failed",
+      "the detached explore prompt failure to terminalize",
+    )
     expect(await controller.actions.startExploreChild({
       parentId,
       task: "Stay healthy",
@@ -5469,9 +5517,10 @@ describe("createSessionController - dynamic conversation actions", () => {
       expect.objectContaining({ failureCategory: "session-start-failed", count: 1 }),
       expect.objectContaining({ failureCategory: "prompt-dispatch-failed", count: 1 }),
     ])
-    expect(await controller.actions.steerDelegatedChild("healthy-child", "Check one more invariant")).toEqual({
-      stopReason: "end_turn",
+    expect(controller.store.getState().delegation.children["healthy-child"]).toMatchObject({
+      status: "running",
     })
+    expect(created[4]!.prompts).toHaveLength(1)
     expect(await controller.actions.sendPrompt("Parent remains usable", parentId)).toEqual({ stopReason: "end_turn" })
   })
 

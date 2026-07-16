@@ -103,6 +103,8 @@ export interface FakeControllerOptions {
   runtimes?: AgentRuntimeState[]
   /** The store to drive. Defaults to a fresh one. */
   store?: AppStore
+  /** Enables the same transcript projection path as an opted-in production controller. */
+  transcriptWindowingEnabled?: boolean
   /** Shell standing exposed to shell-aware views. Defaults to unavailable. */
   shell?: ShellRuntimeState
   /** Explicit-session repository discovery seam for mounted selector tests. */
@@ -246,6 +248,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
 
   return {
     store,
+    transcriptWindowingEnabled: options.transcriptWindowingEnabled ?? false,
     shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {

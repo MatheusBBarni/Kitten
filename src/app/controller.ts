@@ -291,6 +291,8 @@ export interface SessionControllerOptions {
 export interface SessionController {
   /** The store every view subscribes to. */
   readonly store: AppStore
+  /** Whether the resolved default-off transcript window presentation is enabled. */
+  readonly transcriptWindowingEnabled: boolean
   /** The only surface through which the UI drives the agents. */
   readonly actions: ControllerActions
   /** Imperative shell access for the UI/hand-off, or its fail-soft startup error. */
@@ -2081,18 +2083,29 @@ export async function createSessionController(options: SessionControllerOptions)
         : { failure: "parent-closing" }
     }
 
-    publishDelegatedState({ ...child.identity, status: "running", sessionStatus: "working" })
     const prompt = `Task:\n${child.task.task}\n\nDesired outcome:\n${child.task.desiredOutcome}`
-    const result = await actions.sendPrompt(prompt, child.seed.id)
-    const stillOwnsChild = ownsDelegatedIdentity(child.identity)
-    if (result === null || !stillOwnsChild) {
-      if (stillOwnsChild) {
-        await failSession(
-          childRuntime,
-          childRuntime.connection ?? undefined,
-          "Initial child prompt failed",
-          "connection-failed",
-        )
+    let dispatched = false
+    const result = actions.sendPrompt(prompt, child.seed.id, {
+      // The prompt action verifies that this idle child can dispatch before it
+      // invokes us. Publishing `working` earlier would make that same action
+      // reject the child as an already-active session.
+      onDispatched: () => {
+        dispatched = publishDelegatedState({
+          ...child.identity,
+          status: "running",
+          sessionStatus: "working",
+        })
+      },
+    })
+
+    const terminalizePromptFailure = (): void => {
+      void failSession(
+        childRuntime,
+        childRuntime.connection ?? undefined,
+        "Initial child prompt failed",
+        "connection-failed",
+      ).then(() => {
+        if (!ownsDelegatedIdentity(child.identity)) return
         publishDelegatedState({
           ...child.identity,
           status: "failed",
@@ -2103,11 +2116,25 @@ export async function createSessionController(options: SessionControllerOptions)
           failureCategory: "prompt-dispatch-failed",
           count: 1,
         })
-      }
-      return stillOwnsChild
+      }).catch((error) => onError(child.seed.id, error))
+    }
+
+    if (!dispatched) {
+      // Rejection before the transport starts is still an immediate startup
+      // failure. Terminalize it in the background so no launch path waits on
+      // connection disposal.
+      terminalizePromptFailure()
+      return ownsDelegatedIdentity(child.identity)
         ? { snapshot: agentRunSnapshot(child.identity), failure: "startup-failed" }
         : { failure: "parent-closing" }
     }
+
+    // Agent-run start is detached: return the registered, running snapshot now.
+    // A connection that rejects later is terminalized independently and is then
+    // observable through the normal poll route.
+    void result.then((outcome) => {
+      if (outcome === null && ownsDelegatedIdentity(child.identity)) terminalizePromptFailure()
+    })
     return { snapshot: agentRunSnapshot(child.identity) }
   }
 
@@ -2696,6 +2723,7 @@ export async function createSessionController(options: SessionControllerOptions)
 
   return {
     store,
+    transcriptWindowingEnabled: options.config.transcriptWindowingEnabled,
     actions,
     shell,
     runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),

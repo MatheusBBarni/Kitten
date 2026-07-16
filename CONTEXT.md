@@ -38,6 +38,30 @@ _Avoid_: Permission prompt, arbitrary agent question
 The immutable, auditable input assembled automatically for one Run Attempt from trusted task, repository, and prior-review evidence.
 _Avoid_: Context Pack, hidden prompt, agent-generated plan
 
+**Execution Route**:
+The selected runtime path for a Run Attempt: a certified direct ACP profile or the Compozy workflow.
+_Avoid_: Task source, model, provider-specific SDK
+
+**Direct ACP Route**:
+An Execution Route in which Kitten Orchestrator directly hosts a certified Claude, Codex, or Cursor ACP session.
+_Avoid_: Claude Agent SDK, generic ACP compatibility
+
+**Compozy Route**:
+An Execution Route in which Kitten Orchestrator delegates the task workflow to the Compozy CLI while retaining host governance.
+_Avoid_: ACP provider profile, ungoverned subprocess
+
+**Cross-App Handoff**:
+An explicitly reviewed transfer of task, workspace, context, transcript, and evidence into a new session owned by the other Kitten application.
+_Avoid_: Live session transfer, shared session control
+
+**Agent Profile Registry**:
+The versioned user-level configuration that both Kitten applications use to resolve certified agent launch recipes and readiness.
+_Avoid_: Shared application database, provider credential store
+
+**Predecessor Import**:
+The explicit, idempotent copy of Task Orchestrator data into Kitten Orchestrator-owned storage while leaving the source untouched.
+_Avoid_: In-place database upgrade, silent migration
+
 ### Context Engineering
 
 **Context Pack**:
@@ -235,6 +259,17 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - An Orchestrated Work contains one or more sequential **Run Attempts**
 - Review feedback creates a new Run Attempt in the same Orchestrated Work without replacing prior attempts
 - Every Run Attempt starts a fresh ACP session and receives one exact **Run Context** before agent execution begins
+- Every Run Attempt selects exactly one **Execution Route**
+- A **Direct ACP Route** selects exactly one certified Claude, Codex, or Cursor profile
+- A **Compozy Route** remains subject to the same worktree, budget, permission, verification, and review policy as a Direct ACP Route
+- A **Cross-App Handoff** starts a new recipient session and never transfers or shares ownership of the source session
+- No live agent session is concurrently owned by Kitten Cockpit and Kitten Orchestrator
+- Kitten Cockpit and Kitten Orchestrator read the same **Agent Profile Registry**
+- The Agent Profile Registry does not store provider credentials or either application's session, project, queue, attempt, budget, or review data
+- Each application owns and migrates its persistent product data independently
+- A **Predecessor Import** previews its scope, writes only to Kitten Orchestrator storage, records completion, and can be retried without duplicating data
+- Archiving Task Orchestrator requires a verified Predecessor Import path for supported predecessor data
+- The first Kitten Orchestrator release admits at most one active Orchestrated Work globally and does not permit autonomous child delegation
 - A Run Context may include a **Sealed Context Pack**, but it never creates, seals, trims, or rewrites that pack
 - A Context Pack remains optional for Run Attempts and retains the same explicit review requirement as in Kitten Cockpit
 - A **Run Attempt** progresses without supervision unless it reaches a policy-defined blocker
@@ -344,6 +379,11 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - "reuse context" was ambiguous between automatic run assembly and auto-sending a curated Context Pack — resolved: ordinary tasks receive a **Run Context**, while Context Packs remain optional and explicitly reviewed.
 - "run" was used for both the task's end-to-end review lineage and one agent execution — resolved: **Orchestrated Work** is the lineage and **Run Attempt** is one execution.
 - "reuse the engine" was also ambiguous about discarding the predecessor UI and persistence — resolved: the existing desktop product is the parity baseline, then shared Kitten capabilities replace its internals incrementally.
+- "engine" was used for both a provider transport and the Compozy workflow — resolved: **Execution Route** distinguishes direct ACP profiles from the higher-level **Compozy Route**.
+- "shared session" was ambiguous between portable context and shared runtime ownership — resolved: applications exchange an explicitly reviewed **Cross-App Handoff**, and the recipient creates a new owned session.
+- "shared core" was ambiguous about a shared database — resolved: the applications share the **Agent Profile Registry** and code contracts, while all product data remains app-owned.
+- "orchestration" did not imply first-release parallelism — resolved: V1 preserves one globally active Orchestrated Work and defers autonomous child delegation.
+- "preserve stored data" was ambiguous between schema parity and mutating the predecessor database — resolved: Kitten Orchestrator performs an explicit **Predecessor Import** and retains the original for rollback.
 - "kill the Task Orchestrator repo" was ambiguous between deletion and retirement — resolved: import relevant history into Kitten, then archive the predecessor repository read-only with a relocation notice.
 - "context" was used for both an agent's context window and a curated reusable artifact — resolved: the reusable artifact is a **Context Pack**.
 - "similar to RepoPrompt" could mean matching its workflow or cloning its codemap platform — resolved for V1: match the curated-selection workflow with full files, described slices, and diffs; defer codemaps and automatic dependency graphs.

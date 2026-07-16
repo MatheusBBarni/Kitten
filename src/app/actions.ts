@@ -41,9 +41,18 @@ import type { CleanupManagedWorktreeResult } from "./managedWorktree.ts"
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
 
-/** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
+/** Options for one controller-authorized prompt dispatch. */
 export interface PromptSendOptions {
+  /** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
   readonly persist?: boolean
+  /**
+   * Invoked after the prompt transport has been started, but before its turn settles.
+   *
+   * This is intentionally a notification rather than a completion callback: callers
+   * that supervise a detached turn can publish its running state without waiting for
+   * the provider's eventual reply.
+   */
+  readonly onDispatched?: () => void
 }
 
 /** Explicit, provider-neutral work assigned to one background child session. */
@@ -441,7 +450,12 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       persist: options?.persist,
     })
     try {
-      const result = await dispatch.invoke()
+      // `invoke` reaches the connection before returning its settlement promise.
+      // Notify detached supervisors at that boundary so they do not have to await
+      // the whole agent turn merely to learn that dispatch was accepted.
+      const pending = dispatch.invoke()
+      options?.onDispatched?.()
+      const result = await pending
       rejectedFreshPrompts.delete(sessionId)
       return result
     } catch (error) {
