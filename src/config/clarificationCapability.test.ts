@@ -152,6 +152,7 @@ describe("clarification capability classification", () => {
         adapterPackage: "untrusted-display-metadata",
         adapterVersion: "9.9.9",
       },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: {
         kind: "cursor-certified",
         command: "agent",

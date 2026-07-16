@@ -7,6 +7,7 @@ import { startMockAgent, type MockAgentOptions } from "../../test/mockAgent.ts"
 import {
   createAgentConnection,
   CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS,
+  ConcurrentPromptError,
   createFrameScheduler,
   type AgentConnection,
   type FrameScheduler,
@@ -37,6 +38,7 @@ const ASK_USER_MCP_SERVER: McpServerConfig = {
 }
 const SUPPORTED_CONFIG: ResolvedAgentConfig = {
   ...CONFIG,
+  steeringCapability: { status: "unavailable" },
   clarificationCapability: {
     status: "supported",
     adapterPackage: "@agentclientprotocol/claude-agent-acp",
@@ -46,6 +48,7 @@ const SUPPORTED_CONFIG: ResolvedAgentConfig = {
 }
 const UNSUPPORTED_CONFIG: ResolvedAgentConfig = {
   ...CONFIG,
+  steeringCapability: { status: "unavailable" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
   runtimeProfile: { kind: "standard" },
 }
@@ -55,6 +58,7 @@ const CERTIFIED_CURSOR_CONFIG: ResolvedAgentConfig = {
   command: "agent",
   args: ["acp"],
   env: {},
+  steeringCapability: { status: "unavailable" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
   runtimeProfile: {
     kind: "cursor-certified",
@@ -67,6 +71,7 @@ const CERTIFIED_CURSOR_CONFIG: ResolvedAgentConfig = {
 }
 const STANDARD_CODEX_CONFIG: ResolvedAgentConfig = {
   ...CODEX_CONFIG,
+  steeringCapability: { status: "unavailable" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
   runtimeProfile: { kind: "standard" },
 }
@@ -1182,6 +1187,36 @@ describe("status mapping (ADR-006)", () => {
     await conn.dispose()
 
     expect(events.some((event) => event.kind === "status" && event.status === "error")).toBe(false)
+  })
+})
+
+describe("concurrent prompt guard", () => {
+  it("rejects before a second ACP dispatch and preserves the original terminal result", async () => {
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const { conn, mock, events } = await connected({
+      onPrompt: async () => {
+        await firstGate
+        return "end_turn" as const
+      },
+    })
+    const sessionId = await conn.newSession("/tmp")
+
+    const first = conn.prompt(sessionId, [{ type: "text", text: "first" }])
+    await waitFor(() => mock.prompts.length === 1)
+
+    await expect(conn.prompt(sessionId, [{ type: "text", text: "second" }])).rejects.toBeInstanceOf(
+      ConcurrentPromptError,
+    )
+    expect(mock.prompts).toHaveLength(1)
+    expect(lastStatus(events)).toBe("working")
+
+    releaseFirst()
+    await expect(first).resolves.toEqual({ stopReason: "end_turn" })
+    expect(lastStatus(events)).toBe("finished")
+    await conn.dispose()
   })
 })
 

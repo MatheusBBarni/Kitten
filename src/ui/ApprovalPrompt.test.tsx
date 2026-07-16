@@ -16,7 +16,7 @@ import { actAsync, destroyMounted, testRender } from "../../test/reactTui.ts"
 import { APPROVAL_HINT } from "./keymap.ts"
 import { approvalTitleFor, OPTION_MARKER, UNTITLED_ACTION } from "./ApprovalPrompt.tsx"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
-import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
+import { PROMPT_PLACEHOLDER, PROMPT_STEERING_PLACEHOLDER } from "./PromptEditor.tsx"
 import { TOOL_KIND_LABELS } from "./ToolCallRow.tsx"
 
 /**
@@ -47,6 +47,10 @@ const REJECT = { optionId: "reject", name: "Reject", kind: "reject_once" } as co
 /** Typed at the modal overlay; must never appear anywhere, least of all in the composer. */
 const DRAFT_MARKER = "zzq"
 
+function hasMountedPrompt(frame: string): boolean {
+  return frame.includes(PROMPT_PLACEHOLDER) || frame.includes(PROMPT_STEERING_PLACEHOLDER)
+}
+
 /** An `edit` permission request carrying the diff it wants to apply. */
 function editRequest(overrides: Partial<PermissionRequest> = {}): PermissionRequest {
   return {
@@ -63,7 +67,7 @@ async function renderCockpit(controller: FakeController): Promise<TestRendererSe
     height: HEIGHT,
     kittyKeyboard: true,
   })
-  await setup.waitForFrame((frame) => frame.includes(PROMPT_PLACEHOLDER))
+  await setup.waitForFrame(hasMountedPrompt)
   return setup
 }
 
@@ -549,6 +553,7 @@ const APP_CONFIG: AppConfig = {
   clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
+  transcriptWindowingEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -664,6 +669,7 @@ describe("integration - two sessions of the same provider requesting permission 
       clarificationTimeoutSeconds: 300,
       persistenceEnabled: true,
       telemetryEnabled: false,
+      transcriptWindowingEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },

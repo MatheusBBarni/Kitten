@@ -18,12 +18,17 @@ import {
   type CloseConversationResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
+  type ExploreAvailabilityResult,
+  type ExploreLaunchRequest,
+  type ExploreLaunchResult,
   type PromptInput,
   type StartDelegatedChildInput,
   type StatuslineWriteResult,
+  type SteeringResult,
   type SwitchFocusOptions,
 } from "../src/app/actions.ts"
 import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
+import type { CleanupManagedWorktreeResult } from "../src/app/managedWorktree.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
 import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
@@ -40,8 +45,10 @@ import type { ResumeMode } from "../src/telemetry/recorder.ts"
 export interface RecordedCalls {
   createConversation: number
   startDelegatedChild: StartDelegatedChildInput[]
+  startExploreChild: ExploreLaunchRequest[]
   steerDelegatedChild: { childId: SessionId; text: string }[]
   cancelDelegatedChild: SessionId[]
+  cleanupManagedWorktree: SessionId[]
   renameConversation: { sessionId: SessionId; displayName: string }[]
   selectConversation: SessionId[]
   selectConversationOptions: (SwitchFocusOptions | undefined)[]
@@ -55,6 +62,8 @@ export interface RecordedCalls {
   fileSelectorSelected: { sessionId: SessionId; durationMs: number }[]
   fileSelectorCorrected: SessionId[]
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
+  steer: { input: PromptInput; sessionId: SessionId | undefined }[]
+  acknowledgeSteeringRecovery: { sessionId: SessionId; requestId: string }[]
   recordPromptHistory: { text: string; sessionId: SessionId | undefined }[]
   navigatePromptHistory: { direction: PromptHistoryDirection; sessionId: SessionId | undefined }[]
   cancel: (SessionId | undefined)[]
@@ -94,6 +103,8 @@ export interface FakeControllerOptions {
   runtimes?: AgentRuntimeState[]
   /** The store to drive. Defaults to a fresh one. */
   store?: AppStore
+  /** Enables the same transcript projection path as an opted-in production controller. */
+  transcriptWindowingEnabled?: boolean
   /** Shell standing exposed to shell-aware views. Defaults to unavailable. */
   shell?: ShellRuntimeState
   /** Explicit-session repository discovery seam for mounted selector tests. */
@@ -110,6 +121,21 @@ export interface FakeControllerOptions {
     input: StartDelegatedChildInput,
     store: AppStore,
   ) => SessionId | null | Promise<SessionId | null>
+  /** Deterministic managed-worktree result for captured cleanup UI tests. */
+  cleanupManagedWorktree?: (
+    childId: SessionId,
+    store: AppStore,
+  ) => CleanupManagedWorktreeResult | Promise<CleanupManagedWorktreeResult>
+  /** Typed fail-closed explore result used by delegation-dialog tests. */
+  startExploreChild?: (
+    input: ExploreLaunchRequest,
+    store: AppStore,
+  ) => ExploreLaunchResult | Promise<ExploreLaunchResult>
+  /** Advisory availability captured when the delegation dialog opens. */
+  exploreAvailability?: (
+    parentId: SessionId,
+    store: AppStore,
+  ) => ExploreAvailabilityResult
   /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
   sendPrompt?: (
     input: PromptInput,
@@ -161,8 +187,10 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   const calls: RecordedCalls = {
     createConversation: 0,
     startDelegatedChild: [],
+    startExploreChild: [],
     steerDelegatedChild: [],
     cancelDelegatedChild: [],
+    cleanupManagedWorktree: [],
     renameConversation: [],
     selectConversation: [],
     selectConversationOptions: [],
@@ -176,6 +204,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     fileSelectorSelected: [],
     fileSelectorCorrected: [],
     sendPrompt: [],
+    steer: [],
+    acknowledgeSteeringRecovery: [],
     recordPromptHistory: [],
     navigatePromptHistory: [],
     cancel: [],
@@ -198,6 +228,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
 
   const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
   let created = 0
+  let steeringRequests = 0
   const rejectedFreshPrompts = new Map<SessionId, PromptInput>()
 
   async function closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult> {
@@ -217,6 +248,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
 
   return {
     store,
+    transcriptWindowingEnabled: options.transcriptWindowingEnabled ?? false,
     shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {
@@ -291,6 +323,29 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         })
         return sessionId
       },
+      async cleanupManagedWorktree(childId) {
+        calls.cleanupManagedWorktree.push(childId)
+        const result = await (options.cleanupManagedWorktree?.(childId, store)
+          ?? { kind: "refused" as const, reason: "not_managed" as const })
+        const binding = store.getState().sessions[childId]?.worktreeBinding
+        if (binding?.kind === "managed") {
+          store.publishManagedWorktreeBinding(childId, result.kind === "removed"
+            ? { ...binding, availability: "unavailable", reason: "missing" }
+            : { ...binding, availability: "cleanup_refused", reason: result.reason })
+        }
+        return result
+      },
+      async startExploreChild(input) {
+        calls.startExploreChild.push(input)
+        return await (options.startExploreChild?.(input, store)
+          ?? { kind: "denied" as const, reason: "missing-attestation" as const })
+      },
+      exploreAvailability(parentId) {
+        return options.exploreAvailability?.(parentId, store)
+          ?? (options.startExploreChild
+            ? { kind: "available" as const }
+            : { kind: "denied" as const, reason: "missing-attestation" as const })
+      },
       async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
         calls.steerDelegatedChild.push({ childId, text })
         const child = store.getState().delegation.children[childId]
@@ -357,6 +412,33 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
           rejectedFreshPrompts.set(target, input)
         }
         return result
+      },
+      steer(input: PromptInput, sessionId?: SessionId): SteeringResult {
+        calls.steer.push({ input, sessionId })
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (!target) return { kind: "unavailable", reason: "session" }
+        const blocks = (typeof input === "string" ? [{ type: "text" as const, text: input }] : input)
+          .filter((block) => block.text.trim().length > 0)
+        if (blocks.length === 0) return { kind: "unavailable", reason: "empty" }
+        const session = store.getState().sessions[target]
+        if (!session) return { kind: "unavailable", reason: "session" }
+        if (session.status !== "working" && session.status !== "awaiting_approval" && session.status !== "awaiting_clarification") {
+          return { kind: "unavailable", reason: "inactive" }
+        }
+        steeringRequests += 1
+        const requestId = `fake-steering-${steeringRequests}`
+        store.applyEvent(target, {
+          kind: "steering_enqueue",
+          activeTurnId: session.steering.activeTurnId ?? "fake-active-turn",
+          requestId,
+          generation: 1,
+          blocks,
+        })
+        return { kind: "queued", requestId }
+      },
+      acknowledgeSteeringRecovery(sessionId, requestId): void {
+        calls.acknowledgeSteeringRecovery.push({ sessionId, requestId })
+        store.acknowledgeSteeringRecovery(sessionId, requestId)
       },
       recordPromptHistory(text: string, sessionId?: SessionId): void {
         calls.recordPromptHistory.push({ text, sessionId })

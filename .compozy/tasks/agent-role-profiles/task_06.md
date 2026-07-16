@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add content-free explore telemetry and cross-layer safety hardening
 type: backend
 complexity: high
@@ -28,12 +28,12 @@ Record opt-in explore policy outcomes without recording delegated content or ide
 </requirements>
 
 ## Subtasks
-- [ ] 6.1 Add fixed explore policy event types and recorder methods.
-- [ ] 6.2 Emit allowlisted outcomes from accepted launch and current lifecycle transitions.
-- [ ] 6.3 Preserve no-op behavior and private recorder dedupe keys.
-- [ ] 6.4 Add JSONL sentinel tests for forbidden content and identity values.
-- [ ] 6.5 Add restore/persistence regressions for ephemeral policy-bearing delegation state.
-- [ ] 6.6 Run the packet’s full feature verification gate after all cross-layer changes.
+- [x] 6.1 Add fixed explore policy event types and recorder methods.
+- [x] 6.2 Emit allowlisted outcomes from accepted launch and current lifecycle transitions.
+- [x] 6.3 Preserve no-op behavior and private recorder dedupe keys.
+- [x] 6.4 Add JSONL sentinel tests for forbidden content and identity values.
+- [x] 6.5 Add restore/persistence regressions for ephemeral policy-bearing delegation state.
+- [x] 6.6 Run the packet’s full feature verification gate after all cross-layer changes.
 
 ## Implementation Details
 
@@ -70,15 +70,15 @@ Follow TechSpec sections “Monitoring and Observability,” “Testing Approach
 ## Tests
 
 - Unit tests:
-  - [ ] Disabled recorder invokes every explore method without constructing or touching a throwing sink.
-  - [ ] Enabled recorder accepts only the exact allowlisted keys, enums, and counters for every explore event.
-  - [ ] Compile-time/runtime payload checks reject unknown enum values and extra fields.
-  - [ ] Eligibility emits only after registration, capacity denial emits only its closed scope, and duplicate/stale terminal callbacks add no event.
+  - [x] Disabled recorder invokes every explore method without constructing or touching a throwing sink.
+  - [x] Enabled recorder accepts only the exact allowlisted keys, enums, and counters for every explore event.
+  - [x] Compile-time/runtime payload checks reject unknown enum values and extra fields.
+  - [x] Eligibility emits only after registration, capacity denial emits only its closed scope, and duplicate/stale terminal callbacks add no event.
 - Integration tests:
-  - [ ] JSONL output with task, outcome, ids, CWD, title, recipe, model, attestation, MCP, and raw-error sentinels contains none of those values or fields.
-  - [ ] Missing/stale proof, capacity refusal, accepted startup failure, and current terminal lifecycle serialize only their corresponding fixed categories.
-  - [ ] Persisted run and restored session state omit explore snapshot, restrictions, limits, attestation, and delegation ownership; old callbacks cannot recreate them.
-  - [ ] Targeted telemetry/controller/persistence suites pass before the repository typecheck, full tests, self-check, and build gate.
+  - [x] JSONL output with task, outcome, ids, CWD, title, recipe, model, attestation, MCP, and raw-error sentinels contains none of those values or fields.
+  - [x] Missing/stale proof, capacity refusal, accepted startup failure, and current terminal lifecycle serialize only their corresponding fixed categories.
+  - [x] Persisted run and restored session state omit explore snapshot, restrictions, limits, attestation, and delegation ownership; old callbacks cannot recreate them.
+  - [x] Targeted telemetry/controller/persistence suites pass before the repository typecheck, full tests, self-check, and build gate.
 - Test coverage target: >=80%
 - All tests must pass
 

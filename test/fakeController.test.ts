@@ -83,6 +83,65 @@ describe("createFakeController", () => {
     expect(controller.calls.cancelDelegatedChild).toEqual([childId!, childId!])
   })
 
+  it("records managed cleanup targets and publishes bounded review outcomes", async () => {
+    const controller = createFakeController({
+      cleanupManagedWorktree: () => ({ kind: "refused", reason: "dirty" }),
+    })
+    controller.store.addSession({
+      id: "managed-child",
+      providerKind: "codex",
+      title: "Managed child",
+      cwd: "/repo/.kitten/worktrees/managed-child",
+      worktreeBinding: {
+        kind: "managed",
+        id: "binding-managed-child",
+        repoRoot: "/repo",
+        worktreePath: "/repo/.kitten/worktrees/managed-child",
+        branch: "kitten/managed-child",
+        baseBranch: "main",
+        baseSha: "0123456789abcdef",
+        ownerSessionId: "managed-child",
+        availability: "available",
+      },
+    })
+
+    expect(await controller.actions.cleanupManagedWorktree("managed-child")).toEqual({
+      kind: "refused",
+      reason: "dirty",
+    })
+    expect(controller.calls.cleanupManagedWorktree).toEqual(["managed-child"])
+    expect(controller.store.getState().sessions["managed-child"]?.worktreeBinding).toMatchObject({
+      availability: "cleanup_refused",
+      reason: "dirty",
+    })
+  })
+
+  it("keeps typed explore availability and launch separate from the legacy delegation seam", async () => {
+    const controller = createFakeController({
+      exploreAvailability: (parentId) => parentId === "claude-code"
+        ? { kind: "available" }
+        : { kind: "denied", reason: "parent-ineligible" },
+      startExploreChild: (input) => ({ kind: "started", childId: `explore-${input.parentId}` }),
+    })
+
+    expect(controller.actions.exploreAvailability("claude-code")).toEqual({ kind: "available" })
+    expect(controller.actions.exploreAvailability("codex")).toEqual({
+      kind: "denied",
+      reason: "parent-ineligible",
+    })
+    expect(await controller.actions.startExploreChild({
+      parentId: "claude-code",
+      task: "Inspect",
+      desiredOutcome: "Report",
+    })).toEqual({ kind: "started", childId: "explore-claude-code" })
+    expect(controller.calls.startExploreChild).toEqual([{
+      parentId: "claude-code",
+      task: "Inspect",
+      desiredOutcome: "Report",
+    }])
+    expect(controller.calls.startDelegatedChild).toEqual([])
+  })
+
   it("records statusline acknowledgement and confirmation without an ACP connection", async () => {
     const controller = createFakeController({ runtimes: [] })
     const layout = { separator: " | ", line: ["FOLDER", "MODEL"] } as const

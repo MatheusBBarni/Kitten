@@ -44,6 +44,26 @@ describe("persistUserConfig", () => {
     expect(written).toEqual({ ...existing, theme: "dark" })
   })
 
+  it("merges one provider's model or reasoning patch without replacing other saved defaults", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      providerDefaults: {
+        "claude-code": { model: "opus", effort: "high" },
+        codex: { model: "gpt-5.6-terra" },
+      },
+    }))
+
+    await persistUserConfig({ providerDefaults: { codex: { effort: "ultra" } } }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      providerDefaults: {
+        "claude-code": { model: "opus", effort: "high" },
+        codex: { model: "gpt-5.6-terra", effort: "ultra" },
+      },
+    })
+  })
+
   it("writes bytes that re-parse through the strict schema and application loader", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
@@ -135,6 +155,25 @@ describe("persistUserConfig", () => {
 })
 
 describe("writer-loader integration", () => {
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("round-trips transcript windowing %s and preserves it through an unrelated root patch", async (_label, value) => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+
+    await persistUserConfig({ transcriptWindowingEnabled: value }, { path })
+    expect((await loadAppConfig({ path })).transcriptWindowingEnabled).toBe(value)
+
+    await persistUserConfig({ theme: "dark" }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      transcriptWindowingEnabled: value,
+      theme: "dark",
+    })
+    expect((await loadAppConfig({ path })).transcriptWindowingEnabled).toBe(value)
+  })
+
   it("round-trips a theme delta through a real temp file", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")

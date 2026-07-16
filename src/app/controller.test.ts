@@ -18,6 +18,8 @@ import {
 } from "../agent/agentConnection.ts"
 import { defaultAppConfig } from "../config/configLoader.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
+import type { ExploreCapability } from "../config/exploreCapability.ts"
+import { evaluateExplorePolicy } from "../core/explorePolicy.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
   AgentConfig,
@@ -26,6 +28,7 @@ import type {
   ClarificationPayload,
   ConfigOption,
   DomainSessionEvent,
+  ManagedWorktreeBinding,
   McpServerConfig,
   ProviderKind,
   ResolvedAgentConfig,
@@ -63,12 +66,22 @@ import {
 } from "./controller.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 import { createHandoffEdits, createHandoffFlow } from "./handoff.ts"
+import { STEERING_FOLLOW_UP_PREFIX } from "./steeringCoordinator.ts"
+import type {
+  CleanupManagedWorktreeInput,
+  CleanupManagedWorktreeResult,
+  ManagedWorktreeProvisioner,
+  ProvisionManagedWorktreeInput,
+  ProvisionManagedWorktreeResult,
+} from "./managedWorktree.ts"
 import {
   ASK_USER_MCP_SERVER_NAME,
-  type AskUserBridge,
-  type AskUserBridgeOptions,
+  type AgentRunControl,
+  type AgentRunRoute,
+  type KittenMcpBridge,
+  type KittenMcpBridgeOptions,
   type BridgeRegistration,
-} from "./askUserBridge.ts"
+} from "./kittenMcpBridge.ts"
 
 /**
  * The controller is verified two ways.
@@ -100,6 +113,7 @@ const APP_CONFIG: AppConfig = {
   clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
+  transcriptWindowingEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -123,6 +137,66 @@ const TEST_HARNESS_CAPABILITY: HarnessCapability = {
   status: "supported",
   profileId: "controller-test-profile",
   encoder: "codex-prompt-meta-v1",
+}
+
+function testManagedWorktreeBinding(ownerSessionId: SessionId, ordinal = ownerSessionId): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `kw-${ordinal}`,
+    repoRoot: CWD,
+    worktreePath: `${CWD}/.kitten/worktrees/kw-${ordinal}`,
+    branch: `kitten/kw-${ordinal}`,
+    baseBranch: "main",
+    baseSha: "a".repeat(40),
+    ownerSessionId,
+    availability: "available",
+  }
+}
+
+function createTestManagedWorktreeProvisioner(overrides: {
+  provision?: (input: ProvisionManagedWorktreeInput) => Promise<ProvisionManagedWorktreeResult>
+  cleanup?: (input: CleanupManagedWorktreeInput) => Promise<CleanupManagedWorktreeResult>
+} = {}): ManagedWorktreeProvisioner {
+  let ordinal = 0
+  return {
+    async provision(input) {
+      if (overrides.provision) return await overrides.provision(input)
+      ordinal += 1
+      return {
+        kind: "provisioned",
+        binding: testManagedWorktreeBinding(input.ownerSessionId, `${ordinal}`),
+      }
+    },
+    async reconcile(binding) {
+      return { kind: "available", binding }
+    },
+    async cleanup(input) {
+      return await (overrides.cleanup?.(input) ?? Promise.resolve({ kind: "removed" as const }))
+    },
+  }
+}
+
+function testExploreCapability(config: ResolvedAgentConfig, limits = { perParent: 8, global: 16 }): ExploreCapability {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: {
+      filesystem: "read-only",
+      shell: false,
+      externalMcp: false,
+      agentControl: false,
+      askUser: true,
+      maxDepth: 0,
+    },
+    limits,
+    attestationVersion: "controller-test-v1",
+    confirmed: { provider: config.id, model: "test-model", effort: "low" },
+  })
+  if (decision.kind !== "eligible") throw new Error("invalid test explore policy")
+  return {
+    status: "supported",
+    policy: decision.policy,
+    recipe: { ...config, args: [...config.args], env: { ...config.env } },
+  }
 }
 
 function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
@@ -392,6 +466,7 @@ interface StubOptions {
   sessionId?: string
   connectThrows?: unknown
   newSessionThrows?: unknown
+  newSessionWait?: Promise<void>
   loadSessionThrows?: unknown
   loadSessionEvents?: DomainSessionEvent[]
   loadSessionWait?: Promise<void>
@@ -460,6 +535,14 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
+function deferredValue<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 function createStubConnection(id: ProviderKind, options: StubOptions = {}): StubConnection {
   const subscribers = new Set<(event: DomainSessionEvent) => void>()
   const prompts: Array<{ sessionId: string; blocks: PromptBlock[] }> = []
@@ -499,6 +582,7 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
     async newSession(cwd, mcpServers = []) {
       newSessionCwds.push(cwd)
       newSessionMcpServers.push(mcpServers)
+      await options.newSessionWait
       if (options.newSessionThrows !== undefined) throw options.newSessionThrows
       // Mirror the adapter: an agent that advertises config at session start emits it
       // as a `config_options` event during `newSession`, before the controller binds
@@ -565,11 +649,12 @@ function createStubConnection(id: ProviderKind, options: StubOptions = {}): Stub
 }
 
 interface RecordingBridge {
-  readonly factory: (options: AskUserBridgeOptions) => AskUserBridge
+  readonly factory: (options: KittenMcpBridgeOptions) => KittenMcpBridge
   readonly registrations: BridgeRegistration[]
   readonly cancellations: Array<BridgeRegistration & { reason: string }>
   readonly declarations: McpServerConfig[]
   request(sessionId: SessionId, generation: number, payload: ClarificationPayload): Promise<ClarificationOutcome>
+  agentRunControl(): AgentRunControl
   disposeCalls(): number
 }
 
@@ -578,7 +663,7 @@ function createRecordingBridge(): RecordingBridge {
   const cancellations: Array<BridgeRegistration & { reason: string }> = []
   const declarations: McpServerConfig[] = []
   const live = new Map<SessionId, BridgeRegistration>()
-  let callbacks: AskUserBridgeOptions | null = null
+  let callbacks: KittenMcpBridgeOptions | null = null
   let disposals = 0
 
   return {
@@ -630,8 +715,18 @@ function createRecordingBridge(): RecordingBridge {
       if (!callbacks) throw new Error("bridge not created")
       return callbacks.requestClarification(sessionId, generation, payload).outcome
     },
+    agentRunControl() {
+      if (!callbacks?.agentRunControl) throw new Error("agent-run control not created")
+      return callbacks.agentRunControl
+    },
     disposeCalls: () => disposals,
   }
+}
+
+function recordedAgentRunRoute(bridge: RecordingBridge, parentId: SessionId): AgentRunRoute {
+  const registration = bridge.registrations.findLast((entry) => entry.sessionId === parentId)
+  if (!registration) throw new Error(`No recorded route for ${parentId}`)
+  return { parentId, parentGeneration: registration.generation }
 }
 
 /** Build a controller over one stub connection per configured agent. */
@@ -646,10 +741,12 @@ async function controllerWithStubs(
     createShellRuntime?: ShellRuntimeFactory
     store?: AppStore
     newInteractionId?: () => string
+    newSteeringId?: () => string
     /** Exercise the controller's real default-store construction. */
     useProductionStore?: boolean
     resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
     scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
+    scheduleSteeringSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
     bridge?: RecordingBridge
     newSessionId?: () => SessionId
   } = {},
@@ -667,6 +764,7 @@ async function controllerWithStubs(
     createConnection: (config) => connections[config.id],
     newMessageId: () => "msg-1",
     newInteractionId: overrides.newInteractionId,
+    newSteeringId: overrides.newSteeringId,
     onError: overrides.onError,
     recorder: overrides.recorder,
     usageSeenSink: overrides.usageSeenSink,
@@ -674,7 +772,8 @@ async function controllerWithStubs(
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
     resolveHarnessCapability: overrides.resolveHarnessCapability ?? (() => TEST_HARNESS_CAPABILITY),
     scheduleClarificationTimeout: overrides.scheduleClarificationTimeout,
-    createAskUserBridge: bridge.factory,
+    scheduleSteeringSettlementTimeout: overrides.scheduleSteeringSettlementTimeout,
+    createKittenMcpBridge: bridge.factory,
     newSessionId: overrides.newSessionId,
   })
   return { controller, connections, bridge }
@@ -704,6 +803,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
+  transcriptWindowingEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -722,6 +822,7 @@ async function controllerOverFleet(
     repositoryFileSource?: RepositoryFileSource
     createShellRuntime?: ShellRuntimeFactory
     sendInitialTasks?: boolean
+    applyProviderDefaultsOnFreshSession?: boolean
     resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
     bridge?: RecordingBridge
   } = {},
@@ -741,8 +842,9 @@ async function controllerOverFleet(
     repositoryFileSource: overrides.repositoryFileSource,
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
     sendInitialTasks: overrides.sendInitialTasks,
+    applyProviderDefaultsOnFreshSession: overrides.applyProviderDefaultsOnFreshSession,
     resolveHarnessCapability: overrides.resolveHarnessCapability ?? (() => TEST_HARNESS_CAPABILITY),
-    createAskUserBridge: bridge.factory,
+    createKittenMcpBridge: bridge.factory,
   })
   return { controller, created, bridge }
 }
@@ -921,7 +1023,7 @@ async function controllerForRestore(
     readBranch: async () => null,
     createShellRuntime: createTestShellFactory(),
     resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-    createAskUserBridge: bridge.factory,
+    createKittenMcpBridge: bridge.factory,
   })
   return { controller, startup, restored, bridge }
 }
@@ -945,6 +1047,155 @@ describe("composePromptBlocks", () => {
     expect(composePromptBlocks([{ type: "text", text: "" }, { type: "text", text: "keep" }])).toEqual([
       { type: "text", text: "keep" },
     ])
+  })
+})
+
+describe("createSessionController - steering orchestration", () => {
+  it("drains the targeted interaction and coalesces ordered direction into one follow-up", async () => {
+    const turn = deferred()
+    const ids = ["turn-alpha", "steer-1", "steer-2"]
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { promptWait: turn.promise } },
+      { newSteeringId: () => ids.shift()! },
+    )
+
+    const original = controller.actions.sendPrompt("original task", "claude-code")
+    await waitFor(() => connections["claude-code"].prompts.length === 1, "original prompt dispatch")
+    connections["claude-code"].emit({ kind: "status", status: "working" })
+    const permission = connections["claude-code"].ask(PERMISSION_REQUEST)
+    await waitFor(
+      () => controller.store.getState().overlays.approval?.sessionId === "claude-code",
+      "targeted permission boundary",
+    )
+
+    expect(controller.actions.steer("first direction", "claude-code")).toEqual({
+      kind: "queued",
+      requestId: "steer-1",
+    })
+    expect(controller.actions.steer("second direction", "claude-code")).toEqual({
+      kind: "queued",
+      requestId: "steer-2",
+    })
+    expect(connections["claude-code"].cancels).toEqual([])
+    expect(controller.store.getState().sessions["claude-code"]!.steering.queue[0]?.phase).toBe("waiting")
+
+    controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
+    await expect(permission).resolves.toEqual({ outcome: "selected", optionId: "allow" })
+    await waitFor(() => connections["claude-code"].cancels.length === 1, "fallback cancellation")
+    turn.resolve()
+    await original
+    await waitFor(() => connections["claude-code"].prompts.length === 2, "coalesced follow-up")
+    await waitFor(
+      () => controller.store.getState().sessions["claude-code"]!.steering.queue.length === 0,
+      "confirmed steering delivery",
+    )
+
+    expect(connections["claude-code"].prompts[1]?.blocks).toEqual([
+      { type: "text", text: STEERING_FOLLOW_UP_PREFIX },
+      { type: "text", text: "first direction" },
+      { type: "text", text: "second direction" },
+    ])
+    expect(
+      controller.store.getState().sessions["claude-code"]!.turns.filter((entry) => entry.kind === "user"),
+    ).toHaveLength(2)
+    expect(connections.codex.prompts).toEqual([])
+    await controller.dispose()
+  })
+
+  it("recovers a provider-error queue exactly once without disturbing a working sibling", async () => {
+    const claudeTurn = deferred()
+    const codexTurn = deferred()
+    const ids = ["turn-alpha", "steer-error", "turn-beta"]
+    const { controller, connections } = await controllerWithStubs(
+      {
+        "claude-code": { promptWait: claudeTurn.promise },
+        codex: { promptWait: codexTurn.promise },
+      },
+      { newSteeringId: () => ids.shift()! },
+    )
+
+    const alpha = controller.actions.sendPrompt("alpha task", "claude-code")
+    const beta = controller.actions.sendPrompt("beta task", "codex")
+    await waitFor(() => connections["claude-code"].prompts.length === 1, "alpha prompt")
+    await waitFor(() => connections.codex.prompts.length === 1, "beta prompt")
+    connections["claude-code"].emit({ kind: "status", status: "working" })
+    connections.codex.emit({ kind: "status", status: "working" })
+    expect(controller.actions.steer("recover this exactly  ", "claude-code").kind).toBe("queued")
+    await waitFor(
+      () => controller.store.getState().sessions["claude-code"]!.steering.queue[0]?.phase === "settling",
+      "alpha cancellation settlement",
+    )
+
+    connections["claude-code"].emit({ kind: "status", status: "error" })
+    expect(controller.store.getState().sessions["claude-code"]!.steering.recovery).toEqual([
+      { type: "text", text: "recover this exactly  " },
+    ])
+    expect(controller.store.getState().sessions.codex!.status).toBe("working")
+
+    claudeTurn.resolve()
+    codexTurn.resolve()
+    await Promise.all([alpha, beta])
+    expect(controller.store.getState().sessions["claude-code"]!.steering.recovery).toEqual([
+      { type: "text", text: "recover this exactly  " },
+    ])
+    expect(connections["claude-code"].prompts).toHaveLength(1)
+    expect(connections.codex.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it("carries exact live recovery across generation replacement and fences the old prompt", async () => {
+    const oldTurn = deferred()
+    const startup = {
+      "claude-code": createStubConnection("claude-code", { promptWait: oldTurn.promise }),
+      codex: createStubConnection("codex"),
+    } as Record<ProviderKind, StubConnection>
+    const replacements = {
+      "claude-code": createStubConnection("claude-code"),
+      codex: createStubConnection("codex"),
+    } as Record<ProviderKind, StubConnection>
+    const queues = {
+      "claude-code": [startup["claude-code"], replacements["claude-code"]],
+      codex: [startup.codex, replacements.codex],
+    } as Record<ProviderKind, StubConnection[]>
+    const ids = ["turn-old", "steer-replaced", "turn-new"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      store: createAppStore({ selectedVisibleId: "claude-code" }),
+      createConnection: (config) => queues[config.id].shift()!,
+      newSteeringId: () => ids.shift()!,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+
+    const original = controller.actions.sendPrompt("old task", "claude-code")
+    await waitFor(() => startup["claude-code"].prompts.length === 1, "old generation prompt")
+    startup["claude-code"].emit({ kind: "status", status: "working" })
+    expect(controller.actions.steer("survive replacement", "claude-code").kind).toBe("queued")
+    await waitFor(
+      () => controller.store.getState().sessions["claude-code"]!.steering.queue[0]?.phase === "settling",
+      "old generation settlement",
+    )
+
+    await controller.restore(persistedRunV3({}))
+    expect(controller.store.getState().sessions["claude-code"]!.steering.recovery).toEqual([
+      { type: "text", text: "survive replacement" },
+    ])
+    expect(controller.isReady("codex")).toBe(true)
+    await expect(controller.actions.sendPrompt("new generation task", "claude-code")).resolves.toEqual({
+      stopReason: "end_turn",
+    })
+    expect(replacements["claude-code"].prompts).toHaveLength(1)
+
+    oldTurn.resolve()
+    await original
+    expect(startup["claude-code"].prompts).toHaveLength(1)
+    expect(replacements["claude-code"].prompts).toHaveLength(1)
+    expect(controller.store.getState().sessions["claude-code"]!.steering.recovery).toEqual([
+      { type: "text", text: "survive replacement" },
+    ])
+    await controller.dispose()
   })
 })
 
@@ -1428,6 +1679,8 @@ describe("createSessionController - harness delivery lifecycle", () => {
       readBranch: async () => null,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
 
     const oldPrompt = controller.actions.sendPrompt("old generation", "claude-code")
@@ -2587,6 +2840,7 @@ describe("createSessionController - multi-session fleet", () => {
       clarificationTimeoutSeconds: 300,
       persistenceEnabled: true,
       telemetryEnabled: false,
+      transcriptWindowingEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -2610,6 +2864,45 @@ describe("createSessionController - multi-session fleet", () => {
     await controller.dispose()
   })
 
+  it("applies saved defaults before sending a fresh session's configured startup task", async () => {
+    const config: AppConfig = {
+      providers: PROVIDERS,
+      providerDefaults: { codex: { model: "opus", effort: "high" } },
+      sessions: [{ provider: "codex", cwd: process.cwd(), title: "Worker", task: "start the build" }],
+      mcpServers: [],
+      shell: APP_CONFIG.shell,
+      clarificationTimeoutSeconds: 300,
+      persistenceEnabled: true,
+      telemetryEnabled: false,
+      transcriptWindowingEnabled: false,
+      theme: "auto",
+      welcomeBanner: "auto",
+      statusline: { llmDisclosureAcknowledged: false, layout: null },
+    }
+    const { controller, created } = await controllerOverFleet(
+      config,
+      () => ({
+        newSessionConfig: [modelOption("sonnet"), effortOption("low")],
+        setConfig: (_sessionId, configId, value) => configId === "model"
+          ? [modelOption(value), effortOption("low")]
+          : [modelOption("opus"), effortOption(value)],
+      }),
+      { applyProviderDefaultsOnFreshSession: true },
+    )
+
+    expect(created[0]!.configCalls).toEqual([
+      { sessionId: "acp-0", configId: "model", value: "opus" },
+      { sessionId: "acp-0", configId: "effort", value: "high" },
+    ])
+    await waitFor(() => created[0]!.prompts.length === 1, "the defaulted opening task prompt to be sent")
+    expect(controller.store.getState().sessions.codex!.configOptions).toEqual([
+      modelOption("opus"),
+      effortOption("high"),
+    ])
+
+    await controller.dispose()
+  })
+
   it("does not send an initial task when boot has a persisted run to restore", async () => {
     const config: AppConfig = {
       providers: PROVIDERS,
@@ -2620,6 +2913,7 @@ describe("createSessionController - multi-session fleet", () => {
       clarificationTimeoutSeconds: 300,
       persistenceEnabled: true,
       telemetryEnabled: false,
+      transcriptWindowingEnabled: false,
       theme: "auto",
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -2701,6 +2995,7 @@ describe("actions - sendPrompt", () => {
         clarificationTimeoutSeconds: 300,
         persistenceEnabled: true,
         telemetryEnabled: false,
+        transcriptWindowingEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
         statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -3816,7 +4111,931 @@ describe("createSessionController - per-conversation close", () => {
   })
 })
 
+describe("createSessionController - route-authorized agent runs", () => {
+  it("records only settled operation outcomes, bounded sizes, and controller duration", async () => {
+    const bridge = createRecordingBridge()
+    const records: TelemetryRecord[] = []
+    const privateSentinel = "TASK:OUTCOME:CHILD:PARENT:CAPABILITY:ENDPOINT:/private/path:PROMPT:TRANSCRIPT:RAW_ERROR:STATUS"
+    const ids = [`${privateSentinel}-one`, `${privateSentinel}-two`]
+    let controlNow = 1_000
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 77,
+      sessionRef: "anonymous-agent-run",
+    })
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      now: () => controlNow,
+      recorder,
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async (input) => {
+          controlNow += 75
+          return { kind: "provisioned", binding: testManagedWorktreeBinding(input.ownerSessionId) }
+        },
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const route = recordedAgentRunRoute(bridge, parentId)
+    const control = bridge.agentRunControl()
+    const tasks = [
+      { task: `${privateSentinel}-task-one`, desiredOutcome: `${privateSentinel}-outcome-one` },
+      { task: `${privateSentinel}-task-two`, desiredOutcome: `${privateSentinel}-outcome-two` },
+    ]
+
+    const snapshots = await control.start(route, tasks)
+    expect(control.poll(route, snapshots.map((snapshot) => snapshot.childId))).toHaveLength(2)
+    await expect(control.start(route, [])).rejects.toThrow()
+    expect(() => control.poll({ ...route, parentGeneration: route.parentGeneration + 1 }, [snapshots[0]!.childId])).toThrow()
+
+    const agentRunRecords = records.filter((record) => record.type === "agent_run_control")
+    expect(agentRunRecords).toEqual([
+      expect.objectContaining({
+        operation: "start",
+        outcome: "accepted",
+        batchSizeBucket: "two",
+        durationBucket: "100_to_499ms",
+      }),
+      expect.objectContaining({
+        operation: "poll",
+        outcome: "accepted",
+        batchSizeBucket: "two",
+        durationBucket: "under_100ms",
+      }),
+      expect.objectContaining({
+        operation: "start",
+        outcome: "rejected",
+        batchSizeBucket: "zero",
+        durationBucket: "under_100ms",
+      }),
+      expect.objectContaining({
+        operation: "poll",
+        outcome: "unavailable",
+        batchSizeBucket: "one",
+        durationBucket: "under_100ms",
+      }),
+    ])
+    const allowed = new Set([
+      "type", "at", "sessionRef", "operation", "outcome", "batchSizeBucket", "durationBucket",
+    ])
+    expect(agentRunRecords.every((record) => Object.keys(record).every((key) => allowed.has(key)))).toBe(true)
+    expect(JSON.stringify(agentRunRecords)).not.toContain(privateSentinel)
+    await controller.dispose()
+  })
+
+  it("rejects invalid batches and stale routes before allocating any child-side effect", async () => {
+    const bridge = createRecordingBridge()
+    const created: StubConnection[] = []
+    let childIdsRequested = 0
+    let provisions = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => {
+        childIdsRequested += 1
+        return `invalid-child-${childIdsRequested}`
+      },
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async (input) => {
+          provisions += 1
+          return { kind: "provisioned", binding: testManagedWorktreeBinding(input.ownerSessionId) }
+        },
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const route = recordedAgentRunRoute(bridge, parentId)
+    const control = bridge.agentRunControl()
+    const initialConnections = created.length
+    const initialRegistrations = bridge.registrations.length
+    const before = controller.store.getState()
+    const validTask = { task: "Inspect", desiredOutcome: "Report" }
+
+    for (const attempt of [
+      control.start(route, []),
+      control.start(route, Array.from({ length: 5 }, (_, index) => ({
+        task: `Task ${index}`,
+        desiredOutcome: `Outcome ${index}`,
+      }))),
+      control.start(route, [validTask, { ...validTask }]),
+      control.start(route, [{ task: "   ", desiredOutcome: "Report" }]),
+      control.start({ ...route, parentGeneration: route.parentGeneration + 1 }, [validTask]),
+    ]) {
+      await expect(attempt).rejects.toBeInstanceOf(Error)
+    }
+
+    expect(childIdsRequested).toBe(0)
+    expect(provisions).toBe(0)
+    expect(created).toHaveLength(initialConnections)
+    expect(bridge.registrations).toHaveLength(initialRegistrations)
+    expect(controller.store.getState()).toBe(before)
+    expect(created.flatMap((connection) => connection.prompts)).toEqual([])
+    await controller.dispose()
+  })
+
+  it("rejects unready, recursive, and closing route parents without extending child state", async () => {
+    const unreadyBridge = createRecordingBridge()
+    let unreadyIds = 0
+    const unreadyController = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id, config.id === "claude-code"
+        ? { ready: { ready: false, reason: "authentication_required", error: "not ready" } }
+        : {}),
+      createKittenMcpBridge: unreadyBridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => `unready-child-${++unreadyIds}`,
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    await expect(unreadyBridge.agentRunControl().start(
+      { parentId: "claude-code", parentGeneration: 1 },
+      [{ task: "Reject", desiredOutcome: "No child" }],
+    )).rejects.toThrow()
+    expect(unreadyIds).toBe(0)
+    await unreadyController.dispose()
+
+    const bridge = createRecordingBridge()
+    const ids = ["accepted-child", "must-not-exist"]
+    let requestedIds = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids[requestedIds++]!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const control = bridge.agentRunControl()
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const parentRoute = recordedAgentRunRoute(bridge, parentId)
+    await control.start(parentRoute, [{ task: "Accepted", desiredOutcome: "Visible" }])
+    const baseline = controller.store.getState()
+
+    await expect(control.start(
+      recordedAgentRunRoute(bridge, "accepted-child"),
+      [{ task: "Nested", desiredOutcome: "Rejected" }],
+    )).rejects.toThrow()
+    controller.store.markDelegationParentClosing(parentId, parentRoute.parentGeneration)
+    const closingState = controller.store.getState()
+    await expect(control.start(
+      parentRoute,
+      [{ task: "Closing", desiredOutcome: "Rejected" }],
+    )).rejects.toThrow()
+
+    expect(requestedIds).toBe(1)
+    expect(controller.store.getState()).toBe(closingState)
+    expect(controller.store.getState().sessions["must-not-exist"]).toBeUndefined()
+    expect(baseline.delegation.children["accepted-child"]).toBeDefined()
+    await controller.dispose()
+  })
+
+  it("registers four visible children before starting every child concurrently", async () => {
+    const bridge = createRecordingBridge()
+    const startupGate = deferred()
+    const childIds = ["route-child-1", "route-child-2", "route-child-3", "route-child-4"]
+    const pendingIds = [...childIds]
+    const created: StubConnection[] = []
+    const visibleCountsAtConnection: number[] = []
+    let controller!: SessionController
+    controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        if (created.length >= 2) {
+          visibleCountsAtConnection.push(childIds.filter((id) =>
+            controller.store.getState().workspace.conversations[id] !== undefined
+          ).length)
+        }
+        const connection = createStubConnection(config.id, created.length >= 2
+          ? { newSessionWait: startupGate.promise }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => pendingIds.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const control = bridge.agentRunControl()
+    const route = recordedAgentRunRoute(bridge, parentId)
+    const launch = control.start(
+      route,
+      childIds.map((_, index) => ({ task: `Task ${index}`, desiredOutcome: `Outcome ${index}` })),
+    )
+
+    await waitFor(() => created.length === 6, "all route child connections")
+    await expect(control.start(
+      route,
+      [{ task: "Overlap", desiredOutcome: "Must report busy" }],
+    )).rejects.toThrow("busy")
+    expect(visibleCountsAtConnection).toEqual([4, 4, 4, 4])
+    expect(childIds.map((id) => controller.store.getState().delegation.children[id]?.status)).toEqual([
+      "starting",
+      "starting",
+      "starting",
+      "starting",
+    ])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
+
+    startupGate.resolve()
+    expect(await launch).toEqual(childIds.map((childId) => ({ childId, status: "running" })))
+    expect(created.slice(2).every((connection) => connection.prompts.length === 1)).toBe(true)
+    await controller.dispose()
+  })
+
+  it("terminalizes startup and prompt failures per child while accepted siblings remain visible", async () => {
+    const bridge = createRecordingBridge()
+    const ids = ["healthy-child", "startup-failed-child", "prompt-failed-child"]
+    const pendingIds = [...ids]
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const childIndex = created.length - 2
+        const connection = createStubConnection(config.id,
+          childIndex === 1
+            ? { newSessionThrows: new Error("session start failed") }
+            : childIndex === 2
+              ? { promptThrows: new Error("prompt failed") }
+              : {})
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => pendingIds.shift()!,
+      now: () => 4242,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const snapshots = await bridge.agentRunControl().start(
+      recordedAgentRunRoute(bridge, parentId),
+      ids.map((id) => ({ task: id, desiredOutcome: `${id} outcome` })),
+    )
+
+    expect(snapshots).toEqual([
+      { childId: "healthy-child", status: "running" },
+      { childId: "startup-failed-child", status: "failed", terminalAt: 4242 },
+      { childId: "prompt-failed-child", status: "running" },
+    ])
+    await waitFor(
+      () => controller.store.getState().delegation.children["prompt-failed-child"]?.status === "failed",
+      "the asynchronously rejected child prompt to terminalize",
+    )
+    for (const id of ids) {
+      expect(controller.store.getState().workspace.conversations[id]).toBeDefined()
+      expect(controller.store.getState().sessions[id]?.worktreeBinding).toMatchObject({ ownerSessionId: id })
+    }
+    expect(controller.store.getState().delegation.children["healthy-child"]?.terminal).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it("returns agent-run snapshots after dispatch rather than waiting for child turns", async () => {
+    const bridge = createRecordingBridge()
+    const childTurn = deferred()
+    const ids = ["detached-child"]
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length >= 2
+          ? { promptWait: childTurn.promise }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const snapshots = await bridge.agentRunControl().start(
+      recordedAgentRunRoute(bridge, parentId),
+      [{ task: "Long-running child task", desiredOutcome: "Remain pollable" }],
+    )
+
+    expect(snapshots).toEqual([{ childId: "detached-child", status: "running" }])
+    expect(created[2]!.prompts).toHaveLength(1)
+    expect(bridge.agentRunControl().poll(recordedAgentRunRoute(bridge, parentId), ["detached-child"])).toEqual([
+      { childId: "detached-child", status: "running" },
+    ])
+
+    childTurn.resolve()
+    await controller.dispose()
+  })
+
+  it("allows an authorized background parent without changing selection but keeps the UI guard", async () => {
+    const bridge = createRecordingBridge()
+    const ids = ["route-background-child", "ui-must-not-launch"]
+    let childIdsRequested = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids[childIdsRequested++]!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    controller.actions.selectConversation("codex")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+
+    expect(await bridge.agentRunControl().start(
+      recordedAgentRunRoute(bridge, "claude-code"),
+      [{ task: "Background route", desiredOutcome: "Stay background" }],
+    )).toEqual([{ childId: "route-background-child", status: "running" }])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId: "claude-code",
+      task: "Forbidden UI route",
+      desiredOutcome: "No launch",
+    })).toBeNull()
+    expect(childIdsRequested).toBe(1)
+    expect(controller.store.getState().sessions["ui-must-not-launch"]).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it("polls exact owned order and fails closed for every invalid identity set", async () => {
+    const bridge = createRecordingBridge()
+    const ids = ["claude-one", "claude-two", "codex-one"]
+    const pendingIds = [...ids]
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => pendingIds.shift()!,
+      now: () => 9090,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const control = bridge.agentRunControl()
+    const claudeRoute = recordedAgentRunRoute(bridge, "claude-code")
+    const codexRoute = recordedAgentRunRoute(bridge, "codex")
+    await control.start(claudeRoute, [
+      { task: "One", desiredOutcome: "One" },
+      { task: "Two", desiredOutcome: "Two" },
+    ])
+    await control.start(codexRoute, [{ task: "Other", desiredOutcome: "Other" }])
+    created[2]!.emit({ kind: "status", status: "awaiting_approval" })
+    created[3]!.emit({ kind: "status", status: "finished" })
+
+    expect(control.poll(claudeRoute, ["claude-two", "claude-one"])).toEqual([
+      { childId: "claude-two", status: "finished", terminalAt: 9090 },
+      { childId: "claude-one", status: "needs_input" },
+    ])
+    for (const childIds of [
+      [],
+      ["claude-one", "claude-one"],
+      ["claude-one", "missing"],
+      ["claude-one", "codex-one"],
+    ]) {
+      expect(() => control.poll(claudeRoute, childIds)).toThrow()
+    }
+    expect(() => control.poll(
+      { ...claudeRoute, parentGeneration: claudeRoute.parentGeneration + 1 },
+      ["claude-one"],
+    )).toThrow()
+    const staleChild = controller.store.getState().delegation.children["claude-two"]!
+    controller.store.removeDelegationChild({
+      parentId: staleChild.parentId,
+      childId: staleChild.childId,
+      parentGeneration: staleChild.parentGeneration,
+      childGeneration: staleChild.childGeneration,
+    })
+    expect(() => control.poll(claudeRoute, ["claude-two"])).toThrow()
+    await controller.dispose()
+  })
+
+  it("invalidates the prior route generation for both start and poll after parent replacement", async () => {
+    const bridge = createRecordingBridge()
+    const ids = ["old-generation-child", "must-not-start"]
+    let childIdsRequested = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids[childIdsRequested++]!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const oldRoute = recordedAgentRunRoute(bridge, parentId)
+    const control = bridge.agentRunControl()
+    await control.start(oldRoute, [{ task: "Old", desiredOutcome: "Old" }])
+
+    await controller.actions.startFreshFromContext(undefined, parentId)
+    const replacementRoute = recordedAgentRunRoute(bridge, parentId)
+    expect(replacementRoute.parentGeneration).toBeGreaterThan(oldRoute.parentGeneration)
+    expect(() => control.poll(oldRoute, ["old-generation-child"])).toThrow()
+    await expect(control.start(oldRoute, [{ task: "Stale", desiredOutcome: "Reject" }])).rejects.toThrow()
+    expect(childIdsRequested).toBe(1)
+    expect(controller.store.getState().sessions["must-not-start"]).toBeUndefined()
+    await controller.dispose()
+  })
+})
+
 describe("createSessionController - dynamic conversation actions", () => {
+  it("keeps delegated launch side effects behind successful provisioning", async () => {
+    const provision = deferredValue<ProvisionManagedWorktreeResult>()
+    const events: string[] = []
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        if (created.length >= 2) events.push("connection")
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: (options) => {
+        const live = bridge.factory(options)
+        return {
+          ...live,
+          register(input) {
+            if (input.sessionId === "transactional-child") events.push("bridge")
+            return live.register(input)
+          },
+        }
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "transactional-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async () => {
+          events.push("provision")
+          return await provision.promise
+        },
+      }),
+      recorder: {
+        focusSwitch() {},
+        managedWorktreeRequested: () => events.push("worktree-requested"),
+        managedWorktreeProvisioned: () => events.push("worktree-provisioned"),
+        delegatedLaunchRequested: () => events.push("launch-requested"),
+        delegatedLaunchSucceeded: () => events.push("launch-succeeded"),
+      },
+    })
+    controller.store.subscribe((state) => {
+      if (state.sessions["transactional-child"] && !events.includes("store")) events.push("store")
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const initialConnections = created.length
+    const initialBridgeCount = bridge.registrations.length
+
+    const launch = controller.actions.startDelegatedChild({
+      parentId,
+      task: "Wait for isolation",
+      desiredOutcome: "No early side effects",
+    })
+    await Bun.sleep(0)
+
+    expect(events).toEqual(["worktree-requested", "provision"])
+    expect(created).toHaveLength(initialConnections)
+    expect(controller.store.getState().sessions["transactional-child"]).toBeUndefined()
+    expect(controller.runtime("transactional-child")).toBeUndefined()
+    expect(bridge.registrations).toHaveLength(initialBridgeCount)
+
+    const binding = testManagedWorktreeBinding("transactional-child", "transactional")
+    provision.resolve({ kind: "provisioned", binding })
+    expect(await launch).toBe("transactional-child")
+    expect(events).toEqual([
+      "worktree-requested",
+      "provision",
+      "worktree-provisioned",
+      "store",
+      "launch-requested",
+      "bridge",
+      "connection",
+      "launch-succeeded",
+    ])
+    expect(created.at(-1)?.newSessionCwds).toEqual([binding.worktreePath])
+    await controller.dispose()
+  })
+
+  it("returns null on provisioning failure without registering child artifacts", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "provision-failure-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async () => ({ kind: "failed", reason: "verification_failed" }),
+      }),
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "managed-provision-failure",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const before = controller.store.getState()
+    const initialConnections = created.length
+    const initialBridgeCount = bridge.registrations.length
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Must not start",
+      desiredOutcome: "No child artifacts",
+    })).toBeNull()
+    expect(controller.store.getState()).toBe(before)
+    expect(controller.runtime("provision-failure-child")).toBeUndefined()
+    expect(created).toHaveLength(initialConnections)
+    expect(bridge.registrations).toHaveLength(initialBridgeCount)
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_"))).toEqual([
+      expect.objectContaining({ type: "managed_worktree_requested" }),
+      expect.objectContaining({
+        type: "managed_worktree_provision_failed",
+        managedWorktreeReason: "verification_failed",
+      }),
+    ])
+    await controller.dispose()
+  })
+
+  it("rolls back only the provisioned binding when parent ownership changes before registration", async () => {
+    const provision = deferredValue<ProvisionManagedWorktreeResult>()
+    const cleanupInputs: CleanupManagedWorktreeInput[] = []
+    const binding = testManagedWorktreeBinding("stale-parent-child", "stale-parent")
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "stale-parent-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async () => await provision.promise,
+        cleanup: async (input) => {
+          cleanupInputs.push(input)
+          return { kind: "removed" }
+        },
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const siblingId = controller.store.getState().workspace.order.find((id) => id !== parentId)!
+    const launch = controller.actions.startDelegatedChild({
+      parentId,
+      task: "Lose parent ownership",
+      desiredOutcome: "Rollback before registration",
+    })
+    await Bun.sleep(0)
+    controller.actions.selectConversation(siblingId)
+    provision.resolve({ kind: "provisioned", binding })
+
+    expect(await launch).toBeNull()
+    expect(cleanupInputs).toEqual([{ binding, ownerTerminal: true, ownerLive: false }])
+    expect(controller.store.getState().sessions["stale-parent-child"]).toBeUndefined()
+    expect(controller.runtime("stale-parent-child")).toBeUndefined()
+    await controller.dispose()
+  })
+
+  it("denies production explore before allocating connection, bridge, ACP, store, reservation, or prompt state", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const bridge = createRecordingBridge()
+    let childIdsRequested = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => {
+        childIdsRequested += 1
+        return "must-not-exist"
+      },
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "denied-explore-run",
+      }),
+      sendInitialTasks: false,
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const beforeConnections = created.length
+    const beforeRegistrations = bridge.registrations.length
+
+    expect(controller.actions.exploreAvailability(parentId)).toEqual({
+      kind: "denied",
+      reason: "missing-attestation",
+    })
+    expect(await controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })).toEqual({
+      kind: "denied",
+      reason: "missing-attestation",
+    })
+    expect(childIdsRequested).toBe(0)
+    expect(created).toHaveLength(beforeConnections)
+    expect(bridge.registrations).toHaveLength(beforeRegistrations)
+    expect(controller.store.getState().delegation).toEqual({ parents: {}, children: {} })
+    expect(Object.keys(controller.store.getState().sessions)).not.toContain("must-not-exist")
+    expect(created.flatMap((connection) => connection.prompts)).toEqual([])
+    expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
+      expect.objectContaining({
+        type: "explore_launch_denied",
+        denialReason: "missing-attestation",
+        count: 1,
+      }),
+    ])
+    await controller.dispose()
+  })
+
+  it("starts an injected attested recipe with only its scoped ask-user bridge", async () => {
+    const external: McpServerConfig = {
+      name: "external-fixture",
+      command: process.execPath,
+      args: ["external"],
+      env: {},
+    }
+    const created: Array<{ config: ResolvedAgentConfig; connection: StubConnection }> = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: { ...APP_CONFIG, mcpServers: [external] },
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push({ config, connection })
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "attested-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => {
+        const accepted = testExploreCapability(config)
+        if (accepted.status !== "supported") return accepted
+        return {
+          ...accepted,
+          recipe: {
+            ...accepted.recipe,
+            command: "reviewed-restricted-child",
+            args: ["--read-only"],
+            env: { KITTEN_RESTRICTED: "1" },
+          },
+        }
+      },
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    expect(controller.actions.exploreAvailability(parentId)).toEqual({ kind: "available" })
+    expect(await controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })).toEqual({
+      kind: "started",
+      childId: "attested-child",
+    })
+
+    const child = created.at(-1)!
+    expect(child.config).toMatchObject({
+      command: "reviewed-restricted-child",
+      args: ["--read-only"],
+      env: { KITTEN_RESTRICTED: "1" },
+    })
+    expect(child.connection.newSessionMcpServers).toHaveLength(1)
+    expect(child.connection.newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+      ASK_USER_MCP_SERVER_NAME,
+    ])
+    expect(child.connection.newSessionMcpServers[0]?.[0]).toBe(bridge.declarations.at(-1))
+    expect(created[0]?.connection.newSessionMcpServers[0]?.map((server) => server.name)).toEqual([
+      "external-fixture",
+      ASK_USER_MCP_SERVER_NAME,
+    ])
+    expect(controller.store.getState().delegation.children["attested-child"]?.policy?.role).toBe("explore")
+    await controller.dispose()
+  })
+
+  it("retains an admitted managed child when scoped bridge provisioning fails", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: (options) => {
+        const live = bridge.factory(options)
+        return {
+          ...live,
+          register(input) {
+            if (input.sessionId === "bridge-failure-child") throw new Error("bridge unavailable")
+            return live.register(input)
+          },
+        }
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "bridge-failure-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "bridge-failure-run",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const initialConnections = created.length
+
+    expect(await controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })).toEqual({
+      kind: "denied",
+      reason: "bridge-unavailable",
+    })
+    expect(created).toHaveLength(initialConnections)
+    expect(controller.store.getState().delegation.children["bridge-failure-child"]).toMatchObject({
+      status: "failed",
+      terminal: { status: "failed" },
+    })
+    expect(controller.store.getState().sessions["bridge-failure-child"]?.worktreeBinding).toMatchObject({
+      ownerSessionId: "bridge-failure-child",
+      availability: "available",
+    })
+    expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
+      expect.objectContaining({ type: "explore_launch_eligible", count: 1 }),
+      expect.objectContaining({
+        type: "explore_start_failed",
+        failureCategory: "bridge-unavailable",
+        count: 1,
+      }),
+    ])
+    await controller.dispose()
+  })
+
+  it("denies capacity synchronously before a second bridge or connection is created", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const bridge = createRecordingBridge()
+    const ids = ["capacity-one", "capacity-two"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: (config) => testExploreCapability(config, { perParent: 1, global: 1 }),
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "capacity-explore-run",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    expect((await controller.actions.startExploreChild({ parentId, task: "One", desiredOutcome: "One" })).kind).toBe("started")
+    const connectionCount = created.length
+    const bridgeCount = bridge.registrations.length
+    expect(await controller.actions.startExploreChild({ parentId, task: "Two", desiredOutcome: "Two" })).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "per-parent",
+    })
+    expect(created).toHaveLength(connectionCount)
+    expect(bridge.registrations).toHaveLength(bridgeCount)
+    expect(controller.store.getState().sessions["capacity-two"]).toBeUndefined()
+    expect(records.filter((record) => record.type === "explore_capacity_denied")).toEqual([
+      expect.objectContaining({ capacityScope: "per-parent", count: 1 }),
+    ])
+    expect(records.filter((record) =>
+      record.type === "explore_launch_denied" && record.denialReason === "capacity-exhausted"
+    )).toEqual([])
+    await controller.dispose()
+  })
+
+  it("prevents a stale child startup generation from becoming runnable", async () => {
+    const childStartup = deferred()
+    const created: StubConnection[] = []
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length === 2
+          ? { newSessionWait: childStartup.promise }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "stale-start-child",
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const launch = controller.actions.startExploreChild({ parentId, task: "Inspect", desiredOutcome: "Report" })
+    await waitFor(() => created.length === 3, "child connection creation")
+
+    await controller.actions.startFreshFromContext(undefined, parentId)
+    childStartup.resolve()
+
+    expect(await launch).toEqual({ kind: "denied", reason: "parent-closing" })
+    expect(controller.store.getState().sessions["stale-start-child"]).toBeUndefined()
+    expect(controller.store.getState().delegation.children["stale-start-child"]).toBeUndefined()
+    expect(created[2]?.prompts).toEqual([])
+    expect(created[2]?.disposeCalls()).toBe(1)
+    await controller.dispose()
+  })
+
   it("emits delegated lifecycle telemetry only for accepted transitions and deduplicates callbacks", async () => {
     const records: TelemetryRecord[] = []
     let telemetryNow = 100
@@ -3840,6 +5059,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "telemetry-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       recorder,
       now: () => 900,
     })
@@ -3871,6 +5092,15 @@ describe("createSessionController - dynamic conversation actions", () => {
     ])
     expect(delegatedRecords.find((record) => record.type === "delegated_visible_running_ms")?.durationMs).toBeGreaterThan(0)
     expect(delegatedRecords.find((record) => record.type === "delegated_child_terminal")?.delegatedStatus).toBe("finished")
+    expect(records.filter((record) => record.type.startsWith("explore_"))).toEqual([
+      expect.objectContaining({
+        type: "explore_launch_eligible",
+        policyVersion: "explore-v1",
+        provider: "codex",
+        count: 1,
+      }),
+      expect.objectContaining({ type: "explore_terminal", terminalStatus: "finished", count: 1 }),
+    ])
     const serialized = JSON.stringify(delegatedRecords)
     expect(serialized).not.toContain("TASK_SENTINEL")
     expect(serialized).not.toContain("OUTCOME_SENTINEL")
@@ -3894,6 +5124,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "delegated-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const parent = controller.store.getState().sessions[parentId]!
@@ -3907,11 +5139,14 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(childId).toBe("delegated-child")
     expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
     expect(controller.store.getState().workspace.conversations[childId!]?.lifecycle).toBe("background")
+    const binding = controller.store.getState().sessions[childId!]?.worktreeBinding!
     expect(controller.store.getState().sessions[childId!]).toMatchObject({
       providerKind: parent.providerKind,
-      cwd: parent.cwd,
+      cwd: binding.worktreePath,
+      worktreeBinding: binding,
     })
-    expect(created.at(-1)?.newSessionCwds).toEqual([parent.cwd])
+    expect(binding.worktreePath).not.toBe(parent.cwd)
+    expect(created.at(-1)?.newSessionCwds).toEqual([binding.worktreePath])
     expect(created.at(-1)?.prompts.at(-1)?.blocks).toEqual([
       {
         type: "text",
@@ -3937,6 +5172,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const initialConnectionCount = created.length
@@ -3955,6 +5192,9 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect([first, second]).toEqual(["delegated-one", "delegated-two"])
     expect(created).toHaveLength(initialConnectionCount + 2)
     expect(created.at(-2)).not.toBe(created.at(-1))
+    expect(created.at(-2)?.newSessionCwds[0]).not.toBe(created.at(-1)?.newSessionCwds[0])
+    expect(created.at(-2)?.newSessionCwds[0]).not.toBe(CWD)
+    expect(created.at(-1)?.newSessionCwds[0]).not.toBe(CWD)
     expect(controller.store.getState().workspace.selectedVisibleId).toBe(parentId)
     expect(controller.store.getState().delegation.parents[parentId]?.childIds).toEqual([
       "delegated-one",
@@ -3978,6 +5218,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 77,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4012,6 +5254,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "settled-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
@@ -4040,6 +5284,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "terminal-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "Finish", desiredOutcome: "Done" })
@@ -4074,6 +5320,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     await controller.actions.startDelegatedChild({ parentId, task: "One", desiredOutcome: "Stopped" })
@@ -4121,6 +5369,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "terminal-race-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 44,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4160,6 +5410,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "failing-close-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 77,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4189,7 +5441,7 @@ describe("createSessionController - dynamic conversation actions", () => {
     await controller.dispose()
   })
 
-  it("retains failed delegated startup and prompt snapshots without breaking parent or sibling work", async () => {
+  it("retains failed managed children for review without breaking parent or sibling work", async () => {
     const created: StubConnection[] = []
     const records: TelemetryRecord[] = []
     const ids = ["startup-failure", "prompt-failure", "healthy-child"]
@@ -4212,6 +5464,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => ids.shift()!,
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 1234,
       recorder: createTelemetryRecorder({
         enabled: true,
@@ -4221,22 +5475,25 @@ describe("createSessionController - dynamic conversation actions", () => {
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
 
-    expect(await controller.actions.startDelegatedChild({
+    expect(await controller.actions.startExploreChild({
       parentId,
       task: "Fail during startup",
       desiredOutcome: "Inspectable startup failure",
-    })).toBe("startup-failure")
-    expect(await controller.actions.startDelegatedChild({
+    })).toEqual({ kind: "denied", reason: "startup-failed" })
+    expect(await controller.actions.startExploreChild({
       parentId,
       task: "Fail during prompt",
       desiredOutcome: "Inspectable prompt failure",
-    })).toBe("prompt-failure")
-    await Bun.sleep(0)
-    expect(await controller.actions.startDelegatedChild({
+    })).toEqual({ kind: "started", childId: "prompt-failure" })
+    await waitFor(
+      () => controller.store.getState().delegation.children["prompt-failure"]?.status === "failed",
+      "the detached explore prompt failure to terminalize",
+    )
+    expect(await controller.actions.startExploreChild({
       parentId,
       task: "Stay healthy",
       desiredOutcome: "Accept follow-up direction",
-    })).toBe("healthy-child")
+    })).toEqual({ kind: "started", childId: "healthy-child" })
 
     expect(controller.store.getState().delegation.children["startup-failure"]).toMatchObject({
       status: "failed",
@@ -4246,15 +5503,227 @@ describe("createSessionController - dynamic conversation actions", () => {
       status: "failed",
       terminal: { status: "failed", at: 1234 },
     })
-    expect(records.filter((record) => record.type === "delegated_launch_failed")).toHaveLength(1)
-    expect(records.filter((record) => record.type === "delegated_child_terminal")).toEqual([
-      expect.objectContaining({ delegatedStatus: "failed" }),
-      expect.objectContaining({ delegatedStatus: "failed" }),
-    ])
-    expect(await controller.actions.steerDelegatedChild("healthy-child", "Check one more invariant")).toEqual({
-      stopReason: "end_turn",
+    expect(controller.store.getState().sessions["startup-failure"]?.worktreeBinding).toMatchObject({
+      ownerSessionId: "startup-failure",
+      availability: "available",
     })
+    expect(controller.store.getState().sessions["prompt-failure"]?.worktreeBinding).toMatchObject({
+      ownerSessionId: "prompt-failure",
+      availability: "available",
+    })
+    expect(JSON.stringify(records)).not.toContain("Fail during startup")
+    expect(JSON.stringify(records)).not.toContain("Fail during prompt")
+    expect(records.filter((record) => record.type === "explore_start_failed")).toEqual([
+      expect.objectContaining({ failureCategory: "session-start-failed", count: 1 }),
+      expect.objectContaining({ failureCategory: "prompt-dispatch-failed", count: 1 }),
+    ])
+    expect(controller.store.getState().delegation.children["healthy-child"]).toMatchObject({
+      status: "running",
+    })
+    expect(created[4]!.prompts).toHaveLength(1)
     expect(await controller.actions.sendPrompt("Parent remains usable", parentId)).toEqual({ stopReason: "end_turn" })
+  })
+
+  it("releases completed managed children for cleanup and publishes bounded refusal state", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const cleanupInputs: CleanupManagedWorktreeInput[] = []
+    const cleanupErrors: Array<{ sessionId: SessionId; error: unknown }> = []
+    const ids = ["failed-review-child", "live-terminal-child"]
+    let failedReviewCleanupAttempts = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length === 2
+          ? { newSessionThrows: new Error("startup failed") }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => ids.shift()!,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        cleanup: async (input) => {
+          cleanupInputs.push(input)
+          if (input.binding?.ownerSessionId === "failed-review-child") {
+            failedReviewCleanupAttempts += 1
+            if (failedReviewCleanupAttempts === 2) throw new Error("cleanup exploded")
+          }
+          return { kind: "refused", reason: "dirty" }
+        },
+      }),
+      onError: (sessionId, error) => cleanupErrors.push({ sessionId, error }),
+      now: () => 55,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "managed-cleanup-run",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Fail after registration",
+      desiredOutcome: "Retain review binding",
+    })).toBeNull()
+    expect(cleanupInputs).toHaveLength(0)
+
+    expect(await controller.actions.cleanupManagedWorktree("missing")).toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+    expect(await controller.actions.cleanupManagedWorktree(parentId)).toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toEqual([])
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Finish and release the ACP runtime",
+      desiredOutcome: "Allow terminal cleanup",
+    })).toBe("live-terminal-child")
+    created.at(-1)!.emit({ kind: "status", status: "finished" })
+    expect(await controller.actions.cleanupManagedWorktree("live-terminal-child")).toEqual({
+      kind: "refused",
+      reason: "dirty",
+    })
+    expect(created.at(-1)!.disposeCalls()).toBe(1)
+    expect(created.at(-1)!.subscriberCount()).toBe(0)
+    expect(controller.isReady("live-terminal-child")).toBe(false)
+    expect(cleanupInputs).toEqual([
+      expect.objectContaining({ ownerTerminal: true, ownerLive: false }),
+    ])
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toEqual([
+      expect.objectContaining({
+        type: "managed_worktree_cleanup_refused",
+        managedWorktreeReason: "dirty",
+      }),
+    ])
+
+    controller.store.addDelegatedSession({
+      seed: {
+        id: "mismatched-child",
+        providerKind: "codex",
+        title: "Mismatched child",
+        cwd: `${CWD}/mismatched`,
+        worktreeBinding: testManagedWorktreeBinding("different-owner", "mismatched"),
+      },
+      parentId,
+      parentGeneration: 1,
+      childGeneration: 90,
+      task: "Mismatch",
+      desiredOutcome: "Refuse",
+    })
+    controller.store.addDelegatedSession({
+      seed: {
+        id: "non-terminal-child",
+        providerKind: "codex",
+        title: "Non-terminal child",
+        cwd: `${CWD}/non-terminal`,
+        worktreeBinding: testManagedWorktreeBinding("non-terminal-child", "non-terminal"),
+      },
+      parentId,
+      parentGeneration: 1,
+      childGeneration: 91,
+      task: "Still active",
+      desiredOutcome: "Refuse",
+    })
+    expect(await controller.actions.cleanupManagedWorktree("mismatched-child")).toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+    expect(await controller.actions.cleanupManagedWorktree("non-terminal-child")).toEqual({
+      kind: "refused",
+      reason: "live_owned",
+    })
+
+    expect(await controller.closeConversation("live-terminal-child", "cancel")).toEqual({ outcome: "closed" })
+    expect(cleanupInputs).toHaveLength(1)
+
+    expect(await controller.actions.cleanupManagedWorktree("failed-review-child")).toEqual({
+      kind: "refused",
+      reason: "dirty",
+    })
+    expect(cleanupInputs).toHaveLength(2)
+    expect(controller.store.getState().sessions["failed-review-child"]?.worktreeBinding).toMatchObject({
+      availability: "cleanup_refused",
+      reason: "dirty",
+    })
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toEqual([
+      expect.objectContaining({
+        type: "managed_worktree_cleanup_refused",
+        managedWorktreeReason: "dirty",
+      }),
+      expect.objectContaining({
+        type: "managed_worktree_cleanup_refused",
+        managedWorktreeReason: "dirty",
+      }),
+    ])
+    expect(await controller.actions.cleanupManagedWorktree("failed-review-child")).toEqual({
+      kind: "failed",
+      reason: "git_failed",
+    })
+    expect(cleanupErrors.at(-1)).toEqual({
+      sessionId: "failed-review-child",
+      error: expect.objectContaining({ message: "cleanup exploded" }),
+    })
+    expect(controller.store.getState().sessions["failed-review-child"]?.worktreeBinding).toMatchObject({
+      availability: "cleanup_refused",
+      reason: "git_failed",
+    })
+    expect(records.filter((record) => record.type.startsWith("managed_worktree_cleanup"))).toHaveLength(2)
+    await controller.dispose()
+  })
+
+  it("emits cleaned only after the service removes an accepted terminal binding", async () => {
+    const created: StubConnection[] = []
+    const records: TelemetryRecord[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, created.length === 2
+          ? { newSessionThrows: new Error("startup failed") }
+          : {})
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "clean-review-child",
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        cleanup: async () => ({ kind: "removed" }),
+      }),
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        sessionRef: "managed-cleaned-run",
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+
+    expect(await controller.actions.startDelegatedChild({
+      parentId,
+      task: "Retain a clean review artifact",
+      desiredOutcome: "Remove only after explicit cleanup",
+    })).toBeNull()
+    expect(await controller.actions.cleanupManagedWorktree("clean-review-child")).toEqual({ kind: "removed" })
+    expect(controller.store.getState().sessions["clean-review-child"]?.worktreeBinding).toMatchObject({
+      availability: "unavailable",
+      reason: "missing",
+    })
+    expect(records.filter((record) => record.type === "managed_worktree_cleaned")).toEqual([
+      expect.objectContaining({ type: "managed_worktree_cleaned" }),
+    ])
+    await controller.dispose()
   })
 
   it("treats unknown, ordinary, terminal, and stale delegated controls as fail-soft no-ops", async () => {
@@ -4272,6 +5741,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "controlled-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       now: () => 55,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4317,7 +5788,9 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "generation-child",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
-      createAskUserBridge: bridge.factory,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+      createKittenMcpBridge: bridge.factory,
       now: () => 99,
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
@@ -4360,6 +5833,8 @@ describe("createSessionController - dynamic conversation actions", () => {
       newSessionId: () => "generation-child-only",
       sendInitialTasks: false,
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
       recorder: createTelemetryRecorder({
         enabled: true,
         sink: { write: (record) => records.push(record) },
@@ -4380,6 +5855,7 @@ describe("createSessionController - dynamic conversation actions", () => {
     replacement.emit({ kind: "status", status: "error" })
     expect(controller.store.getState().delegation.children[childId!]?.status).toBe("running")
     expect(records.filter((record) => record.type === "delegated_child_terminal")).toEqual([])
+    expect(records.filter((record) => record.type === "explore_terminal")).toEqual([])
     expect(await controller.actions.steerDelegatedChild(childId!, "stale steer")).toBeNull()
     await controller.actions.cancelDelegatedChild(childId!)
     expect(replacement.prompts).toEqual([])
@@ -4554,10 +6030,14 @@ describe("delegated action facade", () => {
       startDelegatedChild: async () => { throw new Error("start failed") },
       steerDelegatedChild: async () => { throw new Error("steer failed") },
       cancelDelegatedChild: async () => { throw new Error("cancel failed") },
+      cleanupManagedWorktree: async () => { throw new Error("cleanup failed") },
+      onError: (sessionId, error) => calls.push(`error:${sessionId}:${String(error)}`),
     })
     expect(await failing.startDelegatedChild({ parentId: "parent", task: "task", desiredOutcome: "outcome" })).toBeNull()
     expect(await failing.steerDelegatedChild("child", "direction")).toBeNull()
     expect(await failing.cancelDelegatedChild("child")).toBeUndefined()
+    expect(await failing.cleanupManagedWorktree("child")).toEqual({ kind: "failed", reason: "git_failed" })
+    expect(calls.at(-1)).toBe("error:child:Error: cleanup failed")
   })
 })
 
@@ -4615,6 +6095,7 @@ describe("createSessionController - dispose", () => {
         clarificationTimeoutSeconds: 300,
         persistenceEnabled: true,
         telemetryEnabled: false,
+        transcriptWindowingEnabled: false,
         theme: "auto",
         welcomeBanner: "auto",
         statusline: { llmDisclosureAcknowledged: false, layout: null },

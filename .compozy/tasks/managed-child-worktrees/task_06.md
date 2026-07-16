@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Persist V4 bindings and reconcile restored worktrees
 type: backend
 complexity: high

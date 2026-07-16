@@ -7,8 +7,15 @@ import type {
   DefaultApplyResult,
   DomainSessionEvent,
   HandoffBundle,
+  ManagedWorktreeAvailability,
+  ManagedWorktreeBinding,
 } from "../core/types.ts"
 import type { StatuslineLayout } from "../core/statusline.ts"
+import {
+  EXPLORE_DENIAL_REASONS,
+  evaluateExplorePolicy,
+  type ExplorePolicySnapshot,
+} from "../core/explorePolicy.ts"
 import { createAppStore, type AppStore } from "./appStore.ts"
 import {
   needsAttention,
@@ -31,14 +38,19 @@ import {
   selectSessionHeadroom,
   selectSessionStatus,
   selectSessionTurns,
+  selectSessionTranscriptProjection,
+  selectSessionTranscriptWindow,
   selectApprovalOverlay,
   selectClarificationCapability,
   selectClarificationOverlay,
   selectDelegationOverlay,
+  selectExploreAvailabilityPresentation,
   selectDelegatedParentCloseSummary,
   selectFocusedPane,
   selectFocusedSessionId,
   selectFocusedSession,
+  selectFocusedTranscriptProjection,
+  selectFocusedTranscriptWindow,
   selectHandoffPreview,
   selectHasOpenOverlay,
   selectIsApprovalOpen,
@@ -61,6 +73,16 @@ import {
   selectSharedWorkspaces,
   selectTabDialogOverlay,
   selectVisibleTabs,
+  EXPLORE_DENIAL_LABELS,
+  EXPLORE_RESTRICTION_SUMMARY,
+  MANAGED_WORKTREE_AVAILABILITY_LABELS,
+  MANAGED_WORKTREE_REASON_LABELS,
+  selectManagedWorktreeReview,
+  selectSessionSteeringPhase,
+  selectSessionSteeringQueueCount,
+  selectSessionSteeringRecovery,
+  selectSessionSteeringRecoveryAvailable,
+  selectSessionSteeringStatus,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -130,6 +152,132 @@ const STATUSLINE_LAYOUT: StatuslineLayout = {
   separator: " · ",
   line: ["FOLDER", "MODEL"],
 }
+
+const enqueueSteering = (
+  store: AppStore,
+  sessionId: "claude-code" | "codex",
+  requestId: string,
+  text: string,
+): void => {
+  store.applyEvent(sessionId, {
+    kind: "steering_enqueue",
+    activeTurnId: "turn-active",
+    requestId,
+    generation: 4,
+    blocks: [{ type: "text", text }],
+  })
+}
+
+describe("steering selectors", () => {
+  it("projects compact idle, queued, sending, and failed status", () => {
+    const store = createAppStore()
+    const selectStatus = selectSessionSteeringStatus("claude-code")
+
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "idle",
+      queueCount: 0,
+      recoveryAvailable: false,
+    })
+    expect(selectSessionSteeringPhase("claude-code")(store.getState())).toBe("idle")
+    expect(selectSessionSteeringQueueCount("claude-code")(store.getState())).toBe(0)
+    expect(selectSessionSteeringRecoveryAvailable("claude-code")(store.getState())).toBe(false)
+
+    enqueueSteering(store, "claude-code", "steer-1", "change direction")
+    enqueueSteering(store, "claude-code", "steer-2", "then preserve order")
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "queued",
+      queueCount: 2,
+      recoveryAvailable: false,
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "steering_cancel",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_settle",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_send",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "sending",
+      queueCount: 2,
+      recoveryAvailable: false,
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "failed",
+      queueCount: 2,
+      recoveryAvailable: true,
+    })
+    expect(selectSessionSteeringRecoveryAvailable("claude-code")(store.getState())).toBe(true)
+  })
+
+  it("uses stable safe fallbacks for null, unknown, idle, and no-recovery sessions", () => {
+    const state = createAppStore().getState()
+    const nullStatus = selectSessionSteeringStatus(null)(state)
+
+    expect(selectSessionSteeringStatus("missing")(state)).toBe(nullStatus)
+    expect(selectSessionSteeringStatus("claude-code")(state)).toBe(nullStatus)
+    expect(selectSessionSteeringRecovery(null)(state)).toBeNull()
+    expect(selectSessionSteeringRecovery("missing")(state)).toBeNull()
+    expect(selectSessionSteeringRecovery("claude-code")(state)).toBeNull()
+  })
+
+  it("keeps generic status content-free and reserves exact blocks for focused recovery", () => {
+    const store = createAppStore()
+    enqueueSteering(store, "claude-code", "steer-secret", "exact unsent text")
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-secret",
+      generation: 4,
+    })
+
+    const status = selectSessionSteeringStatus("claude-code")(store.getState())
+    expect(Object.keys(status).sort()).toEqual(["phase", "queueCount", "recoveryAvailable"])
+    expect(JSON.stringify(status)).not.toContain("exact unsent text")
+    expect(JSON.stringify(status)).not.toContain("steer-secret")
+    expect(selectSessionSteeringRecovery("claude-code")(store.getState())).toEqual({
+      requestId: "steer-secret",
+      blocks: [{ type: "text", text: "exact unsent text" }],
+    })
+  })
+
+  it("preserves projection identities across token and other-session updates", () => {
+    const store = createAppStore()
+    enqueueSteering(store, "claude-code", "steer-1", "recover me")
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    const selectStatus = selectSessionSteeringStatus("claude-code")
+    const selectRecovery = selectSessionSteeringRecovery("claude-code")
+    const status = selectStatus(store.getState())
+    const recovery = selectRecovery(store.getState())
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    enqueueSteering(store, "codex", "steer-other", "other session")
+
+    expect(selectStatus(store.getState())).toBe(status)
+    expect(selectRecovery(store.getState())).toBe(recovery)
+  })
+})
 
 describe("focus selectors", () => {
   it("project the focused agent and per-agent focus flags", () => {
@@ -451,7 +599,31 @@ function fleetStore(): AppStore {
   })
 }
 
-function registerDelegatedChild(store: AppStore, childId = "child", title = "Child"): void {
+function acceptedExplorePolicy(model = "safe-model"): ExplorePolicySnapshot {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: {
+      filesystem: "read-only",
+      shell: false,
+      externalMcp: false,
+      agentControl: false,
+      askUser: true,
+      maxDepth: 0,
+    },
+    limits: { perParent: 2, global: 4 },
+    attestationVersion: "selector-v1",
+    confirmed: { provider: "codex", model, effort: "medium" },
+  })
+  if (decision.kind !== "eligible") throw new Error("explore policy fixture must be eligible")
+  return decision.policy
+}
+
+function registerDelegatedChild(
+  store: AppStore,
+  childId = "child",
+  title = "Child",
+  policy?: ExplorePolicySnapshot,
+): void {
   store.addDelegatedSession({
     seed: { id: childId, providerKind: "codex", title, cwd: `/w/${childId}` },
     parentId: "a",
@@ -459,6 +631,7 @@ function registerDelegatedChild(store: AppStore, childId = "child", title = "Chi
     childGeneration: 1,
     task: "Inspect the selector seam",
     desiredOutcome: "Return a concise result",
+    ...(policy ? { policy } : {}),
   })
 }
 
@@ -479,6 +652,25 @@ function publishDelegatedStatus(
     store.publishDelegatedChildState({ ...identity, status, sessionStatus: "error", at: 1 })
   } else {
     store.publishDelegatedChildState({ ...identity, status, sessionStatus: "idle", at: 1 })
+  }
+}
+
+function managedWorktreeBinding(
+  ownerSessionId: string,
+  availability: ManagedWorktreeAvailability = "available",
+  overrides: Partial<ManagedWorktreeBinding> = {},
+): ManagedWorktreeBinding {
+  return {
+    kind: "managed",
+    id: `binding-${ownerSessionId}`,
+    repoRoot: "/repo",
+    worktreePath: `/repo/.kitten/worktrees/${ownerSessionId}`,
+    branch: `kitten/${ownerSessionId}`,
+    baseBranch: "main",
+    baseSha: "0123456789abcdef",
+    ownerSessionId,
+    availability,
+    ...overrides,
   }
 }
 
@@ -518,6 +710,7 @@ describe("selectSessionList", () => {
       status,
       statusLabel,
       terminalTranscriptAvailable: terminal,
+      explore: null,
     })
     expect(selectSessionList(store.getState())).toBe(first)
   })
@@ -580,6 +773,214 @@ describe("selectSessionList", () => {
       ],
     })
     expect(selectSessionList(store.getState()).map((item) => item.cwd)).toEqual(["/work/frontend", "/work/backend"])
+  })
+
+  it("projects live explore policy stably and rebuilds only when the accepted policy changes", () => {
+    const store = fleetStore()
+    registerDelegatedChild(store, "child", "Child", acceptedExplorePolicy("safe-model-a"))
+    publishDelegatedStatus(store, "child", "running")
+
+    const first = selectSessionList(store.getState()).find((item) => item.id === "child")?.delegation
+    expect(first?.kind).toBe("child")
+    if (first?.kind !== "child") throw new Error("expected delegated child presentation")
+    expect(first.explore).toMatchObject({
+      role: "explore",
+      roleLabel: "explore",
+      compactLabel: "explore",
+      restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+      attestationVersion: "selector-v1",
+      confirmed: { provider: "codex", model: "safe-model-a", effort: "medium" },
+    })
+
+    store.applyEvent("child", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    const streamed = selectSessionList(store.getState()).find((item) => item.id === "child")?.delegation
+    expect(streamed).toBe(first)
+
+    store.applyEvent("b", { kind: "agent_message", messageId: "other", textDelta: "token" })
+    const unrelated = selectSessionList(store.getState()).find((item) => item.id === "child")?.delegation
+    expect(unrelated).toBe(first)
+
+    const currentState = store.getState()
+    const currentChild = currentState.delegation.children.child
+    if (!currentChild) throw new Error("expected delegated child snapshot")
+    const changedState = {
+      ...currentState,
+      delegation: {
+        ...currentState.delegation,
+        children: {
+          ...currentState.delegation.children,
+          child: { ...currentChild, policy: acceptedExplorePolicy("safe-model-b") },
+        },
+      },
+    }
+    const changed = selectSessionList(changedState).find((item) => item.id === "child")?.delegation
+    expect(changed).not.toBe(first)
+    expect(changed?.kind === "child" ? changed.explore?.confirmed.model : null).toBe("safe-model-b")
+  })
+})
+
+describe("managed worktree review presentation", () => {
+  it.each([
+    ["unverified", "Review status unverified"],
+    ["available", "Review available"],
+    ["unavailable", "Review unavailable"],
+    ["cleanup_refused", "Cleanup refused"],
+  ] as const)("maps %s to bounded explicit text", (availability, availabilityLabel) => {
+    const binding = managedWorktreeBinding("child", availability, {
+      ...(availability === "available" ? {} : { reason: "verification_failed" }),
+    })
+    const store = createAppStore({
+      seeds: [{
+        id: "child",
+        providerKind: "codex",
+        title: "Child",
+        cwd: binding.worktreePath,
+        worktreeBinding: binding,
+      }],
+    })
+
+    const review = selectManagedWorktreeReview("child")(store.getState())
+    expect(review).toMatchObject({
+      kind: "managed-worktree",
+      managed: true,
+      managedLabel: "Managed worktree",
+      provenance: "kitten-managed",
+      provenanceLabel: "Kitten-managed workspace",
+      worktreePath: binding.worktreePath,
+      branch: binding.branch,
+      baseBranch: binding.baseBranch,
+      baseSha: binding.baseSha,
+      availability,
+      availabilityLabel,
+    })
+    expect(review?.availabilityLabel).toBe(MANAGED_WORKTREE_AVAILABILITY_LABELS[availability])
+    expect(review?.reasonLabel).toBe(
+      binding.reason ? MANAGED_WORKTREE_REASON_LABELS[binding.reason] : null,
+    )
+    expect(review?.availabilityLabel).not.toContain(binding.worktreePath)
+  })
+
+  it("returns null only for an ordinary session and preserves unchanged presentation identity", () => {
+    const binding = managedWorktreeBinding("child")
+    const store = createAppStore({
+      seeds: [
+        { id: "ordinary", providerKind: "claude-code", title: "Ordinary", cwd: "/repo" },
+        {
+          id: "child",
+          providerKind: "codex",
+          title: "Child",
+          cwd: binding.worktreePath,
+          worktreeBinding: binding,
+        },
+      ],
+    })
+    const selectReview = selectManagedWorktreeReview("child")
+    const first = selectReview(store.getState())
+
+    expect(selectManagedWorktreeReview("ordinary")(store.getState())).toBeNull()
+    expect(first).not.toBeNull()
+    store.applyEvent("child", { kind: "agent_message", messageId: "stream", textDelta: "token" })
+    store.applyShellEvent({ kind: "cwd_changed", cwd: "/elsewhere" })
+    expect(selectReview(store.getState())).toBe(first)
+  })
+
+  it("shares one cached review object across restored row/view projections without delegation", () => {
+    const unavailable = managedWorktreeBinding("child", "unavailable", { reason: "missing" })
+    const store = createAppStore({
+      seeds: [
+        { id: "sibling", providerKind: "claude-code", title: "Sibling", cwd: "/repo" },
+        {
+          id: "child",
+          providerKind: "codex",
+          title: "Restored child",
+          cwd: unavailable.worktreePath,
+          worktreeBinding: unavailable,
+        },
+      ],
+    })
+
+    const row = selectSessionList(store.getState()).find((item) => item.id === "child")
+    const view = selectVisibleTabs(store.getState()).find((item) => item.id === "child")
+    expect(row?.cwd).toBe(unavailable.worktreePath)
+    expect(view?.cwd).toBe(unavailable.worktreePath)
+    expect(row?.delegation).toBeNull()
+    expect(view?.delegation).toBeNull()
+    expect(row?.review).toBe(view?.review)
+    expect(row?.review).toBe(selectManagedWorktreeReview("child")(store.getState()))
+    expect(row?.review).toMatchObject({
+      availability: "unavailable",
+      availabilityLabel: "Review unavailable",
+      reason: "missing",
+      reasonLabel: "Managed workspace is missing",
+    })
+  })
+
+  it("replaces only the updated child row/view while siblings remain stable", () => {
+    const binding = managedWorktreeBinding("child", "available")
+    const store = createAppStore({
+      seeds: [
+        { id: "sibling", providerKind: "claude-code", title: "Sibling", cwd: "/repo" },
+        {
+          id: "child",
+          providerKind: "codex",
+          title: "Child",
+          cwd: binding.worktreePath,
+          worktreeBinding: binding,
+        },
+      ],
+    })
+    const rowsBefore = selectSessionList(store.getState())
+    const viewsBefore = selectVisibleTabs(store.getState())
+
+    store.publishManagedWorktreeBinding(
+      "child",
+      managedWorktreeBinding("child", "cleanup_refused", { reason: "dirty" }),
+    )
+
+    const rowsAfter = selectSessionList(store.getState())
+    const viewsAfter = selectVisibleTabs(store.getState())
+    expect(rowsAfter[0]).toBe(rowsBefore[0])
+    expect(rowsAfter[1]).not.toBe(rowsBefore[1])
+    expect(viewsAfter[0]).toBe(viewsBefore[0])
+    expect(viewsAfter[1]).not.toBe(viewsBefore[1])
+    expect(rowsAfter[1]?.review).toBe(viewsAfter[1]?.review)
+    expect(rowsAfter[1]?.review).toMatchObject({
+      availability: "cleanup_refused",
+      availabilityLabel: "Cleanup refused",
+      reason: "dirty",
+      reasonLabel: "Managed workspace has uncommitted changes",
+    })
+  })
+})
+
+describe("explore availability presentation", () => {
+  it("maps every closed denial to fixed content-free text with stable selector output", () => {
+    const store = fleetStore()
+    for (const reason of EXPLORE_DENIAL_REASONS) {
+      const selector = selectExploreAvailabilityPresentation(reason)
+      const first = selector(store.getState())
+      expect(first).toEqual({
+        kind: "unavailable",
+        roleLabel: "Role: explore",
+        restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+        statusLabel: `Unavailable: ${EXPLORE_DENIAL_LABELS[reason]}`,
+        reason,
+      })
+      expect(first.statusLabel).not.toMatch(/\/|config|error|task/i)
+      store.applyEvent("b", { kind: "agent_message", messageId: reason, textDelta: "unrelated" })
+      expect(selector(store.getState())).toBe(first)
+    }
+  })
+
+  it("projects an explicit textual available state and the complete V1 restriction contract", () => {
+    const presentation = selectExploreAvailabilityPresentation(null)(fleetStore().getState())
+    expect(presentation.kind).toBe("available")
+    expect(presentation.statusLabel).toContain("Available")
+    expect(presentation.restrictionSummary).toContain("Read-only filesystem")
+    expect(presentation.restrictionSummary).toContain("No shell")
+    expect(presentation.restrictionSummary).toContain("No external MCP or agent control")
+    expect(presentation.restrictionSummary).toContain("Scoped ask_user only")
+    expect(presentation.restrictionSummary).toContain("No recursion")
   })
 })
 
@@ -1130,5 +1531,133 @@ describe("workspace view selectors", () => {
     })
     expect(selectActiveModal(store.getState())).toEqual({ kind: "approval", sessionId: "c" })
     expect(selectTabDialogOverlay(store.getState())?.sessionId).toBe("b")
+  })
+})
+
+describe("transcript projection selectors", () => {
+  const addProjectionFixture = (store: AppStore, sessionId: "claude-code" | "codex") => {
+    store.applyEvent(sessionId, { kind: "user_message", messageId: "u0", text: "zero" })
+    store.applyEvent(sessionId, {
+      kind: "tool_call",
+      call: {
+        toolCallId: "historical-tool",
+        kind: "edit",
+        title: "Historical edit",
+        status: "completed",
+        locations: [],
+      },
+    })
+    store.applyEvent(sessionId, { kind: "user_message", messageId: "u2", text: "two" })
+    store.applyEvent(sessionId, { kind: "agent_message", messageId: "a3", textDelta: "three" })
+    store.applyEvent(sessionId, { kind: "user_message", messageId: "u4", text: "four" })
+    store.applyEvent(sessionId, { kind: "agent_message", messageId: "a5", textDelta: "five" })
+  }
+
+  it("projects stable per-session windows and complete disabled presentations", () => {
+    const store = createAppStore()
+    addProjectionFixture(store, "claude-code")
+    const selectWindow = selectSessionTranscriptWindow("claude-code")
+    const selectProjection = selectSessionTranscriptProjection("claude-code", {
+      enabled: false,
+      tailTurnCount: 2,
+    })
+    const window = selectWindow(store.getState())
+    const projection = selectProjection(store.getState())
+
+    expect(window).toEqual({ revealedTurnCount: 0, detachedFromLive: false, scrollTop: null })
+    expect(projection.hiddenTurnCount).toBe(0)
+    expect(projection.rows).toHaveLength(6)
+    expect(projection.rows.every((row) => row.kind === "turn")).toBe(true)
+
+    store.setTranscriptDetached("claude-code", true)
+    store.captureTranscriptScrollTop("claude-code", 4)
+    store.revealTranscriptHistory("claude-code", 2)
+    store.applyEvent("claude-code", { kind: "status", status: "working" })
+    expect(selectProjection(store.getState())).toBe(projection)
+
+    store.applyEvent("codex", { kind: "agent_message", messageId: "other", textDelta: "token" })
+    expect(selectWindow(store.getState())).not.toBe(window)
+    expect(selectProjection(store.getState())).toBe(projection)
+  })
+
+  it("protects only a matching approval tool and gives clarification no transcript ownership", () => {
+    const store = createAppStore()
+    addProjectionFixture(store, "claude-code")
+    const selectProjection = selectSessionTranscriptProjection("claude-code", {
+      enabled: true,
+      tailTurnCount: 2,
+    })
+    const collapsed = selectProjection(store.getState())
+    expect(collapsed.hiddenTurnCount).toBe(4)
+
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/work",
+      request: { sessionId: "acp-codex", toolCall: { toolCallId: "historical-tool" }, options: [] },
+    })
+    expect(selectProjection(store.getState())).toBe(collapsed)
+
+    store.openApproval({
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: "/work",
+      request: { sessionId: "acp-claude", toolCall: { toolCallId: "historical-tool" }, options: [] },
+    })
+    expect(selectProjection(store.getState()).hiddenTurnCount).toBe(1)
+
+    store.closeApproval()
+    const withoutApproval = selectProjection(store.getState())
+    expect(withoutApproval.hiddenTurnCount).toBe(4)
+    store.openClarification({
+      requestId: "clarification-projection",
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: "/work",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+    expect(selectProjection(store.getState())).toBe(withoutApproval)
+  })
+
+  it("keeps a focused projection subscription silent for background streams", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    addProjectionFixture(store, "claude-code")
+    const selectProjection = selectFocusedTranscriptProjection({ enabled: true, tailTurnCount: 2 })
+    const focusedWindow = selectFocusedTranscriptWindow(store.getState())
+    const before = selectProjection(store.getState())
+    const notifications: unknown[] = []
+    store.subscribeSelector(selectProjection, (projection) => notifications.push(projection))
+
+    store.applyEvent("codex", { kind: "agent_message", messageId: "background", textDelta: "token" })
+
+    expect(selectProjection(store.getState())).toBe(before)
+    expect(selectFocusedTranscriptWindow(store.getState())).toBe(focusedWindow)
+    expect(notifications).toEqual([])
+  })
+
+  it("re-projects only the addressed session when history is revealed", () => {
+    const store = createAppStore()
+    addProjectionFixture(store, "claude-code")
+    addProjectionFixture(store, "codex")
+    const selectClaude = selectSessionTranscriptProjection("claude-code", {
+      enabled: true,
+      tailTurnCount: 2,
+    })
+    const selectCodex = selectSessionTranscriptProjection("codex", {
+      enabled: true,
+      tailTurnCount: 2,
+    })
+    const codexBefore = selectCodex(store.getState())
+    const claudeBefore = selectClaude(store.getState())
+
+    store.setTranscriptDetached("claude-code", true)
+    store.captureTranscriptScrollTop("claude-code", 3)
+    expect(selectClaude(store.getState())).toBe(claudeBefore)
+
+    store.revealTranscriptHistory("claude-code", 2)
+
+    expect(selectClaude(store.getState()).hiddenTurnCount).toBe(2)
+    expect(selectCodex(store.getState())).toBe(codexBefore)
   })
 })

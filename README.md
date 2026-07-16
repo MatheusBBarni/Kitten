@@ -7,13 +7,19 @@ If one agent stalls, you can hand its active task to another ready session throu
 
 ## Install Kitten
 
-Install the latest standalone binary with the checksummed installer:
+Install the published CLI and let npm select the matching supported binary:
+
+```bash
+npm install --global @matheusbbarni/kitten
+```
+
+The package installs the `kitten` command. To use the standalone binary instead, run the checksummed installer; it uses `~/.local/bin` by default and tells you how to add it to `PATH` when needed:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash
 ```
 
-The installer uses `~/.local/bin` by default and tells you how to add it to `PATH` when needed. Launch Kitten from inside the Git repository where you want the agents to work:
+Launch Kitten from inside the Git repository where you want the agents to work:
 
 ```bash
 cd path/to/your/repository
@@ -28,7 +34,7 @@ kitten
 - Cursor's local `agent` CLI installed and authenticated to use the Cursor session
 - A git repository to launch Kitten from
 
-Kitten launches the agents' published [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk) adapters. It does not install the agent CLIs or manage their authentication. The npm channel will be documented here when its native-binary install path is published and verified.
+Kitten launches the agents' published [Agent Client Protocol](https://github.com/agentclientprotocol/typescript-sdk) adapters. It does not install the agent CLIs or manage their authentication.
 
 ### Local Cursor session
 
@@ -40,7 +46,7 @@ Cursor is checked independently. If its CLI is missing, unauthenticated, incompa
 
 The canonical showcase URL is [https://matheusbbarni.github.io/Kitten/](https://matheusbbarni.github.io/Kitten/). It becomes a public entry point only after the launch gate below passes. The static Astro project lives in `site/` and deploys through `.github/workflows/showcase-site.yml`.
 
-At launch, the showcase must have exactly one verified install CTA: the source-checkout command under [Develop from source](#develop-from-source). Keep that site-specific CTA separate from the curl-first install guidance above.
+At launch, the showcase must have exactly one verified install CTA: `npm install --global @matheusbbarni/kitten`. Keep that package route consistent with the primary install guidance above; the standalone installer remains an alternative for users who prefer it.
 
 ### Launch gate
 
@@ -48,15 +54,15 @@ Do not publish or announce the showcase until every item is checked:
 
 - [ ] **Repository visibility:** `gh repo view MatheusBBarni/Kitten --json visibility --jq .visibility` reports `PUBLIC`, and the repository CTA works without authentication.
 - [ ] **License presence:** an explicit open-source `LICENSE` or `LICENSE.md` is committed and GitHub detects it.
-- [ ] **Recording availability:** `site/src/config/showcase-config.ts` references a real 20–30 second handoff recording and captions; the referenced files exist and visibly cover prepare, review/trim, confirm, and continue. The poster-only fallback is not launch proof.
-- [ ] **Command verification:** the sole source-checkout command under [Develop from source](#develop-from-source) succeeds from a clean environment with the documented Bun and agent prerequisites.
+- [ ] **Proof clarity:** the visible handoff steps accurately cover prepare, review/trim, confirm, and continue without implying automatic sending or complete context transfer.
+- [ ] **Command verification:** `npm install --global @matheusbbarni/kitten` succeeds from a clean environment and launches the published CLI with the documented agent prerequisites.
 - [ ] **Claim review:** page copy matches released behavior and does not imply complete context transfer, automatic sending, or guaranteed secret removal.
 
 Before launch, at least 8 of 10 target developers should be able to explain the reviewed handoff after 30 seconds. The first 30-day review targets are at least 12 install-intent actions per 100 sessions, 40% proof engagement, 25 net-new GitHub stars, and no more than 20% of the first 20 substantive feedback items caused by unclear setup.
 
 ### Smoke validation
 
-Build the isolated site, check its rendered sections and fallback asset, then run the browser-behavior contracts:
+Build the isolated site, check its rendered sections, then run the browser-behavior contracts:
 
 ```bash
 cd site
@@ -66,9 +72,8 @@ bun run build
 bun run test:coverage
 test -f dist/index.html
 rg -n 'id="(hero|proof|install|requirements|faq)"' dist/index.html
-test -f public/proof/kitten-reviewed-handoff-poster.svg
 bun test test/landing-page.test.ts test/accessibility-motion.test.ts
-bun test src/scripts/copy-command.test.ts src/scripts/star-count.test.ts src/scripts/proof-media-state.test.ts src/scripts/proof-media.test.ts
+bun test src/scripts/copy-command.test.ts src/scripts/star-count.test.ts
 ```
 
 Serve the production artifact and verify the Pages base path from another terminal:
@@ -86,7 +91,7 @@ Complete these manual browser checks against the preview:
 
 - Activate the copy button with the keyboard and confirm the `aria-live` status reports success; with clipboard access blocked, confirm the command is selected for manual copying.
 - Block or fail the GitHub API request and confirm the star control keeps its repository link, shows the configured unavailable message, and never fabricates `0` stars.
-- Enable reduced motion and confirm proof video does not autoplay, pauses if the preference changes, retains native controls, and leaves the written handoff steps visible.
+- Navigate the package-manager tabs with the keyboard and confirm only the selected install command is focusable while the written handoff steps remain visible.
 
 ### Maintenance and measurement
 
@@ -219,6 +224,25 @@ Overrides are merged per provider/session and by field, so you can change one se
 Malformed config files fail fast. There is no silent fallback.
 
 Telemetry is disabled by default. When enabled, it writes local content-free JSONL counters only.
+
+### Experimental transcript windowing
+
+The bounded transcript view is a default-off experiment. To opt in, add the strict top-level boolean to
+`config.json`:
+
+<!-- transcript-windowing-example:start -->
+```json
+{
+  "transcriptWindowingEnabled": true
+}
+```
+<!-- transcript-windowing-example:end -->
+
+This changes presentation only: Kitten keeps the complete transcript available in memory for the current
+live run and collapses older rows behind an explicit history control. It does not persist transcript content
+across restarts, add a transcript archive, or change telemetry's local content-free privacy boundary. There
+is no Settings toggle or environment override for this experiment; remove the field or set it to `false` to
+return to the full-transcript view.
 
 ### Provider model defaults
 

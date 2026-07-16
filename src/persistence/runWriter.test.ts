@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import type { HandoffBundle } from "../core/types.ts"
+import { evaluateExplorePolicy, EXPLORE_RESTRICTIONS } from "../core/explorePolicy.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import type { PersistedRunRecordV3 } from "./runRecord.ts"
 import { createRunWriter } from "./runWriter.ts"
@@ -249,6 +250,47 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
+  it("keeps queued and recovered steering state entirely outside the V3 snapshot", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    const sentinels = [
+      "PROMPT_BLOCK_SENTINEL",
+      "RECOVERY_TEXT_SENTINEL",
+      "REQUEST_ID_SENTINEL",
+      "ACP_ID_SENTINEL",
+      "/PRIVATE/STEERING/PATH",
+      "RAW_STEERING_ERROR_SENTINEL",
+      "ADAPTER_CONFIG_SENTINEL",
+    ]
+    store.applyEvent("claude", {
+      kind: "steering_enqueue",
+      activeTurnId: "ACP_ID_SENTINEL",
+      requestId: "REQUEST_ID_SENTINEL",
+      generation: 1,
+      blocks: [{
+        type: "text",
+        text: "PROMPT_BLOCK_SENTINEL RECOVERY_TEXT_SENTINEL",
+        path: "/PRIVATE/STEERING/PATH",
+        rawError: "RAW_STEERING_ERROR_SENTINEL",
+        adapterConfig: "ADAPTER_CONFIG_SENTINEL",
+      } as never],
+    })
+    store.applyEvent("claude", {
+      kind: "steering_recover",
+      requestId: "REQUEST_ID_SENTINEL",
+      generation: 1,
+    })
+
+    timer.flush()
+
+    const record = runStore.records.at(-1)!
+    const serialized = JSON.stringify(record)
+    expect(record.version).toBe(3)
+    expect(record.conversations.claude).not.toHaveProperty("steering")
+    expect(serialized).not.toContain("steering")
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel)
+    writer.dispose()
+  })
+
   it("keeps an internal request and its paired proposal out of resume eligibility", () => {
     const { store, runStore, timer, writer } = writerHarness()
     const request = "normal developer request"
@@ -327,6 +369,18 @@ describe("createRunWriter", () => {
 
   it("persists delegated children only as ordinary conversations and omits all delegation ownership", () => {
     const { store, runStore, timer, writer } = writerHarness()
+    const policyDecision = evaluateExplorePolicy({
+      role: "explore",
+      restrictions: EXPLORE_RESTRICTIONS,
+      limits: { perParent: 2, global: 2 },
+      attestationVersion: "ATTESTATION_SENTINEL",
+      confirmed: {
+        provider: "claude-code",
+        model: "MODEL_SENTINEL",
+        effort: "EFFORT_SENTINEL",
+      },
+    })
+    if (policyDecision.kind !== "eligible") throw new Error("test policy must be eligible")
     store.addDelegatedSession({
       seed: { id: "running-child", providerKind: "claude-code", title: "Running child", cwd: "/work/kitten" },
       parentId: "claude",
@@ -334,6 +388,7 @@ describe("createRunWriter", () => {
       childGeneration: 8,
       task: "TASK_SENTINEL must remain ephemeral",
       desiredOutcome: "OUTCOME_SENTINEL must remain ephemeral",
+      policy: policyDecision.policy,
       displayName: "Ordinary running conversation",
     })
     store.startSession("running-child", "running-child-acp")
@@ -352,6 +407,7 @@ describe("createRunWriter", () => {
       childGeneration: 9,
       task: "SECOND_TASK_SENTINEL",
       desiredOutcome: "SECOND_OUTCOME_SENTINEL",
+      policy: policyDecision.policy,
       displayName: "Ordinary terminal conversation",
     })
     store.startSession("terminal-child", "terminal-child-acp")
@@ -388,6 +444,14 @@ describe("createRunWriter", () => {
       '"childGeneration"',
       '"closeState"',
       '"terminal"',
+      '"policy"',
+      '"restrictions"',
+      '"limits"',
+      '"attestationVersion"',
+      '"confirmed"',
+      "ATTESTATION_SENTINEL",
+      "MODEL_SENTINEL",
+      "EFFORT_SENTINEL",
     ]) {
       expect(serialized).not.toContain(forbidden)
     }

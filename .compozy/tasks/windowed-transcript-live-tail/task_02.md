@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add Per-Session Presentation State and Selectors
 type: refactor
 complexity: medium

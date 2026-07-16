@@ -249,6 +249,16 @@ function CockpitFrame({
           )
           return
         }
+        case "reveal-history": {
+          const sessionId = state.workspace.selectedVisibleId
+          if (sessionId) controller.store.revealTranscriptHistory(sessionId, Number.MAX_SAFE_INTEGER)
+          return
+        }
+        case "return-to-live": {
+          const sessionId = state.workspace.selectedVisibleId
+          if (sessionId) controller.store.returnTranscriptToLive(sessionId)
+          return
+        }
         case "open-settings":
           setHelpOpen(false)
           controller.store.openSettings()

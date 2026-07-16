@@ -37,6 +37,7 @@ const CLAUDE: ResolvedAgentConfig = {
   args: ["--stdio"],
   env: {},
   clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  steeringCapability: { status: "unavailable" },
   runtimeProfile: { kind: "standard" },
 }
 const CODEX: ResolvedAgentConfig = {
@@ -46,6 +47,7 @@ const CODEX: ResolvedAgentConfig = {
   args: [],
   env: {},
   clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  steeringCapability: { status: "unavailable" },
   runtimeProfile: { kind: "standard" },
 }
 
@@ -57,6 +59,7 @@ const CURSOR: ResolvedAgentConfig = {
   args: ["acp"],
   env: {},
   clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  steeringCapability: { status: "unavailable" },
   runtimeProfile: {
     kind: "cursor-certified",
     command: "agent",
@@ -85,6 +88,7 @@ const APP_CONFIG: AppConfig = {
   clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
+  transcriptWindowingEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },

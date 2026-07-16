@@ -12,6 +12,7 @@
 
 import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
 import type { StatuslinePreference } from "./statusline.ts"
+import type { ExplorePolicySnapshot } from "./explorePolicy.ts"
 
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
@@ -26,6 +27,43 @@ export type ProviderKind = "claude-code" | "codex" | "cursor"
  * not-ready session - one with no ACP id yet - still exists in the collection.
  */
 export type SessionId = string
+
+/** Closed review/cleanup standing for one Kitten-managed worktree binding. */
+export type ManagedWorktreeAvailability =
+  | "unverified"
+  | "available"
+  | "unavailable"
+  | "cleanup_refused"
+
+/** Bounded lifecycle reasons; raw Git errors and workspace content never enter core state. */
+export type ManagedWorktreeReason =
+  | "not_git_repository"
+  | "detached_head"
+  | "submodules_unsupported"
+  | "root_conflict"
+  | "collision"
+  | "verification_failed"
+  | "missing"
+  | "external"
+  | "dirty"
+  | "unmerged"
+  | "live_owned"
+  | "not_managed"
+  | "git_failed"
+
+/** Immutable, protocol-free identity and review state for a Kitten-managed worktree. */
+export interface ManagedWorktreeBinding {
+  readonly kind: "managed"
+  readonly id: string
+  readonly repoRoot: string
+  readonly worktreePath: string
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseSha: string
+  readonly ownerSessionId: SessionId
+  readonly availability: ManagedWorktreeAvailability
+  readonly reason?: ManagedWorktreeReason
+}
 
 /** Closed, protocol-free lifecycle for one host-owned delegated child. */
 export type DelegatedChildStatus =
@@ -57,8 +95,13 @@ export interface DelegatedChildSnapshot {
   readonly status: DelegatedChildStatus
   readonly task: string
   readonly desiredOutcome: string
+  /** Accepted launch-time policy; absent only on the legacy path removed by task 03. */
+  readonly policy?: ExplorePolicySnapshot
   readonly terminal?: DelegatedChildTerminalSnapshot
 }
+
+/** Closed capacity boundary that refused an otherwise valid registration. */
+export type ExploreCapacityScope = "per-parent" | "global"
 
 /** Parent close intent is state, while cancellation and teardown stay controller-owned. */
 export type DelegationParentCloseState = "open" | "closing"
@@ -92,6 +135,8 @@ export type DelegationEvent =
       readonly childGeneration: number
       readonly task: string
       readonly desiredOutcome: string
+      /** Accepted immutable policy for reservation-aware explore registration. */
+      readonly policy?: ExplorePolicySnapshot
     }
   | {
       readonly kind: "publish_child_status"
@@ -532,6 +577,64 @@ export interface ToolCallTurn {
 /** An ordered transcript entry: a message from either party or a tool call. */
 export type Turn = UserTurn | AgentTurn | ToolCallTurn
 
+/** One provider-neutral prompt fragment. V1 steering carries plain text only. */
+export interface PromptBlock {
+  readonly type: "text"
+  readonly text: string
+}
+
+/** Closed lifecycle vocabulary for one accepted steering request. */
+export type SteeringPhase =
+  | "idle"
+  | "queued"
+  | "waiting"
+  | "cancelling"
+  | "settling"
+  | "sending"
+  | "failed"
+
+/** One generation-fenced direction accepted during an active turn. */
+export interface SteeringRequest {
+  readonly id: string
+  readonly generation: number
+  readonly blocks: readonly PromptBlock[]
+  readonly phase: SteeringPhase
+}
+
+/** Live-only steering truth. Raw blocks are cleared only by delivery or acknowledgement. */
+export interface SteeringState {
+  readonly activeTurnId: string | null
+  readonly queue: readonly SteeringRequest[]
+  readonly recovery: readonly PromptBlock[] | null
+}
+
+/** Pure steering lifecycle events emitted by later controller work. */
+export type SteeringEvent =
+  | {
+      readonly kind: "steering_enqueue"
+      readonly activeTurnId: string
+      readonly requestId: string
+      readonly generation: number
+      readonly blocks: readonly PromptBlock[]
+    }
+  | {
+      readonly kind:
+        | "steering_wait"
+        | "steering_cancel"
+        | "steering_settle"
+        | "steering_send"
+        | "steering_recover"
+        | "steering_acknowledge_recovery"
+      readonly requestId: string
+      readonly generation: number
+    }
+  | {
+      readonly kind: "steering_deliver"
+      readonly requestId: string
+      readonly generation: number
+      readonly messageId: string
+    }
+
 /**
  * An edit diff that has been proposed but not yet applied/approved.
  * Derived from `edit`-kind tool calls that carry a diff and are not yet complete.
@@ -553,6 +656,8 @@ export interface SessionSeed {
   title: string
   cwd: string
   task?: string
+  /** Controller-produced managed-worktree identity, when this session owns one. */
+  readonly worktreeBinding?: ManagedWorktreeBinding
   /** The ACP session id, when already known; defaults to `""` (not yet handshaken). */
   acpSessionId?: string
 }
@@ -581,6 +686,8 @@ export interface SessionState {
   /** The session working tree's current branch, when it can be resolved. */
   branch?: string
   task?: string
+  /** Immutable managed-worktree identity and bounded controller-published review state. */
+  readonly worktreeBinding?: ManagedWorktreeBinding
   acpSessionId: string
   turns: Turn[]
   status: SessionStatus
@@ -604,6 +711,8 @@ export interface SessionState {
   commands: AvailableCommand[]
   /** Current-run composer submissions and recall position, private to this session. */
   promptHistory: PromptHistoryState
+  /** Reducer-owned, live-only mid-turn steering lifecycle. */
+  steering: SteeringState
 }
 
 /** One semantically bounded shell command and its captured raw output. */
@@ -655,6 +764,7 @@ export type DomainSessionEvent =
   | { kind: "default_apply_result"; result: DefaultApplyResult }
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
   | PromptHistoryEvent
+  | SteeringEvent
 
 /**
  * The context bundle handed from a source agent to a target agent. Deterministic
@@ -695,6 +805,20 @@ export type ClarificationCapability =
       reason: "unknown_recipe" | "recipe_overridden" | "unverified_recipe"
     }
 
+/**
+ * Whether a fully resolved provider recipe may use an adapter-certified native
+ * steering path. The vocabulary is deliberately protocol-free and fail-closed;
+ * provider extension details remain inside `src/agent/`.
+ */
+export type SteeringCapability =
+  | { readonly status: "unavailable" }
+  | {
+      readonly status: "native"
+      readonly adapterId: string
+      readonly adapterPackage: string
+      readonly adapterVersion: string
+    }
+
 /** A protocol-free stdio MCP server declaration shared by every agent session. */
 export interface McpServerConfig {
   name: string
@@ -731,6 +855,7 @@ export type ProviderRuntimeProfile =
 /** A provider config after all runtime-only capability classification. */
 export interface ResolvedAgentConfig extends AgentConfig {
   clarificationCapability: ClarificationCapability
+  steeringCapability: SteeringCapability
   runtimeProfile: ProviderRuntimeProfile
 }
 
@@ -778,6 +903,8 @@ export interface AppConfig {
   clarificationTimeoutSeconds: number
   persistenceEnabled: boolean
   telemetryEnabled: boolean
+  /** Default-off gate for the bounded live-run transcript projection experiment. */
+  transcriptWindowingEnabled: boolean
   theme: ThemePreference
   welcomeBanner: WelcomeBannerPreference
   statusline: StatuslinePreference

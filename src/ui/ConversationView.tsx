@@ -15,17 +15,20 @@
  * coalescing, is what keeps streaming flicker-free.
  */
 
-import { useMemo, type ReactNode } from "react"
+import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core"
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react"
 
 import type { SessionController } from "../app/controller.ts"
 import type { BannerVariant } from "../config/appState.ts"
+import type { TranscriptProjectionRow } from "../core/transcriptProjection.ts"
 import type { HandoffBundle, SessionId, Turn } from "../core/types.ts"
 import {
   selectFocusedSessionId,
   selectFocusedHarnessDeliveryNotice,
+  selectFocusedTranscriptProjection,
+  selectFocusedTranscriptWindow,
   selectRestoration,
   selectRestorationBundle,
-  selectSessionTurns,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { NEW_RUN_KEY_HINT } from "./keymap.ts"
@@ -47,6 +50,12 @@ export const START_FRESH_LABEL = "start fresh from this context"
 export const DEGRADED_START_LABEL = "Safe start unavailable"
 export const DEGRADED_START_RECOVERY_LABEL = "Your task is preserved. Start a fresh conversation"
 export const CONVERSATION_SCROLLBOX_ID = "conversation-scrollbox"
+export const TRANSCRIPT_HISTORY_MARKER_ID = "transcript-history-marker"
+export const TRANSCRIPT_HISTORY_MARKER_LABEL = "earlier turns hidden"
+
+/** Fixed renderer policy; the experiment switch remains default-off in app config. */
+const TRANSCRIPT_TAIL_TURN_COUNT = 96
+const TRANSCRIPT_HISTORY_REVEAL_COUNT = 48
 
 /**
  * Hide the horizontal scrollbar outright rather than relying on `scrollX: false`.
@@ -71,15 +80,24 @@ export function ConversationView({
 }): ReactNode {
   const controller = useController()
   const focusedSessionId = useAppSelector(selectFocusedSessionId)
+  const transcriptWindowingEnabled = controller.transcriptWindowingEnabled
 
-  // Curried selectors build a new function per call; memoize so the subscription
-  // follows focus rather than tearing down and rebuilding on every render.
-  const turnsSelector = useMemo(() => selectSessionTurns(focusedSessionId), [focusedSessionId])
+  // The projection selects the focused transcript only. It deliberately keeps the
+  // authoritative session turns out of this view's subscription, so `/history` and
+  // the enabled experiment can bound renderer work without changing persisted state.
+  const projectionSelector = useMemo(
+    () => selectFocusedTranscriptProjection({
+      enabled: transcriptWindowingEnabled,
+      tailTurnCount: TRANSCRIPT_TAIL_TURN_COUNT,
+    }),
+    [transcriptWindowingEnabled],
+  )
   const restorationSelector = useMemo(
     () => selectRestoration(focusedSessionId),
     [focusedSessionId],
   )
-  const turns = useAppSelector(turnsSelector)
+  const projection = useAppSelector(projectionSelector)
+  const transcriptWindow = useAppSelector(selectFocusedTranscriptWindow)
   const restoration = useAppSelector(restorationSelector)
   const bundle = useAppSelector(selectRestorationBundle)
   const deliveryNotice = useAppSelector(selectFocusedHarnessDeliveryNotice)
@@ -97,7 +115,8 @@ export function ConversationView({
       content = renderConversationContent(
         controller,
         focusedSessionId,
-        turns,
+        projection.rows,
+        transcriptWindow,
         welcomeBannerVariant,
         <>
           <FreshRestorationBadge />
@@ -118,7 +137,8 @@ export function ConversationView({
     content = renderConversationContent(
       controller,
       focusedSessionId,
-      turns,
+      projection.rows,
+      transcriptWindow,
       welcomeBannerVariant,
       recoveryNotice,
       leadingContent,
@@ -127,7 +147,8 @@ export function ConversationView({
     content = renderConversationContent(
       controller,
       focusedSessionId,
-      turns,
+      projection.rows,
+      transcriptWindow,
       welcomeBannerVariant,
       <>
         <LiveRestorationBadge />
@@ -142,12 +163,13 @@ export function ConversationView({
 function renderConversationContent(
   controller: SessionController,
   focusedSessionId: SessionId,
-  turns: Turn[],
+  rows: readonly TranscriptProjectionRow[],
+  transcriptWindow: { readonly revealedTurnCount: number; readonly detachedFromLive: boolean; readonly scrollTop: number | null },
   welcomeBannerVariant: BannerVariant,
   notice: ReactNode,
   leadingContent: ReactNode = null,
 ): ReactNode {
-  if (turns.length === 0) {
+  if (rows.length === 0) {
     if (welcomeBannerVariant === "none") {
       return leadingContent !== null || notice !== null ? (
         <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}>
@@ -177,20 +199,159 @@ function renderConversationContent(
   }
 
   return (
+    <TranscriptRows
+      controller={controller}
+      sessionId={focusedSessionId}
+      rows={rows}
+      transcriptWindow={transcriptWindow}
+      leadingContent={leadingContent}
+      notice={notice}
+    />
+  )
+}
+
+function TranscriptRows({
+  controller,
+  sessionId,
+  rows,
+  transcriptWindow,
+  leadingContent,
+  notice,
+}: {
+  controller: SessionController
+  sessionId: SessionId
+  rows: readonly TranscriptProjectionRow[]
+  transcriptWindow: { readonly revealedTurnCount: number; readonly detachedFromLive: boolean; readonly scrollTop: number | null }
+  leadingContent: ReactNode
+  notice: ReactNode
+}): ReactNode {
+  const scrollbox = useRef<ScrollBoxRenderable | null>(null)
+  const observed = useRef({ sessionId, transcriptWindow })
+  const pendingHistoryAnchor = useRef<{ readonly top: number; readonly height: number } | null>(null)
+
+  const captureAnchor = useCallback((targetId: SessionId, box: ScrollBoxRenderable): void => {
+    controller.store.setTranscriptDetached(targetId, true)
+    controller.store.captureTranscriptScrollTop(targetId, box.scrollTop)
+  }, [controller.store])
+
+  const revealHistory = useCallback((): void => {
+    const box = scrollbox.current
+    if (!box) return
+    pendingHistoryAnchor.current = { top: box.scrollTop, height: box.scrollHeight }
+    captureAnchor(sessionId, box)
+    controller.store.revealTranscriptHistory(sessionId, TRANSCRIPT_HISTORY_REVEAL_COUNT)
+  }, [captureAnchor, controller.store, sessionId])
+
+  const recordManualScroll = useCallback((): void => {
+    // ScrollBox applies wheel motion after the listener. Capture on the next task so
+    // its public scroll position is the user's actual anchor, not the old position.
+    setTimeout(() => {
+      const box = scrollbox.current
+      if (!box) return
+      const bottom = Math.max(0, box.scrollHeight - box.viewport.height)
+      if (box.scrollTop >= bottom) controller.store.returnTranscriptToLive(sessionId)
+      else captureAnchor(sessionId, box)
+    }, 0)
+  }, [captureAnchor, controller.store, sessionId])
+
+  useEffect(() => {
+    if (!controller.transcriptWindowingEnabled) return
+    return controller.store.subscribe((state) => {
+      const nextSessionId = state.workspace.selectedVisibleId
+      const previous = observed.current
+      const box = scrollbox.current
+      if (box && previous.sessionId !== nextSessionId && previous.sessionId !== null) {
+        const bottom = Math.max(0, box.scrollHeight - box.viewport.height)
+        if (box.scrollTop < bottom) captureAnchor(previous.sessionId, box)
+      }
+      if (nextSessionId !== null && previous.sessionId === nextSessionId) {
+        const nextWindow = state.transcriptWindows[nextSessionId]
+        if (nextWindow && nextWindow.revealedTurnCount > previous.transcriptWindow.revealedTurnCount && box) {
+          pendingHistoryAnchor.current = { top: box.scrollTop, height: box.scrollHeight }
+          if (!nextWindow.detachedFromLive) captureAnchor(nextSessionId, box)
+        }
+      }
+      observed.current = {
+        sessionId: nextSessionId ?? sessionId,
+        transcriptWindow: nextSessionId ? state.transcriptWindows[nextSessionId] ?? transcriptWindow : transcriptWindow,
+      }
+    })
+  }, [captureAnchor, controller.store, controller.transcriptWindowingEnabled, sessionId, transcriptWindow])
+
+  useEffect(() => {
+    if (!controller.transcriptWindowingEnabled) return
+    const timer = setTimeout(() => {
+      const box = scrollbox.current
+      if (!box) return
+      const pending = pendingHistoryAnchor.current
+      if (pending) {
+        // Newly revealed rows are prepended. Offset by their measured height so the
+        // previously visible turn remains at the same viewport position.
+        const restoredTop = pending.top + Math.max(0, box.scrollHeight - pending.height)
+        box.scrollTo(restoredTop)
+        controller.store.captureTranscriptScrollTop(sessionId, restoredTop)
+        pendingHistoryAnchor.current = null
+        return
+      }
+      if (transcriptWindow.detachedFromLive && transcriptWindow.scrollTop !== null) {
+        box.scrollTo(transcriptWindow.scrollTop)
+      } else if (!transcriptWindow.detachedFromLive) {
+        box.scrollTo(Math.max(0, box.scrollHeight - box.viewport.height))
+      }
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [controller.store, controller.transcriptWindowingEnabled, rows, sessionId, transcriptWindow])
+
+  return (
     <scrollbox
       id={CONVERSATION_SCROLLBOX_ID}
+      ref={scrollbox}
       style={{ flexGrow: 1, flexShrink: 1 }}
       stickyScroll
       stickyStart="bottom"
       scrollX={false}
       horizontalScrollbarOptions={HIDDEN_SCROLLBAR}
+      onMouseScroll={recordManualScroll}
     >
       {leadingContent}
       {notice}
-      {turns.map((turn, index) => (
-        <TurnView key={keyFor(turn, index)} turn={turn} />
+      {rows.map((row) => row.kind === "turn" ? (
+        <TurnView key={row.key} turn={row.turn} />
+      ) : (
+        <TranscriptHistoryMarker key={row.key} hiddenTurnCount={row.hiddenTurnCount} onReveal={revealHistory} />
       ))}
     </scrollbox>
+  )
+}
+
+function TranscriptHistoryMarker({
+  hiddenTurnCount,
+  onReveal,
+}: {
+  hiddenTurnCount: number
+  onReveal(): void
+}): ReactNode {
+  const palette = usePalette()
+  const activate = useCallback((key?: KeyEvent): void => {
+    if (key && key.name !== "return" && key.name !== "kpenter" && key.name !== "space") return
+    key?.preventDefault()
+    onReveal()
+  }, [onReveal])
+
+  return (
+    <box
+      id={TRANSCRIPT_HISTORY_MARKER_ID}
+      focusable
+      style={{ flexShrink: 0, height: 1 }}
+      onMouseDown={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        activate()
+      }}
+      onKeyDown={activate}
+    >
+      <text fg={palette.accent}>{`[ ${hiddenTurnCount} ${TRANSCRIPT_HISTORY_MARKER_LABEL} — Enter ]`}</text>
+    </box>
   )
 }
 

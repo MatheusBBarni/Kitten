@@ -541,6 +541,42 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("reveals history and returns to live only for the focused session without sending a prompt", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await actAsync(() => {
+      controller.store.setTranscriptDetached("claude-code", true)
+      controller.store.captureTranscriptScrollTop("claude-code", 12)
+    })
+    await runSlashCommand(setup, "history")
+
+    expect(controller.store.getState().transcriptWindows["claude-code"]?.revealedTurnCount).toBeGreaterThan(0)
+    expect(controller.store.getState().transcriptWindows.codex?.revealedTurnCount).toBe(0)
+
+    await runSlashCommand(setup, "latest")
+    expect(controller.store.getState().transcriptWindows["claude-code"]).toEqual({
+      revealedTurnCount: Number.MAX_SAFE_INTEGER,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+    expect(controller.calls.sendPrompt).toEqual([])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("targets the newly focused session when focus changes before history dispatch", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    await actAsync(() => controller.actions.switchFocus("codex"))
+    await runSlashCommand(setup, "history")
+
+    expect(controller.store.getState().transcriptWindows["claude-code"]?.revealedTurnCount).toBe(0)
+    expect(controller.store.getState().transcriptWindows.codex?.revealedTurnCount).toBe(Number.MAX_SAFE_INTEGER)
+    expect(controller.calls.sendPrompt).toEqual([])
+    await destroyMounted(setup.renderer)
+  })
+
   it("rejects confirmed raw and modified tab lookalikes and stands down behind a modal", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
@@ -971,7 +1007,7 @@ describe("CockpitApp keymap", () => {
 
   it("shows the full command list through /help", async () => {
     const controller = createFakeController()
-    const setup = await renderCockpitApp(controller)
+    const setup = await renderCockpitApp(controller, 80, 30)
 
     expect(setup.captureCharFrame()).not.toContain(HELP_TITLE)
 

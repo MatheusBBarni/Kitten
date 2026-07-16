@@ -12,6 +12,18 @@
  */
 
 import { createPromptHistoryState, promptHistoryReducer } from "./promptHistory.ts"
+import {
+  acknowledgeSteeringRecovery,
+  beginSteeringCancellation,
+  beginSteeringSend,
+  coalesceSteeringText,
+  createSteeringState,
+  deliverSteering,
+  enqueueSteering,
+  recoverSteering,
+  settleSteeringCancellation,
+  waitForSteeringBoundary,
+} from "./steering.ts"
 import type {
   DomainSessionEvent,
   PendingDiff,
@@ -38,6 +50,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     cwd: seed.cwd,
     branch: undefined,
     task: seed.task,
+    worktreeBinding: seed.worktreeBinding,
     acpSessionId: seed.acpSessionId ?? "",
     turns: [],
     status: "idle",
@@ -49,6 +62,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     defaultApplyResult: null,
     commands: [],
     promptHistory: createPromptHistoryState(),
+    steering: createSteeringState(),
   }
 }
 
@@ -112,9 +126,72 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       return promptHistory === state.promptHistory ? state : { ...state, promptHistory }
     }
 
+    case "steering_enqueue":
+      return withSteering(
+        state,
+        enqueueSteering(
+          state.steering,
+          event.activeTurnId,
+          event.requestId,
+          event.generation,
+          event.blocks,
+        ),
+      )
+
+    case "steering_wait":
+      return withSteering(
+        state,
+        waitForSteeringBoundary(state.steering, event.requestId, event.generation),
+      )
+
+    case "steering_cancel":
+      return withSteering(
+        state,
+        beginSteeringCancellation(state.steering, event.requestId, event.generation),
+      )
+
+    case "steering_settle":
+      return withSteering(
+        state,
+        settleSteeringCancellation(state.steering, event.requestId, event.generation),
+      )
+
+    case "steering_send":
+      return withSteering(
+        state,
+        beginSteeringSend(state.steering, event.requestId, event.generation),
+      )
+
+    case "steering_deliver": {
+      const text = coalesceSteeringText(state.steering)
+      const steering = deliverSteering(state.steering, event.requestId, event.generation)
+      if (steering === state.steering) return state
+      return {
+        ...state,
+        steering,
+        turns: [...state.turns, { kind: "user", messageId: event.messageId, text }],
+      }
+    }
+
+    case "steering_recover":
+      return withSteering(
+        state,
+        recoverSteering(state.steering, event.requestId, event.generation),
+      )
+
+    case "steering_acknowledge_recovery":
+      return withSteering(
+        state,
+        acknowledgeSteeringRecovery(state.steering, event.requestId, event.generation),
+      )
+
     default:
       return assertNever(event)
   }
+}
+
+function withSteering(state: SessionState, steering: SessionState["steering"]): SessionState {
+  return steering === state.steering ? state : { ...state, steering }
 }
 
 /**

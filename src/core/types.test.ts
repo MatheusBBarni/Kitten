@@ -11,9 +11,65 @@ import {
   type ClarificationOutcome,
   type ClarificationPayload,
   type ConfigOption,
+  type ManagedWorktreeAvailability,
+  type ManagedWorktreeBinding,
+  type ManagedWorktreeReason,
   type ProviderRuntimeProfile,
   type SessionId,
 } from "./types.ts"
+
+describe("managed-worktree contracts", () => {
+  it("keeps availability and lifecycle reasons bounded and protocol-free", () => {
+    const availabilities: ManagedWorktreeAvailability[] = [
+      "unverified",
+      "available",
+      "unavailable",
+      "cleanup_refused",
+    ]
+    const reasons: Record<ManagedWorktreeReason, true> = {
+      not_git_repository: true,
+      detached_head: true,
+      submodules_unsupported: true,
+      root_conflict: true,
+      collision: true,
+      verification_failed: true,
+      missing: true,
+      external: true,
+      dirty: true,
+      unmerged: true,
+      live_owned: true,
+      not_managed: true,
+      git_failed: true,
+    }
+    const binding: ManagedWorktreeBinding = {
+      kind: "managed",
+      id: "kitten-1",
+      repoRoot: "/repo",
+      worktreePath: "/repo/.kitten/worktrees/kitten-1",
+      branch: "kitten/kitten-1",
+      baseBranch: "main",
+      baseSha: "abc123",
+      ownerSessionId: "child-1",
+      availability: "unverified",
+    }
+
+    expect(availabilities).toEqual([
+      "unverified",
+      "available",
+      "unavailable",
+      "cleanup_refused",
+    ])
+    expect(Object.keys(reasons)).toHaveLength(13)
+    expect(binding).not.toHaveProperty("git")
+    expect(binding).not.toHaveProperty("runtime")
+    expect(binding).not.toHaveProperty("acpSessionId")
+
+    if (false) {
+      // @ts-expect-error Managed bindings are immutable domain values.
+      binding.branch = "other"
+    }
+  })
+})
 
 describe("provider identity contracts", () => {
   it("keeps provider constants and shared display metadata exhaustive for Cursor", () => {

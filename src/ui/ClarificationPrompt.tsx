@@ -30,6 +30,8 @@ import { usePalette } from "./theme.ts"
 export const CLARIFICATION_TITLE = "Clarification"
 export const CLARIFICATION_SELECTION_MARKER = "▸"
 export const CLARIFICATION_REQUIRED_ERROR = "Complete every required field before submitting."
+/** Stable identity for the bounded clarification dialog viewport. */
+export const CLARIFICATION_DIALOG_ID = "clarification-dialog"
 
 export function clarificationTitleFor(displayName: string): string {
   return `${CLARIFICATION_TITLE} from ${displayName}`
@@ -196,12 +198,14 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
 
   return (
     <box
+      id={CLARIFICATION_DIALOG_ID}
       style={{
         position: "absolute",
         top: 1,
         left: 2,
         right: 2,
-        height: Math.max(height - 2, 1),
+        // Keep short questions compact. The cap still protects rich multi-field
+        // requests from drawing beyond the terminal viewport.
         maxHeight: Math.max(height - 2, 1),
         flexDirection: "column",
         border: true,

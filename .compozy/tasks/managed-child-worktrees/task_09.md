@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Emit content-free managed-worktree lifecycle telemetry
 type: backend
 complexity: medium

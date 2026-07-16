@@ -1,5 +1,6 @@
 ---
 import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import { installVerificationSource } from "../config/showcase-config.ts";
 import Section from "./Section.astro";
 
 interface Props {
@@ -7,36 +8,89 @@ interface Props {
 }
 
 const { section } = Astro.props;
-const route = section.commands[0];
-const hintId = `${section.id}-copy-hint`;
-const statusId = `${section.id}-copy-status`;
+const primaryRoute = section.commands.find(
+  ({ source }) => source === installVerificationSource,
+);
 ---
 
 <Section id={section.id} heading={section.heading} body={section.body}>
-  <div class="install-command" data-install-command>
-    <pre><code
-        data-copy-command-text
-        tabindex="0"
-        aria-label="Install command; select and copy manually if automatic copy is unavailable"
-      >{section.primaryInstallCmd}</code></pre>
-    <button
-      class="button button-primary"
-      type="button"
-      data-copy-command-trigger
-      aria-describedby={`${hintId} ${statusId}`}
+  <div class="install-command" data-install-tabset>
+    <div
+      class="install-tablist"
+      role="tablist"
+      aria-label="Choose a package manager"
+      data-install-tabs
     >
-      {section.primaryCtaLabel}
-    </button>
-    {route && <p class="install-hint" id={hintId}>{route.shellCopyHint}</p>}
-    <p
-      class="install-status"
-      id={statusId}
-      data-copy-command-status
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-    ></p>
+      {
+        section.commands.map((route) => {
+          const isSelected = route.id === primaryRoute?.id;
+          const tabId = `${section.id}-tab-${route.id}`;
+          const panelId = `${section.id}-panel-${route.id}`;
+
+          return (
+            <button
+              class="install-tab"
+              type="button"
+              id={tabId}
+              role="tab"
+              aria-selected={isSelected ? "true" : "false"}
+              aria-controls={panelId}
+              tabindex={isSelected ? 0 : -1}
+              data-install-tab
+              data-install-method={route.id}
+            >
+              {route.label}
+            </button>
+          );
+        })
+      }
+    </div>
+    {
+      section.commands.map((route) => {
+        const isSelected = route.id === primaryRoute?.id;
+        const tabId = `${section.id}-tab-${route.id}`;
+        const panelId = `${section.id}-panel-${route.id}`;
+        const hintId = `${section.id}-${route.id}-copy-hint`;
+        const statusId = `${section.id}-${route.id}-copy-status`;
+
+        return (
+          <div
+            class="install-panel"
+            id={panelId}
+            role="tabpanel"
+            aria-labelledby={tabId}
+            data-install-command
+            data-install-panel
+            hidden={!isSelected}
+          >
+            <pre><code
+                data-copy-command-text
+                tabindex="0"
+                aria-label="Install command; select and copy manually if automatic copy is unavailable"
+              >{route.command}</code></pre>
+            <button
+              class="button button-primary"
+              type="button"
+              data-copy-command-trigger
+              aria-describedby={`${hintId} ${statusId}`}
+            >
+              {route.copyCtaLabel}
+            </button>
+            <p class="install-hint" id={hintId}>{route.shellCopyHint}</p>
+            <p
+              class="install-status"
+              id={statusId}
+              data-copy-command-status
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            ></p>
+          </div>
+        );
+      })
+    }
   </div>
 </Section>
 
 <script src="../scripts/copy-command.ts"></script>
+<script src="../scripts/install-tabs.ts"></script>

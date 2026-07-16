@@ -5,10 +5,17 @@ export type ShowcaseSection = {
 };
 
 export type InstallVerificationSource = "verified-route";
+export type InstallCommandSource =
+  | InstallVerificationSource
+  | "supported-alternative";
+export type InstallCommandId = "npm" | "pnpm" | "bun";
 
 export type InstallCommandSpec = {
+  readonly id: InstallCommandId;
+  readonly label: string;
   readonly command: string;
-  readonly source: InstallVerificationSource;
+  readonly source: InstallCommandSource;
+  readonly copyCtaLabel: string;
   readonly shellCopyHint: string;
   readonly verificationReference: string;
 };
@@ -19,17 +26,24 @@ export type ShowcaseConfig = {
     readonly description: string;
     readonly language: string;
   };
+  readonly navigation: {
+    readonly brandLabel: string;
+    readonly brandAccessibleLabel: string;
+    readonly proofLabel: string;
+    readonly installLabel: string;
+    readonly githubStarLabel: string;
+  };
   readonly hero: ShowcaseSection & {
     readonly eyebrow: string;
     readonly primaryCtaLabel: string;
+    readonly secondaryCtaLabel: string;
+    readonly logoAlt: string;
+    readonly outcomeTitle: string;
+    readonly outcomeBody: string;
+    readonly outcomeStatus: string;
+    readonly benefits: readonly string[];
   };
   readonly proof: ShowcaseSection & {
-    readonly videoUrl: string | null;
-    readonly posterUrl: string | null;
-    readonly posterAlt: string;
-    readonly captionsUrl: string | null;
-    readonly fallbackLabel: string;
-    readonly reducedMotionLabel: string;
     readonly accessibleDescription: string;
     readonly steps: readonly {
       readonly label: string;
@@ -38,7 +52,6 @@ export type ShowcaseConfig = {
   };
   readonly install: ShowcaseSection & {
     readonly primaryInstallCmd: string;
-    readonly primaryCtaLabel: string;
     readonly commands: readonly InstallCommandSpec[];
   };
   readonly requirements: ShowcaseSection & {
@@ -56,6 +69,7 @@ export type ShowcaseConfig = {
     readonly url: string;
     readonly star: {
       readonly loadingText: string;
+      readonly loadingAccessibleLabel: string;
       readonly fallbackText: string;
       readonly accessibleLabel: string;
     };
@@ -67,9 +81,10 @@ export const repoOwner = "MatheusBBarni" as const;
 export const repoName = "Kitten" as const;
 export const repositoryUrl =
   `https://github.com/${repoOwner}/${repoName}` as const;
+export const npmPackageName = "@matheusbbarni/kitten" as const;
 export const installVerificationSource = "verified-route" as const;
 export const primaryInstallCmd =
-  `git clone ${repositoryUrl}.git && cd ${repoName} && bun install && bun start` as const;
+  `npm install --global ${npmPackageName}` as const;
 
 const placeholderPattern =
   /(?:\b(?:todo|tbd|replace[-_ ]?me)\b|example\.com|github\.com\/owner\/)/i;
@@ -90,23 +105,29 @@ export function validateShowcaseConfig(
     ["site.title", config.site.title],
     ["site.description", config.site.description],
     ["site.language", config.site.language],
+    ["navigation.brandLabel", config.navigation.brandLabel],
+    ["navigation.brandAccessibleLabel", config.navigation.brandAccessibleLabel],
+    ["navigation.proofLabel", config.navigation.proofLabel],
+    ["navigation.installLabel", config.navigation.installLabel],
+    ["navigation.githubStarLabel", config.navigation.githubStarLabel],
     ["hero.id", config.hero.id],
     ["hero.eyebrow", config.hero.eyebrow],
     ["hero.heading", config.hero.heading],
     ["hero.body", config.hero.body],
     ["hero.primaryCtaLabel", config.hero.primaryCtaLabel],
+    ["hero.secondaryCtaLabel", config.hero.secondaryCtaLabel],
+    ["hero.logoAlt", config.hero.logoAlt],
+    ["hero.outcomeTitle", config.hero.outcomeTitle],
+    ["hero.outcomeBody", config.hero.outcomeBody],
+    ["hero.outcomeStatus", config.hero.outcomeStatus],
     ["proof.id", config.proof.id],
     ["proof.heading", config.proof.heading],
     ["proof.body", config.proof.body],
-    ["proof.posterAlt", config.proof.posterAlt],
-    ["proof.fallbackLabel", config.proof.fallbackLabel],
-    ["proof.reducedMotionLabel", config.proof.reducedMotionLabel],
     ["proof.accessibleDescription", config.proof.accessibleDescription],
     ["install.id", config.install.id],
     ["install.heading", config.install.heading],
     ["install.body", config.install.body],
     ["install.primaryInstallCmd", config.install.primaryInstallCmd],
-    ["install.primaryCtaLabel", config.install.primaryCtaLabel],
     ["requirements.id", config.requirements.id],
     ["requirements.heading", config.requirements.heading],
     ["requirements.body", config.requirements.body],
@@ -117,6 +138,10 @@ export function validateShowcaseConfig(
     ["repository.name", config.repository.name],
     ["repository.url", config.repository.url],
     ["repository.star.loadingText", config.repository.star.loadingText],
+    [
+      "repository.star.loadingAccessibleLabel",
+      config.repository.star.loadingAccessibleLabel,
+    ],
     ["repository.star.fallbackText", config.repository.star.fallbackText],
     ["repository.star.accessibleLabel", config.repository.star.accessibleLabel],
     ["measurementNotes.id", config.measurementNotes.id],
@@ -137,7 +162,9 @@ export function validateShowcaseConfig(
 
   for (const [index, command] of config.install.commands.entries()) {
     for (const [field, value] of [
+      ["label", command.label],
       ["command", command.command],
+      ["copyCtaLabel", command.copyCtaLabel],
       ["shellCopyHint", command.shellCopyHint],
       ["verificationReference", command.verificationReference],
     ] as const) {
@@ -145,6 +172,11 @@ export function validateShowcaseConfig(
         errors.push(`install.commands[${index}].${field} must be non-empty.`);
       }
     }
+  }
+
+  const commandIds = new Set(config.install.commands.map(({ id }) => id));
+  if (commandIds.size !== config.install.commands.length) {
+    errors.push("install.commands must not repeat a package-manager id.");
   }
 
   if (placeholderPattern.test(config.install.primaryInstallCmd)) {
@@ -167,6 +199,10 @@ export function validateShowcaseConfig(
 
   if (config.proof.steps.length === 0) {
     errors.push("proof.steps must contain at least one proof cue.");
+  }
+
+  if (config.hero.benefits.length === 0) {
+    errors.push("hero.benefits must contain at least one benefit.");
   }
 
   if (config.requirements.items.length === 0) {
@@ -203,29 +239,39 @@ export const showcaseConfig = defineShowcaseConfig({
       "Move a live coding task between Claude Code and Codex through a bounded handoff you review before anything is sent.",
     language: "en",
   },
+  navigation: {
+    brandLabel: "Kitten",
+    brandAccessibleLabel: "Kitten home",
+    proofLabel: "How it works",
+    installLabel: "Install",
+    githubStarLabel: "Star on GitHub",
+  },
   hero: {
     id: "hero",
     eyebrow: "A terminal cockpit for two coding agents",
     heading:
-      "Hand a live coding task between Claude Code and Codex without blind copy-paste.",
+      "Keep every coding handoff reviewed and in context.",
     body:
-      "Kitten assembles bounded context for you to review, edit, trim, confirm, or cancel before anything is sent.",
+      "Keep Claude Code and Codex live in one terminal, then hand over a task you can inspect, trim, confirm, or cancel.",
     primaryCtaLabel: "Install Kitten",
+    secondaryCtaLabel: "See how it works",
+    logoAlt:
+      "Kitten logo: a golden cat holding a blue and teal loop between two agents.",
+    outcomeTitle: "Review the handoff before the work moves.",
+    outcomeBody:
+      "The context bundle stays bounded and editable until you give the final confirmation.",
+    outcomeStatus: "Review first",
+    benefits: [
+      "Review every context bundle before it moves.",
+      "Keep both agent sessions live for a quick hand-back.",
+      "Cancel any handoff before it reaches the other agent.",
+    ],
   },
   proof: {
     id: "proof",
-    heading: "See the reviewed handoff before you install",
+    heading: "See the handoff before it reaches the other agent.",
     body:
-      "The launch demonstration follows the real prepare, review and trim, confirm, and continue flow.",
-    videoUrl: null,
-    posterUrl: "./proof/kitten-reviewed-handoff-poster.svg",
-    posterAlt:
-      "A terminal-style preview representing a reviewed handoff between two coding agents.",
-    captionsUrl: null,
-    fallbackLabel:
-      "The handoff recording is being prepared. The steps below describe the same reviewed flow.",
-    reducedMotionLabel:
-      "Reduced motion is enabled. The recording only plays when you use its controls.",
+      "Three deliberate moments turn an easy-to-lose task switch into a reviewable path forward.",
     accessibleDescription:
       "A developer prepares a bounded handoff, reviews and trims its context, explicitly confirms it, and then watches the other agent continue the task.",
     steps: [
@@ -248,18 +294,40 @@ export const showcaseConfig = defineShowcaseConfig({
   },
   install: {
     id: "install",
-    heading: "Run Kitten from source",
+    heading: "Install Kitten with your package manager.",
     body:
-      "Until a Kitten-owned package or release installer is publicly verified, the source checkout is the only promoted route.",
+      "Choose npm, pnpm, or Bun. Each route installs the published CLI and the matching macOS or Linux binary.",
     primaryInstallCmd,
-    primaryCtaLabel: "Copy source install command",
     commands: [
       {
+        id: "npm",
+        label: "npm",
         command: primaryInstallCmd,
         source: installVerificationSource,
+        copyCtaLabel: "Copy npm install command",
         shellCopyHint:
-          "Copy this command into a terminal. It clones Kitten, installs its pinned dependencies, and starts the cockpit.",
-        verificationReference: "README.md#develop-from-source",
+          "Copy this command into a terminal. It installs the Kitten CLI and the matching supported platform binary.",
+        verificationReference: "npm:@matheusbbarni/kitten@0.3.0",
+      },
+      {
+        id: "pnpm",
+        label: "pnpm",
+        command: `pnpm add --global ${npmPackageName}`,
+        source: "supported-alternative",
+        copyCtaLabel: "Copy pnpm install command",
+        shellCopyHint:
+          "Copy this command into a terminal. It installs the Kitten CLI globally with pnpm.",
+        verificationReference: "pnpm.io/cli/add#global",
+      },
+      {
+        id: "bun",
+        label: "Bun",
+        command: `bun install --global ${npmPackageName}`,
+        source: "supported-alternative",
+        copyCtaLabel: "Copy Bun install command",
+        shellCopyHint:
+          "Copy this command into a terminal. It installs the Kitten CLI globally with Bun.",
+        verificationReference: "bun.sh/docs/pm/cli/install#global-installs",
       },
     ],
   },
@@ -269,7 +337,7 @@ export const showcaseConfig = defineShowcaseConfig({
     body:
       "Kitten uses your existing coding-agent installations and runs from inside a Git repository.",
     items: [
-      "Bun 1.3.5 or newer for the source installation route.",
+      "npm, pnpm, or Bun for the published installation route.",
       "Claude Code and Codex installed and authenticated.",
       "A Git repository to launch Kitten from.",
     ],
@@ -312,8 +380,10 @@ export const showcaseConfig = defineShowcaseConfig({
     name: repoName,
     url: repositoryUrl,
     star: {
-      loadingText: "Loading the current GitHub star count…",
-      fallbackText: "Star count unavailable — view Kitten on GitHub",
+      loadingText: "…",
+      loadingAccessibleLabel:
+        "Star Kitten on GitHub. The live star count is loading.",
+      fallbackText: "—",
       accessibleLabel:
         "Star Kitten on GitHub. The live star count is currently unavailable.",
     },

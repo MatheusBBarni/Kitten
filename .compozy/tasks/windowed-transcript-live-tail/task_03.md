@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add the Strict Default-Off Configuration Contract
 type: frontend
 complexity: high

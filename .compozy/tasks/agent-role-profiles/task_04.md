@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add explore availability and typed denial handling to the delegation dialog
 type: frontend
 complexity: high
@@ -29,11 +29,11 @@ Make the existing delegation dialog communicate the fixed `explore` contract bef
 </requirements>
 
 ## Subtasks
-- [ ] 4.1 Add narrow explore availability and denial projections for the captured parent.
-- [ ] 4.2 Update the dialog to describe the fixed explore contract before confirmation.
-- [ ] 4.3 Replace generic failure handling with typed safe-denial presentation.
-- [ ] 4.4 Preserve local draft, focus, pending, validation, and overlay ownership behavior.
-- [ ] 4.5 Extend test fakes and selector/dialog coverage for accepted and refused results.
+- [x] 4.1 Add narrow explore availability and denial projections for the captured parent.
+- [x] 4.2 Update the dialog to describe the fixed explore contract before confirmation.
+- [x] 4.3 Replace generic failure handling with typed safe-denial presentation.
+- [x] 4.4 Preserve local draft, focus, pending, validation, and overlay ownership behavior.
+- [x] 4.5 Extend test fakes and selector/dialog coverage for accepted and refused results.
 
 ## Implementation Details
 
@@ -68,14 +68,14 @@ Follow TechSpec sections “Data Flow,” “Requirements Traceability,” and �
 ## Tests
 
 - Unit tests:
-  - [ ] Each closed availability/denial reason maps to fixed content-free text and selector output remains referentially stable across unrelated session updates.
-  - [ ] Policy projection changes rebuild the cached view while token-stream and unrelated-session updates retain the same reference.
-  - [ ] Restriction summary contains every allowed/prohibited V1 capability and does not depend on color-only status.
+  - [x] Each closed availability/denial reason maps to fixed content-free text and selector output remains referentially stable across unrelated session updates.
+  - [x] Policy projection changes rebuild the cached view while token-stream and unrelated-session updates retain the same reference.
+  - [x] Restriction summary contains every allowed/prohibited V1 capability and does not depend on color-only status.
 - Integration tests:
-  - [ ] Eligible dialog submission calls only `startExploreChild` with trimmed task/outcome and closes only after a started result.
-  - [ ] Unavailable-before-submit state prevents a launch and presents the exact safe reason without an unrestricted bypass.
-  - [ ] Launch-time typed denial and startup failure clear pending state, retain dialog drafts/focus, and replace advisory text with the returned fixed reason.
-  - [ ] Repeated Enter produces one request; existing validation, Escape, approval/clarification preemption, and resumed drafts remain correct.
+  - [x] Eligible dialog submission calls only `startExploreChild` with trimmed task/outcome and closes only after a started result.
+  - [x] Unavailable-before-submit state prevents a launch and presents the exact safe reason without an unrestricted bypass.
+  - [x] Launch-time typed denial and startup failure clear pending state, retain dialog drafts/focus, and replace advisory text with the returned fixed reason.
+  - [x] Repeated Enter produces one request; existing validation, Escape, approval/clarification preemption, and resumed drafts remain correct.
 - Test coverage target: >=80%
 - All tests must pass
 

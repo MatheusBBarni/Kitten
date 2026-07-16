@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Composer Steering and End-to-End Behavior
 type: frontend
 complexity: high

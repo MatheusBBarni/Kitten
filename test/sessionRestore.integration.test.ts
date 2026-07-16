@@ -15,13 +15,20 @@ import {
   composeHandoffBlocks,
   createHandoffEdits,
 } from "../src/app/handoff.ts"
+import type { ManagedWorktreeProvisioner } from "../src/app/managedWorktree.ts"
 import { defaultAppConfig } from "../src/config/configLoader.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+} from "../src/core/explorePolicy.ts"
 import type {
   ClarificationOutcome,
   ClarificationPayload,
   DomainSessionEvent,
   HandoffBundle,
+  ManagedWorktreeBinding,
   ProviderKind,
+  SessionId,
 } from "../src/core/types.ts"
 import {
   selectDelegationAggregateStatus,
@@ -133,6 +140,32 @@ function lifecycleRestoreConnection(id: ProviderKind, ordinal: number): Lifecycl
   }
 }
 
+/** Keep controller restore coverage independent of the CI checkout's Git state. */
+function inMemoryManagedWorktrees(): ManagedWorktreeProvisioner {
+  return {
+    async provision({ parentCwd, ownerSessionId }) {
+      const binding: ManagedWorktreeBinding = {
+        kind: "managed",
+        id: `kw-${ownerSessionId}`,
+        repoRoot: parentCwd,
+        worktreePath: `${parentCwd}/.kitten-test/${ownerSessionId}`,
+        branch: `kitten/${ownerSessionId}`,
+        baseBranch: "main",
+        baseSha: "a".repeat(40),
+        ownerSessionId,
+        availability: "available",
+      }
+      return { kind: "provisioned", binding }
+    },
+    async reconcile(binding) {
+      return { kind: "available", binding }
+    },
+    async cleanup() {
+      return { kind: "removed" }
+    },
+  }
+}
+
 describe("writer-produced run restore", () => {
   it("restores focus, live status, ACP ids, and replayed panes into a populated store", async () => {
     const cwd = process.cwd()
@@ -235,6 +268,18 @@ describe("writer-produced run restore", () => {
     source.startSession("claude-code", "claude-persisted")
     source.startSession("codex", "codex-persisted")
     source.setFocus("claude-code")
+    const persistedPolicy = evaluateExplorePolicy({
+      role: "explore",
+      restrictions: EXPLORE_RESTRICTIONS,
+      limits: { perParent: 1, global: 1 },
+      attestationVersion: "RESTORE_ATTESTATION_SENTINEL",
+      confirmed: {
+        provider: "claude-code",
+        model: "RESTORE_MODEL_SENTINEL",
+        effort: "RESTORE_EFFORT_SENTINEL",
+      },
+    })
+    if (persistedPolicy.kind !== "eligible") throw new Error("test policy must be eligible")
     source.addDelegatedSession({
       seed: {
         id: "persisted-ordinary-child",
@@ -247,6 +292,7 @@ describe("writer-produced run restore", () => {
       childGeneration: 11,
       task: "Ephemeral delegated task",
       desiredOutcome: "Ephemeral delegated outcome",
+      policy: persistedPolicy.policy,
       displayName: "Persisted ordinary child",
     })
     source.startSession("persisted-ordinary-child", "persisted-child-acp")
@@ -269,6 +315,20 @@ describe("writer-produced run restore", () => {
     })
     writer.watch(source)
     writer.dispose()
+    const serializedRun = JSON.stringify(runStore.record)
+    for (const forbidden of [
+      '"delegation"',
+      '"policy"',
+      '"restrictions"',
+      '"limits"',
+      '"attestationVersion"',
+      '"confirmed"',
+      "RESTORE_ATTESTATION_SENTINEL",
+      "RESTORE_MODEL_SENTINEL",
+      "RESTORE_EFFORT_SENTINEL",
+      "Ephemeral delegated task",
+      "Ephemeral delegated outcome",
+    ]) expect(serializedRun).not.toContain(forbidden)
 
     const created: LifecycleRestoreConnection[] = []
     const controller = await createSessionController({
@@ -282,11 +342,27 @@ describe("writer-produced run restore", () => {
       newSessionId: () => "restore-owned-child",
       readBranch: async () => null,
       sendInitialTasks: false,
+      managedWorktreeProvisioner: inMemoryManagedWorktrees(),
       resolveHarnessCapability: () => ({
         status: "supported",
         profileId: "restore-lifecycle-test",
         encoder: "codex-prompt-meta-v1",
       }),
+      resolveExploreCapability: (provider) => {
+        const decision = evaluateExplorePolicy({
+          role: "explore",
+          restrictions: EXPLORE_RESTRICTIONS,
+          limits: { perParent: 1, global: 1 },
+          attestationVersion: "restore-lifecycle-test-v1",
+          confirmed: { provider: provider.id, model: "test-model", effort: "low" },
+        })
+        if (decision.kind !== "eligible") return { status: "unsupported", reason: decision.reason }
+        return {
+          status: "supported",
+          policy: decision.policy,
+          recipe: { ...provider, args: [...provider.args], env: { ...provider.env } },
+        }
+      },
     })
     const parentId = controller.store.getState().workspace.selectedVisibleId!
     const childId = await controller.actions.startDelegatedChild({

@@ -34,6 +34,8 @@ import {
   EFFORT_CATEGORY,
   needsAttention,
   type ConfigOption,
+  type ExploreCapacityScope,
+  type ManagedWorktreeReason,
   type ProviderKind,
   type SessionId,
   type SessionStatus,
@@ -46,6 +48,10 @@ import {
   REEXPLANATION_CHAR_THRESHOLD,
   type EffortRetentionEvent,
 } from "../core/telemetryHeuristics.ts"
+import {
+  isExploreDenialReason,
+  type ExploreDenialReason,
+} from "../core/explorePolicy.ts"
 import type { AppStore, Unsubscribe } from "../store/appStore.ts"
 
 /** The exact content-free debug record used to validate adapter usage emission. */
@@ -147,6 +153,19 @@ export type TelemetryEventType =
   | "delegated_cascade_requested"
   | "delegated_cascade_completed"
   | "delegated_teardown_failed"
+  | "explore_launch_eligible"
+  | "explore_launch_denied"
+  | "explore_capacity_denied"
+  | "explore_start_failed"
+  | "explore_terminal"
+  | "managed_worktree_requested"
+  | "managed_worktree_provisioned"
+  | "managed_worktree_provision_failed"
+  | "managed_worktree_reconciled"
+  | "managed_worktree_cleanup_refused"
+  | "managed_worktree_cleaned"
+  | "agent_run_control"
+  | "steering_outcome"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
 export type ClarificationCapabilityStatus = "supported" | "unsupported"
@@ -213,6 +232,74 @@ export type TabAttentionStatus = "awaiting_approval" | "error" | "finished"
 export type TabLifecycle = "visible" | "background"
 export type ProviderDefaultOutcome = "none" | "applied" | "partial" | "unavailable"
 export type DelegatedTerminalStatus = "finished" | "failed" | "cancelled"
+export type ExplorePolicyVersion = "explore-v1"
+export type ExploreStartupFailureCategory =
+  | "bridge-unavailable"
+  | "session-start-failed"
+  | "prompt-dispatch-failed"
+export type ExploreTerminalStatus = DelegatedTerminalStatus
+/** Closed dimensions for one settled route-authorized agent control operation. */
+export type AgentRunOperation = "start" | "poll"
+export type AgentRunOutcome = "accepted" | "rejected" | "unavailable"
+export type AgentRunBatchSizeBucket = "zero" | "one" | "two" | "three_to_four" | "five_or_more"
+export type AgentRunDurationBucket =
+  | "under_100ms"
+  | "100_to_499ms"
+  | "500_to_1999ms"
+  | "2s_or_more"
+
+/** Closed, content-free dimensions for one steering lifecycle observation. */
+export type SteeringTelemetryOutcome =
+  | "queued"
+  | "delivered"
+  | "recovered"
+  | "timeout"
+  | "unavailable"
+export type SteeringCapabilityClass = "native" | "fallback" | "unavailable"
+export type SteeringDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+/** The exact steering record written locally; lifecycle identity never crosses this boundary. */
+export interface SteeringOutcomeRecord {
+  readonly type: "steering_outcome"
+  readonly at: number
+  readonly sessionRef: string
+  readonly outcome: SteeringTelemetryOutcome
+  readonly capabilityClass: SteeringCapabilityClass
+  readonly durationBucket: SteeringDurationBucket
+}
+
+export interface AgentRunTelemetryInput {
+  readonly operation: AgentRunOperation
+  readonly outcome: AgentRunOutcome
+  readonly batchSizeBucket: AgentRunBatchSizeBucket
+  readonly durationBucket: AgentRunDurationBucket
+}
+
+export interface ExploreLaunchEligibleInput {
+  readonly policyVersion: ExplorePolicyVersion
+  readonly provider: ProviderKind
+  readonly count: 1
+}
+
+export interface ExploreLaunchDeniedInput {
+  readonly denialReason: ExploreDenialReason
+  readonly count: 1
+}
+
+export interface ExploreCapacityDeniedInput {
+  readonly capacityScope: ExploreCapacityScope
+  readonly count: 1
+}
+
+export interface ExploreStartFailedInput {
+  readonly failureCategory: ExploreStartupFailureCategory
+  readonly count: 1
+}
+
+export interface ExploreTerminalInput {
+  readonly terminalStatus: ExploreTerminalStatus
+  readonly count: 1
+}
 
 /** Exact restore facts accepted by the recorder before it reduces them to buckets. */
 export interface TabRestoreInput {
@@ -251,7 +338,7 @@ export interface TelemetryRecord {
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
   /** Fixed file-discovery outcome; never a source error, path, or query. */
-  outcome?: FileSelectorDiscoveryOutcome
+  outcome?: FileSelectorDiscoveryOutcome | AgentRunOutcome | SteeringTelemetryOutcome
   /** Fixed warm-query render state; never a candidate count or candidate content. */
   state?: FileSelectorRenderState
   /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
@@ -269,7 +356,7 @@ export interface TelemetryRecord {
   hasMulti?: boolean
   hasText?: boolean
   /** Coarse latency bucket; exact durations are not recorded. */
-  durationBucket?: ClarificationDurationBucket
+  durationBucket?: ClarificationDurationBucket | AgentRunDurationBucket | SteeringDurationBucket
   /** The closed kind of interaction suspended or resumed by clarification priority. */
   interactionKind?: ClarificationInteractionKind
   /** The closed lifecycle reason for terminal cancellation on session loss. */
@@ -292,6 +379,24 @@ export interface TelemetryRecord {
   lifecycle?: TabLifecycle
   /** Closed delegated terminal state; never a task, outcome, identity, or provider error. */
   delegatedStatus?: DelegatedTerminalStatus
+  /** Fixed V1 policy contract label; never an attestation payload or runtime version. */
+  policyVersion?: ExplorePolicyVersion
+  /** Closed explore refusal reason; never provider output or user content. */
+  denialReason?: ExploreDenialReason
+  /** Which atomic reservation limit refused admission. */
+  capacityScope?: ExploreCapacityScope
+  /** Closed accepted-launch failure category; never a raw error. */
+  failureCategory?: ExploreStartupFailureCategory
+  /** Closed current-generation explore terminal state. */
+  terminalStatus?: ExploreTerminalStatus
+  /** Bounded managed-worktree lifecycle category; never Git identity or raw output. */
+  managedWorktreeReason?: ManagedWorktreeReason
+  /** Fixed route-authorized control operation; no route or lifecycle identity is retained. */
+  operation?: AgentRunOperation
+  /** Bounded request cardinality; never a raw task or child list length. */
+  batchSizeBucket?: AgentRunBatchSizeBucket
+  /** Closed steering transport class; never an adapter recipe or configuration. */
+  capabilityClass?: SteeringCapabilityClass
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -436,6 +541,36 @@ export interface TelemetryRecorder {
   delegatedCascadeCompleted(lifecycleKey: string): void
   /** Emit one content-free teardown failure without serializing its cause. */
   delegatedTeardownFailed(lifecycleKey: string): void
+  /** Record one accepted V1 eligibility fact after atomic registration succeeds. */
+  exploreLaunchEligible(lifecycleKey: string, input: ExploreLaunchEligibleInput): void
+  /** Record one pre-registration typed refusal. */
+  exploreLaunchDenied(input: ExploreLaunchDeniedInput): void
+  /** Record only an atomic capacity-admission refusal. */
+  exploreCapacityDenied(input: ExploreCapacityDeniedInput): void
+  /** Record one accepted launch's fixed startup-failure category. */
+  exploreStartFailed(lifecycleKey: string, input: ExploreStartFailedInput): void
+  /** Record one terminal state for the current private lifecycle key. */
+  exploreTerminal(lifecycleKey: string, input: ExploreTerminalInput): void
+  /** Start one private provisioning attempt after controller validation accepts it. */
+  managedWorktreeRequested(attemptKey: string): void
+  /** Settle one private provisioning attempt as controller-accepted success. */
+  managedWorktreeProvisioned(attemptKey: string): void
+  /** Settle one private provisioning attempt with a bounded failure category. */
+  managedWorktreeProvisionFailed(attemptKey: string, reason: ManagedWorktreeReason): void
+  /** Record one accepted restore reconciliation, optionally with its bounded unavailable reason. */
+  managedWorktreeReconciled(reason?: ManagedWorktreeReason): void
+  /** Record a service-accepted cleanup refusal with its bounded reason. */
+  managedWorktreeCleanupRefused(reason: ManagedWorktreeReason): void
+  /** Record a service-accepted clean removal. */
+  managedWorktreeCleaned(): void
+  /** Record one settled route-authorized control using only approved closed dimensions. */
+  agentRunControl(input: AgentRunTelemetryInput): void
+  /** Record one steering lifecycle outcome, deduplicated and timed by a private key. */
+  steeringOutcome(
+    lifecycleKey: string,
+    outcome: SteeringTelemetryOutcome,
+    capabilityClass: SteeringCapabilityClass,
+  ): void
   /** Start the picker-open-to-interactive clock before opening its store slot. */
   resumePickerOpened(): void
   /** Close the picker clock after its interactive tree commits. */
@@ -515,6 +650,19 @@ const NOOP_RECORDER: TelemetryRecorder = {
   delegatedCascadeRequested() {},
   delegatedCascadeCompleted() {},
   delegatedTeardownFailed() {},
+  exploreLaunchEligible() {},
+  exploreLaunchDenied() {},
+  exploreCapacityDenied() {},
+  exploreStartFailed() {},
+  exploreTerminal() {},
+  managedWorktreeRequested() {},
+  managedWorktreeProvisioned() {},
+  managedWorktreeProvisionFailed() {},
+  managedWorktreeReconciled() {},
+  managedWorktreeCleanupRefused() {},
+  managedWorktreeCleaned() {},
+  agentRunControl() {},
+  steeringOutcome() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
   watch() {
@@ -593,6 +741,13 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly delegatedCascadeRequestedKeys = new Set<string>()
   private readonly delegatedCascadeCompletedKeys = new Set<string>()
   private readonly delegatedTeardownFailures = new Set<string>()
+  private readonly exploreEligibleKeys = new Set<string>()
+  private readonly exploreStartupFailureKeys = new Set<string>()
+  private readonly exploreTerminalKeys = new Set<string>()
+  private readonly managedWorktreeProvisionAttempts = new Set<string>()
+  private readonly managedWorktreeProvisionSettled = new Set<string>()
+  private readonly steeringLifecycleStarts = new Map<string, number>()
+  private readonly steeringLifecycleOutcomes = new Set<string>()
   private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
@@ -903,6 +1058,142 @@ class ActiveRecorder implements TelemetryRecorder {
     this.record({ type: "delegated_teardown_failed" })
   }
 
+  exploreLaunchEligible(lifecycleKey: string, input: ExploreLaunchEligibleInput): void {
+    if (
+      this.exploreEligibleKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["policyVersion", "provider", "count"]) ||
+      input.policyVersion !== "explore-v1" ||
+      !isProviderKind(input.provider) ||
+      input.count !== 1
+    ) return
+    this.exploreEligibleKeys.add(lifecycleKey)
+    this.record({
+      type: "explore_launch_eligible",
+      policyVersion: input.policyVersion,
+      provider: input.provider,
+      count: input.count,
+    })
+  }
+
+  exploreLaunchDenied(input: ExploreLaunchDeniedInput): void {
+    if (
+      !hasExactKeys(input, ["denialReason", "count"]) ||
+      !isExploreDenialReason(input.denialReason) ||
+      input.count !== 1
+    ) return
+    this.record({ type: "explore_launch_denied", ...input })
+  }
+
+  exploreCapacityDenied(input: ExploreCapacityDeniedInput): void {
+    if (
+      !hasExactKeys(input, ["capacityScope", "count"]) ||
+      (input.capacityScope !== "per-parent" && input.capacityScope !== "global") ||
+      input.count !== 1
+    ) return
+    this.record({ type: "explore_capacity_denied", ...input })
+  }
+
+  exploreStartFailed(lifecycleKey: string, input: ExploreStartFailedInput): void {
+    if (
+      this.exploreStartupFailureKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["failureCategory", "count"]) ||
+      !isExploreStartupFailureCategory(input.failureCategory) ||
+      input.count !== 1
+    ) return
+    this.exploreStartupFailureKeys.add(lifecycleKey)
+    this.record({ type: "explore_start_failed", ...input })
+  }
+
+  exploreTerminal(lifecycleKey: string, input: ExploreTerminalInput): void {
+    if (
+      this.exploreTerminalKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["terminalStatus", "count"]) ||
+      !isExploreTerminalStatus(input.terminalStatus) ||
+      input.count !== 1
+    ) return
+    this.exploreTerminalKeys.add(lifecycleKey)
+    this.record({ type: "explore_terminal", ...input })
+  }
+
+  managedWorktreeRequested(attemptKey: string): void {
+    if (
+      this.managedWorktreeProvisionAttempts.has(attemptKey) ||
+      this.managedWorktreeProvisionSettled.has(attemptKey)
+    ) return
+    this.managedWorktreeProvisionAttempts.add(attemptKey)
+    this.record({ type: "managed_worktree_requested" })
+  }
+
+  managedWorktreeProvisioned(attemptKey: string): void {
+    if (
+      !this.managedWorktreeProvisionAttempts.has(attemptKey) ||
+      this.managedWorktreeProvisionSettled.has(attemptKey)
+    ) return
+    this.managedWorktreeProvisionAttempts.delete(attemptKey)
+    this.managedWorktreeProvisionSettled.add(attemptKey)
+    this.record({ type: "managed_worktree_provisioned" })
+  }
+
+  managedWorktreeProvisionFailed(attemptKey: string, reason: ManagedWorktreeReason): void {
+    if (
+      !this.managedWorktreeProvisionAttempts.has(attemptKey) ||
+      this.managedWorktreeProvisionSettled.has(attemptKey) ||
+      !isManagedWorktreeReason(reason)
+    ) return
+    this.managedWorktreeProvisionAttempts.delete(attemptKey)
+    this.managedWorktreeProvisionSettled.add(attemptKey)
+    this.record({ type: "managed_worktree_provision_failed", managedWorktreeReason: reason })
+  }
+
+  managedWorktreeReconciled(reason?: ManagedWorktreeReason): void {
+    if (reason !== undefined && !isManagedWorktreeReason(reason)) return
+    this.record({
+      type: "managed_worktree_reconciled",
+      ...(reason === undefined ? {} : { managedWorktreeReason: reason }),
+    })
+  }
+
+  managedWorktreeCleanupRefused(reason: ManagedWorktreeReason): void {
+    if (!isManagedWorktreeReason(reason)) return
+    this.record({ type: "managed_worktree_cleanup_refused", managedWorktreeReason: reason })
+  }
+
+  managedWorktreeCleaned(): void {
+    this.record({ type: "managed_worktree_cleaned" })
+  }
+
+  agentRunControl(input: AgentRunTelemetryInput): void {
+    this.record({
+      type: "agent_run_control",
+      operation: input.operation,
+      outcome: input.outcome,
+      batchSizeBucket: input.batchSizeBucket,
+      durationBucket: input.durationBucket,
+    })
+  }
+
+  steeringOutcome(
+    lifecycleKey: string,
+    outcome: SteeringTelemetryOutcome,
+    capabilityClass: SteeringCapabilityClass,
+  ): void {
+    if (!isSteeringTelemetryOutcome(outcome) || !isSteeringCapabilityClass(capabilityClass)) return
+
+    const dedupeKey = `${lifecycleKey}\u0000${outcome}`
+    if (this.steeringLifecycleOutcomes.has(dedupeKey)) return
+
+    const at = this.now()
+    const startedAt = this.steeringLifecycleStarts.get(lifecycleKey) ?? at
+    this.steeringLifecycleStarts.set(lifecycleKey, startedAt)
+    this.steeringLifecycleOutcomes.add(dedupeKey)
+    this.record({
+      type: "steering_outcome",
+      outcome,
+      capabilityClass,
+      durationBucket: bucketSteeringDuration(at - startedAt),
+    }, at)
+  }
+
   resumePickerOpened(): void {
     this.resumePickerOpenedAt = this.now()
   }
@@ -1119,11 +1410,87 @@ class ActiveRecorder implements TelemetryRecorder {
   }
 }
 
+function hasExactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  return keys.length === expected.length && expected.every((key) => keys.includes(key))
+}
+
+function isProviderKind(value: unknown): value is ProviderKind {
+  return value === "claude-code" || value === "codex" || value === "cursor"
+}
+
+function isExploreStartupFailureCategory(value: unknown): value is ExploreStartupFailureCategory {
+  return value === "bridge-unavailable" ||
+    value === "session-start-failed" ||
+    value === "prompt-dispatch-failed"
+}
+
+function isExploreTerminalStatus(value: unknown): value is ExploreTerminalStatus {
+  return value === "finished" || value === "failed" || value === "cancelled"
+}
+
+function isManagedWorktreeReason(value: unknown): value is ManagedWorktreeReason {
+  return value === "not_git_repository" ||
+    value === "detached_head" ||
+    value === "submodules_unsupported" ||
+    value === "root_conflict" ||
+    value === "collision" ||
+    value === "verification_failed" ||
+    value === "missing" ||
+    value === "external" ||
+    value === "dirty" ||
+    value === "unmerged" ||
+    value === "live_owned" ||
+    value === "not_managed" ||
+    value === "git_failed"
+}
+
 function bucketClarificationDuration(durationMs: number): ClarificationDurationBucket {
   if (durationMs < 5_000) return "under_5s"
   if (durationMs < 30_000) return "5_to_30s"
   if (durationMs < 120_000) return "30_to_120s"
   return "over_120s"
+}
+
+function isSteeringTelemetryOutcome(value: unknown): value is SteeringTelemetryOutcome {
+  return value === "queued" ||
+    value === "delivered" ||
+    value === "recovered" ||
+    value === "timeout" ||
+    value === "unavailable"
+}
+
+function isSteeringCapabilityClass(value: unknown): value is SteeringCapabilityClass {
+  return value === "native" || value === "fallback" || value === "unavailable"
+}
+
+/** Reduce exact steering latency before any value reaches the local sink. */
+export function bucketSteeringDuration(durationMs: number): SteeringDurationBucket {
+  const normalized = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0
+  if (normalized < 5_000) return "under_5s"
+  if (normalized < 30_000) return "5_to_30s"
+  if (normalized < 120_000) return "30_to_120s"
+  return "over_120s"
+}
+
+/** Reduce an agent-control request size before it crosses the recorder boundary. */
+export function bucketAgentRunBatchSize(batchSize: number): AgentRunBatchSizeBucket {
+  const normalized = Number.isFinite(batchSize) ? Math.max(0, Math.floor(batchSize)) : 0
+  if (normalized === 0) return "zero"
+  if (normalized === 1) return "one"
+  if (normalized === 2) return "two"
+  if (normalized <= 4) return "three_to_four"
+  return "five_or_more"
+}
+
+/** Reduce controller-operation time; child execution time never enters this function. */
+export function bucketAgentRunDuration(durationMs: number): AgentRunDurationBucket {
+  const normalized = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0
+  if (normalized < 100) return "under_100ms"
+  if (normalized < 500) return "100_to_499ms"
+  if (normalized < 2_000) return "500_to_1999ms"
+  return "2s_or_more"
 }
 
 /** Reduce exact restore counts to the only cardinalities written to tab telemetry. */

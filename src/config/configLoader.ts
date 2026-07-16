@@ -39,12 +39,17 @@ import type {
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import { NATIVE_STEERING_ADAPTER_IMPLEMENTATIONS } from "../agent/nativeSteering.ts"
 import {
   normalizeStatuslineLayout,
   type StatuslineItem,
   type StatuslinePreference,
 } from "../core/statusline.ts"
 import { classifyClarificationCapability } from "./clarificationCapability.ts"
+import {
+  CERTIFIED_NATIVE_STEERING_RECIPES,
+  classifySteeringCapability,
+} from "./steeringCapability.ts"
 
 /**
  * The pinned ACP adapter packages the default config launches through `npx`.
@@ -95,6 +100,9 @@ const CERTIFIED_CURSOR_RUNTIME_PROFILES: readonly CertifiedCursorRuntimeProfile[
 
 /** Telemetry is opt-in and off until the user says otherwise (PRD privacy stance). */
 const DEFAULT_TELEMETRY_ENABLED = false
+
+/** Bounded transcript presentation remains an explicit default-off experiment (ADR-004). */
+const DEFAULT_TRANSCRIPT_WINDOWING_ENABLED = false
 
 /** Session persistence is on by default, with a user-configurable off-switch. */
 export const DEFAULT_SESSION_PERSISTENCE_ENABLED = true
@@ -260,6 +268,7 @@ export const USER_CONFIG_SCHEMA = z
     clarificationTimeoutSeconds: z.number().int().positive().max(MAX_CLARIFICATION_TIMEOUT_SECONDS).optional(),
     persistenceEnabled: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
+    transcriptWindowingEnabled: z.boolean().optional(),
     theme: z.enum(THEME_PREFERENCES).optional(),
     welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
@@ -302,6 +311,7 @@ export function defaultAppConfig(): AppConfig {
     clarificationTimeoutSeconds: DEFAULT_CLARIFICATION_TIMEOUT_SECONDS,
     persistenceEnabled: DEFAULT_SESSION_PERSISTENCE_ENABLED,
     telemetryEnabled: DEFAULT_TELEMETRY_ENABLED,
+    transcriptWindowingEnabled: DEFAULT_TRANSCRIPT_WINDOWING_ENABLED,
     theme: DEFAULT_THEME,
     welcomeBanner: DEFAULT_WELCOME_BANNER,
     statusline: defaultStatuslinePreference(),
@@ -346,6 +356,7 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     clarificationTimeoutSeconds: user.clarificationTimeoutSeconds ?? config.clarificationTimeoutSeconds,
     persistenceEnabled: user.persistenceEnabled ?? config.persistenceEnabled,
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
+    transcriptWindowingEnabled: user.transcriptWindowingEnabled ?? config.transcriptWindowingEnabled,
     theme: user.theme ?? config.theme,
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
     statusline: mergeStatuslinePreference(user.statusline),
@@ -470,6 +481,11 @@ export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAg
   return {
     ...resolved,
     clarificationCapability: classifyClarificationCapability(resolved),
+    steeringCapability: classifySteeringCapability(
+      resolved,
+      CERTIFIED_NATIVE_STEERING_RECIPES,
+      NATIVE_STEERING_ADAPTER_IMPLEMENTATIONS,
+    ),
     runtimeProfile: resolveProviderRuntimeProfile(resolved),
   }
 }

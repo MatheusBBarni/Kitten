@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { AvailableCommand, ConfigOption, DomainSessionEvent, SessionState, ToolCallTurn } from "./types.ts"
+import type { AvailableCommand, ConfigOption, DomainSessionEvent, ManagedWorktreeBinding, SessionState, ToolCallTurn } from "./types.ts"
 import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
 
 /**
@@ -11,6 +11,18 @@ import { createWorkspaceState, workspaceReducer } from "./workspace.ts"
  */
 
 const initial = (): SessionState => createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" })
+
+const managedBinding: ManagedWorktreeBinding = {
+  kind: "managed",
+  id: "managed-child",
+  repoRoot: "/repo",
+  worktreePath: "/repo/.kitten/worktrees/managed-child",
+  branch: "kitten/managed-child",
+  baseBranch: "main",
+  baseSha: "abc123",
+  ownerSessionId: "managed-child",
+  availability: "unverified",
+}
 
 /** Fold a sequence of events over a fresh session state. */
 const fold = (events: DomainSessionEvent[], start: SessionState = initial()): SessionState =>
@@ -30,6 +42,7 @@ describe("createSessionState", () => {
       cwd: "/w",
       branch: undefined,
       task: undefined,
+      worktreeBinding: undefined,
       acpSessionId: "s-42",
       turns: [],
       status: "idle",
@@ -41,7 +54,21 @@ describe("createSessionState", () => {
       defaultApplyResult: null,
       commands: [],
       promptHistory: { entries: [], cursor: null },
+      steering: { activeTurnId: null, queue: [], recovery: null },
     })
+  })
+
+  it("preserves a managed seed binding while ordinary seeds remain unbound", () => {
+    const managed = createSessionState({
+      id: "managed-child",
+      providerKind: "codex",
+      title: "Managed child",
+      cwd: managedBinding.worktreePath,
+      worktreeBinding: managedBinding,
+    })
+
+    expect(managed.worktreeBinding).toBe(managedBinding)
+    expect(initial().worktreeBinding).toBeUndefined()
   })
 
   it("defaults configOptions to an empty array", () => {
@@ -105,6 +132,114 @@ describe("prompt history events", () => {
     const before = initial()
 
     expect(sessionReducer(before, { kind: "prompt_history", action: "next" })).toBe(before)
+  })
+})
+
+describe("steering events", () => {
+  const enqueue = {
+    kind: "steering_enqueue",
+    activeTurnId: "turn-active",
+    requestId: "steer-1",
+    generation: 4,
+    blocks: [{ type: "text", text: "change direction" }],
+  } as const
+
+  it("preserves every unrelated transcript-derived reference during steering-only transitions", () => {
+    const before = fold([
+      { kind: "user_message", messageId: "u1", text: "original task" },
+      {
+        kind: "tool_call",
+        call: {
+          toolCallId: "edit-1",
+          kind: "edit",
+          title: "Edit source",
+          status: "pending",
+          locations: ["src/source.ts"],
+          diff: { path: "src/source.ts", unified: "@@ -1 +1 @@" },
+        },
+      },
+    ])
+
+    const after = sessionReducer(before, enqueue)
+
+    expect(after.turns).toBe(before.turns)
+    expect(after.referencedFiles).toBe(before.referencedFiles)
+    expect(after.pendingDiffs).toBe(before.pendingDiffs)
+    expect(after.plan).toBe(before.plan)
+    expect(after.promptHistory).toBe(before.promptHistory)
+  })
+
+  it("returns the existing session for stale or invalid lifecycle events", () => {
+    const state = sessionReducer(initial(), enqueue)
+    expect(
+      sessionReducer(state, {
+        kind: "steering_wait",
+        requestId: "steer-1",
+        generation: 3,
+      }),
+    ).toBe(state)
+    expect(
+      sessionReducer(state, {
+        kind: "steering_send",
+        requestId: "steer-1",
+        generation: 4,
+      }),
+    ).toBe(state)
+  })
+
+  it("folds enqueue through confirmed delivery into exactly one ordered user turn", () => {
+    const state = fold([
+      { kind: "user_message", messageId: "u1", text: "original task" },
+      enqueue,
+      {
+        kind: "steering_enqueue",
+        activeTurnId: "turn-active",
+        requestId: "steer-2",
+        generation: 4,
+        blocks: [
+          { type: "text", text: "then do this" },
+          { type: "text", text: "and preserve order" },
+        ],
+      },
+      { kind: "steering_wait", requestId: "steer-1", generation: 4 },
+      { kind: "steering_cancel", requestId: "steer-1", generation: 4 },
+      { kind: "steering_settle", requestId: "steer-1", generation: 4 },
+      { kind: "steering_send", requestId: "steer-1", generation: 4 },
+      {
+        kind: "steering_deliver",
+        requestId: "steer-1",
+        generation: 4,
+        messageId: "u-steering",
+      },
+    ])
+
+    expect(state.turns).toEqual([
+      { kind: "user", messageId: "u1", text: "original task" },
+      {
+        kind: "user",
+        messageId: "u-steering",
+        text: "change direction\nthen do this\nand preserve order",
+      },
+    ])
+    expect(state.steering).toEqual({ activeTurnId: null, queue: [], recovery: null })
+  })
+
+  it("folds recovery and acknowledgement without adding a user turn", () => {
+    const failed = fold([
+      enqueue,
+      { kind: "steering_recover", requestId: "steer-1", generation: 4 },
+    ])
+
+    expect(failed.turns).toEqual([])
+    expect(failed.steering.recovery).toEqual([{ type: "text", text: "change direction" }])
+
+    const acknowledged = sessionReducer(failed, {
+      kind: "steering_acknowledge_recovery",
+      requestId: "steer-1",
+      generation: 4,
+    })
+    expect(acknowledged.turns).toBe(failed.turns)
+    expect(acknowledged.steering).toEqual({ activeTurnId: null, queue: [], recovery: null })
   })
 })
 

@@ -33,19 +33,19 @@ describe("main npm package shim contract", () => {
     expect(pkg.scripts).not.toHaveProperty("postinstall")
   })
 
-  it("leads with curl without promoting an unverified npm command", () => {
+  it("leads with the published npm package and retains the standalone alternative", () => {
     const firstShellCommand = README.match(/```bash\n([^\n]+)/)?.[1]
     const visitorInstallDocs = README.slice(0, README.indexOf("## Contributing"))
 
     expect(firstShellCommand).toBe(
-      "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+      "npm install --global @matheusbbarni/kitten",
     )
     expect(visitorInstallDocs).not.toContain("npm i -g kitten")
     expect(visitorInstallDocs).not.toContain("npx kitten --version")
     expect(visitorInstallDocs).not.toContain("npm i -g @matheusbbarni/kitten")
     expect(visitorInstallDocs).not.toContain("npx @matheusbbarni/kitten --version")
-    expect(README).toContain(
-      "The npm channel will be documented here when its native-binary install path is published and verified.",
+    expect(visitorInstallDocs).toContain(
+      "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
     )
   })
 })

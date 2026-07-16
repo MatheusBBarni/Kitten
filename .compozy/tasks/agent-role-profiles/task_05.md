@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Render active explore policy in session and tab presentation
 type: frontend
 complexity: medium
@@ -28,11 +28,11 @@ Expose the accepted immutable `explore` policy while a child is active, using th
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Extend active child presentation consumers with the selector-provided explore cue.
-- [ ] 5.2 Render concise role and restriction text in the sessions overlay.
-- [ ] 5.3 Render the compact explore cue in tab workspace child labels.
-- [ ] 5.4 Preserve existing focus, overflow, terminal transcript, and lifecycle behavior.
-- [ ] 5.5 Add session and tab presentation regression coverage.
+- [x] 5.1 Extend active child presentation consumers with the selector-provided explore cue.
+- [x] 5.2 Render concise role and restriction text in the sessions overlay.
+- [x] 5.3 Render the compact explore cue in tab workspace child labels.
+- [x] 5.4 Preserve existing focus, overflow, terminal transcript, and lifecycle behavior.
+- [x] 5.5 Add session and tab presentation regression coverage.
 
 ## Implementation Details
 
@@ -65,13 +65,13 @@ Use TechSpec sections “System Architecture,” “User Experience,” and “T
 ## Tests
 
 - Unit tests:
-  - [ ] Session overlay renders `explore` and every concise restriction cue alongside existing Child-of and lifecycle text.
-  - [ ] Tab workspace renders the selector-provided explore cue without reading raw child snapshots or configuration.
-  - [ ] Role/restriction text remains available when palette values change, proving it is not color-only.
+  - [x] Session overlay renders `explore` and every concise restriction cue alongside existing Child-of and lifecycle text.
+  - [x] Tab workspace renders the selector-provided explore cue without reading raw child snapshots or configuration.
+  - [x] Role/restriction text remains available when palette values change, proving it is not color-only.
 - Integration tests:
-  - [ ] An active explore child appears correctly in both session overlay and tab workspace while focus can move normally.
-  - [ ] Terminal explore children retain existing transcript/lifecycle behavior without claiming live policy verification after terminal or restore conditions.
-  - [ ] Existing selected-tab and overflow/reachability behavior remains unchanged with the compact cue present.
+  - [x] An active explore child appears correctly in both session overlay and tab workspace while focus can move normally.
+  - [x] Terminal explore children retain existing transcript/lifecycle behavior without claiming live policy verification after terminal or restore conditions.
+  - [x] Existing selected-tab and overflow/reachability behavior remains unchanged with the compact cue present.
 - Test coverage target: >=80%
 - All tests must pass
 

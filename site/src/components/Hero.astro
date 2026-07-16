@@ -1,5 +1,8 @@
 ---
+import { Image } from "astro:assets";
+
 import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import kittenIcon from "../../../assets/kitten-icon.png";
 
 interface Props {
   section: ShowcaseConfig["hero"];
@@ -15,10 +18,58 @@ const { section, install } = Astro.props;
   aria-labelledby={`${section.id}-heading`}
   data-section-key={section.id}
 >
-  <p class="eyebrow">{section.eyebrow}</p>
-  <h1 id={`${section.id}-heading`}>{section.heading}</h1>
-  <p class="hero-lede">{section.body}</p>
-  <a class="button button-primary" href={`#${install.id}`}>
-    {section.primaryCtaLabel}
-  </a>
+  <div class="hero-layout">
+    <div class="hero-content">
+      <p class="eyebrow">{section.eyebrow}</p>
+      <h1 id={`${section.id}-heading`}>{section.heading}</h1>
+      <p class="hero-lede">{section.body}</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href={`#${install.id}`}>
+          {section.primaryCtaLabel}
+        </a>
+        <a class="button button-secondary" href="#proof">
+          {section.secondaryCtaLabel}
+        </a>
+      </div>
+      <ul class="hero-benefits">
+        {
+          section.benefits.map((benefit) => (
+            <li>
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m5 12 4.25 4.25L19 6.5" />
+              </svg>
+              <span>{benefit}</span>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+
+    <aside class="hero-outcome" aria-label={section.outcomeTitle}>
+      <div class="hero-logo-wrap">
+        <Image
+          class="hero-logo"
+          src={kittenIcon}
+          alt={section.logoAlt}
+          width={176}
+          loading="eager"
+          format="webp"
+        />
+      </div>
+      <div class="handoff-window">
+        <div class="handoff-window-bar">
+          <span class="handoff-window-title">{section.outcomeTitle}</span>
+          <span class="handoff-window-status">{section.outcomeStatus}</span>
+        </div>
+        <div class="handoff-route" aria-hidden="true">
+          <span>Claude Code</span>
+          <svg viewBox="0 0 56 24">
+            <path d="M2 12h46m-10-8 10 8-10 8" />
+          </svg>
+          <span>Codex</span>
+        </div>
+        <p>{section.outcomeBody}</p>
+      </div>
+    </aside>
+  </div>
 </section>

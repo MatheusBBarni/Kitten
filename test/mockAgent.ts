@@ -16,6 +16,7 @@ import {
   type AuthenticateRequest,
   type AuthenticateResponse,
   type AuthMethod,
+  type CancelNotification,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type InitializeRequest,
@@ -83,6 +84,8 @@ export interface MockAgentOptions {
   /** Handle `session/load`, usually by replaying history through `ctx.update`. */
   onLoadSession?: MockLoadSessionScript
   onPrompt?: MockPromptScript
+  /** Observe transport cancellation and release any scripted pending prompt deterministically. */
+  onCancel?: (notification: CancelNotification) => void | Promise<void>
   /**
    * The config options the agent advertises. When set, `newSession` and `loadSession`
    * return them, while `setSessionConfigOption` mutates the matching option's
@@ -103,6 +106,8 @@ export interface MockAgentHandle {
   readonly authenticationRequests: AuthenticateRequest[]
   /** Every prompt request the agent received, in order. */
   readonly prompts: PromptRequest[]
+  /** Every standard ACP cancellation notification observed by the mock agent. */
+  readonly cancelNotifications: CancelNotification[]
   /** Every permission outcome the client returned to the agent, in order. */
   readonly permissionOutcomes: RequestPermissionOutcome[]
   /** Every elicitation response the client returned to the agent, in order. */
@@ -135,6 +140,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const lifecycle: Array<"initialize" | "authenticate" | "newSession"> = []
   const authenticationRequests: AuthenticateRequest[] = []
   const prompts: PromptRequest[] = []
+  const cancelNotifications: CancelNotification[] = []
   const permissionOutcomes: RequestPermissionOutcome[] = []
   const elicitationOutcomes: CreateElicitationResponse[] = []
   const elicitationRequests: CreateElicitationRequest[] = []
@@ -194,7 +200,10 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
       authenticationRequests.push(request)
       return options.onAuthenticate?.(request) ?? {}
     },
-    cancel: () => {},
+    async cancel(notification) {
+      cancelNotifications.push(notification)
+      await options.onCancel?.(notification)
+    },
     async prompt(request: PromptRequest) {
       prompts.push(request)
       const ctx: MockAgentContext = {
@@ -236,6 +245,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
     lifecycle,
     authenticationRequests,
     prompts,
+    cancelNotifications,
     permissionOutcomes,
     elicitationOutcomes,
     elicitationRequests,

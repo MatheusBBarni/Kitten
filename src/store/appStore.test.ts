@@ -3,9 +3,15 @@ import { describe, expect, it } from "bun:test"
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState } from "../core/shellReducer.ts"
+import { countOccupiedDelegatedChildren } from "../core/orchestration.ts"
+import {
+  evaluateExplorePolicy,
+  EXPLORE_RESTRICTIONS,
+  type ExplorePolicySnapshot,
+} from "../core/explorePolicy.ts"
 import type { StatuslineLayout, StatuslinePreference } from "../core/statusline.ts"
 import { HARNESS_DELIVERY_FAILED_NOTICE, isHarnessDeliveryNotice } from "../core/types.ts"
-import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, SessionId, SessionSeed, SessionState } from "../core/types.ts"
+import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, ManagedWorktreeBinding, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import {
   createAppStore,
   defaultSessionSeeds,
@@ -35,6 +41,8 @@ import {
   selectSessionPicker,
   selectShell,
   selectSessionPromptHistory,
+  selectSessionSteeringRecovery,
+  selectSessionSteeringStatus,
   selectSessionStatus,
   selectSessionTurns,
   selectTabDialogOverlay,
@@ -43,6 +51,118 @@ import {
   selectStatuslinePreference,
   selectThemePreference,
 } from "./selectors.ts"
+
+describe("steering store integration", () => {
+  it("routes enqueue and recovery acknowledgement through the reducer", () => {
+    const store = createAppStore()
+    const before = store.getState()
+    const untouched = before.sessions.codex
+    const workspace = before.workspace
+
+    store.applyEvent("claude-code", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-active",
+      requestId: "steer-1",
+      generation: 7,
+      blocks: [{ type: "text", text: "restore exactly" }],
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 7,
+    })
+
+    const failed = store.getState()
+    expect(failed.sessions.codex).toBe(untouched)
+    expect(failed.workspace).toBe(workspace)
+    expect(selectSessionSteeringRecovery("claude-code")(failed)).toEqual({
+      requestId: "steer-1",
+      blocks: [{ type: "text", text: "restore exactly" }],
+    })
+
+    store.acknowledgeSteeringRecovery("claude-code", "stale")
+    expect(store.getState()).toBe(failed)
+
+    store.acknowledgeSteeringRecovery("claude-code", "steer-1")
+    const acknowledged = store.getState()
+    expect(acknowledged.sessions["claude-code"]?.steering).toEqual({
+      activeTurnId: null,
+      queue: [],
+      recovery: null,
+    })
+    expect(acknowledged.sessions.codex).toBe(untouched)
+    expect(acknowledged.workspace).toBe(workspace)
+  })
+
+  it("keeps selected steering subscribers silent for tokens and other sessions", () => {
+    const store = createAppStore()
+    const selector = selectSessionSteeringStatus("claude-code")
+    const selected = selector(store.getState())
+    let notifications = 0
+    store.subscribeSelector(selector, () => {
+      notifications += 1
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    store.applyEvent("codex", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-other",
+      requestId: "steer-other",
+      generation: 2,
+      blocks: [{ type: "text", text: "other session" }],
+    })
+
+    expect(selector(store.getState())).toBe(selected)
+    expect(notifications).toBe(0)
+  })
+
+  it("publishes focused recovery only for target recovery and acknowledgement", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-active",
+      requestId: "steer-1",
+      generation: 7,
+      blocks: [{ type: "text", text: "recover me" }],
+    })
+    const selector = selectSessionSteeringRecovery("claude-code")
+    const publications: unknown[] = []
+    store.subscribeSelector(selector, (recovery) => {
+      publications.push(recovery)
+    })
+
+    store.applyEvent("codex", {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-other",
+      requestId: "steer-other",
+      generation: 2,
+      blocks: [{ type: "text", text: "other session" }],
+    })
+    store.applyEvent("claude-code", {
+      kind: "steering_recover",
+      requestId: "steer-1",
+      generation: 7,
+    })
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    store.acknowledgeSteeringRecovery("claude-code", "steer-1")
+
+    expect(publications).toEqual([
+      {
+        requestId: "steer-1",
+        blocks: [{ type: "text", text: "recover me" }],
+      },
+      null,
+    ])
+  })
+})
 
 /** A default-fleet seed for `id`, optionally bound to an ACP session id. */
 const seed = (id: SessionId, acpSessionId = ""): SessionSeed => ({
@@ -115,13 +235,45 @@ const delegatedChildSeed: SessionSeed = {
   cwd: "/work/child",
 }
 
-const delegatedRegistration = () => ({
+const managedBinding: ManagedWorktreeBinding = {
+  kind: "managed",
+  id: "managed-child",
+  repoRoot: "/repo",
+  worktreePath: "/repo/.kitten/worktrees/managed-child",
+  branch: "kitten/managed-child",
+  baseBranch: "main",
+  baseSha: "abc123",
+  ownerSessionId: "managed-child",
+  availability: "unverified",
+}
+
+const managedChildSeed: SessionSeed = {
+  ...delegatedChildSeed,
+  id: managedBinding.ownerSessionId,
+  cwd: managedBinding.worktreePath,
+  worktreeBinding: managedBinding,
+}
+
+function acceptedPolicy(perParent = 3, global = 6): ExplorePolicySnapshot {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: EXPLORE_RESTRICTIONS,
+    limits: { perParent, global },
+    attestationVersion: "app-store-test-v1",
+    confirmed: { provider: "codex", model: "test-model", effort: "high" },
+  })
+  if (decision.kind !== "eligible") throw new Error("expected eligible policy fixture")
+  return decision.policy
+}
+
+const delegatedRegistration = (policy = acceptedPolicy()) => ({
   seed: delegatedChildSeed,
   parentId: "claude-code",
   parentGeneration: 4,
   childGeneration: 1,
   task: "Inspect the parser",
   desiredOutcome: "Report concrete failure modes",
+  policy,
 })
 
 const delegatedIdentity = {
@@ -420,6 +572,66 @@ describe("startSession", () => {
     const freshHistory = selectSessionPromptHistory("codex")(store.getState())
     expect(freshHistory).toEqual({ entries: [], cursor: null })
     expect(freshHistory).not.toBe(priorHistory)
+  })
+
+  it("resets ACP execution state without removing a managed-worktree binding", () => {
+    const store = createAppStore({ seeds: [managedChildSeed] })
+    store.applyEvent(managedChildSeed.id, message("m1", "stale"))
+    store.applyEvent(managedChildSeed.id, { kind: "status", status: "working" })
+
+    store.startSession(managedChildSeed.id, "acp-managed")
+
+    const session = store.getState().sessions[managedChildSeed.id]!
+    expect(session.acpSessionId).toBe("acp-managed")
+    expect(session.turns).toEqual([])
+    expect(session.status).toBe("idle")
+    expect(session.worktreeBinding).toBe(managedBinding)
+  })
+})
+
+describe("managed-worktree binding publication", () => {
+  it("is a complete no-op for unknown sessions, mismatched owners, and semantic repeats", () => {
+    const store = createAppStore({ seeds: [managedChildSeed] })
+    const initial = store.getState()
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    store.publishManagedWorktreeBinding("missing", {
+      ...managedBinding,
+      ownerSessionId: "missing",
+    })
+    store.publishManagedWorktreeBinding(managedChildSeed.id, {
+      ...managedBinding,
+      ownerSessionId: "another-session",
+    })
+    store.publishManagedWorktreeBinding(managedChildSeed.id, { ...managedBinding })
+
+    expect(store.getState()).toBe(initial)
+    expect(observed).toEqual([])
+  })
+
+  it("replaces only the addressed session for a valid controller publication", () => {
+    const sibling: SessionSeed = {
+      id: "sibling",
+      providerKind: "claude-code",
+      title: "Sibling",
+      cwd: "/repo",
+    }
+    const store = createAppStore({ seeds: [managedChildSeed, sibling] })
+    const before = store.getState()
+    const available = { ...managedBinding, availability: "available" as const }
+
+    store.publishManagedWorktreeBinding(managedChildSeed.id, available)
+
+    const after = store.getState()
+    expect(after).not.toBe(before)
+    expect(after.sessions).not.toBe(before.sessions)
+    expect(after.sessions[managedChildSeed.id]).not.toBe(before.sessions[managedChildSeed.id])
+    expect(after.sessions[managedChildSeed.id]?.worktreeBinding).toBe(available)
+    expect(after.sessions.sibling).toBe(before.sessions.sibling)
+    expect(after.workspace).toBe(before.workspace)
+    expect(after.delegation).toBe(before.delegation)
+    expect(after.overlays).toBe(before.overlays)
   })
 })
 
@@ -1565,13 +1777,37 @@ describe("workspace lifecycle integration", () => {
 })
 
 describe("delegated session store integration", () => {
+  it("retains managed binding state through delegated insertion and restore replacement", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const registration = { ...delegatedRegistration(), seed: managedChildSeed }
+
+    expect(store.addDelegatedSession(registration)).toEqual({ kind: "accepted" })
+    expect(store.getState().sessions[managedChildSeed.id]?.worktreeBinding).toBe(managedBinding)
+    expect(selectDelegatedChild(managedChildSeed.id)(store.getState())).not.toBeNull()
+
+    store.replaceSessions(
+      [{
+        seed: managedChildSeed,
+        workspace: { sessionId: managedChildSeed.id, displayName: "Managed review" },
+      }],
+      managedChildSeed.id,
+    )
+
+    const restored = store.getState()
+    expect(restored.sessions[managedChildSeed.id]?.worktreeBinding).toBe(managedBinding)
+    expect(restored.delegation).toEqual({ parents: {}, children: {} })
+    expect(selectDelegatedChild(managedChildSeed.id)(restored)).toBeNull()
+  })
+
   it("notifies once with the child session, background workspace entry, and ownership together", () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     const observed: AppState[] = []
     store.subscribe((state) => observed.push(state))
 
-    store.addDelegatedSession(delegatedRegistration())
+    const policy = acceptedPolicy()
+    const result = store.addDelegatedSession(delegatedRegistration(policy))
 
+    expect(result).toEqual({ kind: "accepted" })
     expect(observed).toHaveLength(1)
     const inserted = observed[0]!
     expect(inserted.sessions[delegatedChildSeed.id]).toEqual(createSessionState(delegatedChildSeed))
@@ -1583,7 +1819,50 @@ describe("delegated session store integration", () => {
       childId: delegatedChildSeed.id,
       parentId: "claude-code",
       status: "starting",
+      policy,
     })
+    expect(selectDelegatedChild(delegatedChildSeed.id)(inserted)?.policy).toBe(policy)
+  })
+
+  it("atomically registers a child for a background parent without changing visible selection", () => {
+    const store = createAppStore({ selectedVisibleId: "codex" })
+    store.backgroundConversation("claude-code")
+    store.openSettings()
+    const before = store.getState()
+    const observed: Array<{ state: AppState; previous: AppState }> = []
+    store.subscribe((state, previous) => observed.push({ state, previous }))
+    const childSeed: SessionSeed = {
+      ...delegatedChildSeed,
+      providerKind: "claude-code",
+    }
+
+    const result = store.addDelegatedSession({
+      ...delegatedRegistration(),
+      seed: childSeed,
+    })
+
+    expect(result).toEqual({ kind: "accepted" })
+    expect(observed).toHaveLength(1)
+    expect(observed[0]?.previous).toBe(before)
+    const inserted = observed[0]!.state
+    expect(inserted.workspace.selectedVisibleId).toBe("codex")
+    expect(inserted.workspace.conversations[childSeed.id]).toMatchObject({
+      lifecycle: "background",
+      availability: { kind: "starting" },
+    })
+    expect(selectDelegatedChild(childSeed.id)(inserted)).toMatchObject({
+      childId: childSeed.id,
+      parentId: "claude-code",
+      parentGeneration: 4,
+      childGeneration: 1,
+      status: "starting",
+    })
+    expect(inserted.focusedPane).toBe(before.focusedPane)
+    expect(inserted.overlays).toBe(before.overlays)
+    for (const id of ["claude-code", "codex", "cursor"] as const) {
+      expect(inserted.sessions[id]).toBe(before.sessions[id])
+      expect(inserted.workspace.conversations[id]).toBe(before.workspace.conversations[id])
+    }
   })
 
   it("retains parent focus and unrelated structural references during registration", () => {
@@ -1689,6 +1968,106 @@ describe("delegated session store integration", () => {
     expect(store.getState()).toBe(running)
   })
 
+  it("denies exhausted capacity without a commit or partial session/workspace mutation", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const policy = acceptedPolicy(1, 4)
+    expect(store.addDelegatedSession(delegatedRegistration(policy))).toEqual({ kind: "accepted" })
+    const beforeDenial = store.getState()
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    const result = store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "capacity-denied-child" },
+      childGeneration: 2,
+    })
+
+    expect(result).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "per-parent",
+    })
+    expect(store.getState()).toBe(beforeDenial)
+    expect(observed).toEqual([])
+    expect(store.getState().sessions["capacity-denied-child"]).toBeUndefined()
+    expect(store.getState().workspace.conversations["capacity-denied-child"]).toBeUndefined()
+    expect(store.getState().delegation.children["capacity-denied-child"]).toBeUndefined()
+  })
+
+  it("denies the global limit across parents that remain below their local caps", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const policy = acceptedPolicy(2, 2)
+    expect(store.addDelegatedSession(delegatedRegistration(policy))).toEqual({ kind: "accepted" })
+
+    store.selectConversation("codex")
+    expect(store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "codex-child" },
+      parentId: "codex",
+      parentGeneration: 2,
+      childGeneration: 2,
+    })).toEqual({ kind: "accepted" })
+
+    store.selectConversation("cursor")
+    const beforeDenial = store.getState()
+    expect(store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "cursor-child" },
+      parentId: "cursor",
+      parentGeneration: 3,
+      childGeneration: 3,
+    })).toEqual({
+      kind: "denied",
+      reason: "capacity-exhausted",
+      scope: "global",
+    })
+    expect(store.getState()).toBe(beforeDenial)
+  })
+
+  it("releases on a valid terminal publication once, not on later visible removal", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const policy = acceptedPolicy(1, 1)
+    store.addDelegatedSession(delegatedRegistration(policy))
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 100,
+    })
+    const terminal = store.getState()
+    expect(countOccupiedDelegatedChildren(terminal.delegation)).toBe(0)
+    expect(terminal.delegation.children["delegated-child"]?.terminal).toEqual({
+      status: "finished",
+      at: 100,
+    })
+
+    const replacementResult = store.addDelegatedSession({
+      ...delegatedRegistration(policy),
+      seed: { ...delegatedChildSeed, id: "replacement-child" },
+      childGeneration: 2,
+    })
+    expect(replacementResult).toEqual({ kind: "accepted" })
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+
+    const beforeDuplicate = store.getState()
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 101,
+    })
+    expect(store.getState()).toBe(beforeDuplicate)
+    store.removeDelegationChild(delegatedIdentity)
+    expect(countOccupiedDelegatedChildren(store.getState().delegation)).toBe(1)
+  })
+
   it("marks matching parent close intent once and rejects later child registration", () => {
     const store = createAppStore({ selectedVisibleId: "claude-code" })
     store.addDelegatedSession(delegatedRegistration())
@@ -1772,5 +2151,143 @@ describe("delegated session store integration", () => {
     expect(state.sessions.codex).toEqual(createSessionState(restored))
     expect(state.delegation).toEqual({ parents: {}, children: {} })
     expect(selectDelegatedChild("delegated-child")(state)).toBeNull()
+  })
+})
+
+describe("transcript window state", () => {
+  it("seeds an independent attached window for every live session", () => {
+    const state = createAppStore().getState()
+
+    expect(state.transcriptWindows).toEqual({
+      "claude-code": { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+      codex: { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+      cursor: { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+    })
+    expect(state.transcriptWindows["claude-code"]).not.toBe(state.transcriptWindows.codex)
+  })
+
+  it("updates only the addressed window and retains it through focus changes", () => {
+    const store = createAppStore()
+    const sibling = store.getState().transcriptWindows.codex
+
+    store.revealTranscriptHistory("claude-code", 12)
+    store.setTranscriptDetached("claude-code", true)
+    store.captureTranscriptScrollTop("claude-code", 7)
+    store.setFocus("codex")
+    store.setFocus("claude-code")
+
+    expect(store.getState().transcriptWindows["claude-code"]).toEqual({
+      revealedTurnCount: 12,
+      detachedFromLive: true,
+      scrollTop: 7,
+    })
+    expect(store.getState().transcriptWindows.codex).toBe(sibling)
+
+    store.returnTranscriptToLive("claude-code")
+    expect(store.getState().transcriptWindows["claude-code"]).toEqual({
+      revealedTurnCount: 12,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+  })
+
+  it("keeps unknown, invalid, and equivalent actions as notification-free state no-ops", () => {
+    const store = createAppStore()
+    const initial = store.getState()
+    const observed: AppState[] = []
+    store.subscribe((state) => observed.push(state))
+
+    store.revealTranscriptHistory("missing", 10)
+    store.revealTranscriptHistory("claude-code", 0)
+    store.revealTranscriptHistory("claude-code", Number.NaN)
+    store.setTranscriptDetached("missing", true)
+    store.setTranscriptDetached("claude-code", false)
+    store.captureTranscriptScrollTop("missing", 3)
+    store.captureTranscriptScrollTop("claude-code", -1)
+    store.captureTranscriptScrollTop("claude-code", null)
+    store.returnTranscriptToLive("missing")
+    store.returnTranscriptToLive("claude-code")
+
+    expect(store.getState()).toBe(initial)
+    expect(observed).toEqual([])
+  })
+
+  it("retains unaffected entries across streams and overlays", () => {
+    const store = createAppStore()
+    const claudeWindow = store.getState().transcriptWindows["claude-code"]
+    const codexWindow = store.getState().transcriptWindows.codex
+
+    store.applyEvent("claude-code", message("stream", "token"))
+    store.openApproval({
+      sessionId: "codex",
+      title: "Codex",
+      cwd: "/work",
+      request: APPROVAL_REQUEST,
+    })
+    store.openClarification({
+      requestId: "clarification-window",
+      generation: 1,
+      sessionId: "claude-code",
+      title: "Claude",
+      cwd: "/work",
+      payload: CLARIFICATION_PAYLOAD,
+    })
+
+    expect(store.getState().transcriptWindows["claude-code"]).toBe(claudeWindow)
+    expect(store.getState().transcriptWindows.codex).toBe(codexWindow)
+  })
+
+  it("resets or discards only the correct lifecycle entries", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.revealTranscriptHistory("codex", 5)
+    const claudeWindow = store.getState().transcriptWindows["claude-code"]
+
+    store.startSession("codex", "new-acp")
+    expect(store.getState().transcriptWindows.codex).toEqual({
+      revealedTurnCount: 0,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+    expect(store.getState().transcriptWindows["claude-code"]).toBe(claudeWindow)
+
+    const dynamic: SessionSeed = {
+      id: "dynamic-window",
+      providerKind: "codex",
+      title: "Dynamic",
+      cwd: "/work/dynamic",
+    }
+    store.addSession(dynamic)
+    expect(store.getState().transcriptWindows[dynamic.id]).toEqual({
+      revealedTurnCount: 0,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+    store.removeSession(dynamic.id)
+    expect(store.getState().transcriptWindows[dynamic.id]).toBeUndefined()
+
+    store.addDelegatedSession(delegatedRegistration())
+    store.revealTranscriptHistory("delegated-child", 3)
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "running",
+      sessionStatus: "working",
+    })
+    store.publishDelegatedChildState({
+      ...delegatedIdentity,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 1,
+    })
+    store.removeDelegationChild(delegatedIdentity)
+    expect(store.getState().transcriptWindows["delegated-child"]).toBeUndefined()
+
+    const restored = seed("codex", "restored")
+    store.replaceSessions(
+      [{ seed: restored, workspace: { sessionId: restored.id, displayName: "Restored" } }],
+      restored.id,
+    )
+    expect(store.getState().transcriptWindows).toEqual({
+      codex: { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null },
+    })
   })
 })

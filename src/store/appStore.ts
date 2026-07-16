@@ -25,7 +25,12 @@
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
-import { createDelegationState, delegationReducer } from "../core/orchestration.ts"
+import {
+  createDelegationState,
+  delegationReducer,
+  registerDelegatedChild,
+} from "../core/orchestration.ts"
+import type { ExplorePolicySnapshot } from "../core/explorePolicy.ts"
 import type {
   StatuslineLayout,
   StatuslinePreference,
@@ -41,8 +46,10 @@ import {
   type ConfigOption,
   type DelegationState,
   type DomainSessionEvent,
+  type ExploreCapacityScope,
   type HandoffBundle,
   type HarnessDeliveryNotice,
+  type ManagedWorktreeBinding,
   type ProviderKind,
   type SessionId,
   type SessionSeed,
@@ -159,6 +166,13 @@ export interface Preferences {
   statusline: StatuslinePreference
 }
 
+/** Ephemeral presentation state for one live session transcript. Never persisted. */
+export interface TranscriptWindowState {
+  readonly revealedTurnCount: number
+  readonly detachedFromLive: boolean
+  readonly scrollTop: number | null
+}
+
 /** Whether a restored session is promptable or only its saved context remains. */
 export type RestorationMode = "live" | "unavailable"
 
@@ -222,6 +236,8 @@ export interface OverlayState {
  */
 export interface AppState {
   sessions: Record<SessionId, SessionState>
+  /** Per-session live transcript presentation state; intentionally absent from run records. */
+  transcriptWindows: Record<SessionId, TranscriptWindowState>
   /** Protocol-free live delegation ownership; intentionally empty after restore. */
   delegation: DelegationState
   /** User-owned conversation metadata, order, lifecycle, selection, and attention acknowledgement. */
@@ -260,8 +276,20 @@ export interface DelegatedSessionRegistration {
   readonly childGeneration: number
   readonly task: string
   readonly desiredOutcome: string
+  /** Accepted explore policy; task 03 makes this mandatory at the controller boundary. */
+  readonly policy?: ExplorePolicySnapshot
   readonly displayName?: string
 }
+
+/** Synchronous result returned before any delegated runtime startup can begin. */
+export type DelegatedSessionAdmissionResult =
+  | { readonly kind: "accepted" }
+  | {
+      readonly kind: "denied"
+      readonly reason: "capacity-exhausted"
+      readonly scope: ExploreCapacityScope
+    }
+  | { readonly kind: "rejected" }
 
 export interface DelegatedChildIdentity {
   readonly parentId: SessionId
@@ -305,6 +333,16 @@ export interface AppStore {
 
   /** Apply one already-coalesced domain event to that session's slice. */
   applyEvent(sessionId: SessionId, event: DomainSessionEvent): void
+  /** Reveal an additional number of older turns for one live session. */
+  revealTranscriptHistory(sessionId: SessionId, turnCount: number): void
+  /** Record whether one session is being read away from its live tail. */
+  setTranscriptDetached(sessionId: SessionId, detachedFromLive: boolean): void
+  /** Capture or clear one session's renderer-owned scroll anchor. */
+  captureTranscriptScrollTop(sessionId: SessionId, scrollTop: number | null): void
+  /** Reattach one session to its live tail and clear its captured anchor. */
+  returnTranscriptToLive(sessionId: SessionId): void
+  /** Clear one reducer-owned recovery payload after the composer has copied it. */
+  acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
@@ -316,9 +354,11 @@ export interface AppStore {
   /** Atomically insert a normalized execution slice and its visible workspace entry. */
   addSession(seed: SessionSeed, options?: { displayName?: string; availability?: ConversationAvailability }): void
   /** Atomically insert and background a normal child session with delegation ownership. */
-  addDelegatedSession(registration: DelegatedSessionRegistration): void
+  addDelegatedSession(registration: DelegatedSessionRegistration): DelegatedSessionAdmissionResult
   /** Publish one accepted child lifecycle and its reducer-owned session status atomically. */
   publishDelegatedChildState(publication: DelegatedChildStatePublication): void
+  /** Publish controller-verified managed-worktree review state for its owning session. */
+  publishManagedWorktreeBinding(sessionId: SessionId, binding: ManagedWorktreeBinding): void
   /** Fence new child registration before a controller-owned parent cascade begins. */
   markDelegationParentClosing(parentId: SessionId, parentGeneration: number): void
   /** Atomically remove one terminal child from session, workspace, and delegation state. */
@@ -432,10 +472,12 @@ class AppStoreImpl implements AppStore {
   constructor(options: AppStoreOptions) {
     const seeds = options.seeds ?? defaultSessionSeeds()
     const sessions = {} as Record<SessionId, SessionState>
+    const transcriptWindows = {} as Record<SessionId, TranscriptWindowState>
     const restoration = {} as Record<SessionId, RestorationMode | null>
     const clarificationCapabilities = {} as Record<SessionId, ClarificationCapability>
     for (const seed of seeds) {
       sessions[seed.id] = createSessionState(seed)
+      transcriptWindows[seed.id] = createTranscriptWindowState()
       restoration[seed.id] = null
       clarificationCapabilities[seed.id] = unknownClarificationCapability()
     }
@@ -449,6 +491,7 @@ class AppStoreImpl implements AppStore {
     })
     this.state = {
       sessions,
+      transcriptWindows,
       delegation: createDelegationState(),
       workspace,
       workspaceNotice: null,
@@ -531,6 +574,58 @@ class AppStoreImpl implements AppStore {
     })
   }
 
+  revealTranscriptHistory(sessionId: SessionId, turnCount: number): void {
+    const current = this.state.transcriptWindows[sessionId]
+    if (!current || !Number.isFinite(turnCount) || turnCount <= 0) return
+    const increment = Math.floor(turnCount)
+    if (increment <= 0) return
+    const revealedTurnCount = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      current.revealedTurnCount + increment,
+    )
+    if (revealedTurnCount === current.revealedTurnCount) return
+    this.updateTranscriptWindow(sessionId, { ...current, revealedTurnCount })
+  }
+
+  setTranscriptDetached(sessionId: SessionId, detachedFromLive: boolean): void {
+    const current = this.state.transcriptWindows[sessionId]
+    if (!current || current.detachedFromLive === detachedFromLive) return
+    this.updateTranscriptWindow(sessionId, { ...current, detachedFromLive })
+  }
+
+  captureTranscriptScrollTop(sessionId: SessionId, scrollTop: number | null): void {
+    const current = this.state.transcriptWindows[sessionId]
+    if (
+      !current ||
+      (scrollTop !== null && (!Number.isFinite(scrollTop) || scrollTop < 0)) ||
+      current.scrollTop === scrollTop
+    ) {
+      return
+    }
+    this.updateTranscriptWindow(sessionId, { ...current, scrollTop })
+  }
+
+  returnTranscriptToLive(sessionId: SessionId): void {
+    const current = this.state.transcriptWindows[sessionId]
+    if (!current || (!current.detachedFromLive && current.scrollTop === null)) return
+    this.updateTranscriptWindow(sessionId, {
+      ...current,
+      detachedFromLive: false,
+      scrollTop: null,
+    })
+  }
+
+  acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void {
+    const steering = this.state.sessions[sessionId]?.steering
+    const current = steering?.queue[0]
+    if (!current || steering.recovery === null) return
+    this.applyEvent(sessionId, {
+      kind: "steering_acknowledge_recovery",
+      requestId,
+      generation: current.generation,
+    })
+  }
+
   applyShellEvent(event: ShellEvent): void {
     const next = shellReducer(this.state.shell, event)
     if (next === this.state.shell) return
@@ -552,6 +647,7 @@ class AppStoreImpl implements AppStore {
       title: existing.title,
       cwd: existing.cwd,
       task: existing.task,
+      worktreeBinding: existing.worktreeBinding,
       acpSessionId,
     })
     const workspace = options.preserveWorkspaceAttention
@@ -564,6 +660,10 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [sessionId]: fresh },
+      transcriptWindows: {
+        ...this.state.transcriptWindows,
+        [sessionId]: createTranscriptWindowState(),
+      },
       workspace,
     })
   }
@@ -584,6 +684,10 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      transcriptWindows: {
+        ...this.state.transcriptWindows,
+        [seed.id]: createTranscriptWindowState(),
+      },
       workspace,
       restoration: { ...this.state.restoration, [seed.id]: null },
       clarificationCapabilities: {
@@ -596,19 +700,30 @@ class AppStoreImpl implements AppStore {
     })
   }
 
-  addDelegatedSession(registration: DelegatedSessionRegistration): void {
-    const { seed, parentId, parentGeneration, childGeneration, task, desiredOutcome } = registration
+  addDelegatedSession(
+    registration: DelegatedSessionRegistration,
+  ): DelegatedSessionAdmissionResult {
+    const {
+      seed,
+      parentId,
+      parentGeneration,
+      childGeneration,
+      task,
+      desiredOutcome,
+      policy,
+    } = registration
     if (
       !this.state.sessions[parentId] ||
       !this.state.workspace.conversations[parentId] ||
-      this.state.workspace.selectedVisibleId !== parentId ||
       this.state.sessions[seed.id] ||
       this.state.workspace.conversations[seed.id]
     ) {
-      return
+      return { kind: "rejected" }
     }
 
-    const delegation = delegationReducer(this.state.delegation, {
+    const selectedVisibleId = this.state.workspace.selectedVisibleId
+
+    const admission = registerDelegatedChild(this.state.delegation, {
       kind: "register_child",
       parentId,
       childId: seed.id,
@@ -616,8 +731,14 @@ class AppStoreImpl implements AppStore {
       childGeneration,
       task,
       desiredOutcome,
+      ...(policy ? { policy } : {}),
     })
-    if (delegation === this.state.delegation) return
+    if (admission.kind !== "accepted") {
+      return admission.kind === "denied"
+        ? { kind: "denied", reason: admission.reason, scope: admission.scope }
+        : { kind: "rejected" }
+    }
+    const delegation = admission.state
 
     const createdWorkspace = workspaceReducer(this.state.workspace, {
       kind: "create",
@@ -626,20 +747,24 @@ class AppStoreImpl implements AppStore {
       availability: { kind: "starting" },
       initialStatus: "idle",
     })
-    if (createdWorkspace === this.state.workspace) return
+    if (createdWorkspace === this.state.workspace) return { kind: "rejected" }
     const backgroundWorkspace = workspaceReducer(createdWorkspace, {
       kind: "background",
       sessionId: seed.id,
     })
-    if (backgroundWorkspace === createdWorkspace) return
-    const workspace = backgroundWorkspace.selectedVisibleId === parentId
+    if (backgroundWorkspace === createdWorkspace) return { kind: "rejected" }
+    const workspace = backgroundWorkspace.selectedVisibleId === selectedVisibleId
       ? backgroundWorkspace
-      : { ...backgroundWorkspace, selectedVisibleId: parentId }
-    if (workspace.selectedVisibleId !== parentId) return
+      : { ...backgroundWorkspace, selectedVisibleId }
+    if (workspace.selectedVisibleId !== selectedVisibleId) return { kind: "rejected" }
 
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      transcriptWindows: {
+        ...this.state.transcriptWindows,
+        [seed.id]: createTranscriptWindowState(),
+      },
       delegation,
       workspace,
       restoration: { ...this.state.restoration, [seed.id]: null },
@@ -648,6 +773,7 @@ class AppStoreImpl implements AppStore {
         [seed.id]: unknownClarificationCapability(),
       },
     })
+    return { kind: "accepted" }
   }
 
   publishDelegatedChildState(publication: DelegatedChildStatePublication): void {
@@ -670,6 +796,24 @@ class AppStoreImpl implements AppStore {
       sessions: { ...this.state.sessions, [publication.childId]: nextSession },
       delegation,
       workspace,
+    })
+  }
+
+  publishManagedWorktreeBinding(sessionId: SessionId, binding: ManagedWorktreeBinding): void {
+    const session = this.state.sessions[sessionId]
+    if (
+      !session ||
+      binding.ownerSessionId !== sessionId ||
+      sameManagedWorktreeBinding(session.worktreeBinding, binding)
+    ) {
+      return
+    }
+    this.commit({
+      ...this.state,
+      sessions: {
+        ...this.state.sessions,
+        [sessionId]: { ...session, worktreeBinding: binding },
+      },
     })
   }
 
@@ -698,11 +842,13 @@ class AppStoreImpl implements AppStore {
       sessionId: identity.childId,
     })
     const sessions = { ...this.state.sessions }
+    const transcriptWindows = { ...this.state.transcriptWindows }
     const restoration = { ...this.state.restoration }
     const clarificationCapabilities = { ...this.state.clarificationCapabilities }
     const harnessDeliveries = { ...this.state.harnessDeliveries }
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[identity.childId]
+    delete transcriptWindows[identity.childId]
     delete restoration[identity.childId]
     delete clarificationCapabilities[identity.childId]
     delete harnessDeliveries[identity.childId]
@@ -711,6 +857,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      transcriptWindows,
       delegation,
       workspace,
       overlays: clearSessionOverlays(this.state.overlays, identity.childId),
@@ -727,10 +874,12 @@ class AppStoreImpl implements AppStore {
     selectedVisibleId: SessionId | null,
   ): void {
     const sessions: Record<SessionId, SessionState> = {}
+    const transcriptWindows: Record<SessionId, TranscriptWindowState> = {}
     const restoration: Record<SessionId, RestorationMode | null> = {}
     const clarificationCapabilities: Record<SessionId, ClarificationCapability> = {}
     for (const entry of entries) {
       sessions[entry.seed.id] = createSessionState(entry.seed)
+      transcriptWindows[entry.seed.id] = createTranscriptWindowState()
       restoration[entry.seed.id] = null
       clarificationCapabilities[entry.seed.id] = unknownClarificationCapability()
     }
@@ -741,6 +890,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      transcriptWindows,
       delegation: createDelegationState(),
       workspace,
       workspaceNotice: null,
@@ -757,11 +907,13 @@ class AppStoreImpl implements AppStore {
     if (!this.state.sessions[sessionId] || !this.state.workspace.conversations[sessionId]) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "close_succeeded", sessionId })
     const sessions = { ...this.state.sessions }
+    const transcriptWindows = { ...this.state.transcriptWindows }
     const restoration = { ...this.state.restoration }
     const clarificationCapabilities = { ...this.state.clarificationCapabilities }
     const harnessDeliveries = { ...this.state.harnessDeliveries }
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[sessionId]
+    delete transcriptWindows[sessionId]
     delete restoration[sessionId]
     delete clarificationCapabilities[sessionId]
     delete harnessDeliveries[sessionId]
@@ -769,6 +921,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      transcriptWindows,
       workspace,
       overlays: clearSessionOverlays(this.state.overlays, sessionId),
       restoration,
@@ -1091,6 +1244,19 @@ class AppStoreImpl implements AppStore {
     })
   }
 
+  private updateTranscriptWindow(
+    sessionId: SessionId,
+    transcriptWindow: TranscriptWindowState,
+  ): void {
+    this.commit({
+      ...this.state,
+      transcriptWindows: {
+        ...this.state.transcriptWindows,
+        [sessionId]: transcriptWindow,
+      },
+    })
+  }
+
   /**
    * Publish a new state. Listeners are notified from a snapshot of the set, so a
    * listener that unsubscribes (or subscribes) during notification cannot disturb
@@ -1104,6 +1270,10 @@ class AppStoreImpl implements AppStore {
       listener(next, previous)
     }
   }
+}
+
+function createTranscriptWindowState(): TranscriptWindowState {
+  return { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null }
 }
 
 function reconcilePane(pane: FocusedPane, workspace: WorkspaceState): FocusedPane {
@@ -1198,6 +1368,22 @@ function sameClarificationCapability(
     return left.adapterPackage === right.adapterPackage && left.adapterVersion === right.adapterVersion
   }
   return left.status === "unsupported" && right.status === "unsupported" && left.reason === right.reason
+}
+
+function sameManagedWorktreeBinding(
+  left: ManagedWorktreeBinding | undefined,
+  right: ManagedWorktreeBinding,
+): boolean {
+  return left?.kind === right.kind &&
+    left.id === right.id &&
+    left.repoRoot === right.repoRoot &&
+    left.worktreePath === right.worktreePath &&
+    left.branch === right.branch &&
+    left.baseBranch === right.baseBranch &&
+    left.baseSha === right.baseSha &&
+    left.ownerSessionId === right.ownerSessionId &&
+    left.availability === right.availability &&
+    left.reason === right.reason
 }
 
 /**

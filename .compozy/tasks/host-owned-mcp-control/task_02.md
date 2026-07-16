@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Define the strict agent_run MCP tool contract
 type: backend
 complexity: medium
@@ -28,10 +28,10 @@ Add the narrow public `agent_run` MCP tool for bounded `start` and explicit `pol
 
 ## Subtasks
 
-- [ ] 2.1 Define the strict public operation schemas and bounded input rules.
-- [ ] 2.2 Register `agent_run` alongside the preserved bundled `ask_user` tool.
-- [ ] 2.3 Forward correlated bounded local frames without caller-owned identity fields.
-- [ ] 2.4 Serialize accepted snapshots and generic failures without sensitive content.
+- [x] 2.1 Define the strict public operation schemas and bounded input rules.
+- [x] 2.2 Register `agent_run` alongside the preserved bundled `ask_user` tool.
+- [x] 2.3 Forward correlated bounded local frames without caller-owned identity fields.
+- [x] 2.4 Serialize accepted snapshots and generic failures without sensitive content.
 
 ## Implementation Details
 
@@ -62,13 +62,13 @@ Follow the TechSpec “Data Models,” “API Endpoints,” and “Testing Appro
 ## Tests
 
 - Unit tests:
-  - [ ] A start request with one and four valid distinct task/outcome pairs is accepted for forwarding.
-  - [ ] Empty, over-limit, duplicate, unknown-key, and caller-identity-bearing start input returns `invalid_request` without forwarding.
-  - [ ] Empty, duplicate, and malformed poll ID lists return `invalid_request` without forwarding.
-  - [ ] Oversized, malformed, uncorrelated, and unavailable local frames produce only the approved generic categories and do not echo task or outcome sentinels.
-  - [ ] Successful snapshots contain only child ID, lifecycle status, and an optional terminal timestamp in request order.
+  - [x] A start request with one and four valid distinct task/outcome pairs is accepted for forwarding.
+  - [x] Empty, over-limit, duplicate, unknown-key, and caller-identity-bearing start input returns `invalid_request` without forwarding.
+  - [x] Empty, duplicate, and malformed poll ID lists return `invalid_request` without forwarding.
+  - [x] Oversized, malformed, uncorrelated, and unavailable local frames produce only the approved generic categories and do not echo task or outcome sentinels.
+  - [x] Successful snapshots contain only child ID, lifecycle status, and an optional terminal timestamp in request order.
 - Integration tests:
-  - [ ] The bundled server’s tool list contains both `ask_user` and `agent_run` after registration.
+  - [x] The bundled server’s tool list contains both `ask_user` and `agent_run` after registration.
 - Test coverage target: >=80%
 - All tests must pass
 

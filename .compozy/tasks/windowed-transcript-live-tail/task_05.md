@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Migrate UI Config Fixtures
 type: test
 complexity: medium

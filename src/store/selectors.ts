@@ -26,6 +26,14 @@ import {
 import type { StatuslinePreference } from "../core/statusline.ts"
 import { attentionConversationIds } from "../core/workspace.ts"
 import type { PromptHistoryState } from "../core/promptHistory.ts"
+import {
+  projectTranscript,
+  type TranscriptProjection,
+} from "../core/transcriptProjection.ts"
+import type {
+  ExploreDenialReason,
+  ExplorePolicySnapshot,
+} from "../core/explorePolicy.ts"
 import type {
   AvailableCommand,
   ConfigOption,
@@ -39,15 +47,21 @@ import type {
   DelegationState,
   PendingDiff,
   PlanEntry,
+  PromptBlock,
   ProviderKind,
   SessionId,
   SessionState,
   SessionStatus,
+  SteeringPhase,
+  SteeringState,
   ShellState,
   ThemePreference,
   Turn,
   HandoffBundle,
   HarnessDeliveryNotice,
+  ManagedWorktreeAvailability,
+  ManagedWorktreeBinding,
+  ManagedWorktreeReason,
   ConversationAvailability,
   TeardownState,
   WorkspaceConversation,
@@ -69,6 +83,7 @@ import type {
   Selector,
   StatuslineOverlay,
   TabDialogOverlay,
+  TranscriptWindowState,
 } from "./appStore.ts"
 
 /**
@@ -86,6 +101,17 @@ const EMPTY_PENDING_DIFFS: PendingDiff[] = []
 const EMPTY_REFERENCED_FILES = new Map<string, "read" | "edited">()
 const EMPTY_CONFIG_OPTIONS: ConfigOption[] = []
 const EMPTY_PROMPT_HISTORY: PromptHistoryState = { entries: [], cursor: null }
+const EMPTY_ACTIVE_TOOL_CALL_IDS: readonly string[] = []
+const DEFAULT_TRANSCRIPT_WINDOW: TranscriptWindowState = Object.freeze({
+  revealedTurnCount: 0,
+  detachedFromLive: false,
+  scrollTop: null,
+})
+const EMPTY_STEERING_STATUS: SteeringStatus = Object.freeze({
+  phase: "idle",
+  queueCount: 0,
+  recoveryAvailable: false,
+})
 const UNKNOWN_CLARIFICATION_CAPABILITY: ClarificationCapability = {
   status: "unsupported",
   reason: "unknown_recipe",
@@ -101,6 +127,92 @@ export const DELEGATED_CHILD_STATUS_LABELS: Readonly<Record<DelegatedChildStatus
   cancelled: "Cancelled",
 }
 
+/** Fixed, content-free operator copy for every closed V1 refusal category. */
+export const EXPLORE_DENIAL_LABELS: Readonly<Record<ExploreDenialReason, string>> = Object.freeze({
+  "unsupported-provider": "This provider is not verified for safe explore delegation.",
+  "missing-attestation": "This runtime has no verified safe explore attestation.",
+  "stale-attestation": "This runtime's safe explore attestation is out of date.",
+  "parent-ineligible": "This conversation is not eligible to start an explore child.",
+  "parent-closing": "This conversation is closing and cannot start an explore child.",
+  "capacity-exhausted": "Safe explore child capacity is currently full.",
+  "bridge-unavailable": "The scoped ask_user capability is unavailable for safe explore.",
+  "startup-failed": "The safe explore child could not be started.",
+})
+
+export const EXPLORE_ROLE_LABEL = "Role: explore"
+export const EXPLORE_RESTRICTION_SUMMARY =
+  "Read-only filesystem · No shell · No external MCP or agent control · Scoped ask_user only · No recursion"
+
+export interface ExploreAvailabilityPresentation {
+  readonly kind: "available" | "unavailable"
+  readonly roleLabel: typeof EXPLORE_ROLE_LABEL
+  readonly restrictionSummary: typeof EXPLORE_RESTRICTION_SUMMARY
+  readonly statusLabel: string
+  readonly reason: ExploreDenialReason | null
+}
+
+const AVAILABLE_EXPLORE_PRESENTATION: ExploreAvailabilityPresentation = Object.freeze({
+  kind: "available",
+  roleLabel: EXPLORE_ROLE_LABEL,
+  restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+  statusLabel: "Available: safety will be verified again when you confirm.",
+  reason: null,
+})
+const DENIED_EXPLORE_PRESENTATIONS = Object.freeze(
+  Object.fromEntries(
+    Object.entries(EXPLORE_DENIAL_LABELS).map(([reason, label]) => [
+      reason,
+      Object.freeze({
+        kind: "unavailable" as const,
+        roleLabel: EXPLORE_ROLE_LABEL,
+        restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+        statusLabel: `Unavailable: ${label}`,
+        reason: reason as ExploreDenialReason,
+      }),
+    ]),
+  ) as Record<ExploreDenialReason, ExploreAvailabilityPresentation>,
+)
+
+/** Stable presentation for the controller's advisory result captured with the parent. */
+export const selectExploreAvailabilityPresentation = (
+  reason: ExploreDenialReason | null,
+): Selector<ExploreAvailabilityPresentation> => {
+  const presentation = reason === null
+    ? AVAILABLE_EXPLORE_PRESENTATION
+    : DENIED_EXPLORE_PRESENTATIONS[reason]
+  return () => presentation
+}
+
+export interface ExplorePolicyPresentation {
+  readonly role: "explore"
+  readonly roleLabel: "explore"
+  readonly compactLabel: "explore"
+  readonly restrictionSummary: typeof EXPLORE_RESTRICTION_SUMMARY
+  readonly attestationVersion: string
+  readonly confirmed: ExplorePolicySnapshot["confirmed"]
+}
+
+const explorePolicyPresentationCache = new WeakMap<ExplorePolicySnapshot, ExplorePolicyPresentation>()
+
+function explorePolicyPresentation(
+  policy: ExplorePolicySnapshot | undefined,
+  terminal: boolean,
+): ExplorePolicyPresentation | null {
+  if (policy?.role !== "explore" || terminal) return null
+  const cached = explorePolicyPresentationCache.get(policy)
+  if (cached) return cached
+  const presentation: ExplorePolicyPresentation = Object.freeze({
+    role: "explore",
+    roleLabel: "explore",
+    compactLabel: "explore",
+    restrictionSummary: EXPLORE_RESTRICTION_SUMMARY,
+    attestationVersion: policy.attestationVersion,
+    confirmed: policy.confirmed,
+  })
+  explorePolicyPresentationCache.set(policy, presentation)
+  return presentation
+}
+
 export interface DelegatedChildPresentation {
   readonly kind: "child"
   readonly parentId: SessionId
@@ -109,6 +221,8 @@ export interface DelegatedChildPresentation {
   readonly status: DelegatedChildStatus
   readonly statusLabel: string
   readonly terminalTranscriptAvailable: boolean
+  /** Accepted live policy facts for task 05 presentation consumers. */
+  readonly explore: ExplorePolicyPresentation | null
 }
 
 export interface DelegationParentPresentation {
@@ -120,6 +234,93 @@ export interface DelegationParentPresentation {
 
 /** Render-ready delegation data; views never inspect raw ownership records. */
 export type DelegationPresentation = DelegatedChildPresentation | DelegationParentPresentation
+
+/** Explicit, non-color-only review text for every managed-worktree availability. */
+export const MANAGED_WORKTREE_AVAILABILITY_LABELS: Readonly<
+  Record<ManagedWorktreeAvailability, string>
+> = Object.freeze({
+  unverified: "Review status unverified",
+  available: "Review available",
+  unavailable: "Review unavailable",
+  cleanup_refused: "Cleanup refused",
+})
+
+/** Bounded operator copy for controller-published managed-worktree reasons. */
+export const MANAGED_WORKTREE_REASON_LABELS: Readonly<Record<ManagedWorktreeReason, string>> =
+  Object.freeze({
+    not_git_repository: "No Git repository was found",
+    detached_head: "The source checkout has no attached branch",
+    submodules_unsupported: "Repositories with submodules are not supported",
+    root_conflict: "The managed workspace root is unavailable",
+    collision: "The managed workspace identity is already in use",
+    verification_failed: "Managed workspace verification failed",
+    missing: "Managed workspace is missing",
+    external: "Workspace provenance is outside Kitten management",
+    dirty: "Managed workspace has uncommitted changes",
+    unmerged: "Managed workspace branch is not merged",
+    live_owned: "Managed workspace is still owned by a live child",
+    not_managed: "Workspace is not managed by Kitten",
+    git_failed: "Git could not complete the workspace operation",
+  })
+
+/** One selector-owned model shared by compact and detailed review consumers. */
+export interface ManagedWorktreeReviewPresentation {
+  readonly kind: "managed-worktree"
+  readonly managed: true
+  readonly managedLabel: "Managed worktree"
+  readonly provenance: "kitten-managed"
+  readonly provenanceLabel: "Kitten-managed workspace"
+  readonly worktreePath: string
+  readonly branch: string
+  readonly baseBranch: string
+  readonly baseSha: string
+  readonly availability: ManagedWorktreeAvailability
+  readonly availabilityLabel: string
+  readonly reason: ManagedWorktreeReason | null
+  readonly reasonLabel: string | null
+}
+
+const managedWorktreeReviewCache = new Map<string, ManagedWorktreeReviewPresentation>()
+
+function managedWorktreeReviewPresentation(
+  binding: ManagedWorktreeBinding | undefined,
+): ManagedWorktreeReviewPresentation | null {
+  if (!binding) return null
+  const key = JSON.stringify([
+    binding.worktreePath,
+    binding.branch,
+    binding.baseBranch,
+    binding.baseSha,
+    binding.availability,
+    binding.reason ?? null,
+  ])
+  const cached = managedWorktreeReviewCache.get(key)
+  if (cached) return cached
+  const reason = binding.reason ?? null
+  const presentation: ManagedWorktreeReviewPresentation = Object.freeze({
+    kind: "managed-worktree",
+    managed: true,
+    managedLabel: "Managed worktree",
+    provenance: "kitten-managed",
+    provenanceLabel: "Kitten-managed workspace",
+    worktreePath: binding.worktreePath,
+    branch: binding.branch,
+    baseBranch: binding.baseBranch,
+    baseSha: binding.baseSha,
+    availability: binding.availability,
+    availabilityLabel: MANAGED_WORKTREE_AVAILABILITY_LABELS[binding.availability],
+    reason,
+    reasonLabel: reason === null ? null : MANAGED_WORKTREE_REASON_LABELS[reason],
+  })
+  managedWorktreeReviewCache.set(key, presentation)
+  return presentation
+}
+
+/** One stable render-safe review projection, or `null` for an ordinary session. */
+export const selectManagedWorktreeReview =
+  (sessionId: SessionId): Selector<ManagedWorktreeReviewPresentation | null> =>
+  (state) =>
+    managedWorktreeReviewPresentation(state.sessions[sessionId]?.worktreeBinding)
 
 export interface DelegatedParentCloseStatusSummary {
   readonly status: DelegatedChildStatus
@@ -251,11 +452,180 @@ export const selectFocusedSession: Selector<SessionState | null> = (state) => {
   return sessionId ? (state.sessions[sessionId] ?? null) : null
 }
 
+/** Fixed policy inputs supplied by the resolved experiment configuration. */
+export interface TranscriptProjectionOptions {
+  readonly enabled: boolean
+  readonly tailTurnCount: number
+}
+
+/** One session's ephemeral transcript presentation state. */
+export const selectSessionTranscriptWindow =
+  (sessionId: SessionId | null): Selector<TranscriptWindowState> =>
+  (state) =>
+    (sessionId ? state.transcriptWindows[sessionId] : undefined) ?? DEFAULT_TRANSCRIPT_WINDOW
+
+/** The selected session's ephemeral transcript presentation state. */
+export const selectFocusedTranscriptWindow: Selector<TranscriptWindowState> = (state) => {
+  const sessionId = state.workspace.selectedVisibleId
+  return (sessionId ? state.transcriptWindows[sessionId] : undefined) ?? DEFAULT_TRANSCRIPT_WINDOW
+}
+
+/**
+ * Memoized projection for one addressed session. Unrelated sessions, focus changes,
+ * and overlays without a matching approval tool preserve the result reference.
+ */
+export const selectSessionTranscriptProjection = (
+  sessionId: SessionId | null,
+  options: TranscriptProjectionOptions,
+): Selector<TranscriptProjection> =>
+  createTranscriptProjectionSelector(() => sessionId, options)
+
+/**
+ * Memoized projection for the selected conversation. A background stream leaves
+ * every selected-session input unchanged, so focused subscribers remain silent.
+ */
+export const selectFocusedTranscriptProjection = (
+  options: TranscriptProjectionOptions,
+): Selector<TranscriptProjection> =>
+  createTranscriptProjectionSelector((state) => state.workspace.selectedVisibleId, options)
+
+function createTranscriptProjectionSelector(
+  resolveSessionId: (state: AppState) => SessionId | null,
+  options: TranscriptProjectionOptions,
+): Selector<TranscriptProjection> {
+  let previousTurns: readonly Turn[] | undefined
+  let previousStatus: SessionStatus | undefined
+  let previousRevealedTurnCount: number | undefined
+  let previousApprovalToolCallId: string | null | undefined
+  let previousProjection: TranscriptProjection | undefined
+
+  return (state) => {
+    const sessionId = resolveSessionId(state)
+    const session = sessionId ? state.sessions[sessionId] : undefined
+    const turns = session?.turns ?? EMPTY_TURNS
+    const transcriptWindow = sessionId
+      ? (state.transcriptWindows[sessionId] ?? DEFAULT_TRANSCRIPT_WINDOW)
+      : DEFAULT_TRANSCRIPT_WINDOW
+    const approval = state.overlays.approval
+    const status = options.enabled ? (session?.status ?? "idle") : "idle"
+    const revealedTurnCount = options.enabled ? transcriptWindow.revealedTurnCount : 0
+    const approvalToolCallId = options.enabled && approval?.sessionId === sessionId
+      ? approval.request.toolCall.toolCallId
+      : null
+
+    if (
+      previousProjection &&
+      previousTurns === turns &&
+      previousStatus === status &&
+      previousRevealedTurnCount === revealedTurnCount &&
+      previousApprovalToolCallId === approvalToolCallId
+    ) {
+      return previousProjection
+    }
+
+    previousTurns = turns
+    previousStatus = status
+    previousRevealedTurnCount = revealedTurnCount
+    previousApprovalToolCallId = approvalToolCallId
+    previousProjection = projectTranscript({
+      turns,
+      enabled: options.enabled,
+      revealedTurnCount,
+      protection: {
+        tailTurnCount: options.tailTurnCount,
+        activeStreamingMessageId: status === "working" ? streamingTailMessageId(turns) : null,
+        activeToolCallIds: EMPTY_ACTIVE_TOOL_CALL_IDS,
+        approvalToolCallId,
+      },
+    })
+    return previousProjection
+  }
+}
+
+function streamingTailMessageId(turns: readonly Turn[]): string | null {
+  const tail = turns[turns.length - 1]
+  return tail?.kind === "agent" ? tail.messageId : null
+}
+
 /** One session's lifecycle status. The status strip subscribes to this per session. */
 export const selectSessionStatus =
   (sessionId: SessionId | null): Selector<SessionStatus> =>
   (state) =>
     (sessionId ? state.sessions[sessionId]?.status : undefined) ?? "idle"
+
+/** Content-free composer status for one session's reducer-owned steering lifecycle. */
+export interface SteeringStatus {
+  readonly phase: SteeringPhase
+  readonly queueCount: number
+  readonly recoveryAvailable: boolean
+}
+
+/** Focused recovery data copied once by the composer before acknowledgement. */
+export interface SteeringRecovery {
+  readonly requestId: string
+  readonly blocks: readonly PromptBlock[]
+}
+
+const steeringStatusCache = new WeakMap<SteeringState, SteeringStatus>()
+const steeringRecoveryCache = new WeakMap<SteeringState, SteeringRecovery>()
+
+function steeringStatus(state: SteeringState | undefined): SteeringStatus {
+  const current = state?.queue[0]
+  if (!state || (!current && state.recovery === null)) return EMPTY_STEERING_STATUS
+  const cached = steeringStatusCache.get(state)
+  if (cached) return cached
+  const status: SteeringStatus = Object.freeze({
+    phase: current?.phase ?? "idle",
+    queueCount: state.queue.length,
+    recoveryAvailable: state.recovery !== null,
+  })
+  steeringStatusCache.set(state, status)
+  return status
+}
+
+function steeringRecovery(state: SteeringState | undefined): SteeringRecovery | null {
+  const current = state?.queue[0]
+  if (!state || !current || state.recovery === null) return null
+  const cached = steeringRecoveryCache.get(state)
+  if (cached) return cached
+  const recovery: SteeringRecovery = Object.freeze({
+    requestId: current.id,
+    blocks: state.recovery,
+  })
+  steeringRecoveryCache.set(state, recovery)
+  return recovery
+}
+
+/** Stable compact steering projection; null and unknown sessions share the idle fallback. */
+export const selectSessionSteeringStatus =
+  (sessionId: SessionId | null): Selector<SteeringStatus> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined)
+
+/** One session's current steering phase, safely idle when it is absent. */
+export const selectSessionSteeringPhase =
+  (sessionId: SessionId | null): Selector<SteeringPhase> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined).phase
+
+/** Number of accepted steering requests still owned by one session's reducer state. */
+export const selectSessionSteeringQueueCount =
+  (sessionId: SessionId | null): Selector<number> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined).queueCount
+
+/** Whether the focused recovery path has one reducer-owned payload available to copy. */
+export const selectSessionSteeringRecoveryAvailable =
+  (sessionId: SessionId | null): Selector<boolean> =>
+  (state) =>
+    steeringStatus(sessionId ? state.sessions[sessionId]?.steering : undefined)
+      .recoveryAvailable
+
+/** Exact one-time recovery data for the focused composer; generic status stays content-free. */
+export const selectSessionSteeringRecovery =
+  (sessionId: SessionId | null): Selector<SteeringRecovery | null> =>
+  (state) =>
+    steeringRecovery(sessionId ? state.sessions[sessionId]?.steering : undefined)
 
 /** One session's rounded remaining-context percentage, or `null` when unknown. */
 export const selectSessionHeadroom =
@@ -411,6 +781,8 @@ export interface SessionListItem {
   attentionSeen: boolean
   /** Cached lineage/lifecycle or parent-group presentation for delegated work. */
   delegation: DelegationPresentation | null
+  /** Shared managed-worktree review facts, independent of live delegation ownership. */
+  review: ManagedWorktreeReviewPresentation | null
 }
 
 /**
@@ -423,6 +795,62 @@ const sessionListCache = new WeakMap<
   WorkspaceState,
   WeakMap<DelegationState, WeakMap<AppState["sessions"], SessionListItem[]>>
 >()
+const sessionListItemCache = new WeakMap<WorkspaceConversation, Map<string, SessionListItem>>()
+const stableSessionLists = new WeakMap<SessionId[], SessionListItem[]>()
+const projectionObjectIds = new WeakMap<object, number>()
+let nextProjectionObjectId = 1
+
+function projectionObjectKey(value: object | null): string {
+  if (value === null) return "null"
+  let id = projectionObjectIds.get(value)
+  if (id === undefined) {
+    id = nextProjectionObjectId++
+    projectionObjectIds.set(value, id)
+  }
+  return String(id)
+}
+
+function delegationPresentationKey(presentation: DelegationPresentation | null): string {
+  if (presentation === null) return "ordinary"
+  if (presentation.kind === "parent") {
+    return JSON.stringify([
+      presentation.kind,
+      presentation.childCount,
+      presentation.groupStatus,
+      presentation.groupLabel,
+    ])
+  }
+  return JSON.stringify([
+    presentation.kind,
+    presentation.parentId,
+    presentation.parentLabel,
+    presentation.lineageLabel,
+    presentation.status,
+    presentation.statusLabel,
+    presentation.terminalTranscriptAvailable,
+    presentation.explore?.role ?? null,
+    presentation.explore?.roleLabel ?? null,
+    presentation.explore?.compactLabel ?? null,
+    presentation.explore?.restrictionSummary ?? null,
+    presentation.explore?.attestationVersion ?? null,
+    presentation.explore?.confirmed.provider ?? null,
+    presentation.explore?.confirmed.model ?? null,
+    presentation.explore?.confirmed.effort ?? null,
+  ])
+}
+
+function stableSessionList(state: AppState, next: SessionListItem[]): SessionListItem[] {
+  const previous = stableSessionLists.get(state.workspace.order)
+  if (
+    previous &&
+    previous.length === next.length &&
+    previous.every((item, index) => item === next[index])
+  ) {
+    return previous
+  }
+  stableSessionLists.set(state.workspace.order, next)
+  return next
+}
 
 function displayLabel(state: AppState, sessionId: SessionId): string {
   const conversation = state.workspace.conversations[sessionId]
@@ -465,6 +893,7 @@ function delegationPresentation(
         status: child.status,
         statusLabel: DELEGATED_CHILD_STATUS_LABELS[child.status],
         terminalTranscriptAvailable: child.terminal !== undefined,
+        explore: explorePolicyPresentation(child.policy, child.terminal !== undefined),
       }
     : parent && aggregateStatus
       ? {
@@ -502,13 +931,33 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
     const conversation = state.workspace.conversations[id]
     if (!session || !conversation) return []
     const duplicate = duplicatePosition(state, id)
-    return [{
+    const label = duplicate.count > 1
+      ? `${conversation.displayName} (${duplicate.index})`
+      : conversation.displayName
+    const delegation = delegationPresentation(state, id)
+    const review = managedWorktreeReviewPresentation(session.worktreeBinding)
+    const key = JSON.stringify([
+      label,
+      session.providerKind,
+      session.cwd,
+      session.status,
+      conversation.lifecycle,
+      state.workspace.selectedVisibleId === id,
+      conversation.attention.seen,
+      delegationPresentationKey(delegation),
+      projectionObjectKey(review),
+    ])
+    let byKey = sessionListItemCache.get(conversation)
+    if (!byKey) {
+      byKey = new Map()
+      sessionListItemCache.set(conversation, byKey)
+    }
+    const cachedItem = byKey.get(key)
+    if (cachedItem) return [cachedItem]
+    const item: SessionListItem = {
       id,
       title: conversation.displayName,
-      label:
-        duplicate.count > 1
-          ? `${conversation.displayName} (${duplicate.index})`
-          : conversation.displayName,
+      label,
       providerKind: session.providerKind,
       cwd: session.cwd,
       status: session.status,
@@ -516,11 +965,15 @@ export const selectSessionList: Selector<SessionListItem[]> = (state) => {
       lifecycle: conversation.lifecycle,
       selected: state.workspace.selectedVisibleId === id,
       attentionSeen: conversation.attention.seen,
-      delegation: delegationPresentation(state, id),
-    }]
+      delegation,
+      review,
+    }
+    byKey.set(key, item)
+    return [item]
   })
-  bySessions.set(state.sessions, list)
-  return list
+  const stable = stableSessionList(state, list)
+  bySessions.set(state.sessions, stable)
+  return stable
 }
 
 /**
@@ -706,6 +1159,8 @@ export interface WorkspaceConversationView {
   sharedWorkspaceCount: number
   /** Cached lineage/lifecycle or parent-group presentation for delegated work. */
   delegation: DelegationPresentation | null
+  /** The same cached managed-worktree review object exposed by session-list rows. */
+  review: ManagedWorktreeReviewPresentation | null
 }
 
 export interface SharedWorkspaceCue {
@@ -761,11 +1216,7 @@ function workspaceConversationView(
   const sharedCount = sharedWorkspaceCount(state, session.cwd)
   const selected = state.workspace.selectedVisibleId === sessionId
   const delegation = delegationPresentation(state, sessionId)
-  const delegationKey = delegation === null
-    ? "ordinary"
-    : delegation.kind === "child"
-      ? `child:${delegation.parentLabel}:${delegation.status}:${delegation.terminalTranscriptAvailable}`
-      : `parent:${delegation.childCount}:${delegation.groupStatus}`
+  const review = managedWorktreeReviewPresentation(session.worktreeBinding)
   const key = [
     session.providerKind,
     session.cwd,
@@ -774,7 +1225,8 @@ function workspaceConversationView(
     duplicate.index,
     duplicate.count,
     sharedCount,
-    delegationKey,
+    delegationPresentationKey(delegation),
+    projectionObjectKey(review),
   ].join("\u0000")
   let byKey = conversationViewCache.get(conversation)
   if (!byKey) {
@@ -803,6 +1255,7 @@ function workspaceConversationView(
     duplicateCount: duplicate.count,
     sharedWorkspaceCount: sharedCount,
     delegation,
+    review,
   }
   byKey.set(key, view)
   return view

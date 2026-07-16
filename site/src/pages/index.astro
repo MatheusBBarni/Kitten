@@ -1,4 +1,6 @@
 ---
+import { getImage } from "astro:assets";
+
 import Faq from "../components/Faq.astro";
 import Hero from "../components/Hero.astro";
 import Install from "../components/Install.astro";
@@ -9,11 +11,19 @@ import {
   assertValidShowcaseConfig,
   showcaseConfig,
 } from "../config/showcase-config.ts";
+import kittenIcon from "../../../assets/kitten-icon.png";
 import "../styles/site.css";
 
 assertValidShowcaseConfig(showcaseConfig);
 
-const { site, hero, proof, install, requirements, faq, repository } =
+const favicon = await getImage({
+  src: kittenIcon,
+  width: 64,
+  height: 64,
+  format: "png",
+});
+
+const { site, navigation, hero, proof, install, requirements, faq, repository } =
   showcaseConfig;
 ---
 
@@ -23,14 +33,22 @@ const { site, hero, proof, install, requirements, faq, repository } =
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
     <meta name="description" content={site.description} />
+    <link rel="icon" type="image/png" sizes="64x64" href={favicon.src} />
     <title>{site.title}</title>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <SiteControls
+      repository={repository}
+      navigation={navigation}
+      hero={hero}
+      proof={proof}
+      install={install}
+    />
     <main id="main-content">
       <Hero section={hero} install={install} />
       <Proof section={proof} />
       <Install section={install} />
-      <SiteControls repository={repository} hero={hero} install={install} />
       <Requirements section={requirements} />
       <Faq section={faq} />
     </main>

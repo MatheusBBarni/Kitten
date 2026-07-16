@@ -28,19 +28,31 @@ import {
   type ProviderKind,
   type ProviderModelDefault,
   type SessionId,
+  type PromptBlock as CorePromptBlock,
 } from "../core/types.ts"
 import type { StatuslineLayout } from "../core/statusline.ts"
+import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
 import type { AppStore } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
+import type { CleanupManagedWorktreeResult } from "./managedWorktree.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
 
-/** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
+/** Options for one controller-authorized prompt dispatch. */
 export interface PromptSendOptions {
+  /** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
   readonly persist?: boolean
+  /**
+   * Invoked after the prompt transport has been started, but before its turn settles.
+   *
+   * This is intentionally a notification rather than a completion callback: callers
+   * that supervise a detached turn can publish its running state without waiting for
+   * the provider's eventual reply.
+   */
+  readonly onDispatched?: () => void
 }
 
 /** Explicit, provider-neutral work assigned to one background child session. */
@@ -49,6 +61,16 @@ export interface StartDelegatedChildInput {
   readonly task: string
   readonly desiredOutcome: string
 }
+
+export type ExploreLaunchRequest = StartDelegatedChildInput
+
+export type ExploreLaunchResult =
+  | { readonly kind: "started"; readonly childId: SessionId }
+  | { readonly kind: "denied"; readonly reason: ExploreDenialReason; readonly scope?: "per-parent" | "global" }
+
+export type ExploreAvailabilityResult =
+  | { readonly kind: "available" }
+  | { readonly kind: "denied"; readonly reason: ExploreDenialReason }
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
@@ -60,6 +82,16 @@ export interface AgentSession {
 /** A controller-authorized prompt invocation prepared before visible recording. */
 export interface PreparedPromptDispatch {
   invoke(): Promise<PromptResult>
+}
+
+/** Closed, fail-soft result of one primary-session steering submission. */
+export type SteeringResult =
+  | { readonly kind: "queued"; readonly requestId: string }
+  | { readonly kind: "unavailable"; readonly reason: "empty" | "session" | "inactive" | "recovering" }
+
+/** Captured controller seam that binds steering to one live turn generation. */
+export interface SteeringEnqueue {
+  (sessionId: SessionId, blocks: readonly CorePromptBlock[]): SteeringResult
 }
 
 /**
@@ -179,6 +211,10 @@ export interface ActionDeps {
   ) => PreparedPromptDispatch | null
   /** Settle a possibly invoked first delivery before cancellation reaches transport. */
   terminalizePromptDispatch?: (sessionId: SessionId) => void
+  /** Enqueue against one controller-captured active turn and start its coordinator. */
+  enqueueSteering?: SteeringEnqueue
+  /** Terminalize steering before explicit transport cancellation begins. */
+  terminalizeSteering?: (sessionId: SessionId) => void
   /** Read the latest controller-owned default for one configured session. */
   getProviderDefault?: (sessionId: SessionId) => ProviderModelDefault | undefined
   /** Settle the permission request currently shown in the approval overlay. */
@@ -207,6 +243,12 @@ export interface ActionDeps {
   createConversation?: () => Promise<SessionId | null>
   /** Create, register, and dispatch one controller-owned delegated child. */
   startDelegatedChild?: (input: StartDelegatedChildInput) => Promise<SessionId | null>
+  /** Remove one verified terminal managed child workspace after controller gating. */
+  cleanupManagedWorktree?: (childId: SessionId) => Promise<CleanupManagedWorktreeResult>
+  /** Authoritative fail-closed explore launch. */
+  startExploreChild?: (input: ExploreLaunchRequest) => Promise<ExploreLaunchResult>
+  /** Advisory only; launch always re-attests. */
+  exploreAvailability?: (parentId: SessionId) => ExploreAvailabilityResult
   /** Send additional direction to one live, owned delegated child. */
   steerDelegatedChild?: (childId: SessionId, text: string) => Promise<PromptResult | null>
   /** Cancel one live, owned delegated child without exposing its runtime. */
@@ -225,6 +267,12 @@ export interface ControllerActions {
   createConversation(): Promise<SessionId | null>
   /** Start explicit child work in the background while retaining parent focus. */
   startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null>
+  /** Explicitly clean one managed terminal non-live child workspace. */
+  cleanupManagedWorktree(childId: SessionId): Promise<CleanupManagedWorktreeResult>
+  /** Start only an exactly attested explore child, with a typed closed outcome. */
+  startExploreChild(input: ExploreLaunchRequest): Promise<ExploreLaunchResult>
+  /** Read current advisory eligibility without reserving or starting anything. */
+  exploreAvailability(parentId: SessionId): ExploreAvailabilityResult
   /** Send non-empty additional direction to one current, non-terminal owned child. */
   steerDelegatedChild(childId: SessionId, text: string): Promise<PromptResult | null>
   /** Idempotently cancel one current, non-terminal owned child. */
@@ -265,6 +313,10 @@ export interface ControllerActions {
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
   sendPrompt(input: PromptInput, sessionId?: SessionId, options?: PromptSendOptions): Promise<PromptResult | null>
+  /** Queue non-empty direction for the captured active turn without creating a prompt. */
+  steer(input: PromptInput, sessionId?: SessionId): SteeringResult
+  /** Clear one exact recovery payload only after the composer has copied it. */
+  acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void
   /** Record one accepted plain-composer submission in the addressed session. */
   recordPromptHistory(text: string, sessionId?: SessionId): void
   /** Navigate the addressed session's history and return the post-reducer selection. */
@@ -340,6 +392,12 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const startFreshSession = deps.startFreshSession ?? (async () => false)
   const createConversation = deps.createConversation ?? (async () => null)
   const startDelegatedChild = deps.startDelegatedChild ?? (async () => null)
+  const cleanupManagedWorktree = deps.cleanupManagedWorktree ?? (async () => ({
+    kind: "refused" as const,
+    reason: "not_managed" as const,
+  }))
+  const startExploreChild = deps.startExploreChild ?? (async () => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
+  const exploreAvailability = deps.exploreAvailability ?? (() => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
   const steerDelegatedChild = deps.steerDelegatedChild ?? (async () => null)
   const cancelDelegatedChild = deps.cancelDelegatedChild ?? (async () => {})
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
@@ -373,6 +431,8 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     if (!sessionId) return null
     const blocks = composePromptBlocks(input)
     if (blocks.length === 0) return null
+    const state = store.getState().sessions[sessionId]
+    if (state && isActiveTurnStatus(state.status)) return null
     const dispatch = preparePromptDispatch(sessionId, blocks)
     if (!dispatch) {
       if (store.getState().harnessDeliveryNotices[sessionId]) {
@@ -390,7 +450,12 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       persist: options?.persist,
     })
     try {
-      const result = await dispatch.invoke()
+      // `invoke` reaches the connection before returning its settlement promise.
+      // Notify detached supervisors at that boundary so they do not have to await
+      // the whole agent turn merely to learn that dispatch was accepted.
+      const pending = dispatch.invoke()
+      options?.onDispatched?.()
+      const result = await pending
       rejectedFreshPrompts.delete(sessionId)
       return result
     } catch (error) {
@@ -610,6 +675,32 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
+    async cleanupManagedWorktree(childId): Promise<CleanupManagedWorktreeResult> {
+      try {
+        return await cleanupManagedWorktree(childId)
+      } catch (error) {
+        onError(childId, error)
+        return { kind: "failed", reason: "git_failed" }
+      }
+    },
+
+    async startExploreChild(input): Promise<ExploreLaunchResult> {
+      try {
+        return await startExploreChild(input)
+      } catch (error) {
+        onError(input.parentId, error)
+        return { kind: "denied", reason: "startup-failed" }
+      }
+    },
+
+    exploreAvailability(parentId): ExploreAvailabilityResult {
+      try {
+        return exploreAvailability(parentId)
+      } catch {
+        return { kind: "denied", reason: "missing-attestation" }
+      }
+    },
+
     async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
       try {
         return await steerDelegatedChild(childId, text)
@@ -696,6 +787,29 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
     sendPrompt,
 
+    steer(input, requestedSessionId): SteeringResult {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return { kind: "unavailable", reason: "session" }
+      const blocks = composePromptBlocks(input)
+      if (blocks.length === 0) return { kind: "unavailable", reason: "empty" }
+      const session = store.getState().sessions[sessionId]
+      if (!session || !getSession(sessionId)) return { kind: "unavailable", reason: "session" }
+      if (session.steering.recovery !== null) {
+        return { kind: "unavailable", reason: "recovering" }
+      }
+      if (!isActiveTurnStatus(session.status)) {
+        return { kind: "unavailable", reason: "inactive" }
+      }
+      return deps.enqueueSteering?.(sessionId, blocks) ?? {
+        kind: "unavailable",
+        reason: "session",
+      }
+    },
+
+    acknowledgeSteeringRecovery(sessionId, requestId): void {
+      store.acknowledgeSteeringRecovery(sessionId, requestId)
+    },
+
     recordPromptHistory: recordComposerPrompt,
 
     navigatePromptHistory: navigateComposerHistory,
@@ -706,6 +820,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       const session = getSession(sessionId)
       if (!session) return
       try {
+        deps.terminalizeSteering?.(sessionId)
         deps.terminalizePromptDispatch?.(sessionId)
         await session.connection.cancel(session.acpSessionId)
       } catch (error) {
@@ -851,4 +966,8 @@ function effortUnavailable(model: string | undefined): DefaultApplyResult {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function isActiveTurnStatus(status: import("../core/types.ts").SessionStatus): boolean {
+  return status === "working" || status === "awaiting_approval" || status === "awaiting_clarification"
 }

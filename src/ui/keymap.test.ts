@@ -25,6 +25,10 @@ import {
   HELP_ENTRIES,
   helpEntries,
   KEYMAP_HINT,
+  managedWorktreeReviewHint,
+  MANAGED_WORKTREE_CLEANUP_HINT,
+  MANAGED_WORKTREE_CLEANUP_KEYMAP,
+  MANAGED_WORKTREE_REVIEW_KEYMAP,
   matchApprovalCommand,
   matchClarificationCommand,
   matchDelegationCommand,
@@ -32,6 +36,8 @@ import {
   matchCommand,
   matchHandoffCommand,
   matchMenuCommand,
+  matchManagedWorktreeCleanupCommand,
+  matchManagedWorktreeReviewCommand,
   matchModelSelectCommand,
   matchSessionPickerCommand,
   matchSessionsCommand,
@@ -46,6 +52,7 @@ import {
   SESSION_PICKER_KEYMAP,
   SESSIONS_HINT,
   SESSIONS_KEYMAP,
+  SESSIONS_REVIEW_HINT,
   SHELL_EXIT_HINT,
   SHELL_HINT,
   SETTINGS_HINT,
@@ -196,6 +203,8 @@ describe("COCKPIT_COMMANDS", () => {
       ["clear-run", "clear"],
       ["model-select", "model"],
       ["statusline", "statusline"],
+      ["reveal-history", "history"],
+      ["return-to-live", "latest"],
       ["open-settings", "settings"],
       ["toggle-help", "help"],
     ])
@@ -207,6 +216,12 @@ describe("COCKPIT_COMMANDS", () => {
       expect(command.name).not.toContain("/")
       expect(command.description.length).toBeGreaterThan(0)
     }
+  })
+
+  it("adds no global chord for transcript history commands", () => {
+    expect(COCKPIT_KEYMAP.some(({ command }) =>
+      command === "reveal-history" || command === "return-to-live"
+    )).toBeFalse()
   })
 })
 
@@ -345,6 +360,8 @@ describe("HELP_ENTRIES", () => {
       ...HANDOFF_KEYMAP,
       ...SESSION_PICKER_KEYMAP,
       ...SESSIONS_KEYMAP,
+      ...MANAGED_WORKTREE_REVIEW_KEYMAP,
+      ...MANAGED_WORKTREE_CLEANUP_KEYMAP,
       ...MODEL_SELECT_KEYMAP,
       ...SETTINGS_KEYMAP,
       ...STATUSLINE_KEYMAP,
@@ -565,6 +582,11 @@ describe("matchSessionsCommand", () => {
     expect(matchSessionsCommand(key("d"))).toBe("close-session")
   })
 
+  it("maps r only to contextual managed-worktree review", () => {
+    expect(matchSessionsCommand(key("r"))).toBe("review-worktree")
+    expect(matchSessionsCommand(key("r", { ctrl: true }))).toBeNull()
+  })
+
   it("maps Escape to cancel, dismissing the overview without switching", () => {
     expect(matchSessionsCommand(key("escape"))).toBe("cancel")
   })
@@ -585,17 +607,50 @@ describe("matchSessionsCommand", () => {
 describe("SESSIONS_KEYMAP", () => {
   it("binds each command exactly once", () => {
     const commands = SESSIONS_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["prev-session", "next-session", "jump-into", "jump-next-needy", "close-session", "cancel"])
+    expect(commands).toEqual([
+      "prev-session",
+      "next-session",
+      "jump-into",
+      "jump-next-needy",
+      "close-session",
+      "review-worktree",
+      "cancel",
+    ])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
   it("names every binding in the hint the overview prints", () => {
     for (const binding of SESSIONS_KEYMAP) {
       // The bare `n` is a letter and the hint is written in English, so pin its word.
-      if (binding.command === "jump-next-needy") continue
+      if (binding.command === "jump-next-needy" || binding.command === "review-worktree") continue
       expect(SESSIONS_HINT).toContain(binding.keys)
     }
     expect(SESSIONS_HINT).toContain("n next attention")
+    expect(SESSIONS_REVIEW_HINT).toContain("r review worktree")
+  })
+})
+
+describe("managed worktree modal keymaps", () => {
+  it("keeps review and confirmation intents separate and modifier-safe", () => {
+    expect(matchManagedWorktreeReviewCommand(key("c"))).toBe("request-cleanup")
+    expect(matchManagedWorktreeReviewCommand(key("return"))).toBeNull()
+    expect(matchManagedWorktreeCleanupCommand(key("return"))).toBe("confirm-cleanup")
+    expect(matchManagedWorktreeCleanupCommand(key("kpenter"))).toBe("confirm-cleanup")
+    expect(matchManagedWorktreeCleanupCommand(key("return", { shift: true }))).toBeNull()
+    expect(matchManagedWorktreeCleanupCommand(key("c"))).toBeNull()
+    expect(matchManagedWorktreeReviewCommand(key("escape"))).toBe("cancel")
+    expect(matchManagedWorktreeCleanupCommand(key("escape"))).toBe("cancel")
+  })
+
+  it("binds each mode once and teaches only the keys live in that mode", () => {
+    for (const keymap of [MANAGED_WORKTREE_REVIEW_KEYMAP, MANAGED_WORKTREE_CLEANUP_KEYMAP]) {
+      const commands = keymap.map((binding) => binding.command)
+      expect(new Set(commands).size).toBe(commands.length)
+    }
+    expect(managedWorktreeReviewHint(true)).toContain("c review cleanup")
+    expect(managedWorktreeReviewHint(false)).not.toContain("review cleanup")
+    expect(MANAGED_WORKTREE_CLEANUP_HINT).toContain("Enter")
+    expect(MANAGED_WORKTREE_CLEANUP_HINT).toContain("Esc")
   })
 })
 

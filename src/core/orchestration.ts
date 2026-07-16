@@ -12,8 +12,10 @@ import type {
   DelegationEvent,
   DelegationParent,
   DelegationState,
+  ExploreCapacityScope,
   SessionId,
 } from "./types.ts"
+import { isAcceptedExplorePolicySnapshot } from "./explorePolicy.ts"
 
 const EMPTY_CHILD_IDS = Object.freeze([]) as readonly SessionId[]
 
@@ -32,6 +34,17 @@ const LEGAL_TRANSITIONS: Readonly<Record<DelegatedChildStatus, ReadonlySet<Deleg
   cancelled: new Set(),
 }
 
+/** Pure registration result consumed by the reducer and atomic store seam. */
+export type DelegatedChildRegistrationAdmission =
+  | { readonly kind: "accepted"; readonly state: DelegationState }
+  | {
+      readonly kind: "denied"
+      readonly reason: "capacity-exhausted"
+      readonly scope: ExploreCapacityScope
+      readonly state: DelegationState
+    }
+  | { readonly kind: "rejected"; readonly state: DelegationState }
+
 /** Create the empty ephemeral projection used at boot and after restore. */
 export function createDelegationState(): DelegationState {
   return { parents: {}, children: {} }
@@ -41,7 +54,7 @@ export function createDelegationState(): DelegationState {
 export function delegationReducer(state: DelegationState, event: DelegationEvent): DelegationState {
   switch (event.kind) {
     case "register_child":
-      return registerChild(state, event)
+      return registerDelegatedChild(state, event).state
     case "publish_child_status":
       return publishChildStatus(state, event)
     case "mark_parent_closing":
@@ -128,6 +141,23 @@ export function isDelegationCleanupEligible(state: DelegationState, parentId: Se
   return isDelegationSettled(state, parentId)
 }
 
+/** Count live reservations, optionally narrowed to one parent. Terminal rows do not occupy. */
+export function countOccupiedDelegatedChildren(
+  state: DelegationState,
+  parentId?: SessionId,
+): number {
+  let occupied = 0
+  for (const child of Object.values(state.children)) {
+    if (
+      (parentId === undefined || child.parentId === parentId) &&
+      !isTerminalStatus(child.status)
+    ) {
+      occupied += 1
+    }
+  }
+  return occupied
+}
+
 /** Closed predicate shared by reducer validation and downstream consumers. */
 export function isTerminalDelegatedChildStatus(
   status: DelegatedChildStatus,
@@ -135,10 +165,14 @@ export function isTerminalDelegatedChildStatus(
   return isTerminalStatus(status)
 }
 
-function registerChild(
+/**
+ * Validate and synchronously reserve one child before the store creates any
+ * session or workspace projection. Capacity denial always retains state identity.
+ */
+export function registerDelegatedChild(
   state: DelegationState,
   event: Extract<DelegationEvent, { kind: "register_child" }>,
-): DelegationState {
+): DelegatedChildRegistrationAdmission {
   if (
     event.parentId === event.childId ||
     !event.parentId ||
@@ -151,7 +185,7 @@ function registerChild(
     state.children[event.parentId] ||
     state.parents[event.childId]
   ) {
-    return state
+    return { kind: "rejected", state }
   }
 
   const existingParent = state.parents[event.parentId]
@@ -160,7 +194,29 @@ function registerChild(
     (existingParent.parentGeneration !== event.parentGeneration ||
       existingParent.closeState === "closing")
   ) {
-    return state
+    return { kind: "rejected", state }
+  }
+
+  if (event.policy !== undefined) {
+    if (!isAcceptedExplorePolicySnapshot(event.policy)) {
+      return { kind: "rejected", state }
+    }
+    if (countOccupiedDelegatedChildren(state, event.parentId) >= event.policy.limits.perParent) {
+      return {
+        kind: "denied",
+        reason: "capacity-exhausted",
+        scope: "per-parent",
+        state,
+      }
+    }
+    if (countOccupiedDelegatedChildren(state) >= event.policy.limits.global) {
+      return {
+        kind: "denied",
+        reason: "capacity-exhausted",
+        scope: "global",
+        state,
+      }
+    }
   }
 
   const child: DelegatedChildSnapshot = {
@@ -171,6 +227,7 @@ function registerChild(
     status: "starting",
     task: event.task,
     desiredOutcome: event.desiredOutcome,
+    ...(event.policy ? { policy: event.policy } : {}),
   }
   const parent: DelegationParent = existingParent
     ? { ...existingParent, childIds: [...existingParent.childIds, event.childId] }
@@ -182,8 +239,11 @@ function registerChild(
       }
 
   return {
-    parents: { ...state.parents, [event.parentId]: parent },
-    children: { ...state.children, [event.childId]: child },
+    kind: "accepted",
+    state: {
+      parents: { ...state.parents, [event.parentId]: parent },
+      children: { ...state.children, [event.childId]: child },
+    },
   }
 }
 

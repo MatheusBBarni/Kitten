@@ -56,6 +56,8 @@ export type CockpitCommand =
   | "clear-run"
   | "model-select"
   | "statusline"
+  | "reveal-history"
+  | "return-to-live"
   | "open-settings"
   | "toggle-help"
   | "close-help"
@@ -111,7 +113,14 @@ export type SessionsCommand =
   | "jump-into"
   | "jump-next-needy"
   | "close-session"
+  | "review-worktree"
   | "cancel"
+
+/** Intents live only inside one captured managed-worktree review. */
+export type ManagedWorktreeReviewCommand = "request-cleanup" | "cancel"
+
+/** Intents live only inside explicit cleanup confirmation. */
+export type ManagedWorktreeCleanupCommand = "confirm-cleanup" | "cancel"
 
 /** Every intent the `/resume` saved-run picker handles while it is on screen. */
 export type SessionPickerCommand =
@@ -212,6 +221,8 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
   { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
   { command: "statusline", name: "statusline", description: "Describe and review your personal statusline" },
+  { command: "reveal-history", name: "history", description: "Load earlier history for this conversation" },
+  { command: "return-to-live", name: "latest", description: "Return this conversation to live activity" },
   { command: "open-settings", name: "settings", description: "Open Kitten settings" },
   { command: "toggle-help", name: "help", description: "Show every Kitten command" },
 ]
@@ -577,9 +588,47 @@ export const SESSIONS_KEYMAP: readonly KeyBinding<SessionsCommand>[] = [
     matches: plain("d"),
   },
   {
+    command: "review-worktree",
+    keys: "r",
+    description: "Review the highlighted terminal managed worktree",
+    matches: plain("r"),
+  },
+  {
     command: "cancel",
     keys: "Esc",
     description: "Dismiss the overview without switching",
+    matches: plain("escape"),
+  },
+]
+
+/** Keys for one captured terminal managed-worktree review. */
+export const MANAGED_WORKTREE_REVIEW_KEYMAP: readonly KeyBinding<ManagedWorktreeReviewCommand>[] = [
+  {
+    command: "request-cleanup",
+    keys: "c",
+    description: "Review explicit cleanup confirmation",
+    matches: plain("c"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Return to the sessions overview",
+    matches: plain("escape"),
+  },
+]
+
+/** Keys for the destructive boundary after a child target has been captured. */
+export const MANAGED_WORKTREE_CLEANUP_KEYMAP: readonly KeyBinding<ManagedWorktreeCleanupCommand>[] = [
+  {
+    command: "confirm-cleanup",
+    keys: "Enter",
+    description: "Request cleanup for the captured managed worktree",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Keep the managed worktree and return to review",
     matches: plain("escape"),
   },
 ]
@@ -835,6 +884,20 @@ export const HANDOFF_CONFIG_HINT = "↑↓ move  Enter set target option  Esc ba
 /** The hint printed inside the sessions overview, where those keys are the only live ones. */
 export const SESSIONS_HINT = "↑↓ move  Enter jump  n next attention  d close  Esc close"
 
+/** The contextual overview hint shown only for a review-eligible highlighted row. */
+export const SESSIONS_REVIEW_HINT = `${SESSIONS_HINT}  r review worktree`
+
+/** Detailed review hints reflect whether the selector presentation permits cleanup. */
+export function managedWorktreeReviewHint(cleanupAvailable: boolean): string {
+  return cleanupAvailable ? "c review cleanup  Esc back" : "Esc back"
+}
+
+/** Explicit cleanup remains a separate confirmation step. */
+export const MANAGED_WORKTREE_CLEANUP_HINT = "Enter request cleanup  Esc keep worktree"
+
+/** No further modal action is accepted while the controller request is pending. */
+export const MANAGED_WORKTREE_CLEANUP_PENDING_HINT = "Cleanup request pending…"
+
 /** The hint printed inside the saved-run picker while its filter owns text input. */
 export const SESSION_PICKER_HINT =
   "Type filter  ↑↓ move  Space preview  Enter resume  Ctrl+D delete  Ctrl+A clear all  Esc cancel"
@@ -900,6 +963,8 @@ export const matchHandoffCommand = makeMatcher(HANDOFF_KEYMAP)
 
 /** The overview command a keypress maps to, or `null` when the overview does not claim it. */
 export const matchSessionsCommand = makeMatcher(SESSIONS_KEYMAP)
+export const matchManagedWorktreeReviewCommand = makeMatcher(MANAGED_WORKTREE_REVIEW_KEYMAP)
+export const matchManagedWorktreeCleanupCommand = makeMatcher(MANAGED_WORKTREE_CLEANUP_KEYMAP)
 
 /** The saved-run command a keypress maps to, or `null` when it belongs to filter text. */
 export const matchSessionPickerCommand = makeMatcher(SESSION_PICKER_KEYMAP)

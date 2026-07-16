@@ -1012,6 +1012,7 @@ const APP_CONFIG: AppConfig = {
   clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
+  transcriptWindowingEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },

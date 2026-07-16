@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Make delegated child launch transactional
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Integrate verified provisioning into the controller before child registration an
 </requirements>
 
 ## Subtasks
-- [ ] Inject the managed-worktree service into controller construction and test helpers.
-- [ ] Add provision, revalidation, and owned rollback to delegated launch.
-- [ ] Start ACP with verified child cwd while preserving current failed-child lifecycle behavior.
-- [ ] Add guarded terminal cleanup action and result publication.
-- [ ] Add controller/action ordering and refusal coverage.
+- [x] Inject the managed-worktree service into controller construction and test helpers.
+- [x] Add provision, revalidation, and owned rollback to delegated launch.
+- [x] Start ACP with verified child cwd while preserving current failed-child lifecycle behavior.
+- [x] Add guarded terminal cleanup action and result publication.
+- [x] Add controller/action ordering and refusal coverage.
 
 ## Implementation Details
 
@@ -63,14 +63,14 @@ Modify only controller and action orchestration described in the TechSpec launch
 
 ## Tests
 - Unit tests:
-  - [ ] Deferred provisioning creates no child, runtime, ACP call, prompt, or launch telemetry before success.
-  - [ ] Provision failure returns `null` and leaves parent/siblings unchanged.
-  - [ ] Unknown, ordinary, active, mismatched, and non-terminal cleanup targets make zero service calls.
-  - [ ] Thrown cleanup service errors resolve a bounded failed result through `onError`.
+  - [x] Deferred provisioning creates no child, runtime, ACP call, prompt, or launch telemetry before success.
+  - [x] Provision failure returns `null` and leaves parent/siblings unchanged.
+  - [x] Unknown, ordinary, active, mismatched, and non-terminal cleanup targets make zero service calls.
+  - [x] Thrown cleanup service errors resolve a bounded failed result through `onError`.
 - Integration tests:
-  - [ ] Successful siblings pass distinct verified cwd values to ACP startup.
-  - [ ] ACP startup failure retains a terminal failed child with its binding and no cleanup rollback.
-  - [ ] `closeConversation` never invokes cleanup.
+  - [x] Successful siblings pass distinct verified cwd values to ACP startup.
+  - [x] ACP startup failure retains a terminal failed child with its binding and no cleanup rollback.
+  - [x] `closeConversation` never invokes cleanup.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Migrate Session Shell and Telemetry Config Fixtures
 type: test
 complexity: low

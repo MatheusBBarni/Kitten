@@ -6,6 +6,7 @@ import {
   faq,
   hero,
   installVerificationSource,
+  npmPackageName,
   primaryInstallCmd,
   proof,
   repoName,
@@ -29,12 +30,31 @@ describe("showcase config", () => {
     const routes = verifiedInstallRoutes(showcaseConfig);
 
     expect(primaryInstallCmd.trim()).not.toBe("");
+    expect(npmPackageName).toBe("@matheusbbarni/kitten");
+    expect(primaryInstallCmd).toBe(
+      "npm install --global @matheusbbarni/kitten",
+    );
     expect(showcaseConfig.install.primaryInstallCmd).toBe(primaryInstallCmd);
     expect(routes).toHaveLength(1);
     expect(routes[0]).toMatchObject({
+      id: "npm",
       command: primaryInstallCmd,
       source: installVerificationSource,
     });
+    expect(showcaseConfig.install.commands).toMatchObject([
+      {
+        id: "npm",
+        command: "npm install --global @matheusbbarni/kitten",
+      },
+      {
+        id: "pnpm",
+        command: "pnpm add --global @matheusbbarni/kitten",
+      },
+      {
+        id: "bun",
+        command: "bun install --global @matheusbbarni/kitten",
+      },
+    ]);
     expect(
       showcaseConfig.install.commands.filter(
         ({ source }) => source === "verified-route",
@@ -51,24 +71,28 @@ describe("showcase config", () => {
       url: repositoryUrl,
     });
     expect(showcaseConfig.repository.star.loadingText.trim()).not.toBe("");
+    expect(
+      showcaseConfig.repository.star.loadingAccessibleLabel.trim(),
+    ).not.toBe("");
     expect(showcaseConfig.repository.star.fallbackText).not.toContain("0");
     expect(showcaseConfig.repository.star.accessibleLabel.trim()).not.toBe("");
   });
 
-  test("exports config-backed section values and safe proof defaults", () => {
+  test("exports config-backed section values and proof steps", () => {
     expect({ hero, proof, requirements, faq }).toEqual({
       hero: showcaseConfig.hero,
       proof: showcaseConfig.proof,
       requirements: showcaseConfig.requirements,
       faq: showcaseConfig.faq,
     });
-    expect(proof.videoUrl).toBeNull();
-    expect(proof.posterUrl).toBe("./proof/kitten-reviewed-handoff-poster.svg");
-    expect(proof.posterAlt.trim()).not.toBe("");
-    expect(proof.captionsUrl).toBeNull();
-    expect(proof.fallbackLabel.trim()).not.toBe("");
-    expect(proof.reducedMotionLabel.trim()).not.toBe("");
     expect(proof.accessibleDescription.trim()).not.toBe("");
+    expect(proof.steps).not.toHaveLength(0);
+    expect(hero.secondaryCtaLabel.trim()).not.toBe("");
+    expect(hero.logoAlt.trim()).not.toBe("");
+    expect(hero.outcomeTitle.trim()).not.toBe("");
+    expect(hero.outcomeBody.trim()).not.toBe("");
+    expect(hero.outcomeStatus.trim()).not.toBe("");
+    expect(hero.benefits).not.toHaveLength(0);
   });
 
   test("rejects missing or conflicting install routes", () => {
@@ -146,6 +170,16 @@ describe("showcase config", () => {
     );
   });
 
+  test("rejects an incomplete hero benefit list", () => {
+    const invalidConfig = withConfig({
+      hero: { ...showcaseConfig.hero, benefits: [] },
+    });
+
+    expect(validateShowcaseConfig(invalidConfig)).toContain(
+      "hero.benefits must contain at least one benefit.",
+    );
+  });
+
   test("rejects incomplete verified-route metadata", () => {
     const invalidRoute = withConfig({
       install: {
@@ -153,6 +187,8 @@ describe("showcase config", () => {
         commands: [
           {
             ...showcaseConfig.install.commands[0]!,
+            label: " ",
+            copyCtaLabel: "",
             shellCopyHint: "",
             verificationReference: " ",
           },
@@ -164,6 +200,8 @@ describe("showcase config", () => {
       expect.arrayContaining([
         "install.commands[0].shellCopyHint must be non-empty.",
         "install.commands[0].verificationReference must be non-empty.",
+        "install.commands[0].label must be non-empty.",
+        "install.commands[0].copyCtaLabel must be non-empty.",
       ]),
     );
   });

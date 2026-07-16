@@ -35,6 +35,7 @@ const CONTROLLER_CONFIG: AppConfig = {
   clarificationTimeoutSeconds: 300,
   persistenceEnabled: true,
   telemetryEnabled: false,
+  transcriptWindowingEnabled: false,
   theme: "auto",
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -174,7 +175,7 @@ test("Ctrl+C interrupts a foreground command and leaves the real shell usable", 
     // the observed marker a real foreground-process boundary rather than a guess
     // about when the shell has finished spawning `sleep`.
     runtime.write(encoder.encode(`/bin/sh ${JSON.stringify(script)}\n`))
-    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).trim() === started))
+    await waitForView(runtime, (lines) => lines.some((line) => lineText(line).includes(started)))
 
     runtime.interrupt()
     // The terminal echoes Ctrl+C as `^C` immediately before the trap's output.

@@ -13,8 +13,9 @@ import {
 
 const copy: StarCopy = {
   repositoryName: "Kitten",
-  loadingText: "Loading the current GitHub star count…",
-  fallbackText: "Star count unavailable — view Kitten on GitHub",
+  loadingText: "…",
+  loadingAccessibleLabel: "Star Kitten on GitHub. The live star count is loading.",
+  fallbackText: "—",
   fallbackAccessibleLabel:
     "Star Kitten on GitHub. The live star count is currently unavailable.",
 };
@@ -42,6 +43,7 @@ function createControl(
       repoOwner: "MatheusBBarni",
       repoName: "Kitten",
       starLoadingText: copy.loadingText,
+      starLoadingLabel: copy.loadingAccessibleLabel,
       starFallbackText: copy.fallbackText,
       starFallbackLabel: copy.fallbackAccessibleLabel,
       starStatus: "unavailable",
@@ -95,15 +97,15 @@ describe("star response parsing and state mapping", () => {
     expect(mapStarState("loading", copy)).toEqual({
       status: "loading",
       text: copy.loadingText,
-      accessibleLabel: `Star Kitten on GitHub. ${copy.loadingText}`,
+      accessibleLabel: copy.loadingAccessibleLabel,
     });
     expect(mapStarState("ready", copy, 1)).toEqual({
       status: "ready",
-      text: "1 star on GitHub",
-      accessibleLabel: "Star Kitten on GitHub. 1 star on GitHub.",
+      text: "1",
+      accessibleLabel: "Star Kitten on GitHub. 1 star.",
     });
     expect(mapStarState("ready", copy, 12_345).text).toBe(
-      "12,345 stars on GitHub",
+      "12,345",
     );
     expect(mapStarState("unavailable", copy)).toEqual({
       status: "unavailable",
@@ -183,7 +185,7 @@ describe("star control rendering and binding", () => {
     renderStarState(control, statusElement, state);
 
     expect(control.dataset.starStatus).toBe("ready");
-    expect(statusElement.textContent).toBe("47 stars on GitHub");
+    expect(statusElement.textContent).toBe("47");
     expect(attributes.get("aria-label")).toBe(state.accessibleLabel);
     expect(attributes.get("href")).toBe(
       "https://github.com/MatheusBBarni/Kitten",
@@ -210,13 +212,13 @@ describe("star control rendering and binding", () => {
     expect(await firstBinding).toEqual([
       {
         status: "ready",
-        text: "88 stars on GitHub",
-        accessibleLabel: "Star Kitten on GitHub. 88 stars on GitHub.",
+        text: "88",
+        accessibleLabel: "Star Kitten on GitHub. 88 stars.",
       },
     ]);
     expect(calls).toBe(1);
     expect(control.dataset.starStatus).toBe("ready");
-    expect(statusElement.textContent).toBe("88 stars on GitHub");
+    expect(statusElement.textContent).toBe("88");
   });
 
   test.each([

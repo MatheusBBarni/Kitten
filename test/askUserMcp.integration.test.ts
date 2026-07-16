@@ -15,10 +15,13 @@ import {
   ASK_USER_MCP_MODE_FLAG,
   ASK_USER_MCP_TOOL_NAME,
 } from "../src/agent/askUserMcp.ts"
+import { AGENT_RUN_MCP_TOOL_NAME } from "../src/agent/agentRunMcp.ts"
 import { createAgentConnection, type AgentConnection } from "../src/agent/agentConnection.ts"
 import { createInMemoryTransportPair } from "../src/agent/transport.ts"
 import { createSessionController } from "../src/app/controller.ts"
+import type { ManagedWorktreeProvisioner } from "../src/app/managedWorktree.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../src/config/harnessCapability.ts"
+import { evaluateExplorePolicy, EXPLORE_RESTRICTIONS } from "../src/core/explorePolicy.ts"
 import type { AppConfig, ResolvedAgentConfig } from "../src/core/types.ts"
 import { createInMemoryShellRuntimeFactory } from "../src/shell/shellRuntime.ts"
 import { cockpitElement } from "../src/ui/main.tsx"
@@ -52,23 +55,40 @@ describe("ask_user same-binary child", () => {
             buffers.set(socket, next)
             return
           }
+          buffers.set(socket, next.slice(newline + 1))
           const frame = JSON.parse(next.slice(0, newline)) as {
             kind: string
             callId: string
             capability: string
-            form: Record<string, unknown>
+            form?: Record<string, unknown>
+            request?: Record<string, unknown>
           }
           frames.push(frame)
-          expect(frame.kind).toBe("ask")
           expect(frame.capability).toBe(capability)
-          expect(frame.form).not.toHaveProperty("timeout")
-          expect(frame.form).not.toHaveProperty("session_id")
+          if (frame.kind === "ask") {
+            expect(frame.form).not.toHaveProperty("timeout")
+            expect(frame.form).not.toHaveProperty("session_id")
+            socket.write(`${JSON.stringify({
+              kind: "result",
+              callId: frame.callId,
+              outcome: {
+                kind: "submitted",
+                answers: { strategy: { selectedOptionIds: ["safe"], customText: "after backup" } },
+              },
+            })}\n`)
+            return
+          }
+          expect(frame.kind).toBe("agent_run")
+          expect(frame.request).toEqual({
+            operation: "start",
+            tasks: [{ task: "Inspect the bridge", desired_outcome: "Return protocol evidence" }],
+          })
           socket.write(`${JSON.stringify({
-            kind: "result",
+            kind: "agent_run_result",
             callId: frame.callId,
-            outcome: {
-              kind: "submitted",
-              answers: { strategy: { selectedOptionIds: ["safe"], customText: "after backup" } },
+            result: {
+              operation: "start",
+              children: [{ child_id: "integration-child", status: "running" }],
             },
           })}\n`)
         },
@@ -101,7 +121,10 @@ describe("ask_user same-binary child", () => {
     await client.connect(transport)
     try {
       const tools = await client.listTools()
-      expect(tools.tools.map((tool) => tool.name)).toEqual([ASK_USER_MCP_TOOL_NAME])
+      expect(tools.tools.map((tool) => tool.name)).toEqual([
+        ASK_USER_MCP_TOOL_NAME,
+        AGENT_RUN_MCP_TOOL_NAME,
+      ])
       const response = await client.callTool({
         name: ASK_USER_MCP_TOOL_NAME,
         arguments: {
@@ -124,7 +147,19 @@ describe("ask_user same-binary child", () => {
           },
         },
       })
-      expect(frames).toHaveLength(1)
+      const agentRun = await client.callTool({
+        name: AGENT_RUN_MCP_TOOL_NAME,
+        arguments: {
+          operation: "start",
+          tasks: [{ task: "Inspect the bridge", desired_outcome: "Return protocol evidence" }],
+        },
+      })
+      expect(agentRun.isError).not.toBe(true)
+      expect(agentRun.structuredContent).toEqual({
+        operation: "start",
+        children: [{ child_id: "integration-child", status: "running" }],
+      })
+      expect(frames.map((frame) => (frame as { kind: string }).kind)).toEqual(["ask", "agent_run"])
       expect(stderr).toBe("")
     } finally {
       await client.close()
@@ -148,6 +183,7 @@ describe("ask_user same-binary child", () => {
       clarificationTimeoutSeconds: 300,
       persistenceEnabled: false,
       telemetryEnabled: false,
+      transcriptWindowingEnabled: false,
       theme: "auto",
       welcomeBanner: "off",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -224,7 +260,7 @@ describe("ask_user same-binary child", () => {
         profileId: "ask-user-integration",
         encoder: "codex-prompt-meta-v1",
       }),
-      askUserMcpExecutable: {
+      kittenMcpExecutable: {
         command: process.execPath,
         args: ["run", join(process.cwd(), "src/index.ts")],
       },
@@ -290,6 +326,7 @@ describe("ask_user same-binary child", () => {
       clarificationTimeoutSeconds: 300,
       persistenceEnabled: false,
       telemetryEnabled: false,
+      transcriptWindowingEnabled: false,
       theme: "auto",
       welcomeBanner: "off",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
@@ -300,6 +337,8 @@ describe("ask_user same-binary child", () => {
     }
     const agents = {} as Record<"claude-code" | "codex", MockAgentHandle>
     const outcomes = {} as Record<"claude-code" | "codex", unknown>
+    const parentConnections = new Set<"claude-code" | "codex">()
+    let childOrdinal = 0
     for (const provider of ["claude-code", "codex"] as const) {
       const fieldId = `${provider}-choice`
       const optionId = `${provider}-answer`
@@ -326,6 +365,8 @@ describe("ask_user same-binary child", () => {
       cwd: process.cwd(),
       createConnection(resolved) {
         const provider = resolved.id as "claude-code" | "codex"
+        if (parentConnections.has(provider)) return passiveAgentConnection(provider)
+        parentConnections.add(provider)
         return createAgentConnection({
           config: resolved,
           transport: () => ({ stream: pairs[provider].client, onClose: () => {}, dispose: async () => {} }),
@@ -334,13 +375,16 @@ describe("ask_user same-binary child", () => {
         })
       },
       createShellRuntime: createInMemoryShellRuntimeFactory().factory,
+      managedWorktreeProvisioner: inMemoryManagedWorktrees(),
+      newSessionId: () => `provider-child-${++childOrdinal}`,
       readBranch: async () => null,
+      resolveExploreCapability: integrationExploreCapability,
       resolveHarnessCapability: (resolved) => ({
         status: "supported",
         profileId: "ask-user-integration",
         encoder: resolved.id === "claude-code" ? "claude-code-prompt-meta-v1" : "codex-prompt-meta-v1",
       }),
-      askUserMcpExecutable: {
+      kittenMcpExecutable: {
         command: process.execPath,
         args: ["run", join(process.cwd(), "src/index.ts")],
       },
@@ -402,10 +446,53 @@ describe("ask_user same-binary child", () => {
           text: `continued:${provider}`,
         })
       }
+
+      const starts = await Promise.all((["claude-code", "codex"] as const).map((provider) =>
+        callGeneratedAgentRun(agents[provider], {
+          operation: "start",
+          tasks: [{ task: `Inspect ${provider}`, desired_outcome: `Report ${provider}` }],
+        })
+      ))
+      const childIds = starts.map((result) => {
+        expect(result.isError).not.toBe(true)
+        const content = result.structuredContent as { children: Array<{ child_id: string }> }
+        return content.children[0]!.child_id
+      })
+      expect(new Set(childIds).size).toBe(2)
+
+      const declarations = (["claude-code", "codex"] as const).map((provider) =>
+        agents[provider].newSessionRequests[0]!.mcpServers.at(-1)!
+      )
+      const capabilities = declarations.map((declaration) => {
+        if (!("env" in declaration)) throw new Error("generated MCP declaration was not stdio")
+        return declaration.env.find(({ name }) => name === ASK_USER_MCP_CAPABILITY_ENV)?.value
+      })
+      expect(capabilities[0]).not.toBe(capabilities[1])
+
+      const [claudeOwn, codexOwn] = await Promise.all([
+        callGeneratedAgentRun(agents["claude-code"], { operation: "poll", child_ids: [childIds[0]] }),
+        callGeneratedAgentRun(agents.codex, { operation: "poll", child_ids: [childIds[1]] }),
+      ])
+      const [claudeCross, codexCross] = await Promise.all([
+        callGeneratedAgentRun(agents["claude-code"], { operation: "poll", child_ids: [childIds[1]] }),
+        callGeneratedAgentRun(agents.codex, { operation: "poll", child_ids: [childIds[0]] }),
+      ])
+      expect(claudeOwn.structuredContent).toEqual({
+        operation: "poll",
+        children: [{ child_id: childIds[0], status: "running" }],
+      })
+      expect(codexOwn.structuredContent).toEqual({
+        operation: "poll",
+        children: [{ child_id: childIds[1], status: "running" }],
+      })
+      expect(claudeCross.isError).toBe(true)
+      expect(codexCross.isError).toBe(true)
+      expect(claudeCross.structuredContent).toBeUndefined()
+      expect(codexCross.structuredContent).toBeUndefined()
     } finally {
       await controller.dispose()
     }
-  })
+  }, 15_000)
 })
 
 function certifiedProfile(config: ResolvedAgentConfig): CertifiedHarnessProfile {
@@ -446,6 +533,102 @@ async function callGeneratedAskUser(
     return (await client.callTool({ name: ASK_USER_MCP_TOOL_NAME, arguments: args })).structuredContent
   } finally {
     await client.close()
+  }
+}
+
+async function callGeneratedAgentRun(
+  agent: MockAgentHandle,
+  args: Record<string, unknown>,
+) {
+  const declaration = agent.newSessionRequests[0]!.mcpServers.at(-1)!
+  if (!("command" in declaration)) throw new Error("generated MCP declaration was not stdio")
+  const transport = new StdioClientTransport({
+    command: declaration.command,
+    args: declaration.args,
+    cwd: process.cwd(),
+    env: {
+      ...getDefaultEnvironment(),
+      ...Object.fromEntries(declaration.env.map(({ name, value }) => [name, value])),
+    },
+    stderr: "pipe",
+  })
+  const client = new Client({ name: "agent-run-fake-acp-agent", version: "1.0.0" })
+  await client.connect(transport)
+  try {
+    return await client.callTool({ name: AGENT_RUN_MCP_TOOL_NAME, arguments: args })
+  } finally {
+    await client.close()
+  }
+}
+
+function passiveAgentConnection(id: "claude-code" | "codex"): AgentConnection {
+  return {
+    id,
+    async connect() {
+      return { ready: true, protocolVersion: 1, canLoadSession: false }
+    },
+    async newSession() {
+      return `${id}-child-acp`
+    },
+    async loadSession() {},
+    async prompt() {
+      return { stopReason: "end_turn" }
+    },
+    async cancel() {},
+    async setSessionConfigOption() {
+      return []
+    },
+    onUpdate() {
+      return () => {}
+    },
+    onPermission() {},
+    onClarification() {
+      return () => {}
+    },
+    async dispose() {},
+  }
+}
+
+function inMemoryManagedWorktrees(): ManagedWorktreeProvisioner {
+  return {
+    async provision({ ownerSessionId }) {
+      return {
+        kind: "provisioned",
+        binding: {
+          kind: "managed",
+          id: `kw-${ownerSessionId}`,
+          repoRoot: process.cwd(),
+          worktreePath: join(tmpdir(), `kitten-${ownerSessionId}`),
+          branch: `kitten/${ownerSessionId}`,
+          baseBranch: "main",
+          baseSha: "a".repeat(40),
+          ownerSessionId,
+          availability: "available",
+        },
+      }
+    },
+    async reconcile(binding) {
+      return { kind: "available", binding }
+    },
+    async cleanup() {
+      return { kind: "removed" }
+    },
+  }
+}
+
+function integrationExploreCapability(config: ResolvedAgentConfig) {
+  const decision = evaluateExplorePolicy({
+    role: "explore",
+    restrictions: EXPLORE_RESTRICTIONS,
+    limits: { perParent: 1, global: 2 },
+    attestationVersion: "two-provider-agent-run-v1",
+    confirmed: { provider: config.id, model: "test-model", effort: "low" },
+  })
+  if (decision.kind !== "eligible") return { status: "unsupported" as const, reason: decision.reason }
+  return {
+    status: "supported" as const,
+    policy: decision.policy,
+    recipe: { ...config, args: [...config.args], env: { ...config.env } },
   }
 }
 

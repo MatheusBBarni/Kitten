@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build verified managed-worktree provisioner
 type: backend
 complexity: high
@@ -28,11 +28,11 @@ Create the single app-owned Git lifecycle service that provisions verified child
 </requirements>
 
 ## Subtasks
-- [ ] Define injected command, filesystem, reservation, and bounded-result contracts.
-- [ ] Inspect the parent repository and prepare the private managed root.
-- [ ] Reserve and provision a unique branch/worktree from committed parent state.
-- [ ] Verify authoritative worktree identity and perform owned rollback on failure.
-- [ ] Add injected and temporary-real-repository creation coverage.
+- [x] Define injected command, filesystem, reservation, and bounded-result contracts.
+- [x] Inspect the parent repository and prepare the private managed root.
+- [x] Reserve and provision a unique branch/worktree from committed parent state.
+- [x] Verify authoritative worktree identity and perform owned rollback on failure.
+- [x] Add injected and temporary-real-repository creation coverage.
 
 ## Implementation Details
 
@@ -60,12 +60,12 @@ Create the service described in the TechSpec Git lifecycle section. Follow exist
 
 ## Tests
 - Unit tests:
-  - [ ] Reject non-repository, detached, submodule, root-conflict, and spawn-failure inputs with bounded reasons.
-  - [ ] Preserve pre-existing collision artifacts and roll back only artifacts created by the failed provision.
-  - [ ] Reject a Git-list verification mismatch without returning a binding.
+  - [x] Reject non-repository, detached, submodule, root-conflict, and spawn-failure inputs with bounded reasons.
+  - [x] Preserve pre-existing collision artifacts and roll back only artifacts created by the failed provision.
+  - [x] Reject a Git-list verification mismatch without returning a binding.
 - Integration tests:
-  - [ ] Two provisions in a temporary committed repository create distinct child branches/paths beneath `.kitten/worktrees` with matching base SHA.
-  - [ ] Local exclusion prevents the managed root from appearing as parent project work.
+  - [x] Two provisions in a temporary committed repository create distinct child branches/paths beneath `.kitten/worktrees` with matching base SHA.
+  - [x] Local exclusion prevents the managed root from appearing as parent project work.
 - Test coverage target: >=80%
 - All tests must pass
 

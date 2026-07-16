@@ -10,13 +10,18 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
-import type { SessionId } from "../core/types.ts"
+import type { ExploreLaunchResult } from "../app/actions.ts"
+import {
+  EXPLORE_DENIAL_LABELS,
+  EXPLORE_ROLE_LABEL,
+} from "../store/selectors.ts"
 import { APPROVAL_TITLE } from "./ApprovalPrompt.tsx"
 import { CLARIFICATION_TITLE } from "./ClarificationPrompt.tsx"
 import { CockpitApp } from "./CockpitApp.tsx"
 import {
+  DELEGATION_COMMITTED_BASE_DISCLOSURE,
   DELEGATION_DIALOG_TITLE,
-  DELEGATION_FAILURE,
+  DELEGATION_DENIED_PREFIX,
   DELEGATION_OUTCOME_ERROR,
   DELEGATION_PENDING,
   DELEGATION_TASK_ERROR,
@@ -91,13 +96,27 @@ function openClarification(controller: FakeController): void {
   })
 }
 
-function deferredChild() {
-  let resolve!: (value: SessionId | null) => void
-  const promise = new Promise<SessionId | null>((settle) => { resolve = settle })
+function deferredExplore() {
+  let resolve!: (value: ExploreLaunchResult) => void
+  const promise = new Promise<ExploreLaunchResult>((settle) => { resolve = settle })
   return { promise, resolve }
 }
 
 describe("DelegationDialog launch", () => {
+  it("discloses the committed parent base and excludes uncommitted parent changes", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpit(controller)
+
+    try {
+      const frame = await openWithChord(setup)
+      expect(frame).toContain(DELEGATION_COMMITTED_BASE_DISCLOSURE)
+      expect(frame).toContain("parent committed HEAD")
+      expect(frame).toContain("Uncommitted parent changes are excluded")
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   it("opens through Ctrl+G and /delegate only with a focused parent", async () => {
     const controller = createFakeController()
     const setup = await renderCockpit(controller)
@@ -137,8 +156,8 @@ describe("DelegationDialog launch", () => {
   })
 
   it("submits trimmed values exactly once while pending and retains parent focus on success", async () => {
-    const deferred = deferredChild()
-    const controller = createFakeController({ startDelegatedChild: () => deferred.promise })
+    const deferred = deferredExplore()
+    const controller = createFakeController({ startExploreChild: () => deferred.promise })
     const setup = await renderCockpit(controller)
     const selected = controller.store.getState().workspace.selectedVisibleId
     const focusedPane = controller.store.getState().focusedPane
@@ -151,13 +170,14 @@ describe("DelegationDialog launch", () => {
         setup.mockInput.pressEnter()
       })
       expect(await setup.waitForFrame((frame) => frame.includes(DELEGATION_PENDING))).toContain(DELEGATION_DIALOG_TITLE)
-      expect(controller.calls.startDelegatedChild).toEqual([{
+      expect(controller.calls.startExploreChild).toEqual([{
         parentId: "claude-code",
         task: "Inspect parser",
         desiredOutcome: "Return findings",
       }])
+      expect(controller.calls.startDelegatedChild).toEqual([])
 
-      await actAsync(() => deferred.resolve("delegated-success"))
+      await actAsync(() => deferred.resolve({ kind: "started", childId: "delegated-success" }))
       await setup.waitForFrame((frame) => !frame.includes(DELEGATION_HINT))
       expect(controller.store.getState().workspace.selectedVisibleId).toBe(selected)
       expect(controller.store.getState().focusedPane).toEqual(focusedPane)
@@ -167,19 +187,67 @@ describe("DelegationDialog launch", () => {
     }
   })
 
-  it("keeps the dialog and local feedback visible after a fail-soft null result", async () => {
-    const controller = createFakeController({ startDelegatedChild: () => null })
+  it("prevents an unavailable launch and presents the exact advisory reason without a fallback", async () => {
+    const controller = createFakeController({
+      exploreAvailability: () => ({ kind: "denied", reason: "unsupported-provider" }),
+      startExploreChild: () => ({ kind: "started", childId: "must-not-start" }),
+    })
     const setup = await renderCockpit(controller)
 
     try {
       await openWithChord(setup)
       await enterLaunch(setup, "Investigate", "Explain the cause")
       await actAsync(() => setup.mockInput.pressEnter())
-      const frame = await setup.waitForFrame((value) => value.includes(DELEGATION_FAILURE))
+      const frame = await setup.waitForFrame(
+        (value) => value.includes(EXPLORE_DENIAL_LABELS["unsupported-provider"]),
+      )
 
       expect(frame).toContain(DELEGATION_DIALOG_TITLE)
+      expect(frame).toContain(EXPLORE_ROLE_LABEL)
+      expect(frame).toContain("Read-only filesystem · No shell")
+      expect(frame).toContain("No external MCP or agent control")
+      expect(frame).toContain("Scoped ask_user only")
+      expect(frame).toContain("No recursion")
       expect(controller.store.getState().overlays.delegation).toEqual({ parentId: "claude-code" })
-      expect(controller.calls.startDelegatedChild).toHaveLength(1)
+      expect(controller.calls.startExploreChild).toEqual([])
+      expect(controller.calls.startDelegatedChild).toEqual([])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it.each([
+    [
+      "typed denial",
+      () => Promise.resolve({ kind: "denied", reason: "capacity-exhausted" } as const),
+      "capacity-exhausted" as const,
+    ],
+    [
+      "startup failure",
+      () => Promise.reject(new Error("provider leaked /private/task config")),
+      "startup-failed" as const,
+    ],
+  ])("retains drafts and focused field after a %s", async (_label, startExploreChild, reason) => {
+    const controller = createFakeController({ startExploreChild })
+    const setup = await renderCockpit(controller)
+
+    try {
+      await openWithChord(setup)
+      await enterLaunch(setup, "Retained investigation", "Retained findings")
+      await actAsync(() => setup.mockInput.pressEnter())
+      const frame = await setup.waitForFrame(
+        (value) => value.includes(`${DELEGATION_DENIED_PREFIX} ${EXPLORE_DENIAL_LABELS[reason]}`),
+      )
+
+      expect(frame).toContain("Retained investigation")
+      expect(frame).toContain("Retained findings")
+      expect(frame).not.toContain(DELEGATION_PENDING)
+      expect(frame).not.toContain("provider leaked")
+      expect(frame).not.toContain("/private/task")
+      expect(controller.store.getState().overlays.delegation).toEqual({ parentId: "claude-code" })
+      expect(controller.calls.startExploreChild).toHaveLength(1)
+      expect(controller.calls.startDelegatedChild).toEqual([])
+      expect(setup.renderer.currentFocusedEditor?.plainText).toBe("Retained findings")
     } finally {
       await destroyMounted(setup.renderer)
     }

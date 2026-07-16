@@ -156,6 +156,7 @@ function resolvedSession(id: string, providerKind: "claude-code" | "codex", cwd:
       args: [],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     },
   }

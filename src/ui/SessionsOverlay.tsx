@@ -31,16 +31,26 @@ import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 
-import { PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
+import { PROVIDER_DISPLAY_NAMES, type SessionId } from "../core/types.ts"
 import {
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectIsSessionsOpen,
   selectSessionList,
+  type ManagedWorktreeReviewPresentation,
   type SessionListItem,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
-import { matchSessionsCommand, SESSIONS_HINT } from "./keymap.ts"
+import {
+  managedWorktreeReviewHint,
+  MANAGED_WORKTREE_CLEANUP_HINT,
+  MANAGED_WORKTREE_CLEANUP_PENDING_HINT,
+  matchManagedWorktreeCleanupCommand,
+  matchManagedWorktreeReviewCommand,
+  matchSessionsCommand,
+  SESSIONS_HINT,
+  SESSIONS_REVIEW_HINT,
+} from "./keymap.ts"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { usePalette } from "./theme.ts"
 
@@ -69,6 +79,28 @@ export const SESSIONS_SCROLLBOX_ID = "sessions-overlay-list"
 /** What the overview says when, impossibly, it has no session to list. Never blank. */
 export const NO_SESSIONS = "No sessions."
 
+/** Detailed review copy stays explicit and readable without color. */
+export const MANAGED_WORKTREE_REVIEW_TITLE = "Managed worktree review"
+export const MANAGED_WORKTREE_CLEANUP_TITLE = "Confirm managed worktree cleanup"
+export const MANAGED_WORKTREE_CLEANUP_WARNING =
+  "Cleanup removes only a verified clean, merged worktree. It never closes the session."
+
+type SessionsMode =
+  | { readonly kind: "list" }
+  | { readonly kind: "review"; readonly childId: SessionId }
+  | { readonly kind: "cleanup-confirm"; readonly childId: SessionId }
+
+/** Eligibility is derived entirely from the shared selector row presentation. */
+export function isTerminalManagedReview(session: SessionListItem | undefined): boolean {
+  return session?.review !== null &&
+    session?.delegation?.kind === "child" &&
+    session.delegation.terminalTranscriptAvailable
+}
+
+function cleanupAvailable(review: ManagedWorktreeReviewPresentation | null | undefined): boolean {
+  return review?.availability === "available" || review?.availability === "cleanup_refused"
+}
+
 /** Give each conversation a stable descendant id for scroll-to-selection behavior. */
 export function sessionRowId(sessionId: string): string {
   return `sessions-overlay-row-${sessionId}`
@@ -84,10 +116,7 @@ const HIDDEN_HORIZONTAL_SCROLLBAR = { visible: false } as const
  */
 export function SessionsOverlay(): ReactNode {
   const open = useAppSelector(selectIsSessionsOpen)
-  const approvalOpen = useAppSelector(selectIsApprovalOpen)
-  // Approval is the top-most modal. Returning here unmounts this earlier listener
-  // before it can consume Enter or arrows intended for the permission prompt.
-  if (!open || approvalOpen) return null
+  if (!open) return null
   return <SessionsDialog />
 }
 
@@ -96,15 +125,24 @@ function SessionsDialog(): ReactNode {
   const controller = useController()
   const palette = usePalette()
   const { height } = useTerminalDimensions()
+  const approvalOpen = useAppSelector(selectIsApprovalOpen)
   const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const sessions = useAppSelector(selectSessionList)
 
   const [selected, setSelected] = useState(0)
+  const [mode, setMode] = useState<SessionsMode>({ kind: "list" })
+  const [cleanupPending, setCleanupPending] = useState(false)
+  const cleanupPendingRef = useRef(false)
   const sessionList = useRef<ScrollBoxRenderable | null>(null)
 
   // The highlight is clamped to the list on every move, so it survives a session's
   // status changing beneath it without ever pointing off the end.
   const clamped = Math.min(selected, Math.max(sessions.length - 1, 0))
+  const highlighted = sessions[clamped]
+  const reviewedSession = mode.kind === "list"
+    ? undefined
+    : sessions.find((session) => session.id === mode.childId)
+  const reviewed = reviewedSession?.review ?? null
 
   useEffect(() => {
     const target = sessions[clamped]
@@ -143,15 +181,70 @@ function SessionsDialog(): ReactNode {
     controller.store.openTabDialog({ kind: "close", sessionId: target.id })
   }, [clamped, controller, sessions])
 
+  const reviewHighlighted = useCallback((): void => {
+    const target = sessions[clamped]
+    if (!target || !isTerminalManagedReview(target)) return
+    setMode({ kind: "review", childId: target.id })
+  }, [clamped, sessions])
+
+  const confirmCleanup = useCallback((): void => {
+    if (mode.kind !== "cleanup-confirm" || cleanupPendingRef.current) return
+    const target = sessions.find((session) => session.id === mode.childId)
+    if (!isTerminalManagedReview(target) || !cleanupAvailable(target?.review)) {
+      setMode({ kind: "review", childId: mode.childId })
+      return
+    }
+
+    cleanupPendingRef.current = true
+    setCleanupPending(true)
+    const childId = mode.childId
+    void controller.actions.cleanupManagedWorktree(childId)
+      .catch(() => null)
+      .then(() => {
+        cleanupPendingRef.current = false
+        setCleanupPending(false)
+        setMode({ kind: "review", childId })
+      })
+  }, [controller, mode, sessions])
+
   const onKey = useCallback(
     (key: KeyEvent): void => {
-      // Clarification owns top modal priority. Return before claiming or interpreting
+      // Approval and clarification own higher modal priority. Return before claiming or interpreting
       // this key so the mounted overview and its highlight resume unchanged.
-      if (clarificationOpen) return
+      if (approvalOpen || clarificationOpen) return
 
       // Modal: no key reaches the focused textarea while the overview is open, whether
       // or not this dialog claims it. The shell stands its own chords down separately.
       key.preventDefault()
+
+      if (mode.kind === "cleanup-confirm") {
+        if (cleanupPendingRef.current) return
+        switch (matchManagedWorktreeCleanupCommand(key)) {
+          case "confirm-cleanup":
+            confirmCleanup()
+            return
+          case "cancel":
+            setMode({ kind: "review", childId: mode.childId })
+            return
+          default:
+            return
+        }
+      }
+
+      if (mode.kind === "review") {
+        switch (matchManagedWorktreeReviewCommand(key)) {
+          case "request-cleanup":
+            if (isTerminalManagedReview(reviewedSession) && cleanupAvailable(reviewed)) {
+              setMode({ kind: "cleanup-confirm", childId: mode.childId })
+            }
+            return
+          case "cancel":
+            setMode({ kind: "list" })
+            return
+          default:
+            return
+        }
+      }
 
       switch (matchSessionsCommand(key)) {
         case "prev-session":
@@ -171,6 +264,9 @@ function SessionsDialog(): ReactNode {
         case "close-session":
           closeHighlighted()
           return
+        case "review-worktree":
+          reviewHighlighted()
+          return
         case "cancel":
           controller.store.closeSessions()
           return
@@ -178,7 +274,20 @@ function SessionsDialog(): ReactNode {
           return
       }
     },
-    [clarificationOpen, closeHighlighted, controller, jumpInto, jumpNextNeedy, sessions.length],
+    [
+      approvalOpen,
+      clarificationOpen,
+      closeHighlighted,
+      confirmCleanup,
+      controller,
+      jumpInto,
+      jumpNextNeedy,
+      mode,
+      reviewHighlighted,
+      reviewed,
+      reviewedSession,
+      sessions.length,
+    ],
   )
   useKeyboard(onKey)
 
@@ -203,30 +312,77 @@ function SessionsDialog(): ReactNode {
       title={SESSIONS_TITLE}
       titleColor={palette.accent}
     >
-      <scrollbox
-        id={SESSIONS_SCROLLBOX_ID}
-        ref={sessionList}
-        style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1 }}
-        scrollX={false}
-        horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
-      >
-        {sessions.length === 0 ? (
-          <text fg={palette.muted}>{NO_SESSIONS}</text>
-        ) : (
-          sessions.map((session, index) => (
-            <SessionCard
-              key={session.id}
-              rowId={sessionRowId(session.id)}
-              session={session}
-              highlighted={index === clamped}
-            />
-          ))
-        )}
-      </scrollbox>
+      {mode.kind === "list" ? (
+        <scrollbox
+          id={SESSIONS_SCROLLBOX_ID}
+          ref={sessionList}
+          style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1 }}
+          scrollX={false}
+          horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
+        >
+          {sessions.length === 0 ? (
+            <text fg={palette.muted}>{NO_SESSIONS}</text>
+          ) : (
+            sessions.map((session, index) => (
+              <SessionCard
+                key={session.id}
+                rowId={sessionRowId(session.id)}
+                session={session}
+                highlighted={index === clamped}
+              />
+            ))
+          )}
+        </scrollbox>
+      ) : (
+        <ManagedWorktreeReview
+          session={reviewedSession}
+          review={reviewed}
+          confirming={mode.kind === "cleanup-confirm"}
+        />
+      )}
 
       <text style={{ flexShrink: 0, marginTop: 1 }} fg={palette.muted} wrapMode="word">
-        {SESSIONS_HINT}
+        {mode.kind === "list"
+          ? (isTerminalManagedReview(highlighted) ? SESSIONS_REVIEW_HINT : SESSIONS_HINT)
+          : mode.kind === "cleanup-confirm"
+            ? (cleanupPending ? MANAGED_WORKTREE_CLEANUP_PENDING_HINT : MANAGED_WORKTREE_CLEANUP_HINT)
+            : managedWorktreeReviewHint(
+              isTerminalManagedReview(reviewedSession) && cleanupAvailable(reviewed),
+            )}
       </text>
+    </box>
+  )
+}
+
+function ManagedWorktreeReview({
+  session,
+  review,
+  confirming,
+}: {
+  session: SessionListItem | undefined
+  review: ManagedWorktreeReviewPresentation | null
+  confirming: boolean
+}): ReactNode {
+  const palette = usePalette()
+  if (!session || !review) {
+    return <text fg={palette.muted}>Managed worktree review is no longer available.</text>
+  }
+
+  return (
+    <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, marginTop: 1 }}>
+      <text fg={palette.accent}>{confirming ? MANAGED_WORKTREE_CLEANUP_TITLE : MANAGED_WORKTREE_REVIEW_TITLE}</text>
+      <text fg={palette.text}>{`Child: ${session.label}`}</text>
+      <text fg={palette.muted}>{`Provenance: ${review.provenanceLabel}`}</text>
+      <text fg={palette.muted}>{`Branch: ${review.branch}`}</text>
+      <text fg={palette.muted} wrapMode="word">{`Path: ${review.worktreePath}`}</text>
+      <text fg={palette.muted}>{`Base: ${review.baseBranch} @ ${review.baseSha}`}</text>
+      <text fg={palette.text}>{`Availability: ${review.availabilityLabel}`}</text>
+      {review.reasonLabel ? <text fg={palette.muted}>{`Reason: ${review.reasonLabel}`}</text> : null}
+      {confirming ? (
+        <text style={{ marginTop: 1 }} fg={palette.text} wrapMode="word">
+          {MANAGED_WORKTREE_CLEANUP_WARNING}
+        </text>
+      ) : null}
     </box>
   )
 }
@@ -271,10 +427,17 @@ export function SessionCard({
         {`   ${PROVIDER_DISPLAY_NAMES[session.providerKind]}  ·  ${session.cwd}`}
       </text>
       {session.delegation?.kind === "child" ? (
-        <text fg={palette.muted}>
-          {`   ${session.delegation.lineageLabel}  ·  Delegated ${session.delegation.statusLabel}`}
-          {session.delegation.terminalTranscriptAvailable ? `  ·  ${OPEN_TRANSCRIPT_LABEL}` : ""}
-        </text>
+        <>
+          <text fg={palette.muted}>
+            {`   ${session.delegation.lineageLabel}  ·  Delegated ${session.delegation.statusLabel}`}
+            {session.delegation.terminalTranscriptAvailable ? `  ·  ${OPEN_TRANSCRIPT_LABEL}` : ""}
+          </text>
+          {session.delegation.explore ? (
+            <text fg={palette.muted} wrapMode="word">
+              {`   Role: ${session.delegation.explore.roleLabel}  ·  ${session.delegation.explore.restrictionSummary}`}
+            </text>
+          ) : null}
+        </>
       ) : session.delegation?.kind === "parent" ? (
         <text fg={palette.muted}>
           {`   ${session.delegation.groupLabel}  ·  ${session.delegation.childCount} ${session.delegation.childCount === 1 ? "child" : "children"}`}

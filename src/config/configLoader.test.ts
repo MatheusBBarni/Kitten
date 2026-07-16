@@ -39,7 +39,7 @@ const tempDirs: string[] = []
 const README_PATH = join(import.meta.dir, "..", "..", "README.md")
 
 async function readReadmeJsonExample(
-  name: "mcp-config-example" | "mcp-remote-example" | "provider-defaults-example",
+  name: "mcp-config-example" | "mcp-remote-example" | "provider-defaults-example" | "transcript-windowing-example",
 ): Promise<string> {
   const readme = await Bun.file(README_PATH).text()
   const match = readme.match(new RegExp(`<!-- ${name}:start -->\\s*\`\`\`json\\s*([\\s\\S]*?)\\s*\`\`\`\\s*<!-- ${name}:end -->`))
@@ -79,6 +79,7 @@ describe("defaults", () => {
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
     expect(findAgentConfig(config, "codex")).toEqual({
@@ -88,6 +89,7 @@ describe("defaults", () => {
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
     expect(findAgentConfig(config, "cursor")).toEqual({
@@ -97,6 +99,7 @@ describe("defaults", () => {
       args: ["acp"],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
   })
@@ -398,6 +401,9 @@ describe("user overrides", () => {
     expect(findAgentConfig(command, "codex")?.clarificationCapability.status).toBe("unsupported")
     expect(findAgentConfig(args, "codex")?.clarificationCapability.status).toBe("unsupported")
     expect(findAgentConfig(env, "codex")?.clarificationCapability.status).toBe("unsupported")
+    expect(findAgentConfig(command, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
+    expect(findAgentConfig(args, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
+    expect(findAgentConfig(env, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {
@@ -649,6 +655,44 @@ describe("telemetry opt-in", () => {
   })
 })
 
+describe("transcript windowing experiment", () => {
+  it("Should default to disabled when the config is absent or omits the field", async () => {
+    const missing = join(await makeTempDir(), "missing.json")
+
+    expect(defaultAppConfig().transcriptWindowingEnabled).toBe(false)
+    expect(parseAppConfig("{}").transcriptWindowingEnabled).toBe(false)
+    expect((await loadAppConfig({ path: missing })).transcriptWindowingEnabled).toBe(false)
+  })
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("Should preserve an explicit %s through parsing, merging, and file loading", async (_label, value) => {
+    const source = JSON.stringify({ transcriptWindowingEnabled: value })
+    const path = await writeConfig(source)
+
+    expect(parseAppConfig(source).transcriptWindowingEnabled).toBe(value)
+    expect(mergeAppConfig({ transcriptWindowingEnabled: value }).transcriptWindowingEnabled).toBe(value)
+    expect((await loadAppConfig({ path })).transcriptWindowingEnabled).toBe(value)
+  })
+
+  it.each([
+    ["string", "true"],
+    ["number", 1],
+    ["null", null],
+  ])("Should reject a %s value with a field-naming ConfigError", (_label, value) => {
+    const parse = () => parseAppConfig(JSON.stringify({ transcriptWindowingEnabled: value }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/transcriptWindowingEnabled/)
+  })
+
+  it("Should load the documented JSON opt-in through the strict schema", async () => {
+    expect(parseAppConfig(await readReadmeJsonExample("transcript-windowing-example")).transcriptWindowingEnabled)
+      .toBe(true)
+  })
+})
+
 describe("clarification timeout", () => {
   it("Should use the fixed five-minute default when configuration is absent or omitted", async () => {
     const missing = join(await makeTempDir(), "missing.json")
@@ -764,6 +808,13 @@ describe("invalid config", () => {
     expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(ConfigError)
     expect(() => parseAppConfig(JSON.stringify({ telemetry: true }))).toThrow(/telemetry/)
   })
+
+  it.each(["role", "exploreSafety", "attestation", "eligibleProvider"])(
+    "rejects user-authored explore authority field %s",
+    (field) => {
+      expect(() => parseAppConfig(JSON.stringify({ [field]: true }))).toThrow(ConfigError)
+    },
+  )
 
   it("Should reject an invalid theme preference naming the offending field", () => {
     expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(ConfigError)

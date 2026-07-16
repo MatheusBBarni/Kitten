@@ -65,6 +65,19 @@ export async function persistUserConfig(
 
 function mergeUserConfig(current: UserConfig, patch: Partial<UserConfig>): UserConfig {
   const merged = { ...current, ...patch }
+  if (patch.providerDefaults === undefined) {
+    merged.providerDefaults = current.providerDefaults
+  } else {
+    merged.providerDefaults = {
+      ...current.providerDefaults,
+      ...Object.fromEntries(
+        Object.entries(patch.providerDefaults).map(([provider, defaults]) => [
+          provider,
+          { ...current.providerDefaults?.[provider as keyof NonNullable<UserConfig["providerDefaults"]>], ...defaults },
+        ]),
+      ),
+    }
+  }
   if (patch.statusline === undefined) {
     merged.statusline = current.statusline
   } else {

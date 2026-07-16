@@ -1,35 +1,71 @@
 ---
+import { Image } from "astro:assets";
+
 import type { ShowcaseConfig } from "../config/showcase-config.ts";
+import kittenIcon from "../../../assets/kitten-icon.png";
 
 interface Props {
   repository: ShowcaseConfig["repository"];
   hero: ShowcaseConfig["hero"];
+  proof: ShowcaseConfig["proof"];
   install: ShowcaseConfig["install"];
+  navigation: ShowcaseConfig["navigation"];
 }
 
-const { repository, hero, install } = Astro.props;
+const { repository, hero, proof, install, navigation } = Astro.props;
 ---
 
-<div data-site-controls>
-  <a href={`#${install.id}`}>{hero.primaryCtaLabel}</a>
-  <a
-    href={repository.url}
-    aria-label={repository.star.accessibleLabel}
-    data-star-control
-    data-repo-owner={repository.owner}
-    data-repo-name={repository.name}
-    data-star-loading-text={repository.star.loadingText}
-    data-star-fallback-text={repository.star.fallbackText}
-    data-star-fallback-label={repository.star.accessibleLabel}
-    data-star-status="unavailable"
-  >
-    <span
-      data-star-status-text
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-    >{repository.star.fallbackText}</span>
-  </a>
-</div>
+<header class="site-header" data-site-controls>
+  <div class="site-header-inner">
+    <a
+      class="site-brand"
+      href={`#${hero.id}`}
+      aria-label={navigation.brandAccessibleLabel}
+    >
+      <Image
+        class="site-brand-logo"
+        src={kittenIcon}
+        alt=""
+        width={36}
+        loading="eager"
+        format="webp"
+      />
+      <span>{navigation.brandLabel}</span>
+    </a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href={`#${proof.id}`}>{navigation.proofLabel}</a>
+      <a href={`#${install.id}`}>{navigation.installLabel}</a>
+    </nav>
+    <a
+      class="github-star-control"
+      href={repository.url}
+      aria-label={repository.star.loadingAccessibleLabel}
+      data-star-control
+      data-repo-owner={repository.owner}
+      data-repo-name={repository.name}
+      data-star-loading-text={repository.star.loadingText}
+      data-star-loading-label={repository.star.loadingAccessibleLabel}
+      data-star-fallback-text={repository.star.fallbackText}
+      data-star-fallback-label={repository.star.accessibleLabel}
+      data-star-status="loading"
+    >
+      <span class="github-mark" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 0a8 8 0 0 0-2.53 15.59c.4.08.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.2 1.87.86 2.33.65.07-.52.28-.86.51-1.06-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82A7.66 7.66 0 0 1 8 4.73c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8 8 0 0 0 8 0Z" />
+        </svg>
+      </span>
+      <span class="github-star-label">{navigation.githubStarLabel}</span>
+      <span
+        data-star-status-text
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >{repository.star.loadingText}</span>
+      <svg class="github-star-icon" aria-hidden="true" viewBox="0 0 24 24">
+        <path d="m12 2.5 2.94 5.96 6.58.96-4.76 4.64 1.12 6.55L12 17.53l-5.88 3.09 1.12-6.55-4.76-4.64 6.58-.96L12 2.5Z" />
+      </svg>
+    </a>
+  </div>
+</header>
 
 <script src="../scripts/star-count.ts"></script>

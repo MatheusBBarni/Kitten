@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add memoized managed-worktree review presentation
 type: refactor
 complexity: low

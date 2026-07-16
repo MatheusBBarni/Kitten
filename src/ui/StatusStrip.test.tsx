@@ -17,6 +17,7 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import {
   BACKGROUND_STATUS_LABEL,
+  CONTEXT_HEADROOM_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
   MCP_STATUS_LABEL,
   StatusStrip,
@@ -103,6 +104,7 @@ describe("StatusStrip", () => {
     const setup = await renderStrip(controller)
 
     expect(setup.captureCharFrame()).toContain("Claude:—")
+    expect(setup.captureCharFrame()).toContain(`${CONTEXT_HEADROOM_LABEL} —`)
     expect(setup.captureCharFrame()).not.toContain("Codex:")
 
     await actAsync(() => controller.actions.selectConversation("codex"))
@@ -122,7 +124,7 @@ describe("StatusStrip", () => {
     }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("Claude:opus:high 38% █░░")
+    expect(frame).toContain("Claude:opus:high ctx 38% █░░")
     expect(frame).not.toContain("working")
     expect(frame).not.toContain("Codex:")
     expect(frame).toContain(KEYMAP_HINT)
@@ -262,25 +264,31 @@ describe("StatusStrip", () => {
     const setup = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 100)
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain(`${MCP_STATUS_LABEL} +github`)
+    expect(frame).toContain(`${MCP_STATUS_LABEL}: +github`)
     expect(frame).not.toContain("Codex:")
 
     await destroyMounted(setup.renderer)
   })
 
-  it("shows the built-in ask_user bridge lifecycle beside user MCP declarations", async () => {
+  it("shows the built-in Ask User bridge lifecycle beside user MCP declarations", async () => {
     const [claude, codex] = readyRuntimes()
     claude!.mcp = { loaded: ["github"], skipped: [], askUser: "loading" }
     const setup = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 100)
 
-    expect(setup.captureCharFrame()).toContain(`${MCP_STATUS_LABEL} +github; ask_user loading`)
+    expect(setup.captureCharFrame()).toContain(`${MCP_STATUS_LABEL}: +github; Ask User connecting`)
     await destroyMounted(setup.renderer)
 
     claude!.mcp = { loaded: ["github"], skipped: [], askUser: "attached" }
     const attached = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 100)
-    expect(attached.captureCharFrame()).toContain("ask_user attached")
+    expect(attached.captureCharFrame()).toContain(`${MCP_STATUS_LABEL}: +github; Ask User ready`)
 
     await destroyMounted(attached.renderer)
+
+    claude!.mcp = { loaded: ["github"], skipped: [], askUser: "unavailable" }
+    const unavailable = await renderStrip(createFakeController({ runtimes: [claude!, codex!] }), 100)
+    expect(unavailable.captureCharFrame()).toContain(`${MCP_STATUS_LABEL}: +github; Ask User unavailable`)
+
+    await destroyMounted(unavailable.renderer)
   })
 
   it("renders a saved layout in declared order and omits unavailable values without duplicate separators", async () => {
@@ -404,8 +412,8 @@ describe("StatusStrip", () => {
     }))
 
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("Cursor:Composer:High 75% ██░")
-    expect(frame).toContain(`${MCP_STATUS_LABEL} +github`)
+    expect(frame).toContain("Cursor:Composer:High ctx 75% ██░")
+    expect(frame).toContain(`${MCP_STATUS_LABEL}: +github`)
     expect(frame).not.toContain("Claude:")
     expect(frame).not.toContain("Codex:")
     expectNoOverflow(frame, 80)

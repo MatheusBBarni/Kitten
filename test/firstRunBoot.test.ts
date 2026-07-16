@@ -12,6 +12,7 @@ import { defaultAppConfig } from "../src/config/configLoader.ts"
 import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, type FirstRunGuidanceOptions } from "../src/config/firstRun.ts"
 import {
   dispatchCliFlags,
+  dispatchReservedChildMode,
   exitBlocked,
   main,
   runtimeSetup,
@@ -361,6 +362,42 @@ describe("wantsSelfCheck", () => {
   it("detects the opt-in real-adapter reload probe flag independently", () => {
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check", "--reload-probe"])).toBe(true)
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check"])).toBe(false)
+  })
+})
+
+describe("reserved MCP child dispatch", () => {
+  it("runs before normal repository and readiness boot paths", async () => {
+    let childRuns = 0
+    let normalBoots = 0
+
+    const handled = await dispatchReservedChildMode(
+      ["bun", "index.ts", "--ask-user-mcp"],
+      {},
+      { run: async () => { childRuns += 1 } },
+    )
+    if (!handled) normalBoots += 1
+
+    expect(childRuns).toBe(1)
+    expect(normalBoots).toBe(0)
+  })
+
+  it("preserves the generic child failure discipline", async () => {
+    const errors: string[] = []
+    const exits: number[] = []
+
+    expect(await dispatchReservedChildMode(
+      ["bun", "index.ts", "--ask-user-mcp"],
+      {},
+      {
+        run: async () => { throw new Error("private transport detail") },
+        writeError: (output) => errors.push(output),
+        exit: (code) => exits.push(code),
+      },
+    )).toBe(true)
+
+    expect(errors).toEqual(["ASK_USER MCP FAILED: unavailable\n"])
+    expect(errors.join("")).not.toContain("private transport detail")
+    expect(exits).toEqual([1])
   })
 })
 

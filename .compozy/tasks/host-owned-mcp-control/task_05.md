@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Implement route-authorized batch start and poll
 type: backend
 complexity: high
@@ -28,11 +28,11 @@ Implement the controller-owned `AgentRunControl` service that turns an authentic
 
 ## Subtasks
 
-- [ ] 5.1 Factor the UI launch adapter from a route-authorized internal control service.
-- [ ] 5.2 Validate all start preconditions before any child-side effect.
-- [ ] 5.3 Register accepted children visibly and start them concurrently with existing lifecycle publication.
-- [ ] 5.4 Return owner- and generation-scoped poll snapshots with no partial disclosure.
-- [ ] 5.5 Exercise UI, route, lifecycle, and failure boundaries through controller tests.
+- [x] 5.1 Factor the UI launch adapter from a route-authorized internal control service.
+- [x] 5.2 Validate all start preconditions before any child-side effect.
+- [x] 5.3 Register accepted children visibly and start them concurrently with existing lifecycle publication.
+- [x] 5.4 Return owner- and generation-scoped poll snapshots with no partial disclosure.
+- [x] 5.5 Exercise UI, route, lifecycle, and failure boundaries through controller tests.
 
 ## Implementation Details
 
@@ -62,14 +62,14 @@ Follow the TechSpec “Core Interfaces,” “Controller Behavior,” and “Dat
 ## Tests
 
 - Unit tests:
-  - [ ] An invalid batch with an unready, stale, closing, recursive, duplicate, empty, or fifth task creates no child ID, session, registration, runtime, or prompt.
-  - [ ] A valid four-child route request registers four visible background children before concurrent startup begins.
-  - [ ] One startup or initial-prompt failure terminalizes only its child as `failed` while accepted siblings remain visible.
-  - [ ] A route-authorized background-parent launch preserves selection, while direct UI launch still rejects a non-selected parent.
-  - [ ] Poll rejects unknown, stale, cross-parent, cross-generation, duplicate, and empty ID lists without partial snapshots.
-  - [ ] Poll returns requested-order snapshots with `needs_input` and optional terminal timestamp behavior unchanged.
+  - [x] An invalid batch with an unready, stale, closing, recursive, duplicate, empty, or fifth task creates no child ID, session, registration, runtime, or prompt.
+  - [x] A valid four-child route request registers four visible background children before concurrent startup begins.
+  - [x] One startup or initial-prompt failure terminalizes only its child as `failed` while accepted siblings remain visible.
+  - [x] A route-authorized background-parent launch preserves selection, while direct UI launch still rejects a non-selected parent.
+  - [x] Poll rejects unknown, stale, cross-parent, cross-generation, duplicate, and empty ID lists without partial snapshots.
+  - [x] Poll returns requested-order snapshots with `needs_input` and optional terminal timestamp behavior unchanged.
 - Integration tests:
-  - [ ] Parent replacement invalidates the prior route so it cannot start or poll children for the replacement generation.
+  - [x] Parent replacement invalidates the prior route so it cannot start or poll children for the replacement generation.
 - Test coverage target: >=80%
 - All tests must pass
 
