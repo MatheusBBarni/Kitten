@@ -333,6 +333,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   let disposal: Promise<void> | undefined
   const controller: SessionController = {
     store: baseController.store,
+    transcriptWindowingEnabled: baseController.transcriptWindowingEnabled,
     actions: {
       ...baseController.actions,
       async setSessionConfigOption(configId, value, sessionId): Promise<boolean> {

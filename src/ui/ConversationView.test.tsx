@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { destroyTreeSitterClient, getTreeSitterClient, RGBA, type ScrollBoxRenderable } from "@opentui/core"
+import { destroyTreeSitterClient, getTreeSitterClient, RGBA, type KeyEvent, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -21,6 +21,7 @@ import {
   RESTORATION_LIVE_LABEL,
   RESTORATION_UNAVAILABLE_LABEL,
   START_FRESH_LABEL,
+  TRANSCRIPT_HISTORY_MARKER_ID,
 } from "./ConversationView.tsx"
 import { ROLE_LABELS } from "./MessageView.tsx"
 import { KEYMAP_HINT } from "./keymap.ts"
@@ -203,6 +204,40 @@ describe("ConversationView turns", () => {
     await actAsync(() => scrollbox!.scrollTo(0))
     const top = await setup.waitForFrame((candidate) => candidate.includes("[selected] Claude Code"))
     expect(top).not.toContain("LONG_TRANSCRIPT_TURN_39")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders the opted-in projection and reveals its keyboard-focusable history marker", async () => {
+    const controller = createFakeController({ transcriptWindowingEnabled: true })
+    const setup = await renderConversation(controller)
+
+    await actAsync(() => {
+      for (let index = 0; index < 128; index += 1) {
+        userMessage(controller, "claude-code", `window-${index}`, `WINDOWED_TRANSCRIPT_TURN_${index}`)
+      }
+    })
+    await setup.waitForFrame((frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_127"))
+
+    const marker = setup.renderer.root.findDescendantById(TRANSCRIPT_HISTORY_MARKER_ID) as Renderable | undefined
+    expect(marker).toBeDefined()
+    expect(marker!.focusable).toBe(true)
+    const scrollbox = setup.renderer.root.findDescendantById(CONVERSATION_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+    expect(scrollbox).toBeDefined()
+    await actAsync(() => scrollbox!.scrollTo(0))
+    await setup.waitForFrame((frame) => frame.includes("earlier turns hidden"))
+
+    await actAsync(() => marker!.onKeyDown?.({
+      name: "return",
+      preventDefault() {},
+    } as KeyEvent))
+
+    expect(controller.store.getState().transcriptWindows["claude-code"]?.revealedTurnCount).toBe(48)
+    expect(setup.renderer.root.findDescendantById(TRANSCRIPT_HISTORY_MARKER_ID)).toBeUndefined()
+
+    await actAsync(() => scrollbox!.scrollTo(0))
+    const historical = await setup.waitForFrame((frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_0"))
+    expect(historical).not.toContain("earlier turns hidden")
 
     await destroyMounted(setup.renderer)
   })

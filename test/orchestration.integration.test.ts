@@ -497,6 +497,9 @@ describe("delegation pure consumer integration", () => {
       task: `Run ${childId}`,
       desiredOutcome: `Report ${childId}`,
     })))
+    // Start is detached from the child turns: the parent receives registered
+    // running snapshots and can immediately poll while the agents continue.
+    expect(await launch).toEqual(childIds.map((childId) => ({ childId, status: "running" })))
 
     await waitUntil(() => {
       const children = controller.store.getState().delegation.children
@@ -521,7 +524,12 @@ describe("delegation pure consumer integration", () => {
 
     controller.actions.respondPermission({ outcome: "selected", optionId: "allow" })
     runningGate.resolve()
-    expect(await launch).toEqual([
+    await waitUntil(() => {
+      const children = controller.store.getState().delegation.children
+      return children["running-child"]?.status === "finished" &&
+        children["attention-child"]?.status === "finished"
+    }, "the remaining child turns to finish")
+    expect(control.poll(route, childIds)).toEqual([
       { childId: "running-child", status: "finished", terminalAt: 4242 },
       { childId: "attention-child", status: "finished", terminalAt: 4242 },
       { childId: "finished-child", status: "finished", terminalAt: 4242 },

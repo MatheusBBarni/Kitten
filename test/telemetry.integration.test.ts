@@ -87,6 +87,7 @@ function realController(
   })
   return {
     store,
+    transcriptWindowingEnabled: false,
     actions,
     shell: { ready: false, error: "shell outside telemetry test boundary" },
     runtimes: () => runtimes,

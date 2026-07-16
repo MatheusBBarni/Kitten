@@ -89,6 +89,7 @@ function controllerOver(
   })
   return {
     store,
+    transcriptWindowingEnabled: false,
     actions,
     shell: { ready: false, error: "shell outside cockpit-session test boundary" },
     runtimes: () => runtimes,

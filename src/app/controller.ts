@@ -2090,33 +2090,41 @@ export async function createSessionController(options: SessionControllerOptions)
       // invokes us. Publishing `working` earlier would make that same action
       // reject the child as an already-active session.
       onDispatched: () => {
-        dispatched = publishDelegatedState({
+        if (!ownsDelegatedIdentity(child.identity)) return
+        publishDelegatedState({
           ...child.identity,
           status: "running",
           sessionStatus: "working",
         })
+        // Some adapters synchronously publish their own `working` update from
+        // inside `connection.prompt`. That has already transitioned this child,
+        // but the dispatch itself was still accepted.
+        dispatched = true
       },
     })
 
     const terminalizePromptFailure = (): void => {
+      // `failSession` synchronously fences late runtime events before it awaits
+      // disposal. Publish the terminal child state at that boundary: a detached
+      // start/poll caller must not wait on an adapter's potentially slow teardown
+      // before observing a rejected initial dispatch.
       void failSession(
         childRuntime,
         childRuntime.connection ?? undefined,
         "Initial child prompt failed",
         "connection-failed",
-      ).then(() => {
-        if (!ownsDelegatedIdentity(child.identity)) return
-        publishDelegatedState({
-          ...child.identity,
-          status: "failed",
-          sessionStatus: "error",
-          at: now(),
-        })
-        options.recorder?.exploreStartFailed?.(lifecycleKey, {
-          failureCategory: "prompt-dispatch-failed",
-          count: 1,
-        })
-      }).catch((error) => onError(child.seed.id, error))
+      ).catch((error) => onError(child.seed.id, error))
+      if (!ownsDelegatedIdentity(child.identity)) return
+      publishDelegatedState({
+        ...child.identity,
+        status: "failed",
+        sessionStatus: "error",
+        at: now(),
+      })
+      options.recorder?.exploreStartFailed?.(lifecycleKey, {
+        failureCategory: "prompt-dispatch-failed",
+        count: 1,
+      })
     }
 
     if (!dispatched) {

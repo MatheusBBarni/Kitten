@@ -22,6 +22,7 @@ function controllerOver(store: ReturnType<typeof createAppStore>, connection = C
   const runtimes = readyRuntimes()
   return {
     store,
+    transcriptWindowingEnabled: false,
     shell: { ready: false, error: "shell outside config-persistence test boundary" },
     actions: createControllerActions({
       store,
