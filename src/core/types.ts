@@ -653,6 +653,8 @@ export interface PendingDiff {
   toolCallId: string
   path: string
   unified: string
+  /** Exact controller-resolved source identity used only for sealed-pack deduplication. */
+  sourceIdentity?: string
 }
 
 /**
@@ -781,13 +783,35 @@ export type DomainSessionEvent =
  * in V1 (ADR-002); an LLM-backed assembler can replace the producer later without
  * changing this shape.
  */
+/** One ordinary handoff file plus independently resolved source identity evidence. */
+export interface HandoffFileReference {
+  path: string
+  reason: "read" | "edited"
+  /** Missing evidence never authorizes path-only deduplication. */
+  sourceIdentity?: string
+}
+
+/** Controller-owned identity evidence for ordinary handoff items. */
+export interface HandoffSourceIdentityIndex {
+  readonly files: Readonly<Record<string, string>>
+  readonly pendingDiffs: Readonly<Record<string, string>>
+}
+
+/** One whole exact sealed payload attached to a handoff; no editable block model exists. */
+export interface HandoffContextPackAttachment extends DurableSealedContextPack {
+  readonly sourceIdentities: readonly string[]
+  readonly redactionCount?: number
+}
+
 export interface HandoffBundle {
   intent: "continue"
   summary: string // deterministic transcript excerpt in V1
-  files: { path: string; reason: "read" | "edited" }[]
+  files: HandoffFileReference[]
   pendingDiffs: PendingDiff[]
   /** Redacted shell state offered to the developer for explicit preview curation. */
   shell?: ShellSnapshot
+  /** At most one immutable sealed pack participates in the combined preview. */
+  contextPack?: HandoffContextPackAttachment
   redactionCount: number // secrets stripped before preview
 }
 

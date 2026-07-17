@@ -21,7 +21,8 @@
 import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRequest, PromptBlock } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { CONTEXT_PACK_MCP_INSTRUCTIONS, type ContextPackMcpOperation } from "../agent/contextPackMcp.ts"
-import { isAbsolute } from "node:path"
+import { lstatSync, realpathSync } from "node:fs"
+import { isAbsolute, resolve } from "node:path"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import {
   CONTEXT_BUILD_OPERATIONS,
@@ -48,7 +49,7 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type DomainSessionEvent, type DraftContextPack, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
@@ -124,6 +125,8 @@ import {
   type HarnessDelivery,
 } from "./harnessDelivery.ts"
 import {
+  isPathContainedBy,
+  isSafeRepositoryRelativePath,
   repositoryFileSource as productionRepositoryFileSource,
   type RepositoryFileSource,
 } from "./fileDiscovery.ts"
@@ -355,6 +358,10 @@ export interface SessionController {
   runtime(sessionId: SessionId): AgentRuntimeState | undefined
   /** Whether the session completed its handshake and holds a live ACP session. */
   isReady(sessionId: SessionId): boolean
+  /** Resolve exact ordinary-item source identities without granting path-only deduplication. */
+  handoffSourceIdentities?(sessionId: SessionId, bundle: HandoffBundle): HandoffSourceIdentityIndex
+  /** Recompute fit for one reviewed sealed attachment against the addressed target. */
+  assessHandoffRecipientFit?(targetSessionId: SessionId, sealed: DurableSealedContextPack): RecipientFit
   /** Replace the controller-owned provider-default snapshot without mutating sessions. */
   updateProviderDefaults(defaults: Partial<Record<ProviderKind, ProviderModelDefault>>): void
   /** Replace the current sessions with the independently restored sides of one persisted run. */
@@ -2797,7 +2804,7 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function recipientFitEvidence(
     sessionId: SessionId,
-    sealed: ContextPackSealedState,
+    sealed: DurableSealedContextPack,
   ): RecipientFitEvidence {
     const runtime = runtimes.get(sessionId)
     const session = store.getState().sessions[sessionId]
@@ -2859,6 +2866,60 @@ export async function createSessionController(options: SessionControllerOptions)
     const sealed = store.getState().contextPacks[sessionId]?.sealed
     if (!sealed) return { kind: "unavailable", reason: "missing_evidence" }
     return assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed))
+  }
+
+  function assessHandoffRecipientFit(
+    targetSessionId: SessionId,
+    sealed: DurableSealedContextPack,
+  ): RecipientFit {
+    return assessRecipientFit(sealed, recipientFitEvidence(targetSessionId, sealed))
+  }
+
+  function handoffSourceIdentities(
+    sessionId: SessionId,
+    bundle: HandoffBundle,
+  ): HandoffSourceIdentityIndex {
+    const files = Object.create(null) as Record<string, string>
+    const pendingDiffs = Object.create(null) as Record<string, string>
+    const session = store.getState().sessions[sessionId]
+    const runtime = runtimes.get(sessionId)
+    if (
+      !session ||
+      !runtime ||
+      !isAbsolute(session.cwd) ||
+      session.cwd !== runtime.seed.cwd
+    ) return { files, pendingDiffs }
+
+    let realRoot: string
+    try {
+      realRoot = realpathSync(session.cwd)
+    } catch {
+      return { files, pendingDiffs }
+    }
+
+    const fileIdentity = (path: string): string | null => {
+      if (!isSafeRepositoryRelativePath(session.cwd, path)) return null
+      try {
+        const absolutePath = resolve(session.cwd, path)
+        const stat = lstatSync(absolutePath)
+        if (!stat.isFile()) return null
+        const realSource = realpathSync(absolutePath)
+        if (!isPathContainedBy(realRoot, realSource)) return null
+        return `${String(stat.dev)}:${String(stat.ino)}`
+      } catch {
+        return null
+      }
+    }
+
+    for (const file of bundle.files) {
+      const identity = fileIdentity(file.path)
+      if (identity !== null) files[file.path] = `file:${identity}`
+    }
+    for (const diff of bundle.pendingDiffs) {
+      const identity = fileIdentity(diff.path)
+      if (identity !== null) pendingDiffs[diff.toolCallId] = `diff:pending:${identity}`
+    }
+    return { files, pendingDiffs }
   }
 
   async function sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult> {
@@ -3418,6 +3479,8 @@ export async function createSessionController(options: SessionControllerOptions)
     runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),
     runtime: (sessionId) => runtimes.get(sessionId)?.state,
     isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
+    handoffSourceIdentities,
+    assessHandoffRecipientFit,
     updateProviderDefaults(defaults): void {
       providerDefaults = cloneProviderDefaults(defaults)
     },
@@ -3646,7 +3709,7 @@ function sameContextBuildRoute(left: ContextPackBridgeRoute, right: ContextPackB
     left.workspaceRoot === right.workspaceRoot
 }
 
-function invalidRecipientFitEvidence(sealed: ContextPackSealedState): RecipientFitEvidence {
+function invalidRecipientFitEvidence(sealed: DurableSealedContextPack): RecipientFitEvidence {
   return {
     kind: "current",
     sealedRevision: sealed.revision,

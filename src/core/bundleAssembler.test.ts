@@ -1,9 +1,20 @@
 import { describe, expect, it } from "bun:test"
 
-import { DEFAULT_BUNDLE_LIMITS, createDeterministicAssembler } from "./bundleAssembler.ts"
+import {
+  DEFAULT_BUNDLE_LIMITS,
+  attachSealedContextPack,
+  createDeterministicAssembler,
+  deduplicateHandoffBundle,
+} from "./bundleAssembler.ts"
 import { REDACTION_PLACEHOLDER, createSecretRedactor } from "./secretRedactor.ts"
 import { createSessionState, sessionReducer } from "./sessionReducer.ts"
-import type { DomainSessionEvent, SessionState, ShellSnapshot } from "./types.ts"
+import type {
+  DomainSessionEvent,
+  HandoffBundle,
+  SealedContextPack,
+  SessionState,
+  ShellSnapshot,
+} from "./types.ts"
 
 /**
  * Fixtures are built by folding real domain events through the real reducer, so
@@ -20,6 +31,129 @@ const fold = (events: DomainSessionEvent[]): SessionState =>
   events.reduce(sessionReducer, createSessionState({ id: "claude-code", providerKind: "claude-code", title: "claude-code", cwd: "/w", acpSessionId: "session-1" }))
 
 const assembler = createDeterministicAssembler()
+
+function sealedPack(payload = "# Sealed Context Pack\n\nExact reviewed bytes."): SealedContextPack {
+  const bytes = new TextEncoder().encode(payload).byteLength
+  return {
+    revision: 3,
+    payload,
+    bytes,
+    sealedAt: 123,
+    packEstimate: Math.ceil(bytes / 4),
+    redactionCount: 1,
+    manifest: {
+      version: 1,
+      revision: 3,
+      instructions: { original: "Continue the task.", mode: "preserve", discovered: "" },
+      budget: { unit: "estimated_tokens", limit: 80_000 },
+      brief: {
+        architecture: "Core",
+        selectedContext: "Selected",
+        relationships: "Related",
+        ambiguities: "None",
+        budgetOmissions: "None",
+      },
+      selections: [],
+    },
+    sourceFences: [
+      { selectionKey: "full_file:src/a.ts:file:dev:1", identity: "file:dev:1", digest: "a".repeat(64), bytes: 10 },
+      { selectionKey: "diff:src/b.ts:unstaged:diff:unstaged:dev:2", identity: "diff:unstaged:dev:2", digest: "b".repeat(64), bytes: 20 },
+    ],
+  }
+}
+
+describe("sealed Context Pack attachment", () => {
+  // Suite: immutable sealed-pack handoff composition
+  // Invariant: one exact sealed value may suppress only ordinary blocks with the same source identity.
+  // Boundary IN: pure attachment cardinality, identity comparison, and exact payload custody.
+  // Boundary OUT: recipient evidence and operator confirmation, owned by src/app/handoff.test.ts.
+  const bundle: HandoffBundle = {
+    intent: "continue",
+    summary: "Continue the implementation.",
+    files: [
+      { path: "src/a.ts", reason: "read" },
+      { path: "src/same-path.ts", reason: "read" },
+    ],
+    pendingDiffs: [{ toolCallId: "diff-1", path: "src/b.ts", unified: "+change" }],
+    redactionCount: 0,
+  }
+
+  it("accepts one whole sealed pack and rejects a second attachment", () => {
+    const first = attachSealedContextPack(bundle, sealedPack(), {
+      files: { "src/a.ts": "file:dev:1" },
+      pendingDiffs: { "diff-1": "diff:unstaged:dev:2" },
+    })
+    expect(first.kind).toBe("attached")
+    if (first.kind !== "attached") throw new Error("expected first attachment")
+
+    expect(attachSealedContextPack(first.bundle, sealedPack("replacement"), {
+      files: {},
+      pendingDiffs: {},
+    })).toEqual({ kind: "blocked", reason: "context_pack_already_attached" })
+  })
+
+  it("deduplicates exact identities while retaining the same path with a different identity", () => {
+    const attached = attachSealedContextPack(bundle, sealedPack(), {
+      files: {
+        "src/a.ts": "file:dev:1",
+        "src/same-path.ts": "file:dev:different",
+      },
+      pendingDiffs: { "diff-1": "diff:unstaged:dev:2" },
+    })
+    if (attached.kind !== "attached") throw new Error("expected attachment")
+
+    expect(deduplicateHandoffBundle(attached.bundle)).toEqual({
+      files: [{ path: "src/same-path.ts", reason: "read", sourceIdentity: "file:dev:different" }],
+      pendingDiffs: [],
+    })
+  })
+
+  it("ignores assembler-supplied identities that were not independently resolved", () => {
+    const spoofed: HandoffBundle = {
+      ...bundle,
+      files: [{ path: "src/a.ts", reason: "read", sourceIdentity: "file:dev:1" }],
+      pendingDiffs: [{
+        toolCallId: "diff-1",
+        path: "src/b.ts",
+        unified: "+change",
+        sourceIdentity: "diff:unstaged:dev:2",
+      }],
+    }
+    const attached = attachSealedContextPack(spoofed, sealedPack(), {
+      files: {},
+      pendingDiffs: {},
+    })
+    if (attached.kind !== "attached") throw new Error("expected attachment")
+
+    expect(deduplicateHandoffBundle(attached.bundle)).toEqual({
+      files: [{ path: "src/a.ts", reason: "read" }],
+      pendingDiffs: [{ toolCallId: "diff-1", path: "src/b.ts", unified: "+change" }],
+    })
+  })
+
+  it("preserves sealed payload bytes and never routes them through the handoff redactor", () => {
+    let redactionCalls = 0
+    const base = createDeterministicAssembler({
+      redactor: {
+        redact(value) {
+          redactionCalls += 1
+          return { text: value, count: 0 }
+        },
+      },
+    }).assemble(fold([]), "codex")
+    const exactPayload = "token=sk-ant-already-reviewed\ntrailing-space: \n"
+    const callsBeforeAttachment = redactionCalls
+    const attached = attachSealedContextPack(base, sealedPack(exactPayload), {
+      files: {},
+      pendingDiffs: {},
+    })
+    if (attached.kind !== "attached") throw new Error("expected attachment")
+
+    expect(attached.bundle.contextPack?.payload).toBe(exactPayload)
+    expect(attached.bundle.contextPack?.bytes).toBe(new TextEncoder().encode(exactPayload).byteLength)
+    expect(redactionCalls).toBe(callsBeforeAttachment)
+  })
+})
 
 describe("referenced files and pending diffs", () => {
   it("derives two referenced files with the right reason and one pending diff", () => {

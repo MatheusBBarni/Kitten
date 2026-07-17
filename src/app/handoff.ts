@@ -29,7 +29,12 @@
  */
 
 import type { PromptBlock, PromptResult } from "../agent/agentConnection.ts"
-import { createDeterministicAssembler, type BundleAssembler } from "../core/bundleAssembler.ts"
+import {
+  attachSealedContextPack,
+  createDeterministicAssembler,
+  deduplicateHandoffBundle,
+  type BundleAssembler,
+} from "../core/bundleAssembler.ts"
 import { editedCharCount } from "../core/telemetryHeuristics.ts"
 import {
   visibleConfigOptions,
@@ -84,6 +89,8 @@ export interface HandoffEdits {
   excludedDiffs: ReadonlySet<string>
   /** Command ids the developer dropped from the shell snapshot. */
   excludedCommands: ReadonlySet<string>
+  /** The only allowed sealed-pack edit: remove the entire immutable attachment. */
+  excludeContextPack: boolean
   /** Target model/effort changes to apply before the receiving agent gets the prompt. */
   targetConfig: { configId: string; value: string }[]
 }
@@ -95,18 +102,29 @@ export function createHandoffEdits(bundle: HandoffBundle): HandoffEdits {
     excludedFiles: new Set(),
     excludedDiffs: new Set(),
     excludedCommands: new Set(),
+    excludeContextPack: false,
     targetConfig: [],
   }
 }
 
 /** The files that survive the developer's edits, in bundle order. */
 export function includedFiles(bundle: HandoffBundle, edits: HandoffEdits): HandoffBundle["files"] {
-  return bundle.files.filter((file) => !edits.excludedFiles.has(file.path))
+  return deduplicateHandoffBundle(bundle, !edits.excludeContextPack).files
+    .filter((file) => !edits.excludedFiles.has(file.path))
 }
 
 /** The pending diffs that survive the developer's edits, in bundle order. */
 export function includedDiffs(bundle: HandoffBundle, edits: HandoffEdits): PendingDiff[] {
-  return bundle.pendingDiffs.filter((diff) => !edits.excludedDiffs.has(diff.toolCallId))
+  return deduplicateHandoffBundle(bundle, !edits.excludeContextPack).pendingDiffs
+    .filter((diff) => !edits.excludedDiffs.has(diff.toolCallId))
+}
+
+/** The single whole sealed attachment, or null when the operator removed it. */
+export function includedContextPack(
+  bundle: HandoffBundle,
+  edits: HandoffEdits,
+): HandoffBundle["contextPack"] | null {
+  return edits.excludeContextPack ? null : bundle.contextPack ?? null
 }
 
 /** The shell commands that survive the developer's edits, in execution order. */
@@ -130,7 +148,14 @@ export function composeHandoffBlocks(bundle: HandoffBundle, edits: HandoffEdits)
   const files = includedFiles(bundle, edits)
   const diffs = includedDiffs(bundle, edits)
   const commands = includedCommands(bundle, edits)
-  if (summary.length === 0 && files.length === 0 && diffs.length === 0 && commands.length === 0) return []
+  const contextPack = includedContextPack(bundle, edits)
+  if (
+    summary.length === 0 &&
+    files.length === 0 &&
+    diffs.length === 0 &&
+    commands.length === 0 &&
+    contextPack === null
+  ) return []
 
   const blocks: PromptBlock[] = [text(HANDOFF_INSTRUCTION)]
   if (summary.length > 0) blocks.push(text(summary))
@@ -144,6 +169,9 @@ export function composeHandoffBlocks(bundle: HandoffBundle, edits: HandoffEdits)
   if (bundle.shell && commands.length > 0) {
     blocks.push(text(renderShellContext(bundle.shell.cwd, commands)))
   }
+  // The reviewed payload is already redacted and sealed. Keep it as its own exact
+  // block: no trim, heading prefix, per-selection rewrite, or second redaction pass.
+  if (contextPack) blocks.push(text(contextPack.payload))
   return blocks
 }
 
@@ -234,10 +262,31 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
    */
   function openPreview(source: SessionState, targetSessionId: SessionId, shell: ShellSnapshot): void {
     const target = store.getState().sessions[targetSessionId]!
+    const assembledBundle = assembler.assemble(source, target.providerKind, shell)
+    // The assembly strategy owns only ordinary handoff material. Strip any
+    // injected attachment so the single source-owned sealed value can enter only
+    // through the fresh-fit path below.
+    const { contextPack: _untrustedAttachment, ...ordinaryBundle } = assembledBundle
+    const sealed = store.getState().contextPacks[source.id]?.sealed
+    let bundle = ordinaryBundle
+    if (
+      sealed &&
+      controller.assessHandoffRecipientFit?.(targetSessionId, sealed).kind === "fit"
+    ) {
+      const attached = attachSealedContextPack(
+        ordinaryBundle,
+        sealed,
+        controller.handoffSourceIdentities?.(source.id, ordinaryBundle) ?? {
+          files: {},
+          pendingDiffs: {},
+        },
+      )
+      if (attached.kind === "attached") bundle = attached.bundle
+    }
     store.openHandoffPreview({
       sourceSessionId: source.id,
       targetSessionId,
-      bundle: assembler.assemble(source, target.providerKind, shell),
+      bundle,
       // Snapshot the target's allowed options. The preview owns its local outgoing
       // choices until confirm, so cancelling cannot mutate a live target session.
       targetConfigOptions: visibleConfigOptions(target.configOptions),
@@ -327,6 +376,11 @@ export function createHandoffFlow(options: HandoffFlowOptions): HandoffFlow {
         const confirmed = await actions.setSessionConfigOption(config.configId, config.value, overlay.targetSessionId)
         if (!confirmed) return null
       }
+      const contextPack = includedContextPack(overlay.bundle, edits)
+      if (
+        contextPack &&
+        controller.assessHandoffRecipientFit?.(overlay.targetSessionId, contextPack).kind !== "fit"
+      ) return null
       store.closeHandoffPreview()
       // Address the target explicitly: focus has not moved yet, and it must not have -
       // `sendPrompt` writes the user's turn into whichever session it is given.

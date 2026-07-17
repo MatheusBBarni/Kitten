@@ -25,6 +25,8 @@ import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
 import {
   DIFFS_HEADING,
   DROPPED_BOX,
+  CONTEXT_PACK_HEADING,
+  CONTEXT_PACK_LABEL,
   FILES_HEADING,
   fileProvenanceTarget,
   handoffTitleFor,
@@ -524,6 +526,56 @@ describe("HandoffPreview curation", () => {
     expect(frame).toContain(`${KEPT_BOX} src/app.ts (edited)`)
     expect(frame).not.toContain(DROPPED_BOX)
     expect(spanContaining(setup, "cfg.json (read)")?.fg.toString()).toBe(paletteColor(DARK_PALETTE.text))
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders one immutable sealed-pack row and removes or restores it only as a whole", async () => {
+    const controller = createFakeController({
+      assessHandoffRecipientFit: () => ({ kind: "fit", exactCount: 10, remaining: 990 }),
+    })
+    seed(controller, "claude-code")
+    const setup = await renderWithPreview(controller)
+    const overlay = controller.store.getState().overlays.handoffPreview!
+    const payload = "# Exact sealed pack\n\nPACK_EXACT_MARKER\n"
+
+    await actAsync(() => {
+      controller.store.openHandoffPreview({
+        ...overlay,
+        bundle: {
+          ...overlay.bundle,
+          files: overlay.bundle.files.map((file) =>
+            file.path === "src/app.ts" ? { ...file, sourceIdentity: "file:dev:1" } : file,
+          ),
+          contextPack: {
+            revision: 7,
+            payload,
+            bytes: new TextEncoder().encode(payload).byteLength,
+            sealedAt: 123,
+            sourceIdentities: ["file:dev:1"],
+          },
+        },
+      })
+    })
+
+    const attached = await setup.waitForFrame((frame) => frame.includes("PACK_EXACT_MARKER"))
+    expect(attached).toContain(CONTEXT_PACK_HEADING)
+    expect(attached).toContain(`${ITEM_MARKER} ${KEPT_BOX} ${CONTEXT_PACK_LABEL}`)
+    expect(attached).not.toContain("src/app.ts (edited)")
+
+    await actAsync(async () => {
+      await setup.mockInput.typeText(" ")
+    })
+    const removed = await setup.waitForFrame(
+      (frame) => frame.includes(`${DROPPED_BOX} ${CONTEXT_PACK_LABEL}`) && frame.includes("src/app.ts (edited)"),
+    )
+    expect(removed).not.toContain("PACK_EXACT_MARKER")
+
+    await actAsync(() => {
+      setup.mockInput.pressEnter()
+    })
+    expect(sentText(controller)).not.toContain("PACK_EXACT_MARKER")
+    expect(sentText(controller)).toContain("src/app.ts (edited)")
 
     await destroyMounted(setup.renderer)
   })

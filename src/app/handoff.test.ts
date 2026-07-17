@@ -2,10 +2,21 @@ import { describe, expect, it } from "bun:test"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import type { PromptBlock } from "../agent/agentConnection.ts"
-import type { BundleAssembler } from "../core/bundleAssembler.ts"
-import { REDACTION_PLACEHOLDER } from "../core/secretRedactor.ts"
+import { attachSealedContextPack, type BundleAssembler } from "../core/bundleAssembler.ts"
+import { assembleCandidate, contextSelectionKey, sealCandidate } from "../core/contextPack.ts"
+import { REDACTION_PLACEHOLDER, createSecretRedactor } from "../core/secretRedactor.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, PROVIDER_DISPLAY_NAMES } from "../core/types.ts"
-import type { ConfigOption, HandoffBundle, ProviderKind, SessionId, SessionSeed, ToolCallUpdate } from "../core/types.ts"
+import type {
+  ConfigOption,
+  ContextFullFileSelection,
+  HandoffBundle,
+  ProviderKind,
+  RecipientFit,
+  SealedContextPack,
+  SessionId,
+  SessionSeed,
+  ToolCallUpdate,
+} from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { createTelemetryRecorder, type TelemetryRecord } from "../telemetry/recorder.ts"
 import type { AgentRuntimeState } from "./controller.ts"
@@ -16,6 +27,7 @@ import {
   FILES_HEADING,
   HANDOFF_INSTRUCTION,
   includedCommands,
+  includedContextPack,
   includedDiffs,
   includedFiles,
   pendingDiffHeading,
@@ -158,6 +170,54 @@ function sentText(controller: FakeController): string {
   return (call.input as PromptBlock[]).map((block) => block.text).join("\n")
 }
 
+/** Seal one exact source-owned pack through the real core/store custody path. */
+function seedSealedPack(
+  controller: FakeController,
+  sessionId: SessionId,
+  sourceIdentity = "file:dev:1",
+): SealedContextPack {
+  const content = "export const exact = true\n"
+  const selection: ContextFullFileSelection = {
+    kind: "full_file",
+    path: "src/app.ts",
+    source: {
+      identity: sourceIdentity,
+      digest: "a".repeat(64),
+      bytes: new TextEncoder().encode(content).byteLength,
+    },
+    rationale: "Implementation under handoff",
+    relationship: "Defines the behavior being continued",
+  }
+  const created = controller.store.createContextPackDraft(sessionId, "Continue the exact task.")
+  if (created?.kind !== "created") throw new Error("expected draft fixture")
+  const applied = controller.store.applyContextPackOperatorMutation(sessionId, {
+    kind: "upsert_selection",
+    selection,
+  })
+  if (applied?.kind !== "applied") throw new Error("expected selection fixture")
+  const draft = applied.draft
+  const assembled = assembleCandidate(draft, [{
+    selectionKey: contextSelectionKey(selection),
+    source: selection.source,
+    content,
+  }], createSecretRedactor())
+  if (assembled.kind !== "assembled") throw new Error("expected candidate fixture")
+  if (!controller.store.publishContextPackReview(sessionId, assembled.candidate)) {
+    throw new Error("expected review fixture")
+  }
+  const sealed = sealCandidate({
+    draft,
+    candidate: assembled.candidate,
+    currentSourceFences: assembled.candidate.sourceFences,
+    sealedAt: 123,
+  })
+  if (sealed.kind !== "sealed") throw new Error("expected sealed fixture")
+  if (!controller.store.sealContextPack(sessionId, sealed.sealed)) {
+    throw new Error("expected sealed store fixture")
+  }
+  return sealed.sealed
+}
+
 describe("composeHandoffBlocks", () => {
   const bundle: HandoffBundle = {
     intent: "continue",
@@ -203,6 +263,7 @@ describe("composeHandoffBlocks", () => {
       excludedFiles: new Set(["src/app.ts", "cfg.json"]),
       excludedDiffs: new Set(["call-edit"]),
       excludedCommands: new Set(),
+      excludeContextPack: false,
       targetConfig: [],
     }
     const texts = composeHandoffBlocks(bundle, trimmed).map((block) => block.text)
@@ -223,6 +284,7 @@ describe("composeHandoffBlocks", () => {
       excludedFiles: new Set(["src/app.ts", "cfg.json"]),
       excludedDiffs: new Set(["call-edit"]),
       excludedCommands: new Set(),
+      excludeContextPack: false,
       targetConfig: [],
     }
     // Not "just the instruction": a target told to continue a task it has been told
@@ -284,6 +346,117 @@ describe("composeHandoffBlocks", () => {
     }
 
     expect(composeHandoffBlocks(shellOnly, dropped)).toEqual([])
+  })
+
+  it("removes or restores the whole sealed attachment without exposing partial edits", () => {
+    const sealed = seedSealedPack(controllerWithWork(), "claude-code")
+    const attached = attachSealedContextPack(bundle, sealed, {
+      files: { "src/app.ts": sealed.sourceFences[0]!.identity },
+      pendingDiffs: {},
+    })
+    if (attached.kind !== "attached") throw new Error("expected attachment")
+    const kept = createHandoffEdits(attached.bundle)
+
+    expect(includedContextPack(attached.bundle, kept)?.payload).toBe(sealed.payload)
+    expect(includedFiles(attached.bundle, kept).map((file) => file.path)).toEqual(["cfg.json"])
+    expect(composeHandoffBlocks(attached.bundle, kept)).toContainEqual({
+      type: "text",
+      text: sealed.payload,
+    })
+
+    const removed = { ...kept, excludeContextPack: true }
+    expect(includedContextPack(attached.bundle, removed)).toBeNull()
+    expect(includedFiles(attached.bundle, removed).map((file) => file.path)).toEqual([
+      "src/app.ts",
+      "cfg.json",
+    ])
+    expect(composeHandoffBlocks(attached.bundle, removed)).not.toContainEqual({
+      type: "text",
+      text: sealed.payload,
+    })
+  })
+})
+
+describe("sealed Context Pack handoff integration", () => {
+  // Suite: Context Pack handoff lifecycle
+  // Invariant: attachment and final confirmation each require current fit, and only one confirmed exact payload dispatches.
+  // Boundary IN: real AppStore custody, HandoffFlow, core composition, and the ControllerActions prompt boundary.
+  // Boundary OUT: live provider evidence construction, owned by src/app/controller.test.ts.
+  const fit: RecipientFit = { kind: "fit", exactCount: 100, remaining: 900 }
+
+  it("excludes the optional attachment when fresh fit is unavailable before preview composition", () => {
+    let assessments = 0
+    const controller = createFakeController({
+      assessHandoffRecipientFit: () => {
+        assessments += 1
+        return { kind: "unavailable", reason: "missing_evidence" }
+      },
+    })
+    seedWork(controller, "claude-code")
+    controller.store.setFocus("claude-code")
+    seedSealedPack(controller, "claude-code")
+
+    expect(createHandoffFlow({ controller }).begin()).toEqual({ ok: true })
+    expect(assessments).toBe(1)
+    expect(openBundle(controller).contextPack).toBeUndefined()
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+  })
+
+  it("rechecks fit at final confirmation and preserves the combined preview when evidence becomes unavailable", async () => {
+    const outcomes: RecipientFit[] = [fit, { kind: "unavailable", reason: "stale_evidence" }]
+    let assessments = 0
+    const controller = createFakeController({
+      assessHandoffRecipientFit: () => outcomes[assessments++] ?? outcomes.at(-1)!,
+      handoffSourceIdentities: () => ({
+        files: { "src/app.ts": "file:dev:1" },
+        pendingDiffs: {},
+      }),
+    })
+    seedWork(controller, "claude-code")
+    controller.store.setFocus("claude-code")
+    const sealed = seedSealedPack(controller, "claude-code")
+    const flow = createHandoffFlow({ controller })
+
+    expect(flow.begin()).toEqual({ ok: true })
+    const reviewed = controller.store.getState().overlays.handoffPreview
+    expect(reviewed?.bundle.contextPack?.payload).toBe(sealed.payload)
+
+    expect(await flow.confirm(createHandoffEdits(reviewed!.bundle))).toBeNull()
+    expect(assessments).toBe(2)
+    expect(controller.store.getState().overlays.handoffPreview).toBe(reviewed)
+    expect(controller.calls.sendPrompt).toHaveLength(0)
+    expect(controller.calls.switchFocus).toHaveLength(0)
+  })
+
+  it("dispatches the reviewed attachment through the existing confirmation path only once", async () => {
+    let assessments = 0
+    const controller = createFakeController({
+      assessHandoffRecipientFit: () => {
+        assessments += 1
+        return fit
+      },
+      handoffSourceIdentities: () => ({
+        files: { "src/app.ts": "file:dev:1" },
+        pendingDiffs: {},
+      }),
+    })
+    seedWork(controller, "claude-code")
+    controller.store.setFocus("claude-code")
+    const sealed = seedSealedPack(controller, "claude-code")
+    const flow = createHandoffFlow({ controller })
+
+    expect(flow.begin()).toEqual({ ok: true })
+    const bundle = openBundle(controller)
+    const edits = createHandoffEdits(bundle)
+    await flow.confirm(edits)
+    await flow.confirm(edits)
+
+    expect(assessments).toBe(2)
+    expect(controller.calls.sendPrompt).toHaveLength(1)
+    expect((controller.calls.sendPrompt[0]!.input as PromptBlock[]).filter(
+      (block) => block.text === sealed.payload,
+    )).toHaveLength(1)
+    expect(controller.calls.switchFocus).toEqual(["codex"])
   })
 })
 
@@ -447,6 +620,33 @@ describe("HandoffFlow.begin", () => {
       pendingDiffs: [],
       redactionCount: 7,
     })
+  })
+
+  it("strips an assembler-injected pack so attachment cannot bypass fresh fit", () => {
+    const controller = controllerWithWork()
+    const sealed = seedSealedPack(controller, "claude-code")
+    const assembler: BundleAssembler = {
+      assemble() {
+        return {
+          intent: "continue",
+          summary: "ordinary handoff",
+          files: [],
+          pendingDiffs: [],
+          redactionCount: 0,
+          contextPack: {
+            revision: sealed.revision,
+            payload: sealed.payload,
+            bytes: sealed.bytes,
+            sealedAt: sealed.sealedAt,
+            sourceIdentities: sealed.sourceFences.map((fence) => fence.identity),
+          },
+        }
+      },
+    }
+    controller.assessHandoffRecipientFit = undefined
+
+    expect(createHandoffFlow({ controller, assembler }).begin()).toEqual({ ok: true })
+    expect(openBundle(controller).contextPack).toBeUndefined()
   })
 })
 
@@ -618,6 +818,7 @@ describe("HandoffFlow.confirm", () => {
       excludedFiles: new Set(["cfg.json"]),
       excludedDiffs: new Set(),
       excludedCommands: new Set(),
+      excludeContextPack: false,
       targetConfig: [],
     })
 
@@ -638,6 +839,7 @@ describe("HandoffFlow.confirm", () => {
       excludedFiles: new Set(["cfg.json", "src/app.ts"]),
       excludedDiffs: new Set(["call-edit"]),
       excludedCommands: new Set(),
+      excludeContextPack: false,
       targetConfig: [],
     })
 
@@ -657,6 +859,7 @@ describe("HandoffFlow.confirm", () => {
         excludedFiles: new Set(),
         excludedDiffs: new Set(),
         excludedCommands: new Set(),
+        excludeContextPack: false,
         targetConfig: [],
       }),
     ).toBeNull()
@@ -910,6 +1113,7 @@ describe("hand-off moat - characterization (ADR-002)", () => {
       excludedFiles: new Set(["cfg.json"]),
       excludedDiffs: new Set(),
       excludedCommands: new Set(),
+      excludeContextPack: false,
       targetConfig: [],
     }
     expect(composeHandoffBlocks(FIXED_BUNDLE, edits)).toEqual([

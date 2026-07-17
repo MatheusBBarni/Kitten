@@ -876,6 +876,43 @@ describe("createSessionController - Context Build lifecycle", () => {
     await test.controller.dispose()
   })
 
+  it("integration: supplies fresh target fit to one combined handoff confirmation", async () => {
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 250,
+      now: () => 100,
+    })
+    const sourceId = test.controller.store.getState().workspace.selectedVisibleId!
+    const targetId = sourceId === "codex" ? "claude-code" : "codex"
+    const custody = await reviewedAndSealed(test, sourceId)
+    test.controller.store.applyEvent(sourceId, {
+      kind: "user_message",
+      messageId: "handoff-source",
+      text: "Continue with the sealed context.",
+    })
+    test.controller.store.applyEvent(targetId, { kind: "usage", used: 400, size: 2_000 })
+
+    expect(test.controller.assessHandoffRecipientFit?.(targetId, custody.sealed)).toEqual({
+      kind: "fit",
+      exactCount: 250,
+      remaining: 1_250,
+    })
+    const flow = createHandoffFlow({ controller: test.controller })
+    expect(flow.begin()).toEqual({ ok: true })
+    const preview = test.controller.store.getState().overlays.handoffPreview
+    expect(preview?.targetSessionId).toBe(targetId)
+    expect(preview?.bundle.contextPack?.payload).toBe(custody.sealed.payload)
+
+    await flow.confirm(createHandoffEdits(preview!.bundle))
+
+    const delivered = test.created.slice(0, 2).flatMap((connection) => connection.prompts)
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]?.blocks.filter((block) => block.text === custody.sealed.payload)).toHaveLength(1)
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(targetId)
+    await test.controller.dispose()
+  })
+
   it("integration: changed evidence blocks Send Here without focus, byte, or dispatch changes", async () => {
     let profileAvailable = false
     let exactCount = 700

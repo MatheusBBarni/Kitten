@@ -37,7 +37,15 @@ import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import type { CleanupManagedWorktreeResult } from "../src/app/managedWorktree.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
-import type { ClarificationOutcome, DefaultApplyResult, RecipientFit, SessionId } from "../src/core/types.ts"
+import type {
+  ClarificationOutcome,
+  DefaultApplyResult,
+  DurableSealedContextPack,
+  HandoffBundle,
+  HandoffSourceIdentityIndex,
+  RecipientFit,
+  SessionId,
+} from "../src/core/types.ts"
 import type { StatuslineLayout } from "../src/core/statusline.ts"
 import {
   persistedSelectedConversationId,
@@ -148,6 +156,18 @@ export interface FakeControllerOptions {
     sessionId: SessionId | undefined,
     store: AppStore,
   ) => PromptResult | null | Promise<PromptResult | null>
+  /** Deterministic ordinary-item identity evidence for handoff composition tests. */
+  handoffSourceIdentities?: (
+    sessionId: SessionId,
+    bundle: HandoffBundle,
+    store: AppStore,
+  ) => HandoffSourceIdentityIndex
+  /** Deterministic arbitrary-target fit verdict for sealed handoff attachments. */
+  assessHandoffRecipientFit?: (
+    targetSessionId: SessionId,
+    sealed: DurableSealedContextPack,
+    store: AppStore,
+  ) => RecipientFit
 }
 
 /**
@@ -594,6 +614,18 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
+    handoffSourceIdentities(sessionId, bundle): HandoffSourceIdentityIndex {
+      return options.handoffSourceIdentities?.(sessionId, bundle, store) ?? {
+        files: {},
+        pendingDiffs: {},
+      }
+    },
+    assessHandoffRecipientFit(targetSessionId, sealed): RecipientFit {
+      return options.assessHandoffRecipientFit?.(targetSessionId, sealed, store) ?? {
+        kind: "unavailable",
+        reason: "missing_evidence",
+      }
+    },
     updateProviderDefaults: () => {},
     closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {
