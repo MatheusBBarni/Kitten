@@ -747,6 +747,8 @@ describe("createSessionController - Context Build lifecycle", () => {
       buildOptions: [{ promptWait: failureWait.promise, promptThrows: new Error("child failed") }],
     })
     const failureParent = failure.controller.store.getState().workspace.selectedVisibleId!
+    const sessionStatus = failure.controller.store.getState().sessions[failureParent]?.status
+    const agentAttention = failure.controller.store.getState().workspace.conversations[failureParent]?.attention
     expect((await failure.controller.actions.startContextBuild(freshDraft(failureParent))).kind).toBe("started")
     failureWait.resolve()
     await waitFor(
@@ -754,7 +756,9 @@ describe("createSessionController - Context Build lifecycle", () => {
       "failed Context Build cleanup",
     )
     expect(failure.contextBridge.revocations.at(-1)?.reason).toBe("child_settled")
-    expect(failure.controller.store.getState().workspace.conversations[failureParent]?.attention.status).toBe("error")
+    expect(failure.controller.store.getState().contextPacks[failureParent]?.attention).toBeUndefined()
+    expect(failure.controller.store.getState().sessions[failureParent]?.status).toBe(sessionStatus)
+    expect(failure.controller.store.getState().workspace.conversations[failureParent]?.attention).toBe(agentAttention)
     await failure.controller.dispose()
 
     const closeWait = deferred()
@@ -781,6 +785,8 @@ describe("createSessionController - Context Build lifecycle", () => {
     const selected = before.workspace.selectedVisibleId
     const focusedPane = before.focusedPane
     const overlays = before.overlays
+    const sessionStatus = before.sessions.codex?.status
+    const agentAttention = before.workspace.conversations.codex?.attention
 
     expect((await test.controller.actions.startContextBuild(freshDraft("codex"))).kind).toBe("started")
     promptWait.resolve()
@@ -793,11 +799,14 @@ describe("createSessionController - Context Build lifecycle", () => {
     expect(after.workspace.selectedVisibleId).toBe(selected)
     expect(after.focusedPane).toBe(focusedPane)
     expect(after.overlays).toBe(overlays)
-    expect(after.contextPacks.codex).toMatchObject({ review: null, sealed: null, build: null })
-    expect(after.workspace.conversations.codex?.attention).toMatchObject({
-      status: "finished",
-      seen: false,
+    expect(after.contextPacks.codex).toMatchObject({
+      review: null,
+      sealed: null,
+      build: null,
+      attention: "ready_for_review",
     })
+    expect(after.sessions.codex?.status).toBe(sessionStatus)
+    expect(after.workspace.conversations.codex?.attention).toBe(agentAttention)
     await test.controller.dispose()
   })
 

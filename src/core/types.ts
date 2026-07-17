@@ -1223,6 +1223,8 @@ export interface ContextPackState {
   readonly sealed: ContextPackSealedState | null
   readonly review: ContextPackReviewCandidate | null
   readonly build: ContextBuildBinding | null
+  /** Live-only operator cue; never participates in ACP session status or persistence. */
+  readonly attention?: "ready_for_review"
 }
 
 export type ContextPackValidationCode =

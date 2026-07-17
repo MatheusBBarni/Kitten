@@ -383,6 +383,27 @@ export const selectContextPackBuild =
   (state) =>
     (sessionId ? state.contextPacks[sessionId]?.build : null) ?? null
 
+export interface ContextPackAttentionPresentation {
+  readonly kind: "ready_for_review"
+  readonly label: "Context ready"
+}
+
+const CONTEXT_PACK_READY_ATTENTION: ContextPackAttentionPresentation = Object.freeze({
+  kind: "ready_for_review",
+  label: "Context ready",
+})
+
+function contextPackAttentionPresentation(
+  contextPack: ContextPackState | undefined,
+): ContextPackAttentionPresentation | null {
+  return contextPack?.attention === "ready_for_review" ? CONTEXT_PACK_READY_ATTENTION : null
+}
+
+/** Distinct live Context Pack attention; never synthesized from ACP SessionStatus. */
+export const selectContextPackAttention =
+  (sessionId: SessionId | null): Selector<ContextPackAttentionPresentation | null> =>
+  (state) => contextPackAttentionPresentation(sessionId ? state.contextPacks[sessionId] : undefined)
+
 /** The complete ephemeral delegation projection for controller/store integration. */
 export const selectDelegationState: Selector<DelegationState> = (state) => state.delegation
 
@@ -1227,6 +1248,8 @@ export interface WorkspaceConversationView {
   delegation: DelegationPresentation | null
   /** The same cached managed-worktree review object exposed by session-list rows. */
   review: ManagedWorktreeReviewPresentation | null
+  /** Textual Context Pack cue kept separate from agent execution attention. */
+  contextPackAttention: ContextPackAttentionPresentation | null
 }
 
 export interface SharedWorkspaceCue {
@@ -1283,6 +1306,7 @@ function workspaceConversationView(
   const selected = state.workspace.selectedVisibleId === sessionId
   const delegation = delegationPresentation(state, sessionId)
   const review = managedWorktreeReviewPresentation(session.worktreeBinding)
+  const contextPackAttention = contextPackAttentionPresentation(state.contextPacks[sessionId])
   const key = [
     session.providerKind,
     session.cwd,
@@ -1293,6 +1317,7 @@ function workspaceConversationView(
     sharedCount,
     delegationPresentationKey(delegation),
     projectionObjectKey(review),
+    projectionObjectKey(contextPackAttention),
   ].join("\u0000")
   let byKey = conversationViewCache.get(conversation)
   if (!byKey) {
@@ -1322,6 +1347,7 @@ function workspaceConversationView(
     sharedWorkspaceCount: sharedCount,
     delegation,
     review,
+    contextPackAttention,
   }
   byKey.set(key, view)
   return view

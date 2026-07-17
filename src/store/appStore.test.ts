@@ -2752,12 +2752,13 @@ describe("Context Pack store integration", () => {
       childGeneration: 99,
     }, "ready_for_review")).toBe(false)
     expect(store.getState().contextPacks.b?.build).toEqual(prepared.binding)
+    const sessionStatus = store.getState().sessions.b?.status
+    const agentAttention = store.getState().workspace.conversations.b?.attention
     expect(store.settleContextBuild("b", prepared.binding, "ready_for_review")).toBe(true)
     expect(store.getState().contextPacks.b?.build).toBeNull()
-    expect(store.getState().workspace.conversations.b?.attention).toMatchObject({
-      status: "finished",
-      seen: false,
-    })
+    expect(store.getState().contextPacks.b?.attention).toBe("ready_for_review")
+    expect(store.getState().sessions.b?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.b?.attention).toBe(agentAttention)
     expect(store.getState().workspace.selectedVisibleId).toBe(selected)
     expect(store.getState().focusedPane).toBe(focus)
     expect(store.getState().overlays).toBe(overlays)

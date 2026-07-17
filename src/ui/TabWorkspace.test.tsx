@@ -7,7 +7,7 @@ import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import { evaluateExplorePolicy, type ExplorePolicySnapshot } from "../core/explorePolicy.ts"
 import type { ManagedWorktreeBinding, SessionSeed, SessionStatus } from "../core/types.ts"
-import { createAppStore } from "../store/appStore.ts"
+import { createAppStore, type AppStore } from "../store/appStore.ts"
 import {
   EXPLORE_RESTRICTION_SUMMARY,
   selectVisibleTabs,
@@ -54,6 +54,23 @@ function view(id: string, selected = false): WorkspaceConversationView {
     sharedWorkspaceCount: 1,
     delegation: null,
     review: null,
+    contextPackAttention: null,
+  }
+}
+
+function markContextReady(store: AppStore, sessionId: string): void {
+  const prepared = store.prepareContextBuild(sessionId, {
+    kind: "start_fresh",
+    original: `Prepare ${sessionId}`,
+  }, {
+    parentId: sessionId,
+    childId: `builder-${sessionId}`,
+    parentGeneration: 1,
+    childGeneration: 1,
+  })
+  if (prepared.kind !== "prepared") throw new Error("expected prepared Context Build")
+  if (!store.settleContextBuild(sessionId, prepared.binding, "ready_for_review")) {
+    throw new Error("expected settled Context Build")
   }
 }
 
@@ -341,6 +358,73 @@ describe("TabWorkspace presentation", () => {
     for (const cue of ["idle", "working", "approval", "error", "finished"]) expect(frame).toContain(cue)
 
     await destroyMounted(setup.renderer)
+  })
+
+  it("renders background completion on its owning tab without moving focus or overlays", async () => {
+    const { seeds, runtimes } = fleet(2)
+    const store = createAppStore({ seeds, selectedVisibleId: "s1" })
+    store.setFocusedPane({ kind: "agent", sessionId: "s1" })
+    store.openSettings()
+    const controller = createFakeController({ store, runtimes })
+    const selectedVisibleId = store.getState().workspace.selectedVisibleId
+    const focusedPane = store.getState().focusedPane
+    const overlays = store.getState().overlays
+    const sessionStatus = store.getState().sessions.s2?.status
+    const agentAttention = store.getState().workspace.conversations.s2?.attention
+
+    markContextReady(store, "s2")
+    const setup = await renderStrip(controller, 180)
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Session 2 · idle · Context ready")
+    expect(store.getState().workspace.selectedVisibleId).toBe(selectedVisibleId)
+    expect(store.getState().focusedPane).toBe(focusedPane)
+    expect(store.getState().overlays).toBe(overlays)
+    expect(store.getState().sessions.s2?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.s2?.attention).toBe(agentAttention)
+    expect(controller.calls.reviewContextPack).toEqual([])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("acknowledges only the owning cue on explicit tab selection without opening review", async () => {
+    const { seeds, runtimes } = fleet(2)
+    const store = createAppStore({ seeds, selectedVisibleId: "s1" })
+    markContextReady(store, "s2")
+    const sessionStatus = store.getState().sessions.s2?.status
+    const agentAttention = store.getState().workspace.conversations.s2?.attention
+    const controller = createFakeController({ store, runtimes })
+    const setup = await renderStrip(controller, 180)
+    const point = pointOf(setup.captureCharFrame(), `${TAB_MARKER} Session 2`)
+
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+    await setup.renderOnce()
+
+    expect(store.getState().workspace.selectedVisibleId).toBe("s2")
+    expect(store.getState().contextPacks.s2?.attention).toBeUndefined()
+    expect(store.getState().contextPacks.s2?.review).toBeNull()
+    expect(store.getState().sessions.s2?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.s2?.attention).toBe(agentAttention)
+    expect(controller.calls.reviewContextPack).toEqual([])
+    expect(setup.captureCharFrame()).not.toContain("Context ready")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps agent attention ordering and jump behavior independent from Context Pack cues", () => {
+    const { seeds, runtimes } = fleet(5)
+    const store = createAppStore({ seeds, selectedVisibleId: "s1" })
+    markContextReady(store, "s2")
+    store.applyEvent("s3", { kind: "status", status: "finished" })
+    store.applyEvent("s4", { kind: "status", status: "error" })
+    store.applyEvent("s5", { kind: "status", status: "awaiting_approval" })
+    const controller = createFakeController({ store, runtimes })
+
+    controller.actions.jumpToNextAttention()
+    expect(store.getState().workspace.selectedVisibleId).toBe("s5")
+    controller.actions.jumpToNextAttention()
+    expect(store.getState().workspace.selectedVisibleId).toBe("s4")
+    controller.actions.jumpToNextAttention()
+    expect(store.getState().workspace.selectedVisibleId).toBe("s3")
+    expect(store.getState().contextPacks.s2?.attention).toBe("ready_for_review")
   })
 
   it("shows deterministic duplicate labels and shared-workspace cues from selectors", async () => {

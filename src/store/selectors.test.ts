@@ -89,6 +89,7 @@ import {
   selectSessionExplorerPosition,
   selectVisibleExplorerPosition,
   selectContextPack,
+  selectContextPackAttention,
   selectContextPackBuild,
   selectContextPackDraft,
   selectContextPackReview,
@@ -200,6 +201,83 @@ describe("Context Pack selectors", () => {
     expect(notifications).toHaveLength(1)
     expect(selectDraft(store.getState())).not.toBe(draft)
     expect(selectBuild(store.getState())).toBe(build)
+  })
+
+  it("returns one stable absent attention projection without Context Pack attention", () => {
+    const store = createAppStore({
+      seeds: [{ id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" }],
+    })
+    const selectAttention = selectContextPackAttention("a")
+    const absent = selectAttention(store.getState())
+
+    expect(absent).toBeNull()
+    expect(selectContextPackAttention("missing")(store.getState())).toBeNull()
+    expect(selectContextPackAttention(null)(store.getState())).toBeNull()
+    store.createContextPackDraft("a", "Prepare context")
+    store.applyEvent("a", { kind: "status", status: "working" })
+    expect(selectAttention(store.getState())).toBe(absent)
+  })
+
+  it("projects review-ready Context Pack attention without forging SessionStatus", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+      selectedVisibleId: "a",
+    })
+    store.applyEvent("b", { kind: "status", status: "working" })
+    const prepared = store.prepareContextBuild("b", {
+      kind: "start_fresh",
+      original: "Prepare B",
+    }, {
+      parentId: "b",
+      childId: "builder-b",
+      parentGeneration: 1,
+      childGeneration: 1,
+    })
+    if (prepared.kind !== "prepared") throw new Error("expected prepared Context Build")
+    const sessionStatus = store.getState().sessions.b?.status
+    const agentAttention = store.getState().workspace.conversations.b?.attention
+
+    expect(store.settleContextBuild("b", prepared.binding, "ready_for_review")).toBeTrue()
+    const projection = selectContextPackAttention("b")(store.getState())
+    expect(projection).toEqual({ kind: "ready_for_review", label: "Context ready" })
+    expect(selectContextPackAttention("b")(store.getState())).toBe(projection)
+    expect(store.getState().sessions.b?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.b?.attention).toBe(agentAttention)
+  })
+
+  it("clears only Context Pack attention on explicit session selection", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+      selectedVisibleId: "a",
+    })
+    const prepared = store.prepareContextBuild("b", {
+      kind: "start_fresh",
+      original: "Prepare B",
+    }, {
+      parentId: "b",
+      childId: "builder-b",
+      parentGeneration: 1,
+      childGeneration: 1,
+    })
+    if (prepared.kind !== "prepared") throw new Error("expected prepared Context Build")
+    expect(store.settleContextBuild("b", prepared.binding, "ready_for_review")).toBeTrue()
+    const draft = store.getState().contextPacks.b?.draft
+    const sessionStatus = store.getState().sessions.b?.status
+    const agentAttention = store.getState().workspace.conversations.b?.attention
+
+    store.selectConversation("b")
+
+    expect(selectContextPackAttention("b")(store.getState())).toBeNull()
+    expect(store.getState().contextPacks.b?.draft).toBe(draft)
+    expect(store.getState().contextPacks.b?.review).toBeNull()
+    expect(store.getState().sessions.b?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.b?.attention).toBe(agentAttention)
   })
 })
 

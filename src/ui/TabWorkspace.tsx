@@ -64,7 +64,10 @@ export function tabItemLabel(tab: WorkspaceConversationView): string {
     : ` · ${terminalReview || tab.review.availability !== "available"
       ? tab.review.availabilityLabel
       : tab.review.managedLabel}`
-  return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${delegation}${review}${shared}`
+  const contextPack = tab.contextPackAttention === null
+    ? ""
+    : ` · ${tab.contextPackAttention.label}`
+  return `${tab.selected ? TAB_SELECTED_MARKER : TAB_MARKER} ${tab.label} · ${standing}${delegation}${review}${contextPack}${shared}`
 }
 
 function overflowLabel(hiddenCount: number, backgroundCount: number): string | null {

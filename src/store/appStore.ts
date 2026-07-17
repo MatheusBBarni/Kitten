@@ -510,7 +510,7 @@ export interface AppStore {
   ): ContextBuildPreparationResult
   /** Release only the matching live Context Build generation. */
   releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
-  /** Release one matching build and publish only background attention for its terminal outcome. */
+  /** Release one matching build and publish only a pack-owned ready cue on success. */
   settleContextBuild(
     sessionId: SessionId,
     binding: ContextBuildBinding,
@@ -962,7 +962,7 @@ class AppStoreImpl implements AppStore {
     const result = createDraft(original, options)
     if (result.kind !== "created") return result
     this.commitContextPack(sessionId, {
-      ...current,
+      ...clearContextPackAttention(current),
       draft: result.draft,
       review: null,
     })
@@ -975,7 +975,7 @@ class AppStoreImpl implements AppStore {
     const result = startFreshFromSealed(current.sealed)
     if (result.kind !== "created") return result
     this.commitContextPack(sessionId, {
-      ...current,
+      ...clearContextPackAttention(current),
       draft: result.draft,
       review: null,
     })
@@ -991,7 +991,7 @@ class AppStoreImpl implements AppStore {
     const result = applyOperatorContextPackMutation(current.draft, mutation)
     if (result.kind !== "applied") return result
     this.commitContextPack(sessionId, {
-      ...current,
+      ...clearContextPackAttention(current),
       draft: result.draft,
       review: null,
       build: current.build?.state === "ready_for_review"
@@ -1010,7 +1010,7 @@ class AppStoreImpl implements AppStore {
     const result = applyBuilderContextPackMutation(current.draft, mutation)
     if (result.kind !== "applied") return result
     this.commitContextPack(sessionId, {
-      ...current,
+      ...clearContextPackAttention(current),
       draft: result.draft,
       review: null,
       build: current.build?.state === "ready_for_review"
@@ -1074,7 +1074,10 @@ class AppStoreImpl implements AppStore {
     ) {
       return false
     }
-    this.commitContextPack(sessionId, { ...current, build: binding })
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      build: binding,
+    })
     return true
   }
 
@@ -1107,7 +1110,7 @@ class AppStoreImpl implements AppStore {
       state: "building",
     }
     this.commitContextPack(sessionId, {
-      ...current,
+      ...clearContextPackAttention(current),
       draft: result.draft,
       review: null,
       build: binding,
@@ -1129,18 +1132,15 @@ class AppStoreImpl implements AppStore {
   ): boolean {
     const current = this.state.contextPacks[sessionId]
     if (!current?.build || !sameContextBuildIdentity(current.build, binding)) return false
-    const workspace = workspaceReducer(this.state.workspace, {
-      kind: "execution_status",
-      sessionId,
-      status: outcome === "ready_for_review" ? "finished" : "error",
-    })
+    const settled = clearContextPackAttention({ ...current, build: null })
     this.commit({
       ...this.state,
       contextPacks: {
         ...this.state.contextPacks,
-        [sessionId]: { ...current, build: null },
+        [sessionId]: outcome === "ready_for_review"
+          ? { ...settled, attention: "ready_for_review" }
+          : settled,
       },
-      workspace,
     })
     return true
   }
@@ -1487,17 +1487,32 @@ class AppStoreImpl implements AppStore {
   selectConversation(sessionId: SessionId): void {
     if (hasOpenOverlay(this.state.overlays)) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "select", sessionId })
-    if (workspace === this.state.workspace) return
-    this.commit({ ...this.state, workspace, focusedPane: { kind: "agent", sessionId } })
+    const current = this.state.contextPacks[sessionId]
+    const contextPack = current ? clearContextPackAttention(current) : current
+    if (workspace === this.state.workspace && contextPack === current) return
+    this.commit({
+      ...this.state,
+      workspace,
+      contextPacks: contextPack === current
+        ? this.state.contextPacks
+        : { ...this.state.contextPacks, [sessionId]: contextPack! },
+      focusedPane: { kind: "agent", sessionId },
+    })
   }
 
   selectAdjacentConversation(direction: "previous" | "next"): void {
     if (hasOpenOverlay(this.state.overlays)) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "select_adjacent", direction })
     if (workspace === this.state.workspace) return
+    const sessionId = workspace.selectedVisibleId
+    const current = sessionId ? this.state.contextPacks[sessionId] : undefined
+    const contextPack = current ? clearContextPackAttention(current) : current
     this.commit({
       ...this.state,
       workspace,
+      contextPacks: !sessionId || contextPack === current
+        ? this.state.contextPacks
+        : { ...this.state.contextPacks, [sessionId]: contextPack! },
       focusedPane: workspace.selectedVisibleId
         ? { kind: "agent", sessionId: workspace.selectedVisibleId }
         : { kind: "workspace" },
@@ -1516,9 +1531,14 @@ class AppStoreImpl implements AppStore {
   reopenConversation(sessionId: SessionId): void {
     const workspace = workspaceReducer(this.state.workspace, { kind: "reopen", sessionId })
     if (workspace === this.state.workspace) return
+    const current = this.state.contextPacks[sessionId]
+    const contextPack = current ? clearContextPackAttention(current) : current
     this.commit({
       ...this.state,
       workspace,
+      contextPacks: contextPack === current
+        ? this.state.contextPacks
+        : { ...this.state.contextPacks, [sessionId]: contextPack! },
       focusedPane: { kind: "agent", sessionId },
     })
   }
@@ -1851,6 +1871,12 @@ class AppStoreImpl implements AppStore {
 
 function createContextPackState(): ContextPackState {
   return { draft: null, sealed: null, review: null, build: null }
+}
+
+function clearContextPackAttention(contextPack: ContextPackState): ContextPackState {
+  if (contextPack.attention === undefined) return contextPack
+  const { attention: _attention, ...rest } = contextPack
+  return rest
 }
 
 function createTranscriptWindowState(): TranscriptWindowState {
