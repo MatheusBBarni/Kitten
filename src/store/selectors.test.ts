@@ -88,6 +88,7 @@ import {
   selectSessionSteeringStatus,
   selectSessionExplorerPosition,
   selectVisibleExplorerPosition,
+  selectCursorRecovery,
   selectContextPack,
   selectContextPackAttention,
   selectContextPackBuild,
@@ -327,6 +328,95 @@ const enqueueSteering = (
     blocks: [{ type: "text", text }],
   })
 }
+
+describe("Cursor recovery selector", () => {
+  it("returns only the bounded projection for an unavailable Cursor session", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "cursor", providerKind: "cursor", title: "Cursor", cwd: "/w" },
+        { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w" },
+      ],
+    })
+    const recovery = {
+      reason: "authentication_required",
+      action: "authenticate_natively",
+      recheckable: true,
+    } as const
+
+    store.setConversationAvailability("cursor", {
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: recovery,
+    })
+    store.setConversationAvailability("codex", {
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: recovery,
+    })
+
+    expect(selectCursorRecovery("cursor")(store.getState())).toBe(recovery)
+    expect(selectCursorRecovery("codex")(store.getState())).toBeNull()
+    expect(selectCursorRecovery("missing")(store.getState())).toBeNull()
+    expect(selectCursorRecovery(null)(store.getState())).toBeNull()
+  })
+
+  it("returns null for starting, ready, and unavailable Cursor sessions without a projection", () => {
+    const store = createAppStore({
+      seeds: [{ id: "cursor", providerKind: "cursor", title: "Cursor", cwd: "/w" }],
+    })
+    const selectRecovery = selectCursorRecovery("cursor")
+
+    expect(selectRecovery(store.getState())).toBeNull()
+    store.setConversationAvailability("cursor", { kind: "ready" })
+    expect(selectRecovery(store.getState())).toBeNull()
+    store.setConversationAvailability("cursor", {
+      kind: "unavailable",
+      reasonCode: "teardown-failed",
+      retryable: true,
+    })
+    expect(selectRecovery(store.getState())).toBeNull()
+  })
+
+  it("publishes changed recovery values and stays silent for equal or sibling updates", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "cursor", providerKind: "cursor", title: "Cursor", cwd: "/w" },
+        { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w" },
+      ],
+    })
+    const seen: unknown[] = []
+    store.subscribeSelector(selectCursorRecovery("cursor"), (recovery) => seen.push(recovery))
+
+    const unavailable = {
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: {
+        reason: "uncertified_recipe",
+        action: "await_maintainer_review",
+        recheckable: false,
+      },
+    } as const
+    store.setConversationAvailability("cursor", unavailable)
+    store.setConversationAvailability("cursor", { ...unavailable, cursorRecovery: { ...unavailable.cursorRecovery } })
+    store.setConversationAvailability("codex", { kind: "ready" })
+    store.setConversationAvailability("cursor", {
+      ...unavailable,
+      cursorRecovery: {
+        reason: "binary_missing",
+        action: "install_cursor_cli",
+        recheckable: true,
+      },
+    })
+
+    expect(seen).toEqual([
+      unavailable.cursorRecovery,
+      { reason: "binary_missing", action: "install_cursor_cli", recheckable: true },
+    ])
+  })
+})
 
 describe("steering selectors", () => {
   it("projects compact idle, queued, sending, and failed status", () => {

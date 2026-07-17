@@ -149,7 +149,7 @@ export function startMockAgent(stream: Stream, options: MockAgentOptions = {}): 
   const loadSessionRequests: LoadSessionRequest[] = []
   const configOptionRequests: SetSessionConfigOptionRequest[] = []
   // The live option set the agent advertises, mutated in place by set_config_option.
-  const configOptions: SessionConfigOption[] = options.configOptions ? [...options.configOptions] : []
+  const configOptions: SessionConfigOption[] = options.configOptions ? structuredClone(options.configOptions) : []
   const advertisesConfig = options.configOptions !== undefined
 
   let connection!: AgentSideConnection

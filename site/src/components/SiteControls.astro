@@ -10,16 +10,32 @@ interface Props {
   proof: ShowcaseConfig["proof"];
   install: ShowcaseConfig["install"];
   navigation: ShowcaseConfig["navigation"];
+  homeHref?: string;
+  proofHref?: string;
+  installHref?: string;
+  docsHref?: string;
+  activePage?: "docs";
 }
 
-const { repository, hero, proof, install, navigation } = Astro.props;
+const {
+  repository,
+  hero,
+  proof,
+  install,
+  navigation,
+  homeHref = `#${hero.id}`,
+  proofHref = `#${proof.id}`,
+  installHref = `#${install.id}`,
+  docsHref = "./docs/",
+  activePage,
+} = Astro.props;
 ---
 
 <header class="site-header" data-site-controls>
   <div class="site-header-inner">
     <a
       class="site-brand"
-      href={`#${hero.id}`}
+      href={homeHref}
       aria-label={navigation.brandAccessibleLabel}
     >
       <Image
@@ -33,8 +49,13 @@ const { repository, hero, proof, install, navigation } = Astro.props;
       <span>{navigation.brandLabel}</span>
     </a>
     <nav class="site-nav" aria-label="Primary navigation">
-      <a href={`#${proof.id}`}>{navigation.proofLabel}</a>
-      <a href={`#${install.id}`}>{navigation.installLabel}</a>
+      <a href={proofHref}>{navigation.proofLabel}</a>
+      <a href={installHref}>{navigation.installLabel}</a>
+      <a
+        href={docsHref}
+        aria-current={activePage === "docs" ? "page" : undefined}
+        >{navigation.docsLabel}</a
+      >
     </nav>
     <a
       class="github-star-control"

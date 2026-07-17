@@ -14,7 +14,7 @@ import {
   type PermissionRequest,
 } from "./agentConnection.ts"
 import { createInMemoryTransportPair } from "./transport.ts"
-import { ASK_USER_MCP_HOST_GUIDANCE, ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
+import { ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
 import { KITTEN_VERSION } from "../version.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../config/harnessCapability.ts"
 
@@ -367,9 +367,9 @@ describe("connect / session lifecycle", () => {
     await conn.dispose()
   })
 
-  it("adds hidden ask_user guidance only to prompts from a session with Kitten's bridge", async () => {
+  it("sends only caller-supplied blocks for a fresh session with Kitten's bridge", async () => {
     let receivedPrompt: unknown = []
-    const { conn } = await connected({
+    const { conn, mock } = await connected({
       onPrompt: (request) => {
         receivedPrompt = request.prompt
         return "end_turn"
@@ -379,16 +379,14 @@ describe("connect / session lifecycle", () => {
     const sessionId = await conn.newSession("/repo", [ASK_USER_MCP_SERVER])
     await conn.prompt(sessionId, [{ type: "text", text: "Refine the feature idea." }])
 
-    expect(receivedPrompt).toEqual([
-      { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
-      { type: "text", text: "Refine the feature idea." },
-    ])
+    expect(mock.newSessionRequests[0]?.mcpServers[0]?.name).toBe(ASK_USER_MCP_SERVER_NAME)
+    expect(receivedPrompt).toEqual([{ type: "text", text: "Refine the feature idea." }])
     await conn.dispose()
   })
 
-  it("adds hidden ask_user guidance after restoring a session with Kitten's bridge", async () => {
+  it("sends only caller-supplied blocks after restoring a session with Kitten's bridge", async () => {
     let receivedPrompt: unknown = []
-    const { conn } = await connected({
+    const { conn, mock } = await connected({
       canLoadSession: true,
       onPrompt: (request) => {
         receivedPrompt = request.prompt
@@ -399,10 +397,8 @@ describe("connect / session lifecycle", () => {
     await conn.loadSession("sess-7", "/repo", [ASK_USER_MCP_SERVER])
     await conn.prompt("sess-7", [{ type: "text", text: "Continue the feature idea." }])
 
-    expect(receivedPrompt).toEqual([
-      { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
-      { type: "text", text: "Continue the feature idea." },
-    ])
+    expect(mock.loadSessionRequests[0]?.mcpServers[0]?.name).toBe(ASK_USER_MCP_SERVER_NAME)
+    expect(receivedPrompt).toEqual([{ type: "text", text: "Continue the feature idea." }])
     await conn.dispose()
   })
 
@@ -493,8 +489,9 @@ describe("harness prompt envelope", () => {
     }
     const { conn, mock } = setup({}, undefined, config, HARNESS_PROFILES)
     await conn.connect()
+    const sessionId = await conn.newSession("/repo", [ASK_USER_MCP_SERVER])
 
-    await conn.prompt("mock-session-1", {
+    await conn.prompt(sessionId, {
       userBlocks: [{ type: "text", text: "SYNTHETIC_USER_BLOCK" }],
       harness: { version: "v1", text: "SYNTHETIC_HARNESS_BLOCK" },
       profileId,
@@ -502,7 +499,7 @@ describe("harness prompt envelope", () => {
 
     expect(mock.prompts).toEqual([
       {
-        sessionId: "mock-session-1",
+        sessionId,
         prompt: [{ type: "text", text: "SYNTHETIC_USER_BLOCK" }],
         _meta: { [metaKey]: { kittenHarness: { version: "v1", text: "SYNTHETIC_HARNESS_BLOCK" } } },
       },
@@ -1112,6 +1109,189 @@ describe("full prompt turn", () => {
   })
 })
 
+describe("bundled MCP failure classification", () => {
+  const bundledTitle = `mcp.${ASK_USER_MCP_SERVER_NAME}.ask_user`
+  const textResult = (text: string) => [{ type: "content" as const, content: { type: "text" as const, text } }]
+
+  it("classifies an exact failed full bundled call without retaining its source envelope", async () => {
+    const rawEnvelope = '{ "error": "busy" }'
+    const { conn, events } = await connected({
+      onPrompt: async (_request, ctx) => {
+        await ctx.update({
+          sessionUpdate: "tool_call",
+          toolCallId: "bundled-full",
+          title: bundledTitle,
+          kind: "other",
+          status: "failed",
+          content: textResult(rawEnvelope),
+        })
+        return "end_turn" as const
+      },
+    })
+
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "classify" }])
+    const event = events.find((candidate) => candidate.kind === "tool_call")
+
+    expect(event).toEqual({
+      kind: "tool_call",
+      call: {
+        toolCallId: "bundled-full",
+        title: bundledTitle,
+        kind: "other",
+        status: "failed",
+        diff: null,
+        failureKind: "temporary_capacity",
+      },
+    })
+    expect(JSON.stringify(event)).not.toContain(rawEnvelope)
+    expect(JSON.stringify(event)).not.toContain('"error"')
+    await conn.dispose()
+  })
+
+  it("associates a title-less later update and emits only protocol-free bounded state", async () => {
+    const sentinels = {
+      capability: "private-capability-sentinel",
+      route: "private-route-sentinel",
+      endpoint: "private-endpoint-sentinel",
+      server: "private-server-sentinel",
+    }
+    const { conn, events } = await connected({
+      onPrompt: async (_request, ctx) => {
+        await ctx.update({
+          sessionUpdate: "tool_call",
+          toolCallId: "bundled-later",
+          title: bundledTitle,
+          kind: "other",
+          status: "in_progress",
+        })
+        await ctx.update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "bundled-later",
+          status: "failed",
+          content: textResult('{"error":"unavailable"}'),
+          rawOutput: sentinels,
+          _meta: sentinels,
+        })
+        return "end_turn" as const
+      },
+    })
+
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "classify later" }])
+    const classified = events.filter(
+      (candidate) => candidate.kind === "tool_call" && candidate.call.failureKind !== undefined,
+    )
+
+    expect(classified).toEqual([{
+      kind: "tool_call",
+      call: {
+        toolCallId: "bundled-later",
+        status: "failed",
+        diff: null,
+        failureKind: "unavailable",
+      },
+    }])
+    const serialized = JSON.stringify(classified)
+    expect(serialized).not.toContain('{"error"')
+    expect(serialized).not.toContain(ASK_USER_MCP_SERVER_NAME)
+    for (const sentinel of Object.values(sentinels)) expect(serialized).not.toContain(sentinel)
+    await conn.dispose()
+  })
+
+  it("keeps unrelated titles and non-exact content generic", async () => {
+    const cases = [
+      { id: "other-server", title: "mcp.other.ask_user", content: textResult('{"error":"busy"}') },
+      { id: "missing-function", title: `mcp.${ASK_USER_MCP_SERVER_NAME}`, content: textResult('{"error":"busy"}') },
+      { id: "empty-function", title: `mcp.${ASK_USER_MCP_SERVER_NAME}.`, content: textResult('{"error":"busy"}') },
+      { id: "empty-function-segment", title: `mcp.${ASK_USER_MCP_SERVER_NAME}..ask_user`, content: textResult('{"error":"busy"}') },
+      { id: "non-mcp", title: "shell", content: textResult('{"error":"busy"}') },
+      { id: "still-running", title: bundledTitle, status: "in_progress" as const, content: textResult('{"error":"busy"}') },
+      { id: "completed", title: bundledTitle, status: "completed" as const, content: textResult('{"error":"busy"}') },
+      { id: "malformed", title: bundledTitle, content: textResult("not-json") },
+      { id: "additional-key", title: bundledTitle, content: textResult('{"error":"busy","route":"private"}') },
+      { id: "invalid-request", title: bundledTitle, content: textResult('{"error":"invalid_request"}') },
+      { id: "arbitrary-text", title: bundledTitle, content: textResult("busy") },
+      {
+        id: "multiple-blocks",
+        title: bundledTitle,
+        content: [...textResult('{"error":"busy"}'), ...textResult("ignored")],
+      },
+    ]
+    const { conn, events } = await connected({
+      onPrompt: async (_request, ctx) => {
+        for (const testCase of cases) {
+          await ctx.update({
+            sessionUpdate: "tool_call",
+            toolCallId: testCase.id,
+            title: testCase.title,
+            kind: "other",
+            status: testCase.status ?? "failed",
+            content: testCase.content,
+          })
+        }
+        return "end_turn" as const
+      },
+    })
+
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "keep generic" }])
+    const toolEvents = events.filter((candidate) => candidate.kind === "tool_call")
+
+    expect(toolEvents).toHaveLength(cases.length)
+    for (const event of toolEvents) {
+      if (event.kind === "tool_call") expect(event.call.failureKind).toBeUndefined()
+    }
+    expect(JSON.stringify(toolEvents)).not.toContain('"error"')
+    expect(JSON.stringify(toolEvents)).not.toContain("private")
+    await conn.dispose()
+  })
+
+  it("retires eligibility after both completion and failure before an ID is reused", async () => {
+    const { conn, events } = await connected({
+      onPrompt: async (_request, ctx) => {
+        await ctx.update({
+          sessionUpdate: "tool_call",
+          toolCallId: "completed-id",
+          title: bundledTitle,
+          kind: "other",
+          status: "completed",
+        })
+        await ctx.update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "completed-id",
+          status: "failed",
+          content: textResult('{"error":"busy"}'),
+        })
+        await ctx.update({
+          sessionUpdate: "tool_call",
+          toolCallId: "failed-id",
+          title: bundledTitle,
+          kind: "other",
+          status: "failed",
+          content: textResult('{"error":"busy"}'),
+        })
+        await ctx.update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "failed-id",
+          status: "failed",
+          content: textResult('{"error":"unavailable"}'),
+        })
+        return "end_turn" as const
+      },
+    })
+
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "reuse IDs" }])
+    const calls = events.filter((candidate) => candidate.kind === "tool_call").map((event) => event.call)
+
+    expect(calls[1]?.failureKind).toBeUndefined()
+    expect(calls[2]?.failureKind).toBe("temporary_capacity")
+    expect(calls[3]?.failureKind).toBeUndefined()
+    await conn.dispose()
+  })
+})
+
 describe("status mapping (ADR-006)", () => {
   const finishedReasons = ["end_turn", "max_tokens", "max_turn_requests", "refusal"] as const
 
@@ -1290,34 +1470,46 @@ describe("config options (task_03)", () => {
     await conn.dispose()
   })
 
-  it("setSessionConfigOption returns the agent-confirmed refreshed option set", async () => {
-    const { conn } = await connected({ configOptions: [MODEL, EFFORT] })
+  it("setSessionConfigOption returns only the complete agent-confirmed snapshot without an optimistic event", async () => {
+    const { conn, mock, events } = await connected({ configOptions: [MODEL, EFFORT] })
     const sessionId = await conn.newSession("/tmp/project")
+    const before = configEvents(events).map((event) => structuredClone(event))
 
     const refreshed = await conn.setSessionConfigOption(sessionId, "model", "opus")
 
+    expect(mock.configOptionRequests).toEqual([{ sessionId, configId: "model", value: "opus" }])
     expect(refreshed).toEqual([
       { id: "model", category: "model", label: "model", currentValue: "opus", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] },
       { id: "thought_level", category: "thought_level", label: "thought_level", currentValue: "medium", options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
     ])
+    expect(configEvents(events)).toEqual(before)
+    expect(before[0]).toEqual({
+      kind: "config_options",
+      options: [
+        { id: "model", category: "model", label: "model", currentValue: "sonnet", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] },
+        { id: "thought_level", category: "thought_level", label: "thought_level", currentValue: "medium", options: [{ value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+      ],
+    })
     await conn.dispose()
   })
 
   it("propagates a transport error to the controller's error path without corrupting confirmed state", async () => {
-    const { conn, events } = await connected({
+    const { conn, mock, events } = await connected({
       configOptions: [MODEL],
       onSetConfigOption: () => {
         throw new Error("set_config_option transport boom")
       },
     })
     const sessionId = await conn.newSession("/tmp/project")
-    const before = configEvents(events).length
+    const before = configEvents(events).map((event) => structuredClone(event))
 
     // The adapter rejects so the controller action (the existing error path) reports it
     // through onError; it must never emit a status:error or a config_options event that
     // would misreport the live model, so the overlay keeps its last confirmed value.
     await expect(conn.setSessionConfigOption(sessionId, "model", "opus")).rejects.toThrow()
-    expect(configEvents(events).length).toBe(before)
+    expect(mock.configOptionRequests).toEqual([{ sessionId, configId: "model", value: "opus" }])
+    expect(mock.configOptions[0]?.currentValue).toBe("sonnet")
+    expect(configEvents(events)).toEqual(before)
     expect(events.some((e) => e.kind === "status" && e.status === "error")).toBe(false)
     await conn.dispose()
   })
@@ -1385,27 +1577,6 @@ describe("createFrameScheduler", () => {
 })
 
 describe("filesystem callbacks", () => {
-  it("serves the agent's writeTextFile and windowed readTextFile requests", async () => {
-    const path = `${import.meta.dir}/.tmp-fs-callback-${process.pid}.txt`
-    let readBack = ""
-    const { conn } = await connected({
-      onPrompt: async (_request, ctx) => {
-        await ctx.writeTextFile(path, "line1\nline2\nline3")
-        readBack = await ctx.readTextFile(path, { line: 2, limit: 1 })
-        return "end_turn" as const
-      },
-    })
-    const sessionId = await conn.newSession("/tmp")
-    await conn.prompt(sessionId, [{ type: "text", text: "edit" }])
-    expect(readBack).toBe("line2")
-    expect(await Bun.file(path).text()).toBe("line1\nline2\nline3")
-    await Bun.file(path).delete()
-    await conn.dispose()
-  })
-})
-
-// Ensure adapters expose the interface type without unused-import noise.
-export type _AgentConnection = AgentConnection
   it("omits ACP filesystem capability and handlers for a bridge-only child", async () => {
     let callbackRejected = false
     const { conn } = setup({
@@ -1433,3 +1604,25 @@ export type _AgentConnection = AgentConnection
     expect(callbackRejected).toBe(true)
     await conn.dispose()
   })
+
+  it("serves the agent's writeTextFile and windowed readTextFile requests", async () => {
+    const path = `${import.meta.dir}/.tmp-fs-callback-${process.pid}.txt`
+    let readBack = ""
+    const { conn } = await connected({
+      onPrompt: async (_request, ctx) => {
+        await ctx.writeTextFile(path, "line1\nline2\nline3")
+        readBack = await ctx.readTextFile(path, { line: 2, limit: 1 })
+        return "end_turn" as const
+      },
+    })
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "edit" }])
+    expect(readBack).toBe("line2")
+    expect(await Bun.file(path).text()).toBe("line1\nline2\nline3")
+    await Bun.file(path).delete()
+    await conn.dispose()
+  })
+})
+
+// Ensure adapters expose the interface type without unused-import noise.
+export type _AgentConnection = AgentConnection

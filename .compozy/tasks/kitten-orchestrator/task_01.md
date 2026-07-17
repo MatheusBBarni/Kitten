@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Establish Private Workspace and Cockpit Package Boundary
 type: infra
 complexity: medium

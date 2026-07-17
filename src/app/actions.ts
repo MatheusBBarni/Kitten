@@ -127,6 +127,39 @@ export type ContextPackReviewResult =
   | { readonly kind: "reviewed"; readonly candidate: ContextPackReviewCandidate }
   | { readonly kind: "blocked"; readonly reason: ContextPackReviewBlockingReason }
 
+/** One explicit whole-file membership edit addressed to the draft revision the operator saw. */
+export interface ContextPackFileMembershipInput {
+  readonly sessionId: SessionId
+  readonly path: string
+  readonly readRevision: number
+  readonly operation: "add" | "remove"
+}
+
+export type ContextPackFileMembershipDenialReason =
+  | ContextPackMaterializationBlockedReason
+  | ContextPackMaterializationStaleReason
+  | "unknown_session"
+  | "draft_unavailable"
+  | "workspace_mismatch"
+  | "selection_already_present"
+  | "selection_unavailable"
+  | "invalid_mutation"
+  | "mutation_failed"
+
+/** Closed result; source metadata and the mutable draft never cross into component state. */
+export type ContextPackFileMembershipResult =
+  | {
+      readonly kind: "applied"
+      readonly operation: "add" | "remove"
+      readonly revision: number
+    }
+  | {
+      readonly kind: "stale"
+      readonly readRevision: number
+      readonly currentRevision: number
+    }
+  | { readonly kind: "denied"; readonly reason: ContextPackFileMembershipDenialReason }
+
 export type ContextPackSealBlockingReason =
   | ContextPackReviewBlockingReason
   | ContextPackSealFailureReason
@@ -237,6 +270,25 @@ export interface FileSelectorTelemetry {
   fileSelectorCorrected(sessionId: SessionId): void
 }
 
+/** Closed explorer refresh results accepted at the action-to-recorder boundary. */
+export type ExplorerRefreshOutcome = "refreshed" | "source-failed"
+
+/** Closed final file-open results accepted at the action-to-recorder boundary. */
+export type ExplorerFileOpenOutcome =
+  | "unsupported"
+  | "source-failed"
+  | "default-opened"
+  | "custom-opened"
+  | "final-failure"
+
+/** Content-free explorer facts available to controller actions. */
+export interface ExplorerTelemetry {
+  explorerOpened(sessionId: SessionId): void
+  explorerRefreshed(sessionId: SessionId, outcome: ExplorerRefreshOutcome): void
+  explorerFileOpened(sessionId: SessionId, outcome: ExplorerFileOpenOutcome): void
+  explorerFallback(sessionId: SessionId): void
+}
+
 /** Closed Session Tabs dimensions accepted by the UI-facing telemetry facade. */
 export type TabCreationSource = "inherited" | "default"
 export type TabSelectionSource = "mouse" | "kitty_chord" | "sessions_fallback" | "attention_jump" | "model_select"
@@ -255,7 +307,7 @@ export interface TabTelemetry {
  * both slices.
  */
 export type ActionTelemetry = FocusTelemetry & Partial<
-  SwitchTelemetry & DefaultApplyTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & TabTelemetry
+  SwitchTelemetry & DefaultApplyTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & ExplorerTelemetry & TabTelemetry
 >
 
 /** The default when no recorder is injected: record nothing. */
@@ -327,6 +379,8 @@ export interface ActionDeps {
   startNewRun?: () => Promise<void>
   /** Replace one unavailable restored session with a fresh promptable session. */
   startFreshSession?: (sessionId: SessionId) => Promise<boolean>
+  /** Recheck one eligible unavailable Cursor runtime without exposing controller internals. */
+  recheckCursor?: (sessionId: SessionId) => Promise<void>
   /** Create and start one controller-owned conversation runtime. */
   createConversation?: () => Promise<SessionId | null>
   /** Create, register, and dispatch one controller-owned delegated child. */
@@ -343,6 +397,10 @@ export interface ActionDeps {
   contextBuildAvailability?: (input: StartContextBuildInput) => ContextBuildAvailabilityResult
   /** Materialize and publish only one exact redacted review candidate. */
   reviewContextPack?: (sessionId: SessionId) => Promise<ContextPackReviewResult>
+  /** Materialize and revision-fence one explicit whole-file membership edit. */
+  mutateContextPackFileMembership?: (
+    input: ContextPackFileMembershipInput,
+  ) => Promise<ContextPackFileMembershipResult>
   /** Recheck and atomically seal only the addressed current candidate revision. */
   sealContextPack?: (sessionId: SessionId, candidateRevision: number) => Promise<ContextPackSealActionResult>
   /** Recompute recipient fit from current live evidence. */
@@ -365,6 +423,8 @@ export interface ActionDeps {
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
 export interface ControllerActions {
+  /** Deliberately recheck one unavailable configured Cursor session without throwing into the UI. */
+  recheckCursor(sessionId: SessionId): void
   /** Create a fresh visible conversation, or return `null` when none can be created. */
   createConversation(): Promise<SessionId | null>
   /** Start explicit child work in the background while retaining parent focus. */
@@ -381,6 +441,10 @@ export interface ControllerActions {
   contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult
   /** Materialize and publish one exact redacted candidate for the addressed draft. */
   reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult>
+  /** Add or remove one exact whole-file membership from the addressed observed draft. */
+  mutateContextPackFileMembership(
+    input: ContextPackFileMembershipInput,
+  ): Promise<ContextPackFileMembershipResult>
   /** Recheck and seal the exact addressed candidate revision. */
   sealContextPack(sessionId: SessionId, candidateRevision: number): Promise<ContextPackSealActionResult>
   /** Recompute current fail-closed fit for the addressed sealed pack and session. */
@@ -506,6 +570,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const repositoryFileSource = deps.repositoryFileSource
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
+  const recheckCursor = deps.recheckCursor ?? (async () => {})
   const createConversation = deps.createConversation ?? (async () => null)
   const startDelegatedChild = deps.startDelegatedChild ?? (async () => null)
   const cleanupManagedWorktree = deps.cleanupManagedWorktree ?? (async () => ({
@@ -524,6 +589,10 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   }))
   const reviewContextPack = deps.reviewContextPack ?? (async () => ({
     kind: "blocked" as const,
+    reason: "draft_unavailable" as const,
+  }))
+  const mutateContextPackFileMembership = deps.mutateContextPackFileMembership ?? (async () => ({
+    kind: "denied" as const,
     reason: "draft_unavailable" as const,
   }))
   const sealContextPack = deps.sealContextPack ?? (async () => ({
@@ -794,6 +863,14 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   }
 
   return {
+    recheckCursor(sessionId): void {
+      try {
+        void recheckCursor(sessionId).catch((error) => onError(sessionId, error))
+      } catch (error) {
+        onError(sessionId, error)
+      }
+    },
+
     async createConversation(): Promise<SessionId | null> {
       const creationSource: TabCreationSource = store.getState().workspace.selectedVisibleId
         ? "inherited"
@@ -868,6 +945,15 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       } catch (error) {
         onError(sessionId, error)
         return { kind: "blocked", reason: "draft_unavailable" }
+      }
+    },
+
+    async mutateContextPackFileMembership(input): Promise<ContextPackFileMembershipResult> {
+      try {
+        return await mutateContextPackFileMembership(input)
+      } catch (error) {
+        onError(input.sessionId, error)
+        return { kind: "denied", reason: "mutation_failed" }
       }
     },
 

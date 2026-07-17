@@ -88,10 +88,16 @@ describe("showcase config", () => {
     expect(proof.accessibleDescription.trim()).not.toBe("");
     expect(proof.steps).not.toHaveLength(0);
     expect(hero.secondaryCtaLabel.trim()).not.toBe("");
+    expect(showcaseConfig.navigation.docsLabel).toBe("Docs");
     expect(hero.logoAlt.trim()).not.toBe("");
     expect(hero.outcomeTitle.trim()).not.toBe("");
     expect(hero.outcomeBody.trim()).not.toBe("");
     expect(hero.outcomeStatus.trim()).not.toBe("");
+    expect(hero.rosterAccessibleLabel.trim()).not.toBe("");
+    expect(hero.currentProviders).toEqual(["Claude Code", "Codex", "Cursor"]);
+    expect(hero.futureConnectionsLabel).toBe(
+      "More Agent Client Protocol (ACP) connections are planned.",
+    );
     expect(hero.benefits).not.toHaveLength(0);
   });
 
@@ -177,6 +183,34 @@ describe("showcase config", () => {
 
     expect(validateShowcaseConfig(invalidConfig)).toContain(
       "hero.benefits must contain at least one benefit.",
+    );
+  });
+
+  test("rejects an incomplete or repeated current provider roster", () => {
+    const incompleteRoster = withConfig({
+      hero: { ...showcaseConfig.hero, currentProviders: ["Claude Code"] },
+    });
+    const repeatedRoster = withConfig({
+      hero: {
+        ...showcaseConfig.hero,
+        currentProviders: ["Claude Code", "Codex", "Codex"],
+      },
+    });
+    const emptyProvider = withConfig({
+      hero: {
+        ...showcaseConfig.hero,
+        currentProviders: ["Claude Code", "Codex", " "],
+      },
+    });
+
+    expect(validateShowcaseConfig(incompleteRoster)).toContain(
+      "hero.currentProviders must name the current three-agent roster.",
+    );
+    expect(validateShowcaseConfig(repeatedRoster)).toContain(
+      "hero.currentProviders must not repeat a provider.",
+    );
+    expect(validateShowcaseConfig(emptyProvider)).toContain(
+      "hero.currentProviders must not contain an empty provider.",
     );
   });
 

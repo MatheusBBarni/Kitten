@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add closed ACP live-config contract evidence
 type: backend
 complexity: medium

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Content-free Context Pack telemetry
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Add opt-in local telemetry for only closed Context Pack lifecycle outcomes and c
 
 ## Subtasks
 
-- [ ] 14.1 Add the fixed Context Pack event union, reason enums, and coarse bucket contracts.
-- [ ] 14.2 Extend active and no-op recorders with structural allowlist validation and deduplication.
-- [ ] 14.3 Emit settled controller lifecycle outcomes for draft/build/review/seal/fit/delivery.
-- [ ] 14.4 Preserve disabled-recorder behavior and reject content-bearing inputs.
-- [ ] 14.5 Add recorder, controller, and local JSONL integration coverage.
+- [x] 14.1 Add the fixed Context Pack event union, reason enums, and coarse bucket contracts.
+- [x] 14.2 Extend active and no-op recorders with structural allowlist validation and deduplication.
+- [x] 14.3 Emit settled controller lifecycle outcomes for draft/build/review/seal/fit/delivery.
+- [x] 14.4 Preserve disabled-recorder behavior and reject content-bearing inputs.
+- [x] 14.5 Add recorder, controller, and local JSONL integration coverage.
 
 ## Implementation Details
 
@@ -72,13 +72,13 @@ Follow the TechSpec telemetry allowlist and privacy constraints. This task does 
 ## Tests
 
 - Unit tests:
-  - [ ] Every lifecycle method emits only its exact type and allowlisted key set.
-  - [ ] Forged enum values, extra fields, exact counters, and duplicate private callbacks record nothing additional.
-  - [ ] A disabled recorder can receive every Context Pack event while a throwing sink is never accessed.
-  - [ ] Serialization sentinels for all prohibited content/identity/error fields never appear in records.
+  - [x] Every lifecycle method emits only its exact type and allowlisted key set.
+  - [x] Forged enum values, extra fields, exact counters, and duplicate private callbacks record nothing additional.
+  - [x] A disabled recorder can receive every Context Pack event while a throwing sink is never accessed.
+  - [x] Serialization sentinels for all prohibited content/identity/error fields never appear in records.
 - Integration tests:
-  - [ ] A permitted flow writes ordered draft-created, build, review, seal, fit, and delivery outcomes to local JSONL.
-  - [ ] A stale/denied flow writes only its fixed outcome/reason categories, and all JSON keys are limited to the documented allowlist.
+  - [x] A permitted flow writes ordered draft-created, build, review, seal, fit, and delivery outcomes to local JSONL.
+  - [x] A stale/denied flow writes only its fixed outcome/reason categories, and all JSON keys are limited to the documented allowlist.
 - Test coverage target: >=80%
 - All tests must pass
 

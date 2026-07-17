@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Envelope-only adapter bridge guidance
 type: refactor
 complexity: medium

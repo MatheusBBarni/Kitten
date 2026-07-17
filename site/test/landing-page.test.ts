@@ -38,10 +38,12 @@ beforeAll(async () => {
 });
 
 describe("showcase landing page", () => {
-  test("builds exactly one route with config-driven sections in order", async () => {
-    expect(await readdir(new URL("../src/pages/", import.meta.url))).toEqual([
-      "index.astro",
-    ]);
+  test("builds the landing route with config-driven sections in order", async () => {
+    const pages = await readdir(new URL("../src/pages/", import.meta.url));
+    expect(pages).toHaveLength(2);
+    expect(pages).toEqual(
+      expect.arrayContaining(["docs.astro", "index.astro"]),
+    );
 
     const sections = [
       showcaseConfig.hero,
@@ -84,6 +86,7 @@ describe("showcase landing page", () => {
     expect(renderedHtml).toContain(
       `href="${escapeHtml(showcaseConfig.repository.url)}"`,
     );
+    expect(renderedHtml).toContain('href="./docs/"');
     expect(renderedHtml).toContain("data-proof-step");
     expect(renderedHtml).not.toContain("data-proof-media");
 
@@ -201,6 +204,8 @@ describe("showcase landing page", () => {
       showcaseConfig.hero.outcomeTitle,
       showcaseConfig.hero.outcomeBody,
       showcaseConfig.hero.outcomeStatus,
+      showcaseConfig.hero.rosterAccessibleLabel,
+      showcaseConfig.hero.futureConnectionsLabel,
       showcaseConfig.proof.heading,
       showcaseConfig.proof.body,
       showcaseConfig.install.heading,
@@ -216,6 +221,7 @@ describe("showcase landing page", () => {
         step.description,
       ]),
       ...showcaseConfig.hero.benefits,
+      ...showcaseConfig.hero.currentProviders,
       ...showcaseConfig.install.commands.flatMap((command) => [
         command.label,
         command.command,
@@ -231,6 +237,22 @@ describe("showcase landing page", () => {
 
     for (const claim of narrative) {
       expect(componentSource).not.toContain(claim);
+    }
+  });
+
+  test("presents Kitten as a current three-agent cockpit with planned ACP expansion", () => {
+    expect(renderedHtml).toContain('data-agent-roster');
+    expect(renderedHtml).toContain(
+      escapeHtml(showcaseConfig.hero.rosterAccessibleLabel),
+    );
+    expect(renderedHtml).toContain(
+      escapeHtml(showcaseConfig.hero.futureConnectionsLabel),
+    );
+    expect(renderedHtml).not.toContain("two coding agents");
+    expect(renderedHtml).not.toContain("handoff-route");
+
+    for (const provider of showcaseConfig.hero.currentProviders) {
+      expect(renderedHtml).toContain(escapeHtml(provider));
     }
   });
 });

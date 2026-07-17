@@ -10,6 +10,9 @@ import { join } from "node:path"
 
 import {
   createRepositoryFileSource,
+  isBinaryRepositoryFilePrefix,
+  isPathContainedBy,
+  isSafeRepositoryRelativePath,
   REPOSITORY_FILE_CHECK_CONCURRENCY,
   REPOSITORY_FILE_PREFIX_BYTES,
   type RepositoryFileSpawn,
@@ -111,6 +114,19 @@ function safeFileSystem(overrides: Partial<RepositoryFileSystem> = {}): Reposito
 }
 
 describe("createRepositoryFileSource", () => {
+  it("exports one containment and binary policy for bounded workspace readers", () => {
+    expect(isSafeRepositoryRelativePath("/repo", "src/safe.ts")).toBe(true)
+    expect(isSafeRepositoryRelativePath("/repo", "../escape.ts")).toBe(false)
+    expect(isSafeRepositoryRelativePath("/repo", "src/../escape.ts")).toBe(false)
+    expect(isSafeRepositoryRelativePath("/repo", "bad\0path.ts")).toBe(false)
+    expect(isSafeRepositoryRelativePath("/repo", ".git/config")).toBe(false)
+    expect(isSafeRepositoryRelativePath("/repo", ".gitignore")).toBe(true)
+    expect(isPathContainedBy("/repo", "/repo/src/safe.ts")).toBe(true)
+    expect(isPathContainedBy("/repo", "/repository/not-contained.ts")).toBe(false)
+    expect(isBinaryRepositoryFilePrefix(new Uint8Array([0x61, 0, 0x62]))).toBe(true)
+    expect(isBinaryRepositoryFilePrefix(encoder.encode("plain text"))).toBe(false)
+  })
+
   it("resolves the root, preserves NUL-delimited paths, and returns lexical order", async () => {
     const calls: RepositoryFileSpawnOptions[] = []
     const paths = ["z-last.ts", "src/My File.ts", "a-first.ts"]

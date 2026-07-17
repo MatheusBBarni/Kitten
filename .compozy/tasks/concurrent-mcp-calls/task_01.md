@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add targeted clarification cancellation and bridge telemetry
 type: backend
 complexity: high
@@ -33,11 +33,11 @@ recording user or transport content.
 
 ## Subtasks
 
-- [ ] 1.1 Expose idempotent exact-request clarification cancellation from the controller-owned interaction seam.
-- [ ] 1.2 Keep whole-session clarification invalidation distinct from a single child connection loss.
-- [ ] 1.3 Establish bounded controller outcomes for concurrent and unavailable agent-run starts.
-- [ ] 1.4 Add the closed bridge-outcome recorder event and controller callback wiring.
-- [ ] 1.5 Cover lifecycle isolation, outcome mapping, disabled telemetry, and privacy-negative cases.
+- [x] 1.1 Expose idempotent exact-request clarification cancellation from the controller-owned interaction seam.
+- [x] 1.2 Keep whole-session clarification invalidation distinct from a single child connection loss.
+- [x] 1.3 Establish bounded controller outcomes for concurrent and unavailable agent-run starts.
+- [x] 1.4 Add the closed bridge-outcome recorder event and controller callback wiring.
+- [x] 1.5 Cover lifecycle isolation, outcome mapping, disabled telemetry, and privacy-negative cases.
 
 ## Implementation Details
 
@@ -77,14 +77,14 @@ this targeted contract in the following bridge task.
 ## Tests
 
 - Unit tests:
-  - [ ] Cancelling one active clarification by handle settles only that request and does not remove another same-session queued or suspended clarification.
-  - [ ] Repeating handle cancellation, timing out after cancellation, or resolving after cancellation leaves the original terminal outcome unchanged.
-  - [ ] A concurrent same-route `agent_run.start` projects busy, while a stale or unavailable route projects unavailable without relying on error-message text.
-  - [ ] Enabled telemetry emits only an exact `capacity_limited`, `unavailable`, or `invalid_request` bridge category and retains the existing `agent_run_control` record shape.
-  - [ ] Disabled telemetry creates no record or sink write, and serialized sentinel values for prompts, tasks, endpoints, capabilities, IDs, and raw errors are absent.
+  - [x] Cancelling one active clarification by handle settles only that request and does not remove another same-session queued or suspended clarification.
+  - [x] Repeating handle cancellation, timing out after cancellation, or resolving after cancellation leaves the original terminal outcome unchanged.
+  - [x] A concurrent same-route `agent_run.start` projects busy, while a stale or unavailable route projects unavailable without relying on error-message text.
+  - [x] Enabled telemetry emits only an exact `capacity_limited`, `unavailable`, or `invalid_request` bridge category and retains the existing `agent_run_control` record shape.
+  - [x] Disabled telemetry creates no record or sink write, and serialized sentinel values for prompts, tasks, endpoints, capabilities, IDs, and raw errors are absent.
 - Integration tests:
-  - [ ] An injected bridge failure callback reaches the controller recorder once with the mapped closed category while no runtime/session identity is serialized.
-  - [ ] Session replacement still cancels every clarification for that generation after targeted cancellation support is introduced.
+  - [x] An injected bridge failure callback reaches the controller recorder once with the mapped closed category while no runtime/session identity is serialized.
+  - [x] Session replacement still cancels every clarification for that generation after targeted cancellation support is introduced.
 - Test coverage target: >=80%
 - All tests must pass
 

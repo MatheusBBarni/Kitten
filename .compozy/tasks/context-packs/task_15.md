@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Explore-v2 real-adapter certification
 type: backend
 complexity: high
@@ -30,11 +30,11 @@ Add one opt-in credentialed real-adapter contract suite that proves the exact Co
 
 ## Subtasks
 
-- [ ] 15.1 Add credential/env/provider gating and exact pinned-command validation.
-- [ ] 15.2 Launch one configured real adapter over stdio/ACP with the accepted bridge declaration.
-- [ ] 15.3 Assert the exact tools/list schema and rejection of every forbidden route.
-- [ ] 15.4 Complete one bounded read and revision-fenced parent-only mutation.
-- [ ] 15.5 Enforce per-round and total deadlines, cleanup, and default-skip behavior.
+- [x] 15.1 Add credential/env/provider gating and exact pinned-command validation.
+- [x] 15.2 Launch one configured real adapter over stdio/ACP with the accepted bridge declaration.
+- [x] 15.3 Assert the exact tools/list schema and rejection of every forbidden route.
+- [x] 15.4 Complete one bounded read and revision-fenced parent-only mutation.
+- [x] 15.5 Enforce per-round and total deadlines, cleanup, and default-skip behavior.
 
 ## Implementation Details
 
@@ -70,13 +70,13 @@ Model the opt-in suite on the existing clarification adapter contract test. Use 
 ## Tests
 
 - Unit tests:
-  - [ ] Without the opt-in environment variable, the suite registers skipped and starts no transport.
-  - [ ] Invalid provider input rejects before spawn, and the resolved command is the exact pinned configured npx package/version.
-  - [ ] Per-round and total deadline failures surface as certification failures.
+  - [x] Without the opt-in environment variable, the suite registers skipped and starts no transport.
+  - [x] Invalid provider input rejects before spawn, and the resolved command is the exact pinned configured npx package/version.
+  - [x] Per-round and total deadline failures surface as certification failures.
 - Integration tests:
-  - [ ] tools/list exposes only scoped ask_user plus the three Context Pack tools, and all forbidden tool/route attempts fail generically.
-  - [ ] A real authenticated child reads bounded workspace data and makes one expected-revision parent mutation; sibling drafts, sealed payload, and builder authority remain unchanged.
-  - [ ] Wrong revision, out-of-workspace/oversize input, unexpected close, and teardown leave no active bridge route.
+  - [x] tools/list exposes only scoped ask_user plus the three Context Pack tools, and all forbidden tool/route attempts fail generically.
+  - [x] A real authenticated child reads bounded workspace data and makes one expected-revision parent mutation; sibling drafts, sealed payload, and builder authority remain unchanged.
+  - [x] Wrong revision, out-of-workspace/oversize input, unexpected close, and teardown leave no active bridge route.
 - Test coverage target: >=80%
 - All tests must pass
 

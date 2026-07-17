@@ -93,6 +93,16 @@ describe("showcase accessibility and motion", () => {
     expect(renderedHtml).not.toContain("data-proof-poster");
   });
 
+  test("renders the current provider roster as an accessible list", () => {
+    expect(renderedHtml).toContain(
+      '<ul class="agent-roster-list" aria-label="Current coding-agent connections available in Kitten." data-agent-roster>',
+    );
+
+    for (const provider of showcaseConfig.hero.currentProviders) {
+      expect(renderedHtml).toContain(provider);
+    }
+  });
+
   test("defines narrow-layout, focus, contrast, and reduced-motion safeguards", () => {
     expect(stylesheet).toContain("min-inline-size: 20rem");
     expect(stylesheet).toContain("overflow-wrap: anywhere");
@@ -100,6 +110,9 @@ describe("showcase accessibility and motion", () => {
     expect(stylesheet).toContain("@media (min-width: 48rem)");
     expect(stylesheet).toContain("@media (prefers-color-scheme: light)");
     expect(stylesheet).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(stylesheet).toContain(".docs-code");
+    expect(stylesheet).toContain("overflow-x: auto");
+    expect(stylesheet).toContain(".docs-topic-nav a");
   });
 
   test("keeps dark and light text pairs above WCAG AA contrast", () => {

@@ -67,6 +67,7 @@ import type {
   ContextBuildBinding,
   ContextPackReviewCandidate,
   ContextPackState,
+  CursorRecoveryState,
   DraftContextPack,
   ContextPackSealedState,
   TeardownState,
@@ -467,6 +468,17 @@ export const selectConversationAvailability =
   (sessionId: SessionId | null): Selector<ConversationAvailability | null> =>
   (state) =>
     (sessionId ? state.workspace.conversations[sessionId]?.availability : null) ?? null
+
+/** Safe Cursor recovery semantics for one unavailable Cursor session only. */
+export const selectCursorRecovery =
+  (sessionId: SessionId | null): Selector<CursorRecoveryState | null> =>
+  (state) => {
+    if (!sessionId || state.sessions[sessionId]?.providerKind !== "cursor") return null
+    const availability = state.workspace.conversations[sessionId]?.availability
+    return availability?.kind === "unavailable"
+      ? availability.cursorRecovery ?? null
+      : null
+  }
 
 /** Ephemeral empty-workspace action feedback. */
 export const selectWorkspaceNotice: Selector<WorkspaceNotice | null> = (state) =>

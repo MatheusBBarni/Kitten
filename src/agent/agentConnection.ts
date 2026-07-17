@@ -42,10 +42,7 @@ import type {
   ToolCallUpdate,
 } from "../core/types.ts"
 import { KITTEN_VERSION } from "../version.ts"
-import {
-  ASK_USER_MCP_HOST_GUIDANCE,
-  ASK_USER_MCP_SERVER_NAME,
-} from "./askUserMcp.ts"
+import { ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
 import {
   CERTIFIED_HARNESS_PROFILES,
   matchCertifiedHarnessProfile,
@@ -55,6 +52,7 @@ import {
 import {
   toAcpElicitationOutcome,
   toAcpMcpServers,
+  classifyBundledMcpFailure,
   translateConfigOptions,
   translateElicitationForm,
   translateSessionUpdate,
@@ -209,10 +207,10 @@ export interface AgentConnectionOptions {
   transport?: TransportFactory
   /** Frame scheduler for coalescing; defaults to a real timer-based scheduler. */
   scheduler?: FrameScheduler
-  /** ACP filesystem authority. Context Build children set this to `none` and use only their bounded bridge. */
-  fileSystemAccess?: "read-write" | "none"
   /** Reviewed profiles; injectable only so deterministic adapter tests stay credential-free. */
   harnessProfiles?: readonly CertifiedHarnessProfile[]
+  /** ACP filesystem authority. Context Build children set this to `none` and use only their bounded bridge. */
+  fileSystemAccess?: "read-write" | "none"
 }
 
 /** Create an {@link AgentConnection} for one configured agent. */
@@ -242,9 +240,9 @@ class AgentConnectionImpl implements AgentConnection {
   private readonly runtimeProfile: ProviderRuntimeProfile
   private readonly clarificationSupported: boolean
   private readonly transportFactory: TransportFactory
-  private readonly fileSystemAccess: "read-write" | "none"
   private readonly scheduler: FrameScheduler
   private readonly harnessProfiles: readonly CertifiedHarnessProfile[]
+  private readonly fileSystemAccess: "read-write" | "none"
 
   private transport: AgentTransport | null = null
   private connection: ClientSideConnection | null = null
@@ -260,8 +258,8 @@ class AgentConnectionImpl implements AgentConnection {
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   private clarificationHandler: ClarificationHandler | null = null
   private activeSessionId: string | null = null
-  /** Whether the active ACP session received Kitten's generated question bridge. */
-  private askUserMcpAttached = false
+  /** Bundled MCP calls whose later ACP updates may omit the identifying title. */
+  private readonly bundledMcpToolCallIds = new Set<string>()
   /**
    * The public ACP prompt request has no abort terminal signal for Codex's
    * app-server `turn/aborted` notification. Keep a local recovery race only for
@@ -279,15 +277,16 @@ class AgentConnectionImpl implements AgentConnection {
     this.clarificationSupported =
       "clarificationCapability" in options.config && options.config.clarificationCapability.status === "supported"
     this.transportFactory = options.transport ?? spawnAgentTransport
-    this.fileSystemAccess = options.fileSystemAccess ?? "read-write"
     this.scheduler = options.scheduler ?? createFrameScheduler()
     this.harnessProfiles = options.harnessProfiles ?? CERTIFIED_HARNESS_PROFILES
+    this.fileSystemAccess = options.fileSystemAccess ?? "read-write"
   }
 
   async connect(): Promise<ReadyState> {
     try {
       this.ready = false
       this.transportFailed = false
+      this.bundledMcpToolCallIds.clear()
       this.transport = this.transportFactory(this.config)
       // A transport close we did not ask for is a lost subprocess: surface `error`
       // (ADR-006). The `closing` guard suppresses the close that `dispose` itself
@@ -297,6 +296,7 @@ class AgentConnectionImpl implements AgentConnection {
       this.transport.onClose(() => {
         if (this.closing) return
         this.transportFailed = true
+        this.bundledMcpToolCallIds.clear()
         this.emit({ kind: "status", status: "error" })
       })
       this.connection = new ClientSideConnection(() => this.buildClient(), this.transport.stream)
@@ -348,6 +348,7 @@ class AgentConnectionImpl implements AgentConnection {
 
   async newSession(cwd: string, mcpServers: McpServerConfig[] = []): Promise<string> {
     const connection = this.requireConnection()
+    this.bundledMcpToolCallIds.clear()
     const result = await connection.newSession({ cwd, mcpServers: toAcpMcpServers(mcpServers) })
     // Seed the pane's confirmed config state from what the session already advertises
     // instead of discarding it. Emit only when the agent actually returned the field:
@@ -358,12 +359,12 @@ class AgentConnectionImpl implements AgentConnection {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
     this.activeSessionId = result.sessionId
-    this.askUserMcpAttached = hasAskUserMcp(mcpServers)
     return result.sessionId
   }
 
   async loadSession(sessionId: string, cwd: string, mcpServers: McpServerConfig[] = []): Promise<void> {
     const connection = this.requireConnection()
+    this.bundledMcpToolCallIds.clear()
     const result = await connection.loadSession({ sessionId, cwd, mcpServers: toAcpMcpServers(mcpServers) })
     // A resumed session returns the same initial config snapshot as a fresh one.
     // Preserve it so model and reasoning selectors retain their confirmed state.
@@ -371,7 +372,6 @@ class AgentConnectionImpl implements AgentConnection {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
     this.activeSessionId = sessionId
-    this.askUserMcpAttached = hasAskUserMcp(mcpServers)
   }
 
   async prompt(sessionId: string, input: AgentPromptInput): Promise<PromptResult> {
@@ -407,10 +407,7 @@ class AgentConnectionImpl implements AgentConnection {
   private toPromptRequest(sessionId: string, input: AgentPromptInput): PromptRequest {
     const envelope = Array.isArray(input) ? undefined : input
     const userBlocks = envelope?.userBlocks ?? input as PromptBlock[]
-    const prompt = [
-      ...(this.askUserMcpAttached ? [{ type: "text" as const, text: ASK_USER_MCP_HOST_GUIDANCE }] : []),
-      ...userBlocks.map((block) => ({ type: "text" as const, text: block.text })),
-    ]
+    const prompt = userBlocks.map((block) => ({ type: "text" as const, text: block.text }))
     if (!envelope?.harness) return { sessionId, prompt }
     if (!envelope.profileId) throw new UnsupportedHarnessProfileError()
 
@@ -470,6 +467,7 @@ class AgentConnectionImpl implements AgentConnection {
     this.permissionHandler = null
     this.clarificationHandler = null
     this.activeSessionId = null
+    this.bundledMcpToolCallIds.clear()
     this.completePrompt(this.inFlightPrompt)
     this.connection = null
     const transport = this.transport
@@ -498,7 +496,27 @@ class AgentConnectionImpl implements AgentConnection {
   /** Translate an incoming `session/update` and route it through coalescing. */
   private onSessionUpdate(params: SessionNotification): void {
     this.observeCodexCompactionRecovery(params)
-    const event = translateSessionUpdate(params.update)
+    const update = params.update
+    if (update.sessionUpdate === "tool_call") {
+      // A full call is authoritative for this ID. Remove stale eligibility before
+      // considering the new title so a reused ID cannot inherit classification.
+      this.bundledMcpToolCallIds.delete(update.toolCallId)
+      if (isBundledMcpToolTitle(update.title)) this.bundledMcpToolCallIds.add(update.toolCallId)
+    }
+    const isToolCallUpdate = update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update"
+    const failureKind = isToolCallUpdate
+      && update.status === "failed"
+      && this.bundledMcpToolCallIds.has(update.toolCallId)
+      ? classifyBundledMcpFailure(update.content)
+      : undefined
+
+    const event = translateSessionUpdate(update, failureKind)
+    if (
+      isToolCallUpdate
+      && (update.status === "completed" || update.status === "failed")
+    ) {
+      this.bundledMcpToolCallIds.delete(update.toolCallId)
+    }
     if (event === null) return
     if (event.kind === "agent_message") {
       this.bufferAgentMessage(event.messageId, event.textDelta)
@@ -652,9 +670,12 @@ class AgentConnectionImpl implements AgentConnection {
   }
 }
 
-/** Keep host-only question guidance scoped to sessions that received Kitten's bridge. */
-function hasAskUserMcp(mcpServers: readonly McpServerConfig[]): boolean {
-  return mcpServers.some((server) => server.name === ASK_USER_MCP_SERVER_NAME)
+/** Only a complete `mcp.<server>.<function>` title grants bundled-call eligibility. */
+function isBundledMcpToolTitle(title: string | null | undefined): boolean {
+  const prefix = `mcp.${ASK_USER_MCP_SERVER_NAME}.`
+  return typeof title === "string"
+    && title.startsWith(prefix)
+    && title.slice(prefix.length).split(".").every((segment) => segment.length > 0)
 }
 
 /** The Codex ACP adapter presents compaction as a visible, adapter-owned text update. */

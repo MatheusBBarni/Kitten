@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Relocate Cockpit Runtime Launcher and Build Tooling
 type: refactor
 complexity: critical

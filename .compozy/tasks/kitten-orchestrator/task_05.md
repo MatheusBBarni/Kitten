@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Bridge Root Release Orchestration to Cockpit Artifacts
 type: infra
 complexity: critical

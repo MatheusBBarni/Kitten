@@ -26,6 +26,7 @@ import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
   AgentConfig,
   AppConfig,
+  BoundedArtifactReadResult,
   ClarificationOutcome,
   ClarificationPayload,
   ConfigOption,
@@ -54,7 +55,7 @@ import {
   type ShellRuntime,
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
-import { selectAgentModel } from "../store/selectors.ts"
+import { selectAgentModel, selectCursorRecovery } from "../store/selectors.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import {
   createTelemetryRecorder,
@@ -69,6 +70,7 @@ import { composePromptBlocks, createControllerActions, nextSessionId, type Actio
 import {
   createInteractionCoordinator,
   createSessionController,
+  projectCursorRecovery,
   type ActiveAgentInteraction,
   type SessionController,
 } from "./controller.ts"
@@ -1029,6 +1031,109 @@ describe("createSessionController - Context Build lifecycle", () => {
       reason: "candidate_revision_mismatch",
     })
     expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    await test.controller.dispose()
+  })
+
+  it("materializes revision-fenced whole-file membership and removes only its exact identity", async () => {
+    const source = { identity: "file:1:2", digest: "a".repeat(64), bytes: 12 }
+    const nextRead = deferredValue<BoundedArtifactReadResult>()
+    let readCount = 0
+    const materializer: ContextPackMaterializer = {
+      async read(_workspaceRoot, request) {
+        readCount += 1
+        if (request.path === "invalid.ts") {
+          return { kind: "blocked", reason: "invalid_path", path: request.path }
+        }
+        if (request.path === "raced.ts") return await nextRead.promise
+        return { kind: "ready", artifact: { source, content: "hello world\n" } }
+      },
+      async materialize() {
+        return { kind: "materialized", artifacts: [], totalBytes: 0 }
+      },
+    }
+    const test = await setupContextBuild({ materializer })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const created = test.controller.store.createContextPackDraft(sessionId, "Manage membership")
+    if (created?.kind !== "created") throw new Error("expected draft")
+
+    expect(await test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "src/a.ts",
+      readRevision: created.draft.revision,
+      operation: "add",
+    })).toEqual({ kind: "applied", operation: "add", revision: created.draft.revision + 1 })
+    const afterAdd = test.controller.store.getState().contextPacks[sessionId]!.draft!
+    expect(afterAdd.selections[0]).toEqual({
+      kind: "full_file",
+      path: "src/a.ts",
+      source,
+      rationale: "Added explicitly by the operator",
+      relationship: "Whole-file Context Pack membership",
+    })
+
+    for (const selection of [
+      {
+        kind: "file_slice" as const,
+        path: "src/a.ts",
+        range: { startLine: 1, endLine: 1 },
+        source: { ...source, identity: "slice:1:2:1-1" },
+        rationale: "Keep slice",
+        relationship: "Independent",
+      },
+      {
+        kind: "diff" as const,
+        path: "src/a.ts",
+        scope: "unstaged" as const,
+        source: { ...source, identity: "diff:unstaged:1:2" },
+        rationale: "Keep diff",
+        relationship: "Independent",
+      },
+    ]) {
+      expect(test.controller.store.applyContextPackOperatorMutation(sessionId, {
+        kind: "upsert_selection",
+        selection,
+      })?.kind).toBe("applied")
+    }
+    const beforeRemove = test.controller.store.getState().contextPacks[sessionId]!.draft!
+    expect(await test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "src/a.ts",
+      readRevision: beforeRemove.revision,
+      operation: "remove",
+    })).toEqual({ kind: "applied", operation: "remove", revision: beforeRemove.revision + 1 })
+    expect(test.controller.store.getState().contextPacks[sessionId]!.draft!.selections.map(({ kind }) => kind))
+      .toEqual(["file_slice", "diff"])
+
+    const beforeRace = test.controller.store.getState().contextPacks[sessionId]!.draft!
+    const raced = test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "raced.ts",
+      readRevision: beforeRace.revision,
+      operation: "add",
+    })
+    expect(test.controller.store.applyContextPackOperatorMutation(sessionId, {
+      kind: "set_brief_section",
+      section: "ambiguities",
+      text: "Operator edit wins",
+    })?.kind).toBe("applied")
+    nextRead.resolve({ kind: "ready", artifact: { source, content: "raced source" } })
+    expect(await raced).toEqual({
+      kind: "stale",
+      readRevision: beforeRace.revision,
+      currentRevision: beforeRace.revision + 1,
+    })
+    expect(test.controller.store.getState().contextPacks[sessionId]!.draft!.selections.some(
+      ({ kind, path }) => kind === "full_file" && path === "raced.ts",
+    )).toBeFalse()
+
+    const currentRevision = test.controller.store.getState().contextPacks[sessionId]!.draft!.revision
+    expect(await test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "invalid.ts",
+      readRevision: currentRevision,
+      operation: "add",
+    })).toEqual({ kind: "denied", reason: "invalid_path" })
+    expect(readCount).toBe(3)
     await test.controller.dispose()
   })
 
@@ -3490,6 +3595,22 @@ describe("createSessionController - persisted restore", () => {
 })
 
 describe("createSessionController - Cursor preflight and readiness telemetry", () => {
+  it("exhaustively projects every closed Cursor readiness cause", () => {
+    expect([
+      projectCursorRecovery("binary_not_found"),
+      projectCursorRecovery("version_mismatch"),
+      projectCursorRecovery("authentication_required"),
+      projectCursorRecovery("uncertified_recipe"),
+      projectCursorRecovery("handshake_failed"),
+    ]).toEqual([
+      { reason: "binary_missing", action: "install_cursor_cli", recheckable: true },
+      { reason: "version_mismatch", action: "restore_reviewed_profile", recheckable: true },
+      { reason: "authentication_required", action: "authenticate_natively", recheckable: true },
+      { reason: "uncertified_recipe", action: "await_maintainer_review", recheckable: false },
+      { reason: "handshake_failed", action: "retry_handshake", recheckable: true },
+    ])
+  })
+
   it("preflights before constructing exactly one long-lived Cursor connection and keeps all three providers live", async () => {
     const events: Array<{ kind: "preflight" | "create"; config: unknown }> = []
     const connections = new Map<ProviderKind, StubConnection>()
@@ -3526,11 +3647,271 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
     await controller.dispose()
   })
 
+  it("rechecks only an unavailable Cursor and preserves ready sibling identities and focus", async () => {
+    let cursorPreflights = 0
+    const created = new Map<ProviderKind, StubConnection[]>()
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        if (config.id !== "cursor") return { ready: true }
+        cursorPreflights += 1
+        return cursorPreflights === 1
+          ? { ready: false, reason: "binary_not_found", message: "Cursor CLI is unavailable." }
+          : { ready: true }
+      },
+      createConnection: (config) => {
+        const connections = created.get(config.id) ?? []
+        const connection = createStubConnection(config.id, {
+          sessionId: config.id === "cursor" ? "cursor-recovered-acp" : `${config.id}-acp`,
+        })
+        connections.push(connection)
+        created.set(config.id, connections)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      createKittenMcpBridge: bridge.factory,
+    })
+    const before = controller.store.getState()
+    const focus = before.workspace.selectedVisibleId
+    const siblingSessions = {
+      claude: before.sessions["claude-code"],
+      codex: before.sessions.codex,
+    }
+    const siblingRuntimes = {
+      claude: controller.runtime("claude-code"),
+      codex: controller.runtime("codex"),
+    }
+    const siblingConnections = {
+      claude: created.get("claude-code")![0]!,
+      codex: created.get("codex")![0]!,
+    }
+
+    expect(controller.isReady("cursor")).toBe(false)
+    expect(() => controller.actions.recheckCursor("cursor")).not.toThrow()
+    await waitFor(() => controller.isReady("cursor"), "Cursor targeted recheck to recover")
+
+    const after = controller.store.getState()
+    expect(cursorPreflights).toBe(2)
+    expect(created.get("cursor")).toHaveLength(1)
+    expect(after.sessions.cursor?.acpSessionId).toBe("cursor-recovered-acp")
+    expect(controller.runtime("cursor")?.sessionId).toBe("cursor")
+    expect(bridge.registrations.filter((entry) => entry.sessionId === "cursor")).toEqual([
+      { sessionId: "cursor", generation: 2 },
+    ])
+    expect(after.workspace.selectedVisibleId).toBe(focus)
+    expect(after.sessions["claude-code"]).toBe(siblingSessions.claude)
+    expect(after.sessions.codex).toBe(siblingSessions.codex)
+    expect(controller.runtime("claude-code")).toBe(siblingRuntimes.claude)
+    expect(controller.runtime("codex")).toBe(siblingRuntimes.codex)
+    expect(created.get("claude-code")).toEqual([siblingConnections.claude])
+    expect(created.get("codex")).toEqual([siblingConnections.codex])
+    expect(siblingConnections.claude.subscriberCount()).toBe(1)
+    expect(siblingConnections.codex.subscriberCount()).toBe(1)
+    expect(await controller.actions.sendPrompt("cursor recovered", "cursor")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("claude stayed live", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex stayed live", "codex")).toEqual({ stopReason: "end_turn" })
+    await controller.dispose()
+  })
+
+  it("replaces an authentication-failed Cursor transport with a fresh promptable session", async () => {
+    const cursorConnections: StubConnection[] = []
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async () => ({ ready: true }),
+      createConnection: (config) => {
+        if (config.id !== "cursor") return createStubConnection(config.id)
+        const connection = createStubConnection("cursor", cursorConnections.length === 0
+          ? { ready: { ready: false, reason: "authentication_required", error: "native login expired" } }
+          : { sessionId: "cursor-replacement-acp" })
+        cursorConnections.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+
+    expect(await controller.actions.sendPrompt("blocked", "cursor")).toBeNull()
+    expect(cursorConnections[0]!.disposeCalls()).toBe(1)
+    controller.actions.recheckCursor("cursor")
+    await waitFor(() => controller.isReady("cursor"), "Cursor authentication recovery")
+
+    expect(cursorConnections).toHaveLength(2)
+    expect(cursorConnections[0]).not.toBe(cursorConnections[1])
+    expect(cursorConnections[0]!.disposeCalls()).toBe(1)
+    expect(cursorConnections[1]!.newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions.cursor?.acpSessionId).toBe("cursor-replacement-acp")
+    expect(await controller.actions.sendPrompt("ready now", "cursor")).toEqual({ stopReason: "end_turn" })
+    await controller.dispose()
+  })
+
+  it("keeps a repeated bounded Cursor failure isolated from promptable siblings", async () => {
+    let cursorPreflights = 0
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        if (config.id !== "cursor") return { ready: true }
+        cursorPreflights += 1
+        return {
+          ready: false,
+          reason: cursorPreflights === 1 ? "binary_not_found" : "version_mismatch",
+          message: cursorPreflights === 1
+            ? "Cursor CLI is unavailable."
+            : "Cursor version is not the reviewed version.",
+        }
+      },
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const before = controller.store.getState()
+    const siblingSessions = [before.sessions["claude-code"], before.sessions.codex]
+    const siblingRuntimes = [controller.runtime("claude-code"), controller.runtime("codex")]
+
+    controller.actions.recheckCursor("cursor")
+    await waitFor(() => cursorPreflights === 2, "Cursor repeated preflight failure")
+
+    expect(controller.runtime("cursor")).toMatchObject({
+      ready: false,
+      error: "Cursor version is not the reviewed version.",
+    })
+    expect(controller.store.getState().workspace.conversations.cursor?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: {
+        reason: "version_mismatch",
+        action: "restore_reviewed_profile",
+        recheckable: true,
+      },
+    })
+    expect(controller.store.getState().sessions["claude-code"]).toBe(siblingSessions[0])
+    expect(controller.store.getState().sessions.codex).toBe(siblingSessions[1])
+    expect(controller.runtime("claude-code")).toBe(siblingRuntimes[0])
+    expect(controller.runtime("codex")).toBe(siblingRuntimes[1])
+    expect(await controller.actions.sendPrompt("claude still usable", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex still usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.has("cursor")).toBe(false)
+    await controller.dispose()
+  })
+
+  it("is inert for ready, non-Cursor, unknown, closing, unconfigured, and controller-dead targets", async () => {
+    let preflights = 0
+    let constructions = 0
+    const cursorDisposal = deferred()
+    const readyController = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async () => {
+        preflights += 1
+        return { ready: true }
+      },
+      createConnection: (config) => {
+        constructions += 1
+        return createStubConnection(config.id, config.id === "cursor" ? { disposeWait: cursorDisposal.promise } : {})
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const readyState = readyController.store.getState()
+
+    readyController.actions.recheckCursor("cursor")
+    readyController.actions.recheckCursor("codex")
+    readyController.actions.recheckCursor("missing")
+    await Bun.sleep(0)
+    expect(readyController.store.getState()).toBe(readyState)
+    expect(preflights).toBe(1)
+    expect(constructions).toBe(3)
+
+    const closing = readyController.actions.closeConversation("cursor", "close")
+    await waitFor(
+      () => readyController.store.getState().workspace.conversations.cursor?.teardownState === "closing",
+      "Cursor close to enter teardown",
+    )
+    const closingState = readyController.store.getState()
+    readyController.actions.recheckCursor("cursor")
+    await Bun.sleep(0)
+    expect(readyController.store.getState()).toBe(closingState)
+    expect(preflights).toBe(1)
+    expect(constructions).toBe(3)
+    cursorDisposal.resolve()
+    await closing
+
+    const configWithoutCursor: AppConfig = {
+      ...APP_CONFIG,
+      providerDefaults: {},
+      providers: { codex: PROVIDERS.codex } as AppConfig["providers"],
+    }
+    const record = dynamicPersistedRun()
+    record.conversations["codex-review"] = {
+      ...record.conversations["codex-review"]!,
+      providerKind: "cursor",
+    }
+    const unconfiguredController = await createSessionController({
+      config: configWithoutCursor,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id, {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+      }),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+    await unconfiguredController.restore(record)
+    const unconfiguredState = unconfiguredController.store.getState()
+    unconfiguredController.actions.recheckCursor("codex-review")
+    await Bun.sleep(0)
+    expect(unconfiguredController.store.getState()).toBe(unconfiguredState)
+    expect(unconfiguredController.runtime("codex-review")).toMatchObject({
+      providerKind: "cursor",
+      ready: false,
+      error: "Provider unavailable",
+    })
+
+    await unconfiguredController.dispose()
+    await readyController.dispose()
+    const disposedState = readyController.store.getState()
+    readyController.actions.recheckCursor("cursor")
+    await Bun.sleep(0)
+    expect(readyController.store.getState()).toBe(disposedState)
+    expect(preflights).toBe(1)
+    expect(constructions).toBe(3)
+  })
+
   it.each([
-    ["binary_not_found", "binary_missing"],
-    ["version_mismatch", "version_mismatch"],
-    ["uncertified_recipe", "uncertified_recipe"],
-  ] as const)("isolates Cursor %s before construction and emits only %s", async (reason, outcome) => {
+    ["binary_not_found", "binary_missing", {
+      reason: "binary_missing",
+      action: "install_cursor_cli",
+      recheckable: true,
+    }],
+    ["version_mismatch", "version_mismatch", {
+      reason: "version_mismatch",
+      action: "restore_reviewed_profile",
+      recheckable: true,
+    }],
+    ["uncertified_recipe", "uncertified_recipe", {
+      reason: "uncertified_recipe",
+      action: "await_maintainer_review",
+      recheckable: false,
+    }],
+  ] as const)("isolates Cursor %s before construction and emits only %s", async (reason, outcome, recovery) => {
     const sinkRecords: TelemetryRecord[] = []
     const recorder = createTelemetryRecorder({
       enabled: true,
@@ -3562,6 +3943,13 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
 
     expect(created).not.toContain("cursor")
     expect(controller.runtime("cursor")).toMatchObject({ ready: false, error: `Cursor recovery for ${reason}` })
+    expect(controller.store.getState().workspace.conversations.cursor?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: recovery,
+    })
+    expect(selectCursorRecovery("cursor")(controller.store.getState())).toEqual(recovery)
     expect(controller.isReady("codex")).toBe(true)
     expect(controller.isReady("claude-code")).toBe(true)
     expect(await controller.actions.sendPrompt("still usable", "codex")).toEqual({ stopReason: "end_turn" })
@@ -3573,6 +3961,59 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       provider: "cursor",
       readinessOutcome: outcome,
     }))
+    await controller.dispose()
+  })
+
+  it("uses the same bounded recovery projection for initial and restored Cursor failures", async () => {
+    const rawDetail = "/private/workspace cursor 99.1 credential=secret"
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async () => ({
+        ready: false,
+        reason: "version_mismatch",
+        message: rawDetail,
+      }),
+      createConnection: (config) => createStubConnection(config.id, {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+      }),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const initialAvailability = controller.store.getState().workspace.conversations.cursor?.availability
+    const initialRecovery = selectCursorRecovery("cursor")(controller.store.getState())
+    const record = dynamicPersistedRun()
+    record.conversations["codex-review"] = {
+      ...record.conversations["codex-review"]!,
+      providerKind: "cursor",
+    }
+
+    await controller.restore(record)
+
+    const restoredAvailability = controller.store.getState().workspace.conversations["codex-review"]?.availability
+    const restoredRecovery = selectCursorRecovery("codex-review")(controller.store.getState())
+    expect(initialAvailability).toMatchObject({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+    })
+    expect(restoredAvailability).toMatchObject({
+      kind: "unavailable",
+      reasonCode: "restore-unavailable",
+      retryable: true,
+    })
+    expect(restoredRecovery).toBe(initialRecovery)
+    expect(restoredRecovery).toEqual({
+      reason: "version_mismatch",
+      action: "restore_reviewed_profile",
+      recheckable: true,
+    })
+    expect(JSON.stringify({ initialAvailability, restoredAvailability, restoredRecovery }))
+      .not.toContain(rawDetail)
+    expect(controller.isReady("codex-build")).toBe(true)
+    expect(selectCursorRecovery("codex-build")(controller.store.getState())).toBeNull()
     await controller.dispose()
   })
 
@@ -3606,6 +4047,13 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       error: "Cursor: authentication is required. Sign in with the Cursor CLI, then restart Kitten.",
     })
     expect(cursorRuntime && !cursorRuntime.ready ? cursorRuntime.error : "").not.toContain("login rejected")
+    expect(selectCursorRecovery("cursor")(controller.store.getState())).toEqual({
+      reason: "authentication_required",
+      action: "authenticate_natively",
+      recheckable: true,
+    })
+    expect(JSON.stringify(controller.store.getState().workspace.conversations.cursor?.availability))
+      .not.toContain("login rejected")
     expect(records).toContainEqual(expect.objectContaining({
       type: "provider_readiness",
       provider: "cursor",
@@ -3650,6 +4098,13 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
         "Restart Kitten; if it still fails, continue with another ready provider.",
     })
     expect(cursorRuntime && !cursorRuntime.ready ? cursorRuntime.error : "").not.toMatch(/private|token/i)
+    expect(selectCursorRecovery("cursor")(controller.store.getState())).toEqual({
+      reason: "handshake_failed",
+      action: "retry_handshake",
+      recheckable: true,
+    })
+    expect(JSON.stringify(controller.store.getState().workspace.conversations.cursor?.availability))
+      .not.toMatch(/private|token/i)
     expect(records.filter((record) => record.type === "provider_readiness" && record.provider === "cursor"))
       .toEqual([expect.objectContaining({ readinessOutcome: "handshake_failed" })])
     expect(await controller.actions.sendPrompt("claude sibling", "claude-code")).toEqual({ stopReason: "end_turn" })
@@ -7821,6 +8276,60 @@ function connectionToMockAgent(
 }
 
 describe("integration - two mock ACP agents", () => {
+  it("recovers Cursor over the real ACP adapter without replacing healthy provider sessions", async () => {
+    let cursorPreflights = 0
+    const agents = new Map<ProviderKind, MockAgentHandle[]>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        if (config.id !== "cursor") return { ready: true }
+        cursorPreflights += 1
+        return cursorPreflights === 1
+          ? { ready: false, reason: "binary_not_found", message: "Cursor CLI is unavailable." }
+          : { ready: true }
+      },
+      createConnection: (config) => {
+        const providerAgents = agents.get(config.id) ?? []
+        const { connection, agent } = connectionToMockAgent(config, {
+          sessionId: `${config.id}-mock-${providerAgents.length + 1}`,
+        })
+        providerAgents.push(agent)
+        agents.set(config.id, providerAgents)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const before = controller.store.getState()
+    const selected = before.workspace.selectedVisibleId
+    const siblingSessions = [before.sessions["claude-code"], before.sessions.codex]
+    const siblingRuntimes = [controller.runtime("claude-code"), controller.runtime("codex")]
+
+    controller.actions.recheckCursor("cursor")
+    await waitFor(() => controller.isReady("cursor"), "real ACP Cursor recheck")
+
+    expect(cursorPreflights).toBe(2)
+    expect(agents.get("cursor")).toHaveLength(1)
+    expect(agents.get("claude-code")).toHaveLength(1)
+    expect(agents.get("codex")).toHaveLength(1)
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(selected)
+    expect(controller.store.getState().sessions["claude-code"]).toBe(siblingSessions[0])
+    expect(controller.store.getState().sessions.codex).toBe(siblingSessions[1])
+    expect(controller.runtime("claude-code")).toBe(siblingRuntimes[0])
+    expect(controller.runtime("codex")).toBe(siblingRuntimes[1])
+
+    expect(await controller.actions.sendPrompt("cursor turn", "cursor")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("claude turn", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex turn", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(agents.get("cursor")![0]!.prompts).toHaveLength(1)
+    expect(agents.get("claude-code")![0]!.prompts).toHaveLength(1)
+    expect(agents.get("codex")![0]!.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
   it("round-trips ACP elicitation through the controller projection and dedicated response action", async () => {
     const supportedConfig = {
       ...CLAUDE,

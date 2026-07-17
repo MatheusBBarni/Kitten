@@ -61,12 +61,20 @@ const { section, install } = Astro.props;
           <span class="handoff-window-title">{section.outcomeTitle}</span>
           <span class="handoff-window-status">{section.outcomeStatus}</span>
         </div>
-        <div class="handoff-route" aria-hidden="true">
-          <span>Claude Code</span>
-          <svg viewBox="0 0 56 24">
-            <path d="M2 12h46m-10-8 10 8-10 8" />
-          </svg>
-          <span>Codex</span>
+        <div class="agent-roster">
+          <span class="agent-roster-label">Available today</span>
+          <ul
+            class="agent-roster-list"
+            aria-label={section.rosterAccessibleLabel}
+            data-agent-roster
+          >
+            {
+              section.currentProviders.map((provider) => (
+                <li class="agent-roster-provider">{provider}</li>
+              ))
+            }
+          </ul>
+          <p class="agent-roster-future">{section.futureConnectionsLabel}</p>
         </div>
         <p>{section.outcomeBody}</p>
       </div>

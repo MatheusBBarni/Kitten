@@ -42,6 +42,7 @@ import type {
   McpServerConfig,
   PlanEntry,
   ToolCallDiff,
+  ToolCallFailureKind,
   ToolCallKind,
   ToolCallUpdate,
 } from "../core/types.ts"
@@ -269,7 +270,10 @@ export function toAcpMcpServers(servers: McpServerConfig[]): McpServer[] {
  * protocol-free domain slices.
  * Returning `null` keeps the caller's dispatch loop trivial.
  */
-export function translateSessionUpdate(update: SessionUpdate): DomainSessionEvent | null {
+export function translateSessionUpdate(
+  update: SessionUpdate,
+  failureKind?: ToolCallFailureKind,
+): DomainSessionEvent | null {
   switch (update.sessionUpdate) {
     case "user_message_chunk": {
       const text = extractText(update.content)
@@ -283,7 +287,7 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
     }
     case "tool_call":
     case "tool_call_update":
-      return { kind: "tool_call", call: translateToolCall(update) }
+      return { kind: "tool_call", call: translateToolCall(update, failureKind) }
     case "plan":
       return { kind: "plan", entries: update.entries.map(translatePlanEntry) }
     case "config_option_update":
@@ -315,7 +319,10 @@ export function translateSessionUpdate(update: SessionUpdate): DomainSessionEven
  * the reducer preserves the prior value; a provided `content` array without a diff
  * block clears the stored diff via an explicit `null`.
  */
-export function translateToolCall(tc: ToolCall | AcpToolCallUpdate): ToolCallUpdate {
+export function translateToolCall(
+  tc: ToolCall | AcpToolCallUpdate,
+  failureKind?: ToolCallFailureKind,
+): ToolCallUpdate {
   const call: ToolCallUpdate = { toolCallId: tc.toolCallId }
   if (tc.kind != null) call.kind = mapKind(tc.kind)
   if (tc.title != null) call.title = tc.title
@@ -324,7 +331,32 @@ export function translateToolCall(tc: ToolCall | AcpToolCallUpdate): ToolCallUpd
   if (tc.rawInput !== undefined) call.inputSummary = summarizeToolCallInput(tc.rawInput)
   const diff = translateDiff(tc.content)
   if (diff !== undefined) call.diff = diff
+  if (failureKind !== undefined) call.failureKind = failureKind
   return call
+}
+
+/**
+ * Parse the bundled child's fixed failed-tool envelope without retaining its text.
+ * Eligibility is intentionally decided by `AgentConnection`, which owns the
+ * per-tool-call lifecycle state needed for title-less ACP updates.
+ */
+export function classifyBundledMcpFailure(
+  content: Array<ToolCallContent> | null | undefined,
+): ToolCallFailureKind | undefined {
+  if (content?.length !== 1) return undefined
+  const block = content[0]
+  if (block?.type !== "content" || block.content.type !== "text") return undefined
+
+  let envelope: unknown
+  try {
+    envelope = JSON.parse(block.content.text)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(envelope) || Object.keys(envelope).length !== 1) return undefined
+  if (envelope.error === "busy") return "temporary_capacity"
+  if (envelope.error === "unavailable") return "unavailable"
+  return undefined
 }
 
 /** The longest input shape the transcript will show before collapsing the remaining fields. */

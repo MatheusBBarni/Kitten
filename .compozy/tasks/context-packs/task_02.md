@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Store-owned Context Pack slice and selectors
 type: refactor
 complexity: high
@@ -29,11 +29,11 @@ Make the AppStore the sole mutable owner of each session's current draft, sealed
 
 ## Subtasks
 
-- [ ] 2.1 Add the session-keyed Context Pack state projection and initialization behavior.
-- [ ] 2.2 Add atomic draft, review, sealed, and build-binding transitions.
-- [ ] 2.3 Clear Context Pack state at every existing session-removal boundary.
-- [ ] 2.4 Add narrow Context Pack, draft, sealed, review, and build selectors.
-- [ ] 2.5 Prove session isolation, structural sharing, and cleanup in tests.
+- [x] 2.1 Add the session-keyed Context Pack state projection and initialization behavior.
+- [x] 2.2 Add atomic draft, review, sealed, and build-binding transitions.
+- [x] 2.3 Clear Context Pack state at every existing session-removal boundary.
+- [x] 2.4 Add narrow Context Pack, draft, sealed, review, and build selectors.
+- [x] 2.5 Prove session isolation, structural sharing, and cleanup in tests.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ Follow the TechSpec State Model and Store Actions. Keep filesystem reads, bridge
 ## Tests
 
 - Unit tests:
-  - [ ] Two sessions retain distinct drafts, sealed values, reviews, and build bindings.
-  - [ ] Each mutation invalidates the correct review while preserving unrelated session references.
-  - [ ] Removal of a session or delegation child clears only its Context Pack state.
-  - [ ] Replacing sessions cannot leave an orphan projection or live build binding.
-  - [ ] Missing sessions return stable null projections and unrelated updates preserve selector identity.
+  - [x] Two sessions retain distinct drafts, sealed values, reviews, and build bindings.
+  - [x] Each mutation invalidates the correct review while preserving unrelated session references.
+  - [x] Removal of a session or delegation child clears only its Context Pack state.
+  - [x] Replacing sessions cannot leave an orphan projection or live build binding.
+  - [x] Missing sessions return stable null projections and unrelated updates preserve selector identity.
 - Integration tests:
-  - [ ] A controller-style sequence can create, review, bind, release, and seal one addressed session without altering a sibling session.
+  - [x] A controller-style sequence can create, review, bind, release, and seal one addressed session without altering a sibling session.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Render readiness-first Cursor model controls
 type: frontend
 complexity: medium

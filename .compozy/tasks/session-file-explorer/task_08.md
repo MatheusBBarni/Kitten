@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Settings Editor Draft and Explicit Save/Cancel UX
 type: frontend
 complexity: medium

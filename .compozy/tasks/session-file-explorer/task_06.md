@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Apply Saved and Watched Editor Preference at Runtime
 type: backend
 complexity: medium

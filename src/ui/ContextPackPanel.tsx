@@ -24,6 +24,7 @@ import {
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { CONTEXT_PACK_HINT, matchContextPackCommand } from "./keymap.ts"
+import { ContextPackFileExplorer } from "./ContextPackFileExplorer.tsx"
 import { usePalette } from "./theme.ts"
 
 export const CONTEXT_PACK_TITLE = "Context Pack"
@@ -32,7 +33,7 @@ export const CONTEXT_PACK_EXACT_REVIEW_LABEL = "Exact review candidate"
 export const CONTEXT_PACK_EXACT_SEALED_LABEL = "Exact sealed payload"
 export const CONTEXT_PACK_EXPORT_DESTINATION_LABEL = "Export destination"
 
-type ContextPackActionId = "build" | "review" | "seal" | "send" | "refine" | "export"
+type ContextPackActionId = "build" | "review" | "seal" | "send" | "refine" | "export" | "files"
 type ExportPhase = "idle" | "destination" | "overwrite"
 
 interface ContextPackActionRow {
@@ -102,6 +103,7 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
   const [pendingAction, setPendingAction] = useState<ContextPackActionId | null>(null)
   const [exportPhase, setExportPhase] = useState<ExportPhase>("idle")
   const [destination, setDestination] = useState("")
+  const [fileExplorerActive, setFileExplorerActive] = useState(false)
   const pendingRef = useRef(false)
 
   const actions = useMemo<readonly ContextPackActionRow[]>(() => [
@@ -155,6 +157,14 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
       enabled: sealed !== null,
       reason: sealed === null ? "Sealed pack unavailable" : null,
     },
+    {
+      id: "files",
+      label: "File Explorer membership",
+      enabled: draft !== null && draft.stale.kind !== "stale",
+      reason: draft === null
+        ? sealed === null ? "Draft unavailable" : "Sealed pack is immutable; refine it first"
+        : draft.stale.kind === "stale" ? "Draft freshness requires attention" : null,
+    },
   ], [build, buildAvailability, draft, fit, refinable, refineAvailability, review, sealed])
 
   const submitExport = useCallback(async (overwriteConfirmed: boolean): Promise<void> => {
@@ -197,6 +207,11 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
     }
     if (action.id === "export") {
       setExportPhase("destination")
+      return
+    }
+    if (action.id === "files") {
+      setFileExplorerActive(true)
+      setNotice("File Explorer focused")
       return
     }
 
@@ -250,6 +265,7 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
 
   const onKey = useCallback((key: KeyEvent): void => {
     if (preempted) return
+    if (fileExplorerActive) return
     if (exportPhase === "destination") {
       if (key.name === "escape" && !key.ctrl && !key.meta && !key.shift) {
         key.preventDefault()
@@ -297,7 +313,7 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
         onClose()
         return
     }
-  }, [actions.length, activate, exportPhase, onClose, preempted, submitExport])
+  }, [actions.length, activate, exportPhase, fileExplorerActive, onClose, preempted, submitExport])
   useKeyboard(onKey)
 
   if (preempted) return null
@@ -318,6 +334,15 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
       >
         <CustodyDetails draft={draft} review={review} sealed={sealed} fit={fit} />
       </scrollbox>
+
+      <ContextPackFileExplorer
+        sessionId={sessionId}
+        active={fileExplorerActive}
+        onExit={() => {
+          setFileExplorerActive(false)
+          setNotice("Returned to Context Pack actions")
+        }}
+      />
 
       <box style={{ flexShrink: 0, flexDirection: "column", border: true, borderColor: palette.border, paddingLeft: 1, paddingRight: 1 }}>
         <text fg={palette.text}>Explicit actions</text>

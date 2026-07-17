@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Immutable sealed-pack handoff composition
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Extend the existing handoff workflow with one optional whole sealed Context Pack
 
 ## Subtasks
 
-- [ ] 9.1 Add an optional whole sealed-pack attachment contract to handoff values.
-- [ ] 9.2 Compose one combined preview with source-identity deduplication.
-- [ ] 9.3 Preserve sealed payload bytes and prohibit per-block editing/removal.
-- [ ] 9.4 Recheck fit before attachment and final handoff confirmation.
-- [ ] 9.5 Add composition, deduplication, and blocked-path coverage.
+- [x] 9.1 Add an optional whole sealed-pack attachment contract to handoff values.
+- [x] 9.2 Compose one combined preview with source-identity deduplication.
+- [x] 9.3 Preserve sealed payload bytes and prohibit per-block editing/removal.
+- [x] 9.4 Recheck fit before attachment and final handoff confirmation.
+- [x] 9.5 Add composition, deduplication, and blocked-path coverage.
 
 ## Implementation Details
 
@@ -72,13 +72,13 @@ Follow the TechSpec Handoff integration and existing preview/confirm behavior. K
 ## Tests
 
 - Unit tests:
-  - [ ] A handoff accepts one whole sealed pack and rejects a second attachment.
-  - [ ] Only identical source identities deduplicate; same path with a different identity remains present.
-  - [ ] Removing the attachment removes the whole pack and cannot edit or trim an individual sealed block.
-  - [ ] Composition retains sealed bytes exactly and never calls a second redaction path.
+  - [x] A handoff accepts one whole sealed pack and rejects a second attachment.
+  - [x] Only identical source identities deduplicate; same path with a different identity remains present.
+  - [x] Removing the attachment removes the whole pack and cannot edit or trim an individual sealed block.
+  - [x] Composition retains sealed bytes exactly and never calls a second redaction path.
 - Integration tests:
-  - [ ] Fresh fit is rechecked before final handoff confirmation; unavailable evidence keeps the preview and blocks consumption.
-  - [ ] A permitted combined confirmation sends the reviewed attachment through the existing handoff flow only once.
+  - [x] Fresh fit is rechecked before final handoff confirmation; unavailable evidence keeps the preview and blocks consumption.
+  - [x] A permitted combined confirmation sends the reviewed attachment through the existing handoff flow only once.
 - Test coverage target: >=80%
 - All tests must pass
 

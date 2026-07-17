@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Admit concurrent authenticated MCP sockets per route
 type: bugfix
 complexity: high
@@ -32,11 +32,11 @@ disconnects affect only their owning calls and route invalidation remains global
 
 ## Subtasks
 
-- [ ] 2.1 Replace singleton route socket ownership with bounded authenticated socket membership.
-- [ ] 2.2 Preserve existing reservation, authorization, and exact terminal-frame behavior under multi-socket admission.
-- [ ] 2.3 Isolate normal close and error settlement to the owning socket's pending calls.
-- [ ] 2.4 Keep controller-driven route invalidation as the only whole-route teardown path.
-- [ ] 2.5 Prove real-child mixed calls, saturation, disconnect recovery, and cross-session isolation.
+- [x] 2.1 Replace singleton route socket ownership with bounded authenticated socket membership.
+- [x] 2.2 Preserve existing reservation, authorization, and exact terminal-frame behavior under multi-socket admission.
+- [x] 2.3 Isolate normal close and error settlement to the owning socket's pending calls.
+- [x] 2.4 Keep controller-driven route invalidation as the only whole-route teardown path.
+- [x] 2.5 Prove real-child mixed calls, saturation, disconnect recovery, and cross-session isolation.
 
 ## Implementation Details
 
@@ -76,15 +76,15 @@ shared capacity, durable history, or retry mechanism.
 ## Tests
 
 - Unit tests:
-  - [ ] Two distinct authenticated sockets on one route can hold a pending `agent_run` and a pending `ask` concurrently, and both receive their own terminal result.
-  - [ ] Four pending calls from distinct sockets are admitted; a fifth receives one immediate `busy` frame, creates no pending work, and a later call succeeds after capacity settles.
-  - [ ] Closing or erroring one socket with a pending ask cancels only its clarification and leaves another same-route pending call and a new authenticated socket usable.
-  - [ ] Closing a socket during `agent_run.start` does not close the route or replay the start; later same-route calls remain authorized.
-  - [ ] Duplicate IDs, wrong capabilities, malformed frames, stale generations, and cross-route sockets remain rejected with their existing bounded outcomes.
+  - [x] Two distinct authenticated sockets on one route can hold a pending `agent_run` and a pending `ask` concurrently, and both receive their own terminal result.
+  - [x] Four pending calls from distinct sockets are admitted; a fifth receives one immediate `busy` frame, creates no pending work, and a later call succeeds after capacity settles.
+  - [x] Closing or erroring one socket with a pending ask cancels only its clarification and leaves another same-route pending call and a new authenticated socket usable.
+  - [x] Closing a socket during `agent_run.start` does not close the route or replay the start; later same-route calls remain authorized.
+  - [x] Duplicate IDs, wrong capabilities, malformed frames, stale generations, and cross-route sockets remain rejected with their existing bounded outcomes.
 - Integration tests:
-  - [ ] The real generated child invokes `ask_user` and `agent_run` concurrently from one parent environment and both structured results settle without a false stream-limit error.
-  - [ ] Two parent environments can run mixed calls concurrently but cannot poll, settle, or observe the other session's delegated child.
-  - [ ] Session replacement and controller disposal remove the endpoint and make late child calls unavailable even after multi-socket admission.
+  - [x] The real generated child invokes `ask_user` and `agent_run` concurrently from one parent environment and both structured results settle without a false stream-limit error.
+  - [x] Two parent environments can run mixed calls concurrently but cannot poll, settle, or observe the other session's delegated child.
+  - [x] Session replacement and controller disposal remove the endpoint and make late child calls unavailable even after multi-socket admission.
 - Test coverage target: >=80%
 - All tests must pass
 

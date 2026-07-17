@@ -5,6 +5,7 @@ import type { ElicitationSchema, SessionUpdate, ToolCall, ToolCallUpdate as AcpT
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import type { ClarificationAnswer, ClarificationPayload, DomainSessionEvent, McpServerConfig } from "../core/types.ts"
 import {
+  classifyBundledMcpFailure,
   toAcpElicitationOutcome,
   toAcpMcpServers,
   toUnifiedDiff,
@@ -392,6 +393,37 @@ describe("translateSessionUpdate: messages", () => {
 })
 
 describe("translateSessionUpdate: tool calls", () => {
+  const textResult = (text: string) => [{ type: "content" as const, content: { type: "text" as const, text } }]
+
+  it.each([
+    ['{ "error": "busy" }', "temporary_capacity"],
+    ['{"error":"unavailable"}', "unavailable"],
+  ] as const)("classifies the exact bundled child envelope %s", (text, expected) => {
+    const failureKind = classifyBundledMcpFailure(textResult(text))
+    const call = translateToolCall({
+      toolCallId: "t1",
+      status: "failed",
+      content: textResult(text),
+    }, failureKind)
+
+    expect(call).toEqual({ toolCallId: "t1", status: "failed", diff: null, failureKind: expected })
+    expect(JSON.stringify(call)).not.toContain(text)
+    expect(JSON.stringify(call)).not.toContain('"error"')
+  })
+
+  it.each([
+    ["missing content", undefined],
+    ["null content", null],
+    ["malformed JSON", textResult("not-json")],
+    ["additional key", textResult('{"error":"busy","route":"private"}')],
+    ["different error", textResult('{"error":"invalid_request"}')],
+    ["arbitrary text", textResult("busy")],
+    ["multiple blocks", [...textResult('{"error":"busy"}'), ...textResult("ignored")]],
+    ["non-text block", [{ type: "content" as const, content: { type: "image" as const, data: "AAAA", mimeType: "image/png" } }]],
+  ])("leaves a %s result unclassified", (_label, content) => {
+    expect(classifyBundledMcpFailure(content)).toBeUndefined()
+  })
+
   it("maps a tool_call preserving kind, title, status, locations, and a value-free input shape", () => {
     const sensitiveInput = "sk-proj-this-must-not-reach-the-transcript-state"
     const update: SessionUpdate = {

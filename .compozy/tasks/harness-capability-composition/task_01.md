@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Core capability-composition contract
 type: backend
 complexity: medium

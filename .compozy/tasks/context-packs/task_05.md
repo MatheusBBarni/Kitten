@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Bounded workspace materialization and source fences
 type: backend
 complexity: high

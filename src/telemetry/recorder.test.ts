@@ -1254,6 +1254,167 @@ describe("file-selector events", () => {
   })
 })
 
+describe("session file explorer events", () => {
+  it("records only the allowlisted ordinal and closed outcome for each event family", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "run-1",
+    })
+
+    recorder.explorerOpened("private-session-a")
+    recorder.explorerRefreshed("private-session-a", "refreshed")
+    recorder.explorerRefreshed("private-session-b", "source-failed")
+    recorder.explorerFileOpened("private-session-a", "unsupported")
+    recorder.explorerFileOpened("private-session-a", "source-failed")
+    recorder.explorerFileOpened("private-session-a", "default-opened")
+    recorder.explorerFileOpened("private-session-a", "custom-opened")
+    recorder.explorerFallback("private-session-a")
+    recorder.explorerFileOpened("private-session-a", "final-failure")
+
+    expect(sink.records).toEqual([
+      { type: "explorer_opened", agentRef: 1, at: 42, sessionRef: "run-1" },
+      {
+        type: "explorer_refreshed",
+        agentRef: 1,
+        outcome: "refreshed",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_refreshed",
+        agentRef: 2,
+        outcome: "source-failed",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "unsupported",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "source-failed",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "default-opened",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "custom-opened",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_fallback",
+        agentRef: 1,
+        outcome: "fallback",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "final-failure",
+        at: 42,
+        sessionRef: "run-1",
+      },
+    ])
+  })
+
+  it("cannot serialize repository, editor, error, tree, or stable identity content", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+    const forbidden = [
+      "/private/acme/workspace/src/credential-store.ts",
+      "credential-store.ts",
+      "acme-workspace-stable-id",
+      "/Applications/Private Editor.app/Contents/MacOS/editor",
+      "--reuse-window",
+      "ENOENT: secret launcher detail",
+      "nested-secret-tree-entry",
+      "stable-user-8675309",
+    ]
+    const contentBearingSessionId = forbidden.join("::")
+
+    recorder.explorerOpened(contentBearingSessionId)
+    recorder.explorerRefreshed(contentBearingSessionId, "source-failed")
+    recorder.explorerFallback(contentBearingSessionId)
+    recorder.explorerFileOpened(contentBearingSessionId, "final-failure")
+
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of forbidden) expect(serialized).not.toContain(sentinel)
+    for (const record of sink.records) {
+      expect(Object.keys(record).sort()).toEqual(
+        record.type === "explorer_opened"
+          ? ["agentRef", "at", "sessionRef", "type"]
+          : ["agentRef", "at", "outcome", "sessionRef", "type"],
+      )
+    }
+  })
+
+  it("does not access or construct a sink when disabled", () => {
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled explorer telemetry must not access a sink")
+      },
+    })
+
+    recorder.explorerOpened("content-bearing-session")
+    recorder.explorerRefreshed("content-bearing-session", "refreshed")
+    recorder.explorerFallback("content-bearing-session")
+    recorder.explorerFileOpened("content-bearing-session", "default-opened")
+  })
+
+  it("rejects runtime values outside the closed outcome vocabulary", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+
+    recorder.explorerRefreshed(
+      "codex",
+      "ENOENT: /private/workspace" as unknown as "refreshed",
+    )
+    recorder.explorerFileOpened(
+      "codex",
+      "/Applications/Private Editor.app" as unknown as "final-failure",
+    )
+
+    expect(sink.records).toHaveLength(0)
+  })
+
+  it("keeps refresh and file-open outcomes closed at the typed recorder API", () => {
+    if (false) {
+      const recorder = createTelemetryRecorder({ enabled: false })
+      // @ts-expect-error Refresh outcomes are intentionally fixed.
+      recorder.explorerRefreshed("codex", "credential-store.ts")
+      // @ts-expect-error File-open outcomes are intentionally fixed.
+      recorder.explorerFileOpened("codex", "ENOENT: editor failed")
+      // @ts-expect-error Fallback details cannot cross the facade.
+      recorder.explorerFallback("codex", "private-editor-command")
+    }
+    expect(true).toBe(true)
+  })
+})
+
 describe("prompt-history events", () => {
   it("emits eligibility once on a session's second composer submission", () => {
     const sink = memorySink()

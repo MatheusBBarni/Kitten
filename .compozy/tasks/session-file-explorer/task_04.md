@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Strict Editor Preference Config and Atomic Persistence
 type: backend
 complexity: medium
@@ -28,11 +28,11 @@ Extend the user config model with a strict editor preference and preserve it thr
 
 ## Subtasks
 
-- [ ] 4.1 Add the closed editor preference schema and default resolution.
-- [ ] 4.2 Validate exact placeholder cardinality and reject unknown keys.
-- [ ] 4.3 Include editor data in user-config parse, merge, and resolved application config.
-- [ ] 4.4 Preserve editor data through atomic patch writes without overwriting unrelated fields.
-- [ ] 4.5 Add loader and writer coverage for valid, invalid, and concurrent-field cases.
+- [x] 4.1 Add the closed editor preference schema and default resolution.
+- [x] 4.2 Validate exact placeholder cardinality and reject unknown keys.
+- [x] 4.3 Include editor data in user-config parse, merge, and resolved application config.
+- [x] 4.4 Preserve editor data through atomic patch writes without overwriting unrelated fields.
+- [x] 4.5 Add loader and writer coverage for valid, invalid, and concurrent-field cases.
 
 ## Implementation Details
 
@@ -65,13 +65,13 @@ Follow the TechSpec “Configuration Contract,” “Runtime Configuration Reloa
 ## Tests
 
 - Unit tests:
-  - [ ] An absent editor block resolves to `system-default`.
-  - [ ] A valid custom executable with exactly one full `{file}` placeholder loads successfully.
-  - [ ] Repeated, partial, or missing placeholders and unknown keys produce a config error.
-  - [ ] Writing an editor patch preserves provider, theme, statusline, and other existing fields.
-  - [ ] Invalid serialized editor data fails before a target file is created or replaced.
+  - [x] An absent editor block resolves to `system-default`.
+  - [x] A valid custom executable with exactly one full `{file}` placeholder loads successfully.
+  - [x] Repeated, partial, or missing placeholders and unknown keys produce a config error.
+  - [x] Writing an editor patch preserves provider, theme, statusline, and other existing fields.
+  - [x] Invalid serialized editor data fails before a target file is created or replaced.
 - Integration tests:
-  - [ ] An atomic editor save can be reloaded as the same validated preference.
+  - [x] An atomic editor save can be reloaded as the same validated preference.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Direct-Argv External Editor Launcher
 type: backend
 complexity: medium

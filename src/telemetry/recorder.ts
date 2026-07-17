@@ -131,6 +131,10 @@ export type TelemetryEventType =
   | "file_selector_query_rendered"
   | "file_selector_selected"
   | "file_selector_corrected"
+  | "explorer_opened"
+  | "explorer_refreshed"
+  | "explorer_file_opened"
+  | "explorer_fallback"
   | "clarification_capability_classified"
   | "clarification_presented"
   | "clarification_settled"
@@ -223,6 +227,26 @@ export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
 
 /** Closed post-render states for the warm local-query latency metric. */
 export type FileSelectorRenderState = "results" | "empty" | "unavailable"
+
+/** Closed explorer refresh results; no source detail or tree size may cross this boundary. */
+export type ExplorerRefreshOutcome = "refreshed" | "source-failed"
+
+/** Closed settled file-open results; no file, editor, command, or error detail is accepted. */
+export type ExplorerFileOpenOutcome =
+  | "unsupported"
+  | "source-failed"
+  | "default-opened"
+  | "custom-opened"
+  | "final-failure"
+
+/** The only fallback fact recorded before the final file-open outcome. */
+export type ExplorerFallbackOutcome = "fallback"
+
+/** Complete content-free explorer vocabulary serialized through `TelemetryRecord.outcome`. */
+export type ExplorerTelemetryOutcome =
+  | ExplorerRefreshOutcome
+  | ExplorerFileOpenOutcome
+  | ExplorerFallbackOutcome
 
 /** The two entry points whose adoption the resume metrics compare. */
 export type ResumeMode = "picker" | "last-run"
@@ -431,7 +455,7 @@ export interface TelemetryRecord {
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
   /** Fixed file-discovery outcome; never a source error, path, or query. */
-  outcome?: FileSelectorDiscoveryOutcome | AgentRunOutcome | SteeringTelemetryOutcome
+  outcome?: FileSelectorDiscoveryOutcome | ExplorerTelemetryOutcome | AgentRunOutcome | SteeringTelemetryOutcome
   /** Fixed warm-query render state; never a candidate count or candidate content. */
   state?: FileSelectorRenderState
   /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
@@ -574,6 +598,14 @@ export interface TelemetryRecorder {
   fileSelectorSelected(sessionId: SessionId, durationMs: number): void
   /** One pending accepted reference was edited through before submission. */
   fileSelectorCorrected(sessionId: SessionId): void
+  /** The hidden explorer became visible for one run-local session ordinal. */
+  explorerOpened(sessionId: SessionId): void
+  /** An explicit refresh settled with one closed source outcome. */
+  explorerRefreshed(sessionId: SessionId, outcome: ExplorerRefreshOutcome): void
+  /** A user-initiated file open settled with one closed final outcome. */
+  explorerFileOpened(sessionId: SessionId, outcome: ExplorerFileOpenOutcome): void
+  /** A failed custom dispatch began its one allowed system-default fallback. */
+  explorerFallback(sessionId: SessionId): void
   /** A provider recipe was classified without recording any recipe identity. */
   clarificationCapabilityClassified(
     provider: ProviderKind,
@@ -754,6 +786,10 @@ const NOOP_RECORDER: TelemetryRecorder = {
   fileSelectorQueryRendered() {},
   fileSelectorSelected() {},
   fileSelectorCorrected() {},
+  explorerOpened() {},
+  explorerRefreshed() {},
+  explorerFileOpened() {},
+  explorerFallback() {},
   clarificationCapabilityClassified() {},
   clarificationPresented() {},
   clarificationSettled() {},
@@ -1012,6 +1048,28 @@ class ActiveRecorder implements TelemetryRecorder {
 
   fileSelectorCorrected(sessionId: SessionId): void {
     this.record({ type: "file_selector_corrected", agent: sessionId })
+  }
+
+  explorerOpened(sessionId: SessionId): void {
+    this.record({ type: "explorer_opened", agentRef: this.agentRef(sessionId) })
+  }
+
+  explorerRefreshed(sessionId: SessionId, outcome: ExplorerRefreshOutcome): void {
+    if (!isExplorerRefreshOutcome(outcome)) return
+    this.record({ type: "explorer_refreshed", agentRef: this.agentRef(sessionId), outcome })
+  }
+
+  explorerFileOpened(sessionId: SessionId, outcome: ExplorerFileOpenOutcome): void {
+    if (!isExplorerFileOpenOutcome(outcome)) return
+    this.record({ type: "explorer_file_opened", agentRef: this.agentRef(sessionId), outcome })
+  }
+
+  explorerFallback(sessionId: SessionId): void {
+    this.record({
+      type: "explorer_fallback",
+      agentRef: this.agentRef(sessionId),
+      outcome: "fallback",
+    })
   }
 
   clarificationCapabilityClassified(
@@ -1676,6 +1734,18 @@ function isProviderReadinessOutcome(value: unknown): value is ProviderReadinessO
     value === "uncertified_recipe" ||
     value === "authentication_required" ||
     value === "handshake_failed"
+}
+
+function isExplorerRefreshOutcome(value: unknown): value is ExplorerRefreshOutcome {
+  return value === "refreshed" || value === "source-failed"
+}
+
+function isExplorerFileOpenOutcome(value: unknown): value is ExplorerFileOpenOutcome {
+  return value === "unsupported" ||
+    value === "source-failed" ||
+    value === "default-opened" ||
+    value === "custom-opened" ||
+    value === "final-failure"
 }
 
 function isExploreStartupFailureCategory(value: unknown): value is ExploreStartupFailureCategory {

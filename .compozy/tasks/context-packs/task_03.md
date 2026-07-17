@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Strict Context Pack persistence
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Extend persisted run records with a strict session-keyed Context Pack projection
 
 ## Subtasks
 
-- [ ] 3.1 Define V4 persisted Context Pack manifests and strict parser/serializer schemas.
-- [ ] 3.2 Add compatible record migration and session-keyed projection encoding.
-- [ ] 3.3 Persist exact sealed bytes without a second redaction or text transformation.
-- [ ] 3.4 Restore safe draft and sealed state while clearing all live authority.
-- [ ] 3.5 Add schema-negative, migration, and atomic-store coverage.
+- [x] 3.1 Define V4 persisted Context Pack manifests and strict parser/serializer schemas.
+- [x] 3.2 Add compatible record migration and session-keyed projection encoding.
+- [x] 3.3 Persist exact sealed bytes without a second redaction or text transformation.
+- [x] 3.4 Restore safe draft and sealed state while clearing all live authority.
+- [x] 3.5 Add schema-negative, migration, and atomic-store coverage.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ Follow the TechSpec persisted RunRecord model and restoration rules. Keep valida
 ## Tests
 
 - Unit tests:
-  - [ ] Accepted V1–V3 records migrate while a V4 record includes only allowlisted Context Pack keys.
-  - [ ] Raw materialized source, candidate bytes, routes, profile evidence, and arbitrary extra fields are rejected.
-  - [ ] Persisted sealed payload bytes round-trip exactly without normalization or redaction changes.
-  - [ ] Restored drafts require revalidation and never carry a review candidate or build binding.
+  - [x] Accepted V1–V3 records migrate while a V4 record includes only allowlisted Context Pack keys.
+  - [x] Raw materialized source, candidate bytes, routes, profile evidence, and arbitrary extra fields are rejected.
+  - [x] Persisted sealed payload bytes round-trip exactly without normalization or redaction changes.
+  - [x] Restored drafts require revalidation and never carry a review candidate or build binding.
 - Integration tests:
-  - [ ] An atomic run-store restart restores one session's manifest and sealed value while a malformed sibling projection is dropped safely.
-  - [ ] Existing file mode and atomic replacement guarantees remain true for records containing Context Pack data.
+  - [x] An atomic run-store restart restores one session's manifest and sealed value while a malformed sibling projection is dropped safely.
+  - [x] Existing file mode and atomic replacement guarantees remain true for records containing Context Pack data.
 - Test coverage target: >=80%
 - All tests must pass
 

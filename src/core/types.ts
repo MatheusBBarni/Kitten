@@ -309,6 +309,19 @@ export type ConversationUnavailableReason =
   | "restore-unavailable"
   | "teardown-failed"
 
+/**
+ * Closed, user-safe recovery semantics for an unavailable Cursor session.
+ *
+ * The projection deliberately contains no runtime error, command, path, version,
+ * credential, or probe detail. Presentation code maps these values to copy later.
+ */
+export type CursorRecoveryState =
+  | { readonly reason: "binary_missing"; readonly action: "install_cursor_cli"; readonly recheckable: true }
+  | { readonly reason: "version_mismatch"; readonly action: "restore_reviewed_profile"; readonly recheckable: true }
+  | { readonly reason: "authentication_required"; readonly action: "authenticate_natively"; readonly recheckable: true }
+  | { readonly reason: "uncertified_recipe"; readonly action: "await_maintainer_review"; readonly recheckable: false }
+  | { readonly reason: "handshake_failed"; readonly action: "retry_handshake"; readonly recheckable: true }
+
 /** Runtime standing exposed to the workspace without carrying raw ACP errors. */
 export type ConversationAvailability =
   | { kind: "starting" }
@@ -317,6 +330,7 @@ export type ConversationAvailability =
       kind: "unavailable"
       reasonCode: ConversationUnavailableReason
       retryable: boolean
+      cursorRecovery?: CursorRecoveryState
     }
 
 /** Prevents duplicate teardown while lifecycle remains unchanged until success. */
@@ -1007,7 +1021,7 @@ export interface ContextPackInstructions {
   readonly discovered: string
 }
 
-/** Metadata supplied by the controller-owned materializer; never copied source content. */
+/** Source identity/digest fence plus exact materialized artifact byte length; never copied content. */
 export interface ContextPackSourceReference {
   readonly identity: string
   readonly digest: string

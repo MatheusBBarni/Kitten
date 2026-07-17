@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Align local-only Cursor docs and telemetry guardrails
 type: docs
 complexity: low
@@ -29,10 +29,10 @@ Align the written support boundary and local telemetry boundary with the certifi
 </requirements>
 
 ## Subtasks
-- [ ] 5.1 Update the local-only Cursor onboarding and recovery boundary without adding an unreviewed compatibility promise.
-- [ ] 5.2 Prove documentation excludes credential ownership and direct-CLI active-session control.
-- [ ] 5.3 Preserve the exact closed readiness telemetry schema and disabled-recorder behavior.
-- [ ] 5.4 Add regression tests that reject sentinel content at the recorder boundary.
+- [x] 5.1 Update the local-only Cursor onboarding and recovery boundary without adding an unreviewed compatibility promise.
+- [x] 5.2 Prove documentation excludes credential ownership and direct-CLI active-session control.
+- [x] 5.3 Preserve the exact closed readiness telemetry schema and disabled-recorder behavior.
+- [x] 5.4 Add regression tests that reject sentinel content at the recorder boundary.
 
 ## Implementation Details
 
@@ -64,13 +64,13 @@ Use the TechSpec sections **Privacy and Telemetry**, **User Experience**, and **
 ## Tests
 
 - Unit tests:
-  - [ ] Documentation assertions cover local `agent acp`, certified-local-only support, and exclusion of cloud, background, and remote Cursor products.
-  - [ ] Documentation assertions cover native authentication ownership, no Kitten credential handling, no direct-CLI active-session claim, four recovery boundaries, and sibling availability.
-  - [ ] Documentation assertions reject a literal certified semantic version before native review.
-  - [ ] Recorder assertions accept exactly the six readiness outcomes and serialize only `type`, `provider`, `readinessOutcome`, `at`, and `sessionRef`.
+  - [x] Documentation assertions cover local `agent acp`, certified-local-only support, and exclusion of cloud, background, and remote Cursor products.
+  - [x] Documentation assertions cover native authentication ownership, no Kitten credential handling, no direct-CLI active-session claim, four recovery boundaries, and sibling availability.
+  - [x] Documentation assertions reject a literal certified semantic version before native review.
+  - [x] Recorder assertions accept exactly the six readiness outcomes and serialize only `type`, `provider`, `readinessOutcome`, `at`, and `sessionRef`.
 - Integration tests:
-  - [ ] Casted raw sentinel values reaching the recorder boundary are discarded rather than serialized.
-  - [ ] The disabled recorder performs no sink access and creates no records even when Cursor readiness is reported.
+  - [x] Casted raw sentinel values reaching the recorder boundary are discarded rather than serialized.
+  - [x] The disabled recorder performs no sink access and creates no records even when Cursor readiness is reported.
 - Test coverage target: >=80%
 - All tests must pass
 

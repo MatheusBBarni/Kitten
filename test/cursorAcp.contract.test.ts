@@ -14,7 +14,12 @@ import {
   matchCertifiedCursorRuntimeProfile,
   type CertifiedCursorRuntimeProfile,
 } from "../src/config/configLoader.ts"
-import type { DomainSessionEvent, ResolvedAgentConfig } from "../src/core/types.ts"
+import {
+  visibleConfigOptions,
+  type ConfigOption,
+  type DomainSessionEvent,
+  type ResolvedAgentConfig,
+} from "../src/core/types.ts"
 
 const CONTRACT_ENABLED = process.env.KITTEN_CURSOR_ACP_CONTRACT === "1"
 const contractTest = test.skipIf(!CONTRACT_ENABLED)
@@ -37,6 +42,7 @@ interface VersionProbeResult {
 interface CursorContractConnection {
   connect(): Promise<ReadyState>
   newSession(cwd: string): Promise<string>
+  setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<readonly ConfigOption[]>
   prompt(sessionId: string, input: AgentPromptInput): Promise<{ stopReason: string }>
   onPermission(handler: () => Promise<PermissionOutcome>): void
   onUpdate(handler: (event: DomainSessionEvent) => void): () => void
@@ -51,6 +57,8 @@ interface CursorContractDependencies {
   roundTimeoutMs: number
 }
 
+export type CursorConfigCapabilityResult = "not_advertised" | "accepted" | "rejected"
+
 export interface CursorCertificationEvidence {
   recipe: {
     provider: "cursor"
@@ -59,6 +67,7 @@ export interface CursorCertificationEvidence {
     env: Record<string, never>
   }
   exactVersion: string
+  configCapability: CursorConfigCapabilityResult
   checks: {
     versionMatched: boolean
     initialized: boolean
@@ -131,11 +140,13 @@ export async function runCursorAcpContract(options: {
   let permissionSafelyCancelled = false
   let unexpectedClose = false
   let disposedCleanly = false
+  let advertisedOptions: ConfigOption[] = []
   let output = ""
   let resolveOutput!: () => void
   const outputAvailable = new Promise<void>((resolve) => { resolveOutput = resolve })
   const unsubscribe = connection.onUpdate((event) => {
     if (event.kind === "status" && event.status === "error") unexpectedClose = true
+    if (event.kind === "config_options") advertisedOptions = event.options
     if (event.kind === "agent_message") {
       output += event.textDelta
       resolveOutput()
@@ -152,6 +163,7 @@ export async function runCursorAcpContract(options: {
   let authenticated = false
   let sessionCreated = false
   let promptCompleted = false
+  let configCapability: CursorConfigCapabilityResult = "not_advertised"
   try {
     const ready = await withTimeout(connection.connect(), options.dependencies.roundTimeoutMs, "initialize/authenticate")
     if (!ready.ready) throw new Error(`Cursor authentication failed: ${ready.error}`)
@@ -166,6 +178,13 @@ export async function runCursorAcpContract(options: {
     )
     sessionCreated = sessionId.length > 0
     if (!sessionCreated) throw new Error("Cursor returned an empty session id")
+
+    configCapability = await probeConfigCapability(
+      connection,
+      sessionId,
+      advertisedOptions,
+      options.dependencies.roundTimeoutMs,
+    )
 
     const turn = await withTimeout(
       connection.prompt(sessionId, {
@@ -204,6 +223,7 @@ export async function runCursorAcpContract(options: {
       env: {},
     },
     exactVersion: observedVersion,
+    configCapability,
     checks: {
       versionMatched: true,
       initialized,
@@ -222,6 +242,27 @@ export async function runCursorAcpContract(options: {
   }
   options.onEvidence?.(evidence)
   return { status: "passed", evidence }
+}
+
+async function probeConfigCapability(
+  connection: CursorContractConnection,
+  sessionId: string,
+  advertisedOptions: readonly ConfigOption[],
+  timeoutMs: number,
+): Promise<CursorConfigCapabilityResult> {
+  const visibleOption = visibleConfigOptions([...advertisedOptions])[0]
+  if (!visibleOption) return "not_advertised"
+
+  try {
+    await withTimeout(
+      connection.setSessionConfigOption(sessionId, visibleOption.id, visibleOption.currentValue),
+      timeoutMs,
+      "live configuration probe",
+    )
+    return "accepted"
+  } catch {
+    return "rejected"
+  }
 }
 
 
@@ -342,11 +383,12 @@ describe("Cursor ACP contract harness", () => {
       },
     })
 
-    expect(calls).toEqual(["resolve", "version:agent", "create:agent acp", "connect", "newSession", "prompt", "permission", "dispose"])
+    expect(calls).toEqual(["resolve", "version:agent", "create:agent acp", "connect", "newSession", "setConfig", "prompt", "permission", "dispose"])
     expect(result).toEqual({ status: "passed", evidence: emitted! })
     expect(emitted).toEqual({
       recipe: { provider: "cursor", command: "agent", args: ["acp"], env: {} },
       exactVersion: "1.2.3",
+      configCapability: "accepted",
       checks: {
         versionMatched: true,
         initialized: true,
@@ -364,6 +406,111 @@ describe("Cursor ACP contract harness", () => {
       },
     })
     expect(JSON.stringify(emitted)).not.toMatch(/Reply with OK|not-evidence|credential|path|override|telemetry|cwd/i)
+  })
+
+  test("submits one visible option's exact current value and records accepted", async () => {
+    const calls: string[] = []
+    const configRequests: Array<{ sessionId: string; configId: string; value: string }> = []
+    const configOptions: ConfigOption[] = [
+      {
+        id: "visible-id-sentinel",
+        category: "model",
+        label: "visible-label-sentinel",
+        currentValue: "current-value-sentinel",
+        options: [{ value: "current-value-sentinel", name: "visible-value-label-sentinel" }],
+      },
+    ]
+
+    const result = await runCursorAcpContract({
+      enabled: true,
+      candidateVersion: "1.2.3",
+      dependencies: fakeDependencies(calls, { configOptions, configRequests }),
+    })
+
+    expect(configRequests).toEqual([{
+      sessionId: "cursor-contract-session",
+      configId: "visible-id-sentinel",
+      value: "current-value-sentinel",
+    }])
+    expect(result.status).toBe("passed")
+    if (result.status === "passed") expect(result.evidence.configCapability).toBe("accepted")
+    expect(calls).toEqual(["resolve", "version:agent", "create:agent acp", "connect", "newSession", "setConfig", "prompt", "dispose"])
+  })
+
+  test("records not_advertised without an update request and completes prompt disposal", async () => {
+    const calls: string[] = []
+    const configRequests: Array<{ sessionId: string; configId: string; value: string }> = []
+    const configOptions: ConfigOption[] = [{
+      id: "hidden-mode-id",
+      category: "mode",
+      label: "Hidden mode",
+      currentValue: "ask",
+      options: [{ value: "ask", name: "Ask" }],
+    }]
+    const result = await runCursorAcpContract({
+      enabled: true,
+      candidateVersion: "1.2.3",
+      dependencies: fakeDependencies(calls, { configOptions, configRequests }),
+    })
+
+    expect(configRequests).toEqual([])
+    expect(result.status).toBe("passed")
+    if (result.status === "passed") expect(result.evidence.configCapability).toBe("not_advertised")
+    expect(calls).toEqual(["resolve", "version:agent", "create:agent acp", "connect", "newSession", "prompt", "dispose"])
+  })
+
+  test("contains a rejected update and still completes prompt disposal", async () => {
+    const calls: string[] = []
+    const result = await runCursorAcpContract({
+      enabled: true,
+      candidateVersion: "1.2.3",
+      dependencies: fakeDependencies(calls, { configError: new Error("raw-provider-error-sentinel") }),
+    })
+
+    expect(result.status).toBe("passed")
+    if (result.status === "passed") expect(result.evidence.configCapability).toBe("rejected")
+    expect(calls).toEqual(["resolve", "version:agent", "create:agent acp", "connect", "newSession", "setConfig", "prompt", "dispose"])
+  })
+
+  test("serializes only the closed config result, never provider or option content", async () => {
+    const calls: string[] = []
+    const configOptions: ConfigOption[] = [
+      {
+        id: "private-option-id --list-models",
+        category: "thought_level",
+        label: "private-option-label credential-secret /private/workspace/path --model",
+        currentValue: "private-option-value",
+        options: [{ value: "private-option-value", name: "private-option-name" }],
+      },
+    ]
+    const result = await runCursorAcpContract({
+      enabled: true,
+      candidateVersion: "1.2.3",
+      dependencies: fakeDependencies(calls, {
+        configOptions,
+        configError: new Error("raw-provider-error"),
+      }),
+    })
+
+    expect(result.status).toBe("passed")
+    if (result.status !== "passed") return
+    const serialized = JSON.stringify(result.evidence)
+    for (const forbidden of [
+      "private-option-id",
+      "private-option-label",
+      "private-option-value",
+      "private-option-name",
+      SYNTHETIC_HARNESS,
+      SYNTHETIC_USER,
+      "credential-secret",
+      "/private/workspace/path",
+      "raw-provider-error",
+      "--list-models",
+      "--model",
+    ]) {
+      expect(serialized).not.toContain(forbidden)
+    }
+    expect(result.evidence.configCapability).toBe("rejected")
   })
 
   test("malformed version output cannot construct a connection or emit evidence", async () => {
@@ -464,6 +611,9 @@ function fakeDependencies(
     roundTimeoutMs?: number
     unexpectedClose?: boolean
     versionOutput?: string
+    configOptions?: ConfigOption[]
+    configError?: Error
+    configRequests?: Array<{ sessionId: string; configId: string; value: string }>
   } = {},
 ): CursorContractDependencies {
   return {
@@ -488,6 +638,13 @@ function fakeDependencies(
       calls.push(`create:${config.command} ${config.args.join(" ")}`)
       let permissionHandler: (() => Promise<PermissionOutcome>) | undefined
       let updateHandler: ((event: DomainSessionEvent) => void) | undefined
+      const configOptions = options.configOptions ?? [{
+        id: "model",
+        category: "model",
+        label: "Model",
+        currentValue: "current",
+        options: [{ value: "current", name: "Current" }],
+      }]
       return {
         async connect() {
           calls.push("connect")
@@ -495,7 +652,14 @@ function fakeDependencies(
         },
         async newSession() {
           calls.push("newSession")
+          updateHandler?.({ kind: "config_options", options: configOptions })
           return "cursor-contract-session"
+        },
+        async setSessionConfigOption(sessionId, configId, value) {
+          calls.push("setConfig")
+          options.configRequests?.push({ sessionId, configId, value })
+          if (options.configError) throw options.configError
+          return configOptions
         },
         async prompt(_sessionId, input) {
           calls.push("prompt")

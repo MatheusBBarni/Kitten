@@ -19,6 +19,8 @@ import {
   type ContextBuildAvailabilityResult,
   type ContextBuildStartResult,
   type ContextPackReviewResult,
+  type ContextPackFileMembershipInput,
+  type ContextPackFileMembershipResult,
   type ContextPackExportActionInput,
   type ContextPackExportActionResult,
   type ContextPackSealActionResult,
@@ -64,6 +66,7 @@ export interface RecordedCalls {
   startExploreChild: ExploreLaunchRequest[]
   startContextBuild: StartContextBuildInput[]
   reviewContextPack: SessionId[]
+  mutateContextPackFileMembership: ContextPackFileMembershipInput[]
   sealContextPack: { sessionId: SessionId; candidateRevision: number }[]
   assessContextPackRecipientFit: SessionId[]
   sendContextPackHere: SessionId[]
@@ -172,6 +175,10 @@ export interface FakeControllerOptions {
     sessionId: SessionId,
     store: AppStore,
   ) => ContextPackReviewResult | Promise<ContextPackReviewResult>
+  mutateContextPackFileMembership?: (
+    input: ContextPackFileMembershipInput,
+    store: AppStore,
+  ) => ContextPackFileMembershipResult | Promise<ContextPackFileMembershipResult>
   sealContextPack?: (
     sessionId: SessionId,
     candidateRevision: number,
@@ -253,6 +260,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     startExploreChild: [],
     startContextBuild: [],
     reviewContextPack: [],
+    mutateContextPackFileMembership: [],
     sealContextPack: [],
     assessContextPackRecipientFit: [],
     sendContextPackHere: [],
@@ -431,6 +439,13 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         calls.reviewContextPack.push(sessionId)
         return await (options.reviewContextPack?.(sessionId, store)
           ?? { kind: "blocked" as const, reason: "draft_unavailable" as const })
+      },
+      async mutateContextPackFileMembership(
+        input: ContextPackFileMembershipInput,
+      ): Promise<ContextPackFileMembershipResult> {
+        calls.mutateContextPackFileMembership.push(input)
+        return await (options.mutateContextPackFileMembership?.(input, store)
+          ?? { kind: "denied" as const, reason: "mutation_failed" as const })
       },
       async sealContextPack(
         sessionId: SessionId,

@@ -8,6 +8,7 @@ import { describe, expect, it } from "bun:test"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
+import { useState, type ReactNode } from "react"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
@@ -130,6 +131,7 @@ async function renderPanel(
     </CockpitProvider>,
     { width: 120, height: 60, kittyKeyboard: true, exitOnCtrlC: false },
   )
+  await actAsync(async () => { await Promise.resolve() })
   await setup.waitForFrame((frame) => frame.includes(CONTEXT_PACK_TITLE))
   return setup
 }
@@ -331,6 +333,88 @@ describe("ContextPackPanel actions", () => {
       await setup.waitForFrame((frame) => frame.includes("Exported:"))
       expect(attempts).toBe(2)
       expect(controller.calls.exportContextPack.at(-1)?.overwriteConfirmed).toBeTrue()
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("hands keyboard ownership to the mounted explorer and Escape returns to panel actions", async () => {
+    let closed = 0
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["src/a.ts"] }),
+    })
+    installContextPack(controller, "claude-code", custodyState())
+    const setup = await renderPanel(controller, () => { closed++ })
+
+    try {
+      for (let index = 0; index < 6; index++) await actAsync(() => setup.mockInput.pressTab())
+      expect(await setup.waitForFrame((frame) => frame.includes("[focused] File Explorer membership"))).toContain("available")
+      await actAsync(() => setup.mockInput.pressEnter())
+      expect(await setup.waitForFrame((frame) => frame.includes("Enter/Space add or remove"))).toContain("File Explorer focused")
+      await actAsync(() => setup.mockInput.pressEscape())
+      expect(await setup.waitForFrame((frame) => frame.includes("Returned to Context Pack actions"))).toContain("[focused] File Explorer membership")
+      expect(closed).toBe(0)
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+})
+
+describe("ContextPackPanel File Explorer routing", () => {
+  it("ignores a deferred session-A discovery result after the captured panel switches to session B", async () => {
+    let resolveClaude!: (value: { kind: "ready"; paths: readonly string[] }) => void
+    let resolveCodex!: (value: { kind: "ready"; paths: readonly string[] }) => void
+    const claude = new Promise<{ kind: "ready"; paths: readonly string[] }>((resolve) => { resolveClaude = resolve })
+    const codex = new Promise<{ kind: "ready"; paths: readonly string[] }>((resolve) => { resolveCodex = resolve })
+    const controller = createFakeController({
+      listRepositoryFiles: (sessionId) => sessionId === "claude-code" ? claude : codex,
+    })
+    installContextPack(controller, "claude-code", custodyState())
+    installContextPack(controller, "codex", custodyState())
+    let switchPanel!: (sessionId: SessionId) => void
+
+    function Harness(): ReactNode {
+      const [sessionId, setSessionId] = useState<SessionId>("claude-code")
+      switchPanel = setSessionId
+      return <ContextPackPanel sessionId={sessionId} onClose={() => {}} />
+    }
+
+    const setup = await testRender(
+      <CockpitProvider controller={controller}><Harness /></CockpitProvider>,
+      { width: 120, height: 60, kittyKeyboard: true, exitOnCtrlC: false },
+    )
+    try {
+      await setup.waitFor(() => controller.calls.listRepositoryFiles.length === 1)
+      await actAsync(() => switchPanel("codex"))
+      await setup.waitFor(() => controller.calls.listRepositoryFiles.length === 2)
+      await actAsync(() => resolveCodex({ kind: "ready", paths: ["session-b.ts"] }))
+      expect(await setup.waitForFrame((frame) => frame.includes("session-b.ts"))).not.toContain("session-a.ts")
+
+      await actAsync(() => resolveClaude({ kind: "ready", paths: ["session-a.ts"] }))
+      await actAsync(async () => { await Promise.resolve() })
+      const finalFrame = setup.captureCharFrame()
+      expect(finalFrame).toContain("session-b.ts")
+      expect(finalFrame).not.toContain("session-a.ts")
+      expect(controller.calls.listRepositoryFiles).toEqual(["claude-code", "codex"])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("keeps discovery addressed to the panel session after global focus changes", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: (sessionId) => ({ kind: "ready", paths: [`${sessionId}.ts`] }),
+    })
+    installContextPack(controller, "claude-code", custodyState())
+    installContextPack(controller, "codex", custodyState())
+    controller.store.selectConversation("codex")
+    const setup = await renderPanel(controller, () => {}, "claude-code")
+
+    try {
+      const frame = await setup.waitForFrame((value) => value.includes("claude-code.ts"))
+      expect(frame).not.toContain("codex.ts")
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+      expect(controller.calls.listRepositoryFiles).toEqual(["claude-code"])
     } finally {
       await destroyMounted(setup.renderer)
     }

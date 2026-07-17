@@ -45,15 +45,17 @@ import {
   handshakeReadinessFailure,
   preflightAgentReadiness,
   type AgentReadinessPreflight,
+  type ConnectionReadinessFailure,
+  type PreflightNotReadyReason,
   type ReadinessPreflightOptions,
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type CursorRecoveryState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
-import { assembleCandidate, assessRecipientFit, createDraft, restoreManifest, sealCandidate } from "../core/contextPack.ts"
+import { assembleCandidate, assessRecipientFit, contextSelectionKey, createDraft, restoreManifest, sealCandidate } from "../core/contextPack.ts"
 import { createSecretRedactor, type SecretRedactor } from "../core/secretRedactor.ts"
 import {
   type HarnessDeliveryCheckpoint,
@@ -122,6 +124,8 @@ import {
   type ContextBuildDenialReason,
   type ContextBuildStartResult,
   type ContextPackReviewResult,
+  type ContextPackFileMembershipInput,
+  type ContextPackFileMembershipResult,
   type ContextPackExportActionInput,
   type ContextPackExportActionResult,
   type ContextPackSealActionResult,
@@ -298,6 +302,41 @@ export type AgentRuntimeState =
       ready: false
       error: string
     })
+
+export type CursorReadinessCause = PreflightNotReadyReason | ConnectionReadinessFailure["reason"]
+
+const CURSOR_RECOVERY_BY_CAUSE = {
+  binary_not_found: Object.freeze({
+    reason: "binary_missing",
+    action: "install_cursor_cli",
+    recheckable: true,
+  }),
+  version_mismatch: Object.freeze({
+    reason: "version_mismatch",
+    action: "restore_reviewed_profile",
+    recheckable: true,
+  }),
+  authentication_required: Object.freeze({
+    reason: "authentication_required",
+    action: "authenticate_natively",
+    recheckable: true,
+  }),
+  uncertified_recipe: Object.freeze({
+    reason: "uncertified_recipe",
+    action: "await_maintainer_review",
+    recheckable: false,
+  }),
+  handshake_failed: Object.freeze({
+    reason: "handshake_failed",
+    action: "retry_handshake",
+    recheckable: true,
+  }),
+} as const satisfies Record<CursorReadinessCause, CursorRecoveryState>
+
+/** Project one normalized Cursor readiness cause without consulting runtime error text. */
+export function projectCursorRecovery(cause: CursorReadinessCause): CursorRecoveryState {
+  return CURSOR_RECOVERY_BY_CAUSE[cause]
+}
 
 /** The controller-owned shell boundary, including a legible degraded state. */
 export type ShellRuntimeState =
@@ -1068,6 +1107,18 @@ export async function createSessionController(options: SessionControllerOptions)
     if (event.kind === "status") publishDelegatedRuntimeStatus(runtime, event.status)
   }
 
+  /** Bind updates to the exact connection generation that created the subscription. */
+  function subscribeRuntimeUpdates(
+    runtime: AgentRuntime,
+    connection: AgentConnection,
+    generation: number,
+  ): Unsubscribe {
+    return connection.onUpdate((event) => {
+      if (!isCurrentGeneration(runtime, generation)) return
+      applyRuntimeEvent(runtime, event)
+    })
+  }
+
   function delegatedIdentity(childId: SessionId): DelegatedChildIdentity | null {
     const child = store.getState().delegation.children[childId]
     if (!child) return null
@@ -1378,7 +1429,13 @@ export async function createSessionController(options: SessionControllerOptions)
       if (!preflightResult.ready) {
         options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
         readinessRecorded = true
-        await failSession(runtime, undefined, preflightResult.message, "connection-failed")
+        await failSession(
+          runtime,
+          undefined,
+          preflightResult.message,
+          "connection-failed",
+          preflightResult.reason,
+        )
         return
       }
       connection = create(config)
@@ -1392,7 +1449,13 @@ export async function createSessionController(options: SessionControllerOptions)
         const failure = longLivedReadinessFailure(config, ready)
         options.recorder?.providerReadiness?.(config.id, failure.reason)
         readinessRecorded = true
-        await failSession(runtime, connection, failure.message, "connection-failed")
+        await failSession(
+          runtime,
+          connection,
+          failure.message,
+          "connection-failed",
+          failure.reason,
+        )
         return
       }
       if (config.id !== "cursor") {
@@ -1423,7 +1486,7 @@ export async function createSessionController(options: SessionControllerOptions)
       // an event that arrived first would be thrown away.
       store.startSession(seed.id, acpSessionId)
       if (seededConfig) store.applyEvent(seed.id, seededConfig)
-      const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
+      const unsubscribe = subscribeRuntimeUpdates(runtime, connection, generation)
       connection.onPermission((request) => enqueuePermission(runtime, request))
       connection.onClarification((payload) => enqueueClarification(runtime, payload))
       runtime.state = {
@@ -1454,7 +1517,7 @@ export async function createSessionController(options: SessionControllerOptions)
       const message = config.id === "cursor"
         ? handshakeReadinessFailure(config).message
         : errorMessage(error)
-      await failSession(runtime, connection, message, "connection-failed")
+      await failSession(runtime, connection, message, "connection-failed", "handshake_failed")
     }
   }
 
@@ -1464,6 +1527,7 @@ export async function createSessionController(options: SessionControllerOptions)
     connection: AgentConnection | undefined,
     error: string,
     reasonCode: "connection-failed" | "restore-unavailable" | "provider-unavailable",
+    cursorReadinessCause?: CursorReadinessCause,
   ): Promise<void> {
     terminalizeSteering(runtime.seed.id)
     abandonPromptLifecycle(runtime.seed.id)
@@ -1486,12 +1550,16 @@ export async function createSessionController(options: SessionControllerOptions)
     }
     runtime.connection = null
     runtime.acpSessionId = null
+    runtime.unsubscribe?.()
     runtime.unsubscribe = null
     runtime.acceptEvents = false
     store.setConversationAvailability(runtime.seed.id, {
       kind: "unavailable",
       reasonCode,
       retryable: runtime.config !== null,
+      ...(runtime.seed.providerKind === "cursor" && cursorReadinessCause
+        ? { cursorRecovery: projectCursorRecovery(cursorReadinessCause) }
+        : {}),
     })
     await disposeQuietly(connection)
   }
@@ -1522,7 +1590,7 @@ export async function createSessionController(options: SessionControllerOptions)
     }
     store.startSession(seed.id, acpSessionId!)
     if (seededConfig) store.applyEvent(seed.id, seededConfig)
-    const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
+    const unsubscribe = subscribeRuntimeUpdates(runtime, connection, generation)
     connection.onPermission((request) => enqueuePermission(runtime, request))
     connection.onClarification((payload) => enqueueClarification(runtime, payload))
     return { acpSessionId: acpSessionId!, unsubscribe }
@@ -1586,7 +1654,13 @@ export async function createSessionController(options: SessionControllerOptions)
         options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
         readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
-        await failSession(previous, undefined, preflightResult.message, "restore-unavailable")
+        await failSession(
+          previous,
+          undefined,
+          preflightResult.message,
+          "restore-unavailable",
+          preflightResult.reason,
+        )
         return false
       }
       connection = create(config)
@@ -1601,7 +1675,13 @@ export async function createSessionController(options: SessionControllerOptions)
         options.recorder?.providerReadiness?.(config.id, failure.reason)
         readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
-        await failSession(previous, connection, failure.message, "restore-unavailable")
+        await failSession(
+          previous,
+          connection,
+          failure.message,
+          "restore-unavailable",
+          failure.reason,
+        )
         return false
       }
       if (config.id !== "cursor") {
@@ -1616,7 +1696,7 @@ export async function createSessionController(options: SessionControllerOptions)
       if (ready.canLoadSession && stored?.sessionId && stored.messageCount > 0) {
         acpSessionId = stored.sessionId
         store.startSession(seed.id, acpSessionId, { preserveWorkspaceAttention: true })
-        unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(previous, event))
+        unsubscribe = subscribeRuntimeUpdates(previous, connection, generation)
         connection.onPermission((request) => enqueuePermission(previous, request))
         connection.onClarification((payload) => enqueueClarification(previous, payload))
         try {
@@ -1693,7 +1773,7 @@ export async function createSessionController(options: SessionControllerOptions)
       const message = config.id === "cursor"
         ? handshakeReadinessFailure(config).message
         : errorMessage(error)
-      await failSession(previous, connection, message, "restore-unavailable")
+      await failSession(previous, connection, message, "restore-unavailable", "handshake_failed")
       return false
     }
   }
@@ -2765,7 +2845,10 @@ export async function createSessionController(options: SessionControllerOptions)
   function contextPackWorkspace(
     sessionId: SessionId,
   ): { readonly workspaceRoot: string; readonly draft: DraftContextPack } |
-    Extract<ContextPackReviewResult, { readonly kind: "blocked" }> {
+    {
+      readonly kind: "blocked"
+      readonly reason: "unknown_session" | "draft_unavailable" | "workspace_mismatch"
+    } {
     const state = store.getState()
     const session = state.sessions[sessionId]
     const runtime = runtimes.get(sessionId)
@@ -2782,6 +2865,68 @@ export async function createSessionController(options: SessionControllerOptions)
       return { kind: "blocked", reason: "workspace_mismatch" }
     }
     return { workspaceRoot: session.cwd, draft }
+  }
+
+  async function mutateContextPackFileMembership(
+    input: ContextPackFileMembershipInput,
+  ): Promise<ContextPackFileMembershipResult> {
+    const workspace = contextPackWorkspace(input.sessionId)
+    if ("kind" in workspace) return { kind: "denied", reason: workspace.reason }
+    if (workspace.draft.revision !== input.readRevision) {
+      return {
+        kind: "stale",
+        readRevision: input.readRevision,
+        currentRevision: workspace.draft.revision,
+      }
+    }
+
+    const existing = workspace.draft.selections.find(
+      (selection) => selection.kind === "full_file" && selection.path === input.path,
+    )
+    if (input.operation === "remove") {
+      if (!existing) return { kind: "denied", reason: "selection_unavailable" }
+      const result = store.applyContextPackOperatorMutation(input.sessionId, {
+        kind: "remove_selection",
+        selectionKey: contextSelectionKey(existing),
+      })
+      if (!result) return { kind: "denied", reason: "draft_unavailable" }
+      return result.kind === "applied"
+        ? { kind: "applied", operation: "remove", revision: result.draft.revision }
+        : { kind: "denied", reason: "invalid_mutation" }
+    }
+
+    if (existing) return { kind: "denied", reason: "selection_already_present" }
+    const materialized = await contextPackMaterializer.read(
+      workspace.workspaceRoot,
+      { kind: "full_file", path: input.path },
+    )
+    if (materialized.kind !== "ready") {
+      return { kind: "denied", reason: materialized.reason }
+    }
+
+    const currentDraft = store.getState().contextPacks[input.sessionId]?.draft
+    if (!currentDraft) return { kind: "denied", reason: "draft_unavailable" }
+    if (currentDraft.revision !== input.readRevision) {
+      return {
+        kind: "stale",
+        readRevision: input.readRevision,
+        currentRevision: currentDraft.revision,
+      }
+    }
+    const result = store.applyContextPackOperatorMutation(input.sessionId, {
+      kind: "upsert_selection",
+      selection: {
+        kind: "full_file",
+        path: input.path,
+        source: materialized.artifact.source,
+        rationale: "Added explicitly by the operator",
+        relationship: "Whole-file Context Pack membership",
+      },
+    })
+    if (!result) return { kind: "denied", reason: "draft_unavailable" }
+    return result.kind === "applied"
+      ? { kind: "applied", operation: "add", revision: result.draft.revision }
+      : { kind: "denied", reason: "invalid_mutation" }
   }
 
   function settledContextPackReview(result: ContextPackReviewResult): ContextPackReviewResult {
@@ -3527,6 +3672,59 @@ export async function createSessionController(options: SessionControllerOptions)
     await actions.applyProviderDefaults(sessionId)
   }
 
+  /**
+   * Replace only one configured unavailable Cursor runtime after an explicit user
+   * recheck. Eligibility is checked before any mutation; the fresh generation then
+   * reuses the ordinary startup path and its bounded Cursor failure normalization.
+   */
+  async function recheckCursor(sessionId: SessionId): Promise<void> {
+    const runtime = runtimes.get(sessionId)
+    const conversation = store.getState().workspace.conversations[sessionId]
+    if (
+      disposed ||
+      !runtime?.config ||
+      runtime.seed.providerKind !== "cursor" ||
+      runtime.config.id !== "cursor" ||
+      runtime.state.ready ||
+      runtime.closing ||
+      conversation?.teardownState === "closing" ||
+      conversation?.availability.kind !== "unavailable"
+    ) return
+
+    const replacedGeneration = runtime.generation
+    terminalizeSteering(sessionId)
+    abandonPromptLifecycle(sessionId)
+    terminalizeHarnessDelivery(runtime, replacedGeneration)
+    invalidateBridge(runtime, replacedGeneration, "session_replaced")
+    interactionCoordinator.cancelSession(sessionId, replacedGeneration, "session_replaced")
+    runtime.closing = true
+    runtime.acceptEvents = false
+    runtime.unsubscribe?.()
+    runtime.unsubscribe = null
+    const previousConnection = runtime.connection
+    runtime.connection = null
+    runtime.acpSessionId = null
+    // The store keeps SessionId stable while an empty ACP id makes the replacement
+    // boundary explicit even when the new preflight fails before session creation.
+    store.startSession(sessionId, "")
+    await disposeQuietly(previousConnection ?? undefined)
+    if (
+      disposed ||
+      runtimes.get(sessionId) !== runtime ||
+      runtime.generation !== replacedGeneration
+    ) return
+
+    const generation = nextConnectionGeneration(sessionId, connectionGenerations)
+    runtime.generation = generation
+    runtime.harnessDelivery = null
+    runtime.bridgeMcpServer = null
+    runtime.bridgeGeneration = null
+    runtime.closing = false
+    runtime.acceptEvents = true
+    runtime.cancelCompleted = false
+    await startSession(runtime.seed, runtime.config, generation)
+  }
+
   const actions = createControllerActions({
     store,
     getSession,
@@ -3556,6 +3754,7 @@ export async function createSessionController(options: SessionControllerOptions)
     startContextBuild,
     contextBuildAvailability,
     reviewContextPack,
+    mutateContextPackFileMembership,
     sealContextPack,
     assessContextPackRecipientFit,
     sendContextPackHere,
@@ -3563,6 +3762,7 @@ export async function createSessionController(options: SessionControllerOptions)
     steerDelegatedChild,
     cancelDelegatedChild,
     closeConversation,
+    recheckCursor,
     startNewRun: async () => {
       if (disposed) return
       store.setRestorationBundle(null)

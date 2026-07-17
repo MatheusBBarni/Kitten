@@ -31,6 +31,7 @@ export type ShowcaseConfig = {
     readonly brandAccessibleLabel: string;
     readonly proofLabel: string;
     readonly installLabel: string;
+    readonly docsLabel: string;
     readonly githubStarLabel: string;
   };
   readonly hero: ShowcaseSection & {
@@ -41,6 +42,9 @@ export type ShowcaseConfig = {
     readonly outcomeTitle: string;
     readonly outcomeBody: string;
     readonly outcomeStatus: string;
+    readonly rosterAccessibleLabel: string;
+    readonly currentProviders: readonly string[];
+    readonly futureConnectionsLabel: string;
     readonly benefits: readonly string[];
   };
   readonly proof: ShowcaseSection & {
@@ -109,6 +113,7 @@ export function validateShowcaseConfig(
     ["navigation.brandAccessibleLabel", config.navigation.brandAccessibleLabel],
     ["navigation.proofLabel", config.navigation.proofLabel],
     ["navigation.installLabel", config.navigation.installLabel],
+    ["navigation.docsLabel", config.navigation.docsLabel],
     ["navigation.githubStarLabel", config.navigation.githubStarLabel],
     ["hero.id", config.hero.id],
     ["hero.eyebrow", config.hero.eyebrow],
@@ -120,6 +125,8 @@ export function validateShowcaseConfig(
     ["hero.outcomeTitle", config.hero.outcomeTitle],
     ["hero.outcomeBody", config.hero.outcomeBody],
     ["hero.outcomeStatus", config.hero.outcomeStatus],
+    ["hero.rosterAccessibleLabel", config.hero.rosterAccessibleLabel],
+    ["hero.futureConnectionsLabel", config.hero.futureConnectionsLabel],
     ["proof.id", config.proof.id],
     ["proof.heading", config.proof.heading],
     ["proof.body", config.proof.body],
@@ -205,6 +212,21 @@ export function validateShowcaseConfig(
     errors.push("hero.benefits must contain at least one benefit.");
   }
 
+  if (config.hero.currentProviders.length < 3) {
+    errors.push("hero.currentProviders must name the current three-agent roster.");
+  }
+
+  if (config.hero.currentProviders.some((provider) => provider.trim().length === 0)) {
+    errors.push("hero.currentProviders must not contain an empty provider.");
+  }
+
+  if (
+    new Set(config.hero.currentProviders.map((provider) => provider.trim()))
+      .size !== config.hero.currentProviders.length
+  ) {
+    errors.push("hero.currentProviders must not repeat a provider.");
+  }
+
   if (config.requirements.items.length === 0) {
     errors.push("requirements.items must contain at least one requirement.");
   }
@@ -234,9 +256,9 @@ function defineShowcaseConfig<const Config extends ShowcaseConfig>(
 
 export const showcaseConfig = defineShowcaseConfig({
   site: {
-    title: "Kitten — reviewed handoffs between Claude Code and Codex",
+    title: "Kitten — reviewed handoffs for your coding agents",
     description:
-      "Move a live coding task between Claude Code and Codex through a bounded handoff you review before anything is sent.",
+      "Run Claude Code, Codex, and Cursor in one terminal. Review every handoff before a task moves, with more Agent Client Protocol connections planned.",
     language: "en",
   },
   navigation: {
@@ -244,46 +266,51 @@ export const showcaseConfig = defineShowcaseConfig({
     brandAccessibleLabel: "Kitten home",
     proofLabel: "How it works",
     installLabel: "Install",
+    docsLabel: "Docs",
     githubStarLabel: "Star on GitHub",
   },
   hero: {
     id: "hero",
-    eyebrow: "A terminal cockpit for two coding agents",
-    heading:
-      "Keep every coding handoff reviewed and in context.",
+    eyebrow: "A terminal cockpit for coding agents",
+    heading: "Keep your coding agents in context.",
     body:
-      "Keep Claude Code and Codex live in one terminal, then hand over a task you can inspect, trim, confirm, or cancel.",
+      "Run Claude Code, Codex, and Cursor in one terminal. Move a task to the next ready session through a handoff you can inspect, trim, confirm, or cancel.",
     primaryCtaLabel: "Install Kitten",
     secondaryCtaLabel: "See how it works",
     logoAlt:
-      "Kitten logo: a golden cat holding a blue and teal loop between two agents.",
-    outcomeTitle: "Review the handoff before the work moves.",
+      "Kitten logo: a golden cat holding a blue and teal loop.",
+    outcomeTitle: "Choose the next ready agent.",
     outcomeBody:
       "The context bundle stays bounded and editable until you give the final confirmation.",
     outcomeStatus: "Review first",
+    rosterAccessibleLabel:
+      "Current coding-agent connections available in Kitten.",
+    currentProviders: ["Claude Code", "Codex", "Cursor"],
+    futureConnectionsLabel:
+      "More Agent Client Protocol (ACP) connections are planned.",
     benefits: [
+      "Run Claude Code, Codex, and Cursor in one cockpit.",
       "Review every context bundle before it moves.",
-      "Keep both agent sessions live for a quick hand-back.",
-      "Cancel any handoff before it reaches the other agent.",
+      "Keep ready sessions live for a quick hand-back.",
     ],
   },
   proof: {
     id: "proof",
-    heading: "See the handoff before it reaches the other agent.",
+    heading: "A reviewed handoff, whichever agent is next.",
     body:
-      "Three deliberate moments turn an easy-to-lose task switch into a reviewable path forward.",
+      "Three deliberate moments turn a task switch into a reviewable path to the right ready session.",
     accessibleDescription:
-      "A developer prepares a bounded handoff, reviews and trims its context, explicitly confirms it, and then watches the other agent continue the task.",
+      "A developer prepares a bounded handoff, chooses a ready target, reviews and trims its context, explicitly confirms it, and then watches that agent continue the task.",
     steps: [
       {
-        label: "Prepare",
+        label: "Prepare context",
         description:
           "Kitten assembles recent conversation context, touched files, and pending changes.",
       },
       {
-        label: "Review and trim",
+        label: "Choose and review",
         description:
-          "The developer inspects the redacted preview and edits or removes context before sending.",
+          "The developer chooses a ready target, then inspects the redacted preview and edits or removes context before sending.",
       },
       {
         label: "Confirm and continue",
@@ -338,7 +365,7 @@ export const showcaseConfig = defineShowcaseConfig({
       "Kitten uses your existing coding-agent installations and runs from inside a Git repository.",
     items: [
       "npm, pnpm, or Bun for the published installation route.",
-      "Claude Code and Codex installed and authenticated.",
+      "Claude Code, Codex, and Cursor installed and authenticated.",
       "A Git repository to launch Kitten from.",
     ],
   },
@@ -354,6 +381,16 @@ export const showcaseConfig = defineShowcaseConfig({
           "A bounded bundle of recent conversation context, touched files, and pending changes — not every piece of task history.",
       },
       {
+        question: "Which coding agents work with Kitten today?",
+        answer:
+          "Claude Code, Codex, and Cursor. Install and authenticate the local agent CLIs you want Kitten to run.",
+      },
+      {
+        question: "Will Kitten support more agents?",
+        answer:
+          "More Agent Client Protocol (ACP) connections are planned. Kitten adds a connection only after its integration is supported and reviewed.",
+      },
+      {
         question: "Does Kitten send anything automatically?",
         answer:
           "No. The handoff opens in a preview where you can edit, trim, confirm, or cancel it. Only confirmation sends it.",
@@ -366,7 +403,7 @@ export const showcaseConfig = defineShowcaseConfig({
       {
         question: "What happens if one agent is unavailable?",
         answer:
-          "Kitten marks that agent unavailable and leaves the other usable instead of taking down the cockpit.",
+          "Kitten marks that session unavailable and leaves the other ready sessions usable instead of taking down the cockpit.",
       },
       {
         question: "Does the showcase track visitors?",

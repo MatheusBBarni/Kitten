@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Context Pack attention cues
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Project a completed Context Build as a distinct textual Context Pack attention c
 
 ## Subtasks
 
-- [ ] 13.1 Define a narrow selector-derived Context Pack attention projection.
-- [ ] 13.2 Render the text cue in the owning session tab/workspace surface.
-- [ ] 13.3 Acknowledge only that cue on explicit session interaction.
-- [ ] 13.4 Preserve existing agent attention and jump behavior.
-- [ ] 13.5 Add background-completion and accessibility coverage.
+- [x] 13.1 Define a narrow selector-derived Context Pack attention projection.
+- [x] 13.2 Render the text cue in the owning session tab/workspace surface.
+- [x] 13.3 Acknowledge only that cue on explicit session interaction.
+- [x] 13.4 Preserve existing agent attention and jump behavior.
+- [x] 13.5 Add background-completion and accessibility coverage.
 
 ## Implementation Details
 
@@ -70,13 +70,13 @@ Follow the TechSpec no-surprises background-build UX. The lifecycle sets review-
 ## Tests
 
 - Unit tests:
-  - [ ] Sessions without Context Pack state receive a stable absent attention projection.
-  - [ ] A review-ready Context Pack produces a textual Context ready cue without modifying SessionStatus.
-  - [ ] Explicit acknowledgment clears only the Context Pack cue.
+  - [x] Sessions without Context Pack state receive a stable absent attention projection.
+  - [x] A review-ready Context Pack produces a textual Context ready cue without modifying SessionStatus.
+  - [x] Explicit acknowledgment clears only the Context Pack cue.
 - Integration tests:
-  - [ ] Build completion for background session B preserves focus, selectedVisibleId, and overlays for session A while rendering B's cue.
-  - [ ] Explicitly selecting B acknowledges its cue and does not auto-open review.
-  - [ ] Existing approval/error/finished ordering and jumpToNextAttention behavior are unchanged.
+  - [x] Build completion for background session B preserves focus, selectedVisibleId, and overlays for session A while rendering B's cue.
+  - [x] Explicitly selecting B acknowledges its cue and does not auto-open review.
+  - [x] Existing approval/error/finished ordering and jumpToNextAttention behavior are unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

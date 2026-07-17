@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Render truthful concurrent MCP tool outcomes
 type: frontend
 complexity: low
@@ -32,10 +32,10 @@ ambiguous delegated-work start can be repeated safely.
 
 ## Subtasks
 
-- [ ] 5.1 Define concise, accessible presentation text for each approved failed state.
-- [ ] 5.2 Render the optional domain failure kind through the existing tool-call row only.
-- [ ] 5.3 Preserve the generic tool-call and MCP-title presentation paths.
-- [ ] 5.4 Prove no replay affordance or private diagnostic detail enters the rendered transcript.
+- [x] 5.1 Define concise, accessible presentation text for each approved failed state.
+- [x] 5.2 Render the optional domain failure kind through the existing tool-call row only.
+- [x] 5.3 Preserve the generic tool-call and MCP-title presentation paths.
+- [x] 5.4 Prove no replay affordance or private diagnostic detail enters the rendered transcript.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ ACP/MCP objects or infer a retry state from a generic failed status.
 ## Tests
 
 - Unit tests:
-  - [ ] A failed bundled-MCP record with `temporary_capacity` renders a textual capacity state and manual-only known-outcome guidance without relying on color.
-  - [ ] A failed record with `unavailable` renders distinct unavailable text and does not imply retry is safe.
-  - [ ] A failed record without a failure kind keeps the current generic failed wording.
-  - [ ] MCP title formatting, non-MCP titles, status bullets, diffs, locations, and palette behavior remain unchanged for classified and unclassified rows.
-  - [ ] Rendered output contains no route, endpoint, capability, call ID, raw error, prompt, task, or retry-control sentinel.
+  - [x] A failed bundled-MCP record with `temporary_capacity` renders a textual capacity state and manual-only known-outcome guidance without relying on color.
+  - [x] A failed record with `unavailable` renders distinct unavailable text and does not imply retry is safe.
+  - [x] A failed record without a failure kind keeps the current generic failed wording.
+  - [x] MCP title formatting, non-MCP titles, status bullets, diffs, locations, and palette behavior remain unchanged for classified and unclassified rows.
+  - [x] Rendered output contains no route, endpoint, capability, call ID, raw error, prompt, task, or retry-control sentinel.
 - Integration tests:
-  - [ ] A transcript turn containing each classified record renders through `ConversationView` without changing ordering, focus, or the surrounding message presentation.
+  - [x] A transcript turn containing each classified record renders through `ConversationView` without changing ordering, focus, or the surrounding message presentation.
 - Test coverage target: >=80%
 - All tests must pass
 

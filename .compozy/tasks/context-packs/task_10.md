@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Confirmed Context Pack Markdown export
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Provide an operator-confirmed export of the exact sealed Context Pack payload wi
 
 ## Subtasks
 
-- [ ] 10.1 Define a sealed-payload-only export request and bounded result contract.
-- [ ] 10.2 Add exact Markdown rendering with compact provenance.
-- [ ] 10.3 Add controller/action explicit-path and overwrite-confirmation flow.
-- [ ] 10.4 Preserve sealed bytes and surface typed operational failures.
-- [ ] 10.5 Add exact-output, confirmation, and error-boundary coverage.
+- [x] 10.1 Define a sealed-payload-only export request and bounded result contract.
+- [x] 10.2 Add exact Markdown rendering with compact provenance.
+- [x] 10.3 Add controller/action explicit-path and overwrite-confirmation flow.
+- [x] 10.4 Preserve sealed bytes and surface typed operational failures.
+- [x] 10.5 Add exact-output, confirmation, and error-boundary coverage.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ Follow the TechSpec export rules. The later Context Pack panel invokes this cont
 ## Tests
 
 - Unit tests:
-  - [ ] Export output contains the exact sealed payload and only compact permitted provenance.
-  - [ ] The sealed payload is not re-redacted, normalized, or mutated during rendering.
-  - [ ] Missing sealed state, missing destination, and denied overwrite produce typed failures and no write.
-  - [ ] Raw filesystem errors are not retained in state or exporter results.
+  - [x] Export output contains the exact sealed payload and only compact permitted provenance.
+  - [x] The sealed payload is not re-redacted, normalized, or mutated during rendering.
+  - [x] Missing sealed state, missing destination, and denied overwrite produce typed failures and no write.
+  - [x] Raw filesystem errors are not retained in state or exporter results.
 - Integration tests:
-  - [ ] A selected destination is written only after explicit confirmation; an existing file needs an independent overwrite confirmation.
-  - [ ] Review, sealing, handoff, and Send Here sequences never cause an export unless the operator invokes it.
+  - [x] A selected destination is written only after explicit confirmation; an existing file needs an independent overwrite confirmation.
+  - [x] Review, sealing, handoff, and Send Here sequences never cause an export unless the operator invokes it.
 - Test coverage target: >=80%
 - All tests must pass
 

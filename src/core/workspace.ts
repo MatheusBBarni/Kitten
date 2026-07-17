@@ -315,7 +315,20 @@ function acknowledgeAttention(conversation: WorkspaceConversation): WorkspaceCon
 function sameAvailability(left: ConversationAvailability, right: ConversationAvailability): boolean {
   if (left.kind !== right.kind) return false
   if (left.kind !== "unavailable" || right.kind !== "unavailable") return true
-  return left.reasonCode === right.reasonCode && left.retryable === right.retryable
+  return left.reasonCode === right.reasonCode &&
+    left.retryable === right.retryable &&
+    sameCursorRecovery(left.cursorRecovery, right.cursorRecovery)
+}
+
+function sameCursorRecovery(
+  left: Extract<ConversationAvailability, { kind: "unavailable" }>["cursorRecovery"],
+  right: Extract<ConversationAvailability, { kind: "unavailable" }>["cursorRecovery"],
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.reason === right.reason &&
+    left.action === right.action &&
+    left.recheckable === right.recheckable
 }
 
 function nextCreatedOrdinal(state: WorkspaceState): number {
