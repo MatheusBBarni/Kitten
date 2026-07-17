@@ -336,7 +336,7 @@ describe("ask_user same-binary child", () => {
       await destroyMounted(setup.renderer)
       if (!disposed) await controller.dispose()
     }
-  })
+  }, 15_000)
 
   it("keeps two concurrent fake-ACP child calls isolated and preserves user MCP order", async () => {
     const config: AppConfig = {

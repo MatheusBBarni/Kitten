@@ -262,7 +262,15 @@ describe("ConversationView turns", () => {
     await actAsync(async () => {
       await sleep(0)
     })
-    await actAsync(() => scrollbox!.scrollTo(0))
+    // The marker action has just committed a new transcript projection. Resolve
+    // the current scrollbox and request its next frame explicitly: a direct
+    // `scrollTo` does not schedule one on every OpenTUI test renderer.
+    await actAsync(() => {
+      const revealedScrollbox = setup.renderer.root.findDescendantById(CONVERSATION_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+      expect(revealedScrollbox).toBeDefined()
+      revealedScrollbox!.scrollTo(0)
+      setup.renderer.requestRender()
+    })
     const historical = await setup.waitForFrame(
       (frame) => frame.includes("WINDOWED_TRANSCRIPT_TURN_0"),
       { maxPasses: 200 },
