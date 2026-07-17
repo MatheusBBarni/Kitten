@@ -106,6 +106,8 @@ import {
   type ContextBuildDenialReason,
   type ContextBuildStartResult,
   type ContextPackReviewResult,
+  type ContextPackExportActionInput,
+  type ContextPackExportActionResult,
   type ContextPackSealActionResult,
   type ContextPackSendHereResult,
   type ExploreAvailabilityResult,
@@ -154,6 +156,10 @@ import {
   createContextPackMaterializer,
   type ContextPackMaterializer,
 } from "./contextPackMaterializer.ts"
+import {
+  createContextPackExporter,
+  type ContextPackExporter,
+} from "./contextPackExport.ts"
 import {
   createManagedWorktreeProvisioner,
   type CleanupManagedWorktreeResult,
@@ -338,6 +344,8 @@ export interface SessionControllerOptions {
   createContextPackBridge?: (options: CreateContextPackBridgeOptions) => ContextPackBridge
   /** Bounded workspace reader used only through the dedicated Context Pack bridge. */
   contextPackMaterializer?: ContextPackMaterializer
+  /** Confirmed exact-payload export boundary; injectable for no-write controller tests. */
+  contextPackExporter?: ContextPackExporter
   /** Executable and optional entrypoint arguments used by generated bridge declarations. */
   kittenMcpExecutable?: { readonly command: string; readonly args?: readonly string[] }
 }
@@ -884,6 +892,7 @@ export async function createSessionController(options: SessionControllerOptions)
   })
   const kittenMcpExecutable = options.kittenMcpExecutable ?? defaultKittenMcpExecutable()
   const contextPackMaterializer = options.contextPackMaterializer ?? createContextPackMaterializer()
+  const contextPackExporter = options.contextPackExporter ?? createContextPackExporter()
   const contextPackRedactor = options.contextPackRedactor ?? createSecretRedactor()
   const attestRecipientProfile = options.resolveRecipientProfile ?? ((config: ResolvedAgentConfig) =>
     resolveRecipientProfile(config, undefined, now()))
@@ -2939,6 +2948,24 @@ export async function createSessionController(options: SessionControllerOptions)
       : { kind: "blocked", reason: "dispatch_failed" }
   }
 
+  async function exportContextPack(
+    input: ContextPackExportActionInput,
+  ): Promise<ContextPackExportActionResult> {
+    const sealed = store.getState().contextPacks[input.sessionId]?.sealed
+    if (!sealed) return { kind: "blocked", reason: "sealed_unavailable" }
+
+    const current = store.getState().contextPacks[input.sessionId]?.sealed
+    if (!current || !sameSealedCustody(sealed, current)) {
+      return { kind: "blocked", reason: "sealed_changed" }
+    }
+    return await contextPackExporter.export({
+      sealed,
+      destination: input.destination,
+      writeConfirmed: input.writeConfirmed,
+      overwriteConfirmed: input.overwriteConfirmed,
+    })
+  }
+
   async function startAgentRunBatch(
     route: AgentRunRoute,
     tasks: readonly AgentRunTask[],
@@ -3419,6 +3446,7 @@ export async function createSessionController(options: SessionControllerOptions)
     sealContextPack,
     assessContextPackRecipientFit,
     sendContextPackHere,
+    exportContextPack,
     steerDelegatedChild,
     cancelDelegatedChild,
     closeConversation,

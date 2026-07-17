@@ -19,6 +19,8 @@ import {
   type ContextBuildAvailabilityResult,
   type ContextBuildStartResult,
   type ContextPackReviewResult,
+  type ContextPackExportActionInput,
+  type ContextPackExportActionResult,
   type ContextPackSealActionResult,
   type ContextPackSendHereResult,
   type FileSelectorDiscoveryOutcome,
@@ -63,6 +65,7 @@ export interface RecordedCalls {
   steerDelegatedChild: { childId: SessionId; text: string }[]
   cancelDelegatedChild: SessionId[]
   cleanupManagedWorktree: SessionId[]
+  exportContextPack: ContextPackExportActionInput[]
   renameConversation: { sessionId: SessionId; displayName: string }[]
   selectConversation: SessionId[]
   selectConversationOptions: (SwitchFocusOptions | undefined)[]
@@ -168,6 +171,11 @@ export interface FakeControllerOptions {
     sealed: DurableSealedContextPack,
     store: AppStore,
   ) => RecipientFit
+  /** Deterministic confirmed-export result for later Context Pack panel tests. */
+  exportContextPack?: (
+    input: ContextPackExportActionInput,
+    store: AppStore,
+  ) => ContextPackExportActionResult | Promise<ContextPackExportActionResult>
 }
 
 /**
@@ -217,6 +225,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     steerDelegatedChild: [],
     cancelDelegatedChild: [],
     cleanupManagedWorktree: [],
+    exportContextPack: [],
     renameConversation: [],
     selectConversation: [],
     selectConversationOptions: [],
@@ -278,6 +287,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {
+      recheckCursor(): void {},
       async createConversation(): Promise<SessionId | null> {
         calls.createConversation++
         const selected = store.getState().workspace.selectedVisibleId
@@ -392,6 +402,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       async sendContextPackHere(_sessionId: SessionId): Promise<ContextPackSendHereResult> {
         return { kind: "blocked", reason: "sealed_unavailable" }
+      },
+      async exportContextPack(input): Promise<ContextPackExportActionResult> {
+        calls.exportContextPack.push(input)
+        return await (options.exportContextPack?.(input, store)
+          ?? { kind: "blocked" as const, reason: "sealed_unavailable" as const })
       },
       async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
         calls.steerDelegatedChild.push({ childId, text })

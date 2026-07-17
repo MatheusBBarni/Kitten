@@ -98,6 +98,10 @@ import type {
   CreateContextPackBridgeOptions,
 } from "./contextPackBridge.ts"
 import type { ContextPackMaterializer } from "./contextPackMaterializer.ts"
+import {
+  createContextPackExporter,
+  type ContextPackExporter,
+} from "./contextPackExport.ts"
 
 /**
  * The controller is verified two ways.
@@ -505,6 +509,7 @@ describe("createSessionController - Context Build lifecycle", () => {
     readonly resolveRecipientProfile?: (config: ResolvedAgentConfig) => RecipientProfileAvailability
     readonly countContextPackPayload?: (payload: string, profile: ResolvedRecipientProfile) => number | null
     readonly materializer?: ContextPackMaterializer
+    readonly exporter?: ContextPackExporter
     readonly redactor?: SecretRedactor
     readonly now?: () => number
     readonly newChildIds?: readonly SessionId[]
@@ -540,6 +545,7 @@ describe("createSessionController - Context Build lifecycle", () => {
       resolveRecipientProfile: overrides.resolveRecipientProfile,
       countContextPackPayload: overrides.countContextPackPayload,
       contextPackMaterializer: overrides.materializer,
+      contextPackExporter: overrides.exporter,
       contextPackRedactor: overrides.redactor,
       now: overrides.now,
       createKittenMcpBridge: ordinaryBridge.factory,
@@ -873,6 +879,113 @@ describe("createSessionController - Context Build lifecycle", () => {
       reason: "candidate_revision_mismatch",
     })
     expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    await test.controller.dispose()
+  })
+
+  it("requires sealed custody, an explicit destination, write confirmation, and independent overwrite confirmation", async () => {
+    const writes: Array<{ destination: string; markdown: string; mode: string }> = []
+    const exporter = createContextPackExporter({
+      async write(destination, markdown, mode) {
+        writes.push({ destination, markdown, mode })
+        if (mode === "create") {
+          throw Object.assign(new Error("private filesystem detail"), { code: "EEXIST" })
+        }
+      },
+    })
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      exporter,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "sealed_unavailable" })
+
+    const custody = await reviewedAndSealed(test, sessionId)
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "destination_required" })
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: false,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "confirmation_required" })
+    expect(writes).toEqual([])
+
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "overwrite_confirmation_required" })
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({ destination: "/operator/context.md", mode: "create" })
+    expect(writes[0]!.markdown.endsWith(custody.sealed.payload)).toBe(true)
+
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: true,
+    })).toMatchObject({ kind: "exported", payloadBytes: custody.sealed.bytes })
+    expect(writes.at(-1)).toMatchObject({ destination: "/operator/context.md", mode: "overwrite" })
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    await test.controller.dispose()
+  })
+
+  it("never starts export after review, seal, Send Here, or handoff without the explicit export action", async () => {
+    const exportRequests: unknown[] = []
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 100,
+      now: () => 100,
+      exporter: {
+        async export(request) {
+          exportRequests.push(request)
+          return {
+            kind: "exported",
+            payloadBytes: request.sealed.bytes,
+            exportBytes: request.sealed.bytes,
+          }
+        },
+      },
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const custody = await reviewedAndSealed(test, sessionId)
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 100, size: 2_000 })
+    expect((await test.controller.actions.sendContextPackHere(sessionId)).kind).toBe("sent")
+
+    const handoff = createHandoffFlow({ controller: test.controller })
+    expect(handoff.begin()).toEqual({ ok: true })
+    handoff.cancel()
+    expect(exportRequests).toEqual([])
+
+    const exportInput = {
+      sessionId,
+      destination: "/operator/confirmed-context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    } as const
+    expect(await test.controller.actions.exportContextPack(exportInput)).toMatchObject({
+      kind: "exported",
+      payloadBytes: custody.sealed.bytes,
+    })
+    expect(exportRequests).toEqual([{
+      sealed: custody.sealed,
+      destination: exportInput.destination,
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    }])
     await test.controller.dispose()
   })
 

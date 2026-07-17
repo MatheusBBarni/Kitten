@@ -185,6 +185,10 @@ describe("ControllerActions Context Pack custody boundary", () => {
           fit: { kind: "unavailable", reason: "stale_evidence" },
         }
       },
+      exportContextPack: async (input) => {
+        calls.push(["export", input])
+        return { kind: "blocked", reason: "overwrite_confirmation_required" }
+      },
     })
 
     expect(await actions.reviewContextPack("alpha")).toEqual({ kind: "blocked", reason: "over_budget" })
@@ -202,11 +206,22 @@ describe("ControllerActions Context Pack custody boundary", () => {
       reason: "recipient_fit",
       fit: { kind: "unavailable", reason: "stale_evidence" },
     })
+    const exportInput = {
+      sessionId: "alpha",
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    } as const
+    expect(await actions.exportContextPack(exportInput)).toEqual({
+      kind: "blocked",
+      reason: "overwrite_confirmation_required",
+    })
     expect(calls).toEqual([
       ["review", "alpha"],
       ["seal", "alpha", 7],
       ["fit", "alpha"],
       ["send", "alpha"],
+      ["export", exportInput],
     ])
   })
 
@@ -221,6 +236,7 @@ describe("ControllerActions Context Pack custody boundary", () => {
       sealContextPack: async () => { throw new Error("seal failed") },
       assessContextPackRecipientFit: () => { throw new Error("fit failed") },
       sendContextPackHere: async () => { throw new Error("send failed") },
+      exportContextPack: async () => { throw new Error("EACCES /private/operator/path") },
       onError: (_sessionId, error) => errors.push(error),
     })
 
@@ -240,6 +256,12 @@ describe("ControllerActions Context Pack custody boundary", () => {
       kind: "blocked",
       reason: "dispatch_failed",
     })
+    expect(await actions.exportContextPack({
+      sessionId: "alpha",
+      destination: "/private/operator/path",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "filesystem_failure" })
     expect(errors).toHaveLength(3)
   })
 })

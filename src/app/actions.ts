@@ -45,6 +45,7 @@ import type { AppStore, ContextBuildDraftPreparation } from "../store/appStore.t
 import { selectNextNeedy } from "../store/selectors.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 import type { CleanupManagedWorktreeResult } from "./managedWorktree.ts"
+import type { ContextPackExportResult } from "./contextPackExport.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
@@ -142,6 +143,21 @@ export type ContextPackSendHereResult =
       readonly kind: "blocked"
       readonly reason: "sealed_unavailable" | "sealed_changed" | "dispatch_failed" | "recipient_fit"
       readonly fit?: Exclude<RecipientFit, { readonly kind: "fit" }>
+    }
+
+export interface ContextPackExportActionInput {
+  readonly sessionId: SessionId
+  /** Exact operator-selected destination; no default is inferred by the controller. */
+  readonly destination: string
+  readonly writeConfirmed: boolean
+  readonly overwriteConfirmed: boolean
+}
+
+export type ContextPackExportActionResult =
+  | ContextPackExportResult
+  | {
+      readonly kind: "blocked"
+      readonly reason: "sealed_unavailable" | "sealed_changed"
     }
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
@@ -333,6 +349,8 @@ export interface ActionDeps {
   assessContextPackRecipientFit?: (sessionId: SessionId) => RecipientFit
   /** Explicitly deliver the exact sealed payload through the existing send boundary. */
   sendContextPackHere?: (sessionId: SessionId) => Promise<ContextPackSendHereResult>
+  /** Explicitly export the exact current sealed payload to the operator-selected destination. */
+  exportContextPack?: (input: ContextPackExportActionInput) => Promise<ContextPackExportActionResult>
   /** Send additional direction to one live, owned delegated child. */
   steerDelegatedChild?: (childId: SessionId, text: string) => Promise<PromptResult | null>
   /** Cancel one live, owned delegated child without exposing its runtime. */
@@ -369,6 +387,8 @@ export interface ControllerActions {
   assessContextPackRecipientFit(sessionId: SessionId): RecipientFit
   /** Explicitly send the exact sealed pack here after a new final fit check. */
   sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult>
+  /** Explicitly export the exact sealed pack after write and overwrite confirmations. */
+  exportContextPack(input: ContextPackExportActionInput): Promise<ContextPackExportActionResult>
   /** Send non-empty additional direction to one current, non-terminal owned child. */
   steerDelegatedChild(childId: SessionId, text: string): Promise<PromptResult | null>
   /** Idempotently cancel one current, non-terminal owned child. */
@@ -515,6 +535,10 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     reason: "missing_evidence" as const,
   }))
   const sendContextPackHere = deps.sendContextPackHere ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "sealed_unavailable" as const,
+  }))
+  const exportContextPack = deps.exportContextPack ?? (async () => ({
     kind: "blocked" as const,
     reason: "sealed_unavailable" as const,
   }))
@@ -870,6 +894,16 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       } catch (error) {
         onError(sessionId, error)
         return { kind: "blocked", reason: "dispatch_failed" }
+      }
+    },
+
+    async exportContextPack(input): Promise<ContextPackExportActionResult> {
+      try {
+        return await exportContextPack(input)
+      } catch {
+        // Export errors are deliberately content-free and never forwarded as raw
+        // filesystem errors into state, telemetry, or the controller error sink.
+        return { kind: "blocked", reason: "filesystem_failure" }
       }
     },
 

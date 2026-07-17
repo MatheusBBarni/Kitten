@@ -19,6 +19,16 @@ describe("createFakeController", () => {
     await controller.actions.cancel("codex")
     controller.actions.respondPermission({ outcome: "cancelled" })
     controller.actions.respondClarification("clarification-1", 3, { kind: "cancelled" })
+    const exportInput = {
+      sessionId: "codex",
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    } as const
+    expect(await controller.actions.exportContextPack(exportInput)).toEqual({
+      kind: "blocked",
+      reason: "sealed_unavailable",
+    })
     await controller.dispose()
 
     expect(controller.calls.sendPrompt).toEqual([{ input: "hello", sessionId: undefined }])
@@ -34,6 +44,7 @@ describe("createFakeController", () => {
       generation: 3,
       outcome: { kind: "cancelled" },
     }])
+    expect(controller.calls.exportContextPack).toEqual([exportInput])
     expect(controller.calls.dispose).toBe(1)
   })
 
