@@ -745,6 +745,40 @@ describe("createSessionController - Context Build lifecycle", () => {
     await test.controller.dispose()
   })
 
+  it("starts Context Build from the explicit operator-created draft without replacing it", async () => {
+    const promptWait = deferred()
+    const test = await setupContextBuild({ buildOptions: [{ promptWait: promptWait.promise }] })
+    const parentId = test.controller.store.getState().workspace.selectedVisibleId!
+
+    expect(test.controller.actions.createContextPackDraft(
+      parentId,
+      "Preserve these original operator instructions",
+    )).toEqual({ kind: "created", revision: 0 })
+    const started = await test.controller.actions.startContextBuild({
+      parentId,
+      draft: { kind: "use_current" },
+    })
+
+    expect(started).toEqual({
+      kind: "started",
+      childId: "context-builder-1",
+      draftRevision: 0,
+    })
+    expect(test.controller.store.getState().contextPacks[parentId]?.draft?.instructions.original)
+      .toBe("Preserve these original operator instructions")
+    expect(test.controller.store.getState().contextPacks[parentId]?.build).toMatchObject({
+      childId: "context-builder-1",
+      draftRevision: 0,
+    })
+
+    promptWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks[parentId]?.build === null,
+      "Context Build settlement",
+    )
+    await test.controller.dispose()
+  })
+
   it("records Context Pack outcomes only after each controller result settles", async () => {
     const records: TelemetryRecord[] = []
     let currentTime = 100

@@ -364,7 +364,6 @@ export function createContextPackBridge(options: CreateContextPackBridgeOptions)
     route.sockets.add(socket)
     const reservation = reserveCall(route, parsed.callId)
     if (reservation !== "ok") {
-      route.pending.delete(parsed.callId)
       const reason = reservation === "duplicate"
         ? "connection_duplicate_call_id"
         : reservation === "busy"

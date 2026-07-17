@@ -123,6 +123,7 @@ import {
   type ContextBuildAvailabilityResult,
   type ContextBuildDenialReason,
   type ContextBuildStartResult,
+  type ContextPackDraftCreationResult,
   type ContextPackReviewResult,
   type ContextPackFileMembershipInput,
   type ContextPackFileMembershipResult,
@@ -2538,6 +2539,8 @@ export async function createSessionController(options: SessionControllerOptions)
       if (!pack.sealed || !("manifest" in pack.sealed)) {
         return { kind: "denied", reason: "draft_unavailable" }
       }
+    } else if (input.draft.kind === "use_current") {
+      if (!pack.draft) return { kind: "denied", reason: "draft_unavailable" }
     } else if (createDraft(input.draft.original, {
       ...(input.draft.mode === undefined ? {} : { mode: input.draft.mode }),
       ...(input.draft.discovered === undefined ? {} : { discovered: input.draft.discovered }),
@@ -2569,6 +2572,24 @@ export async function createSessionController(options: SessionControllerOptions)
   function contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult {
     const result = contextBuildPreflight(input)
     return "kind" in result ? result : { kind: "available" }
+  }
+
+  function createContextPackDraft(
+    sessionId: SessionId,
+    original: string,
+  ): ContextPackDraftCreationResult {
+    if (disposed) return { kind: "blocked", reason: "controller_disposed" }
+    const contextPack = store.getState().contextPacks[sessionId]
+    if (!contextPack) return { kind: "blocked", reason: "unknown_session" }
+    if (contextPack.build) return { kind: "blocked", reason: "build_active" }
+    if (contextPack.draft) return { kind: "blocked", reason: "draft_active" }
+    const result = store.createContextPackDraft(sessionId, original)
+    if (result === null) return { kind: "blocked", reason: "creation_failed" }
+    if (result.kind !== "created") return { kind: "blocked", reason: "invalid_instructions" }
+    options.recorder?.contextPackDraftCreated?.({
+      selectionCountBucket: bucketContextPackSelectionCount(result.draft.selections.length),
+    })
+    return { kind: "created", revision: result.draft.revision }
   }
 
   function deniedContextBuild(reason: ContextBuildDenialReason): ContextBuildStartResult {
@@ -2737,9 +2758,11 @@ export async function createSessionController(options: SessionControllerOptions)
         prepared.reason === "unknown_session" ? "unknown_parent" : prepared.reason,
       )
     }
-    options.recorder?.contextPackDraftCreated?.({
-      selectionCountBucket: bucketContextPackSelectionCount(prepared.draft.selections.length),
-    })
+    if (input.draft.kind !== "use_current") {
+      options.recorder?.contextPackDraftCreated?.({
+        selectionCountBucket: bucketContextPackSelectionCount(prepared.draft.selections.length),
+      })
+    }
 
     const route: ContextPackBridgeRoute = {
       parentId: prepared.binding.parentId,
@@ -3753,6 +3776,7 @@ export async function createSessionController(options: SessionControllerOptions)
     exploreAvailability,
     startContextBuild,
     contextBuildAvailability,
+    createContextPackDraft,
     reviewContextPack,
     mutateContextPackFileMembership,
     sealContextPack,

@@ -18,6 +18,7 @@ import {
   selectContextPackDraft,
   selectContextPackReview,
   selectContextPackSealed,
+  selectAgentModel,
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectSessionUsage,
@@ -33,8 +34,9 @@ export const CONTEXT_PACK_EXACT_REVIEW_LABEL = "Exact review candidate"
 export const CONTEXT_PACK_EXACT_SEALED_LABEL = "Exact sealed payload"
 export const CONTEXT_PACK_EXPORT_DESTINATION_LABEL = "Export destination"
 
-type ContextPackActionId = "build" | "review" | "seal" | "send" | "refine" | "export" | "files"
+type ContextPackActionId = "create" | "build" | "review" | "seal" | "send" | "refine" | "export" | "files"
 type ExportPhase = "idle" | "destination" | "overwrite"
+type DraftCreationPhase = "idle" | "original"
 
 interface ContextPackActionRow {
   readonly id: ContextPackActionId
@@ -64,22 +66,18 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
   const sealedSelector = useMemo(() => selectContextPackSealed(sessionId), [sessionId])
   const buildSelector = useMemo(() => selectContextPackBuild(sessionId), [sessionId])
   const usageSelector = useMemo(() => selectSessionUsage(sessionId), [sessionId])
+  const modelSelector = useMemo(() => selectAgentModel(sessionId), [sessionId])
   const draft = useAppSelector(draftSelector)
   const review = useAppSelector(reviewSelector)
   const sealed = useAppSelector(sealedSelector)
   const build = useAppSelector(buildSelector)
   const usage = useAppSelector(usageSelector)
+  const model = useAppSelector(modelSelector)
   const approvalOpen = useAppSelector(selectIsApprovalOpen)
   const clarificationOpen = useAppSelector(selectIsClarificationOpen)
   const preempted = approvalOpen || clarificationOpen
 
-  const buildChoice = useMemo(() => draft ? ({
-    kind: "start_fresh" as const,
-    original: draft.instructions.original,
-    mode: draft.instructions.mode,
-    discovered: draft.instructions.discovered,
-    budgetLimit: draft.budget.limit,
-  }) : null, [draft])
+  const buildChoice = useMemo(() => draft ? ({ kind: "use_current" as const }) : null, [draft])
   const buildAvailability = useMemo(
     () => buildChoice
       ? controller.actions.contextBuildAvailability({ parentId: sessionId, draft: buildChoice })
@@ -95,20 +93,28 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
   )
   const fit = useMemo<RecipientFit | null>(
     () => sealed ? controller.actions.assessContextPackRecipientFit(sessionId) : null,
-    [controller, sealed, sessionId, usage],
+    [controller, model, sealed, sessionId, usage],
   )
 
   const [selectedAction, setSelectedAction] = useState(0)
   const [notice, setNotice] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<ContextPackActionId | null>(null)
+  const [draftCreationPhase, setDraftCreationPhase] = useState<DraftCreationPhase>("idle")
+  const [draftOriginal, setDraftOriginal] = useState("")
   const [exportPhase, setExportPhase] = useState<ExportPhase>("idle")
   const [destination, setDestination] = useState("")
   const [fileExplorerActive, setFileExplorerActive] = useState(false)
   const pendingRef = useRef(false)
 
   const actions = useMemo<readonly ContextPackActionRow[]>(() => [
+    ...(draft === null && sealed === null ? [{
+      id: "create" as const,
+      label: "Create Context Pack draft",
+      enabled: build === null,
+      reason: build === null ? null : "Context Build already active",
+    }] : []),
     {
-      id: "build",
+      id: "build" as const,
       label: "Build Context",
       enabled: draft !== null && build === null && buildAvailability.kind === "available",
       reason: draft === null
@@ -167,6 +173,21 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
     },
   ], [build, buildAvailability, draft, fit, refinable, refineAvailability, review, sealed])
 
+  const submitDraft = useCallback((): void => {
+    if (draftOriginal.trim().length === 0) {
+      setNotice("Blocked: original instructions required")
+      return
+    }
+    const result = controller.actions.createContextPackDraft(sessionId, draftOriginal)
+    if (result.kind === "created") {
+      setDraftCreationPhase("idle")
+      setDraftOriginal("")
+      setNotice(`Draft created: revision ${result.revision}`)
+      return
+    }
+    setNotice(`Blocked: ${humanizeReason(result.reason)}`)
+  }, [controller, draftOriginal, sessionId])
+
   const submitExport = useCallback(async (overwriteConfirmed: boolean): Promise<void> => {
     if (pendingRef.current || destination.trim().length === 0) {
       if (destination.trim().length === 0) setNotice("Blocked: export destination required")
@@ -212,6 +233,11 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
     if (action.id === "files") {
       setFileExplorerActive(true)
       setNotice("File Explorer focused")
+      return
+    }
+    if (action.id === "create") {
+      setDraftCreationPhase("original")
+      setNotice("Enter the original instructions for this Context Pack")
       return
     }
 
@@ -266,6 +292,14 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
   const onKey = useCallback((key: KeyEvent): void => {
     if (preempted) return
     if (fileExplorerActive) return
+    if (draftCreationPhase === "original") {
+      if (key.name === "escape" && !key.ctrl && !key.meta && !key.shift) {
+        key.preventDefault()
+        setDraftCreationPhase("idle")
+        setNotice("Draft creation cancelled")
+      }
+      return
+    }
     if (exportPhase === "destination") {
       if (key.name === "escape" && !key.ctrl && !key.meta && !key.shift) {
         key.preventDefault()
@@ -313,7 +347,7 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
         onClose()
         return
     }
-  }, [actions.length, activate, exportPhase, fileExplorerActive, onClose, preempted, submitExport])
+  }, [actions.length, activate, draftCreationPhase, exportPhase, fileExplorerActive, onClose, preempted, submitExport])
   useKeyboard(onKey)
 
   if (preempted) return null
@@ -356,6 +390,19 @@ function ContextPackPanelBody({ sessionId, onClose }: ContextPackPanelProps): Re
           )
         })}
         {pendingAction ? <text fg={palette.accent}>{`Pending: ${pendingAction}`}</text> : null}
+        {draftCreationPhase === "original" ? (
+          <box style={{ flexDirection: "row" }}>
+            <text fg={palette.text}>Original instructions: </text>
+            <input
+              focused
+              value={draftOriginal}
+              placeholder="What should this Context Pack prepare?"
+              onInput={setDraftOriginal}
+              onSubmit={submitDraft}
+              style={{ flexGrow: 1, textColor: palette.text, cursorColor: palette.accent }}
+            />
+          </box>
+        ) : null}
         {exportPhase === "destination" ? (
           <box style={{ flexDirection: "row" }}>
             <text fg={palette.text}>{`${CONTEXT_PACK_EXPORT_DESTINATION_LABEL}: `}</text>

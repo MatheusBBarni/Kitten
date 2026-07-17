@@ -113,6 +113,20 @@ export type ContextBuildStartResult =
   | { readonly kind: "started"; readonly childId: SessionId; readonly draftRevision: number }
   | { readonly kind: "denied"; readonly reason: ContextBuildDenialReason }
 
+/** Closed result for the operator's explicit first Context Pack draft. */
+export type ContextPackDraftCreationResult =
+  | { readonly kind: "created"; readonly revision: number }
+  | {
+      readonly kind: "blocked"
+      readonly reason:
+        | "unknown_session"
+        | "draft_active"
+        | "build_active"
+        | "invalid_instructions"
+        | "controller_disposed"
+        | "creation_failed"
+    }
+
 export type ContextPackReviewBlockingReason =
   | ContextPackMaterializationBlockedReason
   | ContextPackMaterializationStaleReason
@@ -395,6 +409,8 @@ export interface ActionDeps {
   startContextBuild?: (input: StartContextBuildInput) => Promise<ContextBuildStartResult>
   /** Advisory only; Context Build launch always re-attests exact explore-v2 evidence. */
   contextBuildAvailability?: (input: StartContextBuildInput) => ContextBuildAvailabilityResult
+  /** Create one fresh operator-authored draft before a Context Build is enabled. */
+  createContextPackDraft?: (sessionId: SessionId, original: string) => ContextPackDraftCreationResult
   /** Materialize and publish only one exact redacted review candidate. */
   reviewContextPack?: (sessionId: SessionId) => Promise<ContextPackReviewResult>
   /** Materialize and revision-fence one explicit whole-file membership edit. */
@@ -439,6 +455,8 @@ export interface ControllerActions {
   startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult>
   /** Read advisory Context Build eligibility without preparing a draft or binding. */
   contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult
+  /** Create one fresh operator-authored draft without starting a Context Build. */
+  createContextPackDraft(sessionId: SessionId, original: string): ContextPackDraftCreationResult
   /** Materialize and publish one exact redacted candidate for the addressed draft. */
   reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult>
   /** Add or remove one exact whole-file membership from the addressed observed draft. */
@@ -587,6 +605,16 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     kind: "denied" as const,
     reason: "missing_evidence" as const,
   }))
+  const createContextPackDraft = deps.createContextPackDraft ?? ((sessionId: SessionId, original: string): ContextPackDraftCreationResult => {
+    const contextPack = store.getState().contextPacks[sessionId]
+    if (!contextPack) return { kind: "blocked", reason: "unknown_session" }
+    if (contextPack.build) return { kind: "blocked", reason: "build_active" }
+    if (contextPack.draft) return { kind: "blocked", reason: "draft_active" }
+    const result = store.createContextPackDraft(sessionId, original)
+    if (result === null) return { kind: "blocked", reason: "creation_failed" }
+    if (result.kind !== "created") return { kind: "blocked", reason: "invalid_instructions" }
+    return { kind: "created", revision: result.draft.revision }
+  })
   const reviewContextPack = deps.reviewContextPack ?? (async () => ({
     kind: "blocked" as const,
     reason: "draft_unavailable" as const,
@@ -936,6 +964,15 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
         return contextBuildAvailability(input)
       } catch {
         return { kind: "denied", reason: "missing_evidence" }
+      }
+    },
+
+    createContextPackDraft(sessionId, original): ContextPackDraftCreationResult {
+      try {
+        return createContextPackDraft(sessionId, original)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "creation_failed" }
       }
     },
 

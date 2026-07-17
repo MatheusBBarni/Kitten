@@ -18,6 +18,7 @@ import {
   type CloseConversationResult,
   type ContextBuildAvailabilityResult,
   type ContextBuildStartResult,
+  type ContextPackDraftCreationResult,
   type ContextPackReviewResult,
   type ContextPackFileMembershipInput,
   type ContextPackFileMembershipResult,
@@ -65,6 +66,7 @@ export interface RecordedCalls {
   startDelegatedChild: StartDelegatedChildInput[]
   startExploreChild: ExploreLaunchRequest[]
   startContextBuild: StartContextBuildInput[]
+  createContextPackDraft: { sessionId: SessionId; original: string }[]
   reviewContextPack: SessionId[]
   mutateContextPackFileMembership: ContextPackFileMembershipInput[]
   sealContextPack: { sessionId: SessionId; candidateRevision: number }[]
@@ -171,6 +173,11 @@ export interface FakeControllerOptions {
     store: AppStore,
   ) => ContextBuildAvailabilityResult
   /** Typed Context Pack custody seams used by the presentation-only panel. */
+  createContextPackDraft?: (
+    sessionId: SessionId,
+    original: string,
+    store: AppStore,
+  ) => ContextPackDraftCreationResult
   reviewContextPack?: (
     sessionId: SessionId,
     store: AppStore,
@@ -259,6 +266,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     startDelegatedChild: [],
     startExploreChild: [],
     startContextBuild: [],
+    createContextPackDraft: [],
     reviewContextPack: [],
     mutateContextPackFileMembership: [],
     sealContextPack: [],
@@ -434,6 +442,19 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
           ?? (options.startContextBuild
             ? { kind: "available" as const }
             : { kind: "denied" as const, reason: "missing_evidence" as const })
+      },
+      createContextPackDraft(sessionId: SessionId, original: string): ContextPackDraftCreationResult {
+        calls.createContextPackDraft.push({ sessionId, original })
+        const override = options.createContextPackDraft?.(sessionId, original, store)
+        if (override) return override
+        const contextPack = store.getState().contextPacks[sessionId]
+        if (!contextPack) return { kind: "blocked", reason: "unknown_session" }
+        if (contextPack.build) return { kind: "blocked", reason: "build_active" }
+        if (contextPack.draft) return { kind: "blocked", reason: "draft_active" }
+        const result = store.createContextPackDraft(sessionId, original)
+        if (result === null) return { kind: "blocked", reason: "creation_failed" }
+        if (result.kind !== "created") return { kind: "blocked", reason: "invalid_instructions" }
+        return { kind: "created", revision: result.draft.revision }
       },
       async reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult> {
         calls.reviewContextPack.push(sessionId)

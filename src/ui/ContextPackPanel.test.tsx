@@ -13,12 +13,14 @@ import { useState, type ReactNode } from "react"
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { applyOperatorMutation, assembleCandidate, contextSelectionKey, createDraft, sealCandidate } from "../core/contextPack.ts"
-import type {
-  ContextPackMutation,
-  ContextPackState,
-  ContextSelection,
-  DraftContextPack,
-  SessionId,
+import {
+  MODEL_CATEGORY,
+  type ConfigOption,
+  type ContextPackMutation,
+  type ContextPackState,
+  type ContextSelection,
+  type DraftContextPack,
+  type SessionId,
 } from "../core/types.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
@@ -137,6 +139,46 @@ async function renderPanel(
 }
 
 describe("ContextPackPanel presentation", () => {
+  it("collects original instructions to create the first draft before Context Build", async () => {
+    const controller = createFakeController({
+      contextBuildAvailability: () => ({ kind: "available" }),
+      startContextBuild: (input) => ({
+        kind: "started",
+        childId: "context-child",
+        draftRevision: input.draft.kind === "use_current" ? 0 : 1,
+      }),
+    })
+    const setup = await renderPanel(controller)
+
+    try {
+      expect(setup.captureCharFrame()).toContain("Create Context Pack draft — available")
+      await actAsync(() => setup.mockInput.pressEnter())
+      expect(await setup.waitForFrame((frame) => frame.includes("Original instructions:"))).toContain(
+        "Enter the original instructions for this Context Pack",
+      )
+      await actAsync(async () => setup.mockInput.pasteBracketedText("Prepare the release handoff"))
+      await actAsync(() => setup.mockInput.pressEnter())
+      expect(await setup.waitForFrame((frame) => frame.includes("Draft created: revision 0"))).toContain(
+        "Build Context — available",
+      )
+      expect(controller.calls.createContextPackDraft).toEqual([{
+        sessionId: "claude-code",
+        original: "Prepare the release handoff",
+      }])
+      expect(controller.store.getState().contextPacks["claude-code"]?.draft?.instructions.original)
+        .toBe("Prepare the release handoff")
+
+      await actAsync(() => setup.mockInput.pressEnter())
+      await setup.waitForFrame((frame) => frame.includes("Started: Context Build revision 0"))
+      expect(controller.calls.startContextBuild).toEqual([{
+        parentId: "claude-code",
+        draft: { kind: "use_current" },
+      }])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
   it("renders exact draft, review, sealed, freshness, budget, brief, selection, redaction, and fit details", async () => {
     const state = custodyState({ includeReview: true, includeSealed: true })
     const controller = createFakeController({
@@ -183,6 +225,42 @@ describe("ContextPackPanel presentation", () => {
       expect(frame).toContain("Phase: Sealed")
       expect(frame).toContain(CONTEXT_PACK_EXACT_SEALED_LABEL)
       expect(frame).toContain("Recipient Fit: Unavailable — Stale evidence")
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("recomputes Recipient Fit when the confirmed model changes", async () => {
+    const state = custodyState({ includeSealed: true })
+    const controller = createFakeController({
+      assessContextPackRecipientFit: (sessionId, store) => {
+        const model = store.getState().sessions[sessionId]?.configOptions.find(
+          (option) => option.category === MODEL_CATEGORY,
+        )?.currentValue
+        return model === "certified-model"
+          ? { kind: "fit" as const, exactCount: 100, remaining: 900 }
+          : { kind: "unavailable" as const, reason: "stale_evidence" as const }
+      },
+    })
+    installContextPack(controller, "claude-code", state)
+    const options = (currentValue: string): ConfigOption[] => [{
+      id: "model",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue,
+      options: [{ value: currentValue, name: currentValue }],
+    }]
+    controller.store.applyEvent("claude-code", { kind: "config_options", options: options("certified-model") })
+    const setup = await renderPanel(controller)
+
+    try {
+      expect(setup.captureCharFrame()).toContain("Send Here — available")
+      await actAsync(() => {
+        controller.store.applyEvent("claude-code", { kind: "config_options", options: options("other-model") })
+      })
+      expect(await setup.waitForFrame((frame) => frame.includes("Send Here — unavailable"))).toContain(
+        "Recipient Fit: Unavailable — Stale evidence",
+      )
     } finally {
       await destroyMounted(setup.renderer)
     }

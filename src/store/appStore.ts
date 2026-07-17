@@ -389,6 +389,8 @@ export type ContextBuildDraftPreparation =
       readonly discovered?: string
       readonly budgetLimit?: number
     }
+  /** Bind the exact draft the operator already created and inspected. */
+  | { readonly kind: "use_current" }
   | { readonly kind: "refine" }
 
 /** Generation identity supplied by the controller before any child I/O starts. */
@@ -1091,6 +1093,23 @@ class AppStoreImpl implements AppStore {
       return { kind: "denied", reason: "unknown_session" }
     }
     if (current.build) return { kind: "denied", reason: "build_active" }
+
+    if (preparation.kind === "use_current") {
+      const draft = current.draft
+      if (!draft) return { kind: "denied", reason: "draft_unavailable" }
+      const binding: ContextBuildBinding = {
+        ...identity,
+        draftRevision: draft.revision,
+        state: "building",
+      }
+      this.commitContextPack(sessionId, {
+        ...clearContextPackAttention(current),
+        draft,
+        review: null,
+        build: binding,
+      })
+      return { kind: "prepared", draft, binding }
+    }
 
     const result = preparation.kind === "start_fresh"
       ? createDraft(preparation.original, {

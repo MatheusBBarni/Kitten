@@ -51,6 +51,7 @@ function createHarness(options: {
   readonly listenFails?: boolean
   readonly workspaceResult?: ContextPackReadWorkspaceResult
   readonly askOutcome?: ClarificationOutcome
+  readonly askUser?: () => Promise<ClarificationOutcome>
 } = {}): Harness {
   const created = createDraft("Curate this task")
   if (created.kind !== "created") throw new Error("draft fixture failed")
@@ -90,6 +91,7 @@ function createHarness(options: {
       return result
     },
     async askUser() {
+      if (options.askUser) return await options.askUser()
       return options.askOutcome ?? { kind: "skipped" }
     },
     dispose(_route, reason) {
@@ -161,6 +163,24 @@ function mutateRequest(expectedRevision: number): ContextPackMcpRequest {
       mutation: { kind: "set_brief_section", section: "architecture", text: "Layered" },
     },
   }
+}
+
+function askRequest(): ContextPackMcpRequest {
+  return {
+    operation: "ask_user",
+    input: {
+      prompt: "Choose",
+      fields: [{ id: "choice", label: "Choose", required: true, mode: "text" }],
+    },
+  }
+}
+
+async function waitFor(condition: () => boolean, description: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (condition()) return
+    await Bun.sleep(1)
+  }
+  throw new Error(`Timed out waiting for ${description}`)
 }
 
 describe("generation-bound Context Pack bridge", () => {
@@ -238,6 +258,40 @@ describe("generation-bound Context Pack bridge", () => {
     })
     expect(harness.mutationCount()).toBe(1)
     expect(harness.draft()).toBe(newer)
+    await harness.bridge.dispose()
+  })
+
+  it("keeps the original reservation when a duplicate call ID is rejected", async () => {
+    let settleAsk!: (outcome: ClarificationOutcome) => void
+    const pendingAsk = new Promise<ClarificationOutcome>((resolve) => { settleAsk = resolve })
+    let asks = 0
+    const harness = createHarness({
+      askUser: async () => {
+        asks += 1
+        return await pendingAsk
+      },
+    })
+    const first = harness.call(askRequest(), { outer: { callId: "first" } })
+    await waitFor(() => asks === 1, "the first pending Context Pack ask")
+
+    expect(await harness.call(askRequest(), { outer: { callId: "first" } })).toMatchObject({
+      kind: "error",
+      callId: "first",
+      error: "invalid_request",
+    })
+
+    const additional = ["second", "third", "fourth"].map((callId) =>
+      harness.call(askRequest(), { outer: { callId } }),
+    )
+    await waitFor(() => asks === 4, "four distinct pending Context Pack asks")
+    expect(await harness.call(askRequest(), { outer: { callId: "fifth" } })).toMatchObject({
+      kind: "error",
+      callId: "fifth",
+      error: "busy",
+    })
+
+    settleAsk({ kind: "skipped" })
+    await expect(Promise.all([first, ...additional])).resolves.toHaveLength(4)
     await harness.bridge.dispose()
   })
 
