@@ -2,6 +2,11 @@ import { describe, expect, it } from "bun:test"
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
+import {
+  assembleCandidate,
+  sealCandidate,
+} from "../core/contextPack.ts"
+import { createSecretRedactor } from "../core/secretRedactor.ts"
 import { createShellState } from "../core/shellReducer.ts"
 import { countOccupiedDelegatedChildren } from "../core/orchestration.ts"
 import {
@@ -11,7 +16,7 @@ import {
 } from "../core/explorePolicy.ts"
 import type { StatuslineLayout, StatuslinePreference } from "../core/statusline.ts"
 import { HARNESS_DELIVERY_FAILED_NOTICE, isHarnessDeliveryNotice } from "../core/types.ts"
-import type { ClarificationPayload, DomainSessionEvent, HandoffBundle, ManagedWorktreeBinding, SessionId, SessionSeed, SessionState } from "../core/types.ts"
+import type { ClarificationPayload, ContextBuildBinding, ContextPackReviewCandidate, DraftContextPack, DomainSessionEvent, HandoffBundle, ManagedWorktreeBinding, SealedContextPack, SessionId, SessionSeed, SessionState } from "../core/types.ts"
 import {
   createAppStore,
   defaultSessionSeeds,
@@ -2514,5 +2519,288 @@ describe("session explorer state", () => {
     store.toggleExplorer("codex")
 
     expect(store.getState()).toBe(before)
+  })
+})
+
+function requireDraft(store: AppStore, sessionId: SessionId, instructions: string): DraftContextPack {
+  const result = store.createContextPackDraft(sessionId, instructions)
+  if (result?.kind !== "created") throw new Error("expected Context Pack draft")
+  return result.draft
+}
+
+function reviewCandidate(draft: DraftContextPack): ContextPackReviewCandidate {
+  const result = assembleCandidate(draft, [], createSecretRedactor())
+  if (result.kind !== "assembled") throw new Error("expected Context Pack candidate")
+  return result.candidate
+}
+
+function sealedCandidate(
+  draft: DraftContextPack,
+  candidate: ContextPackReviewCandidate,
+  sealedAt = 100,
+): SealedContextPack {
+  const result = sealCandidate({ draft, candidate, currentSourceFences: [], sealedAt })
+  if (result.kind !== "sealed") throw new Error("expected sealed Context Pack")
+  return result.sealed
+}
+
+describe("Context Pack store integration", () => {
+  it("initializes every seeded, dynamic, delegated, and replacement session", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+    })
+
+    expect(store.getState().contextPacks).toEqual({
+      a: { draft: null, sealed: null, review: null, build: null },
+      b: { draft: null, sealed: null, review: null, build: null },
+    })
+    expect(store.getState().contextPacks.a).not.toBe(store.getState().contextPacks.b)
+
+    store.addSession({ id: "dynamic", providerKind: "cursor", title: "Dynamic", cwd: "/work/dynamic" })
+    expect(store.getState().contextPacks.dynamic).toEqual({
+      draft: null,
+      sealed: null,
+      review: null,
+      build: null,
+    })
+
+    const registration = {
+      seed: { ...delegatedChildSeed, id: "context-child" },
+      parentId: "a",
+      parentGeneration: 1,
+      childGeneration: 2,
+      task: "Curate context",
+      desiredOutcome: "A reviewed draft",
+      policy: acceptedPolicy(),
+    } as const
+    expect(store.addDelegatedSession(registration)).toEqual({ kind: "accepted" })
+    expect(store.getState().contextPacks[registration.seed.id]).toEqual({
+      draft: null,
+      sealed: null,
+      review: null,
+      build: null,
+    })
+
+    store.replaceSessions(
+      [{
+        seed: { id: "restored", providerKind: "codex", title: "Restored", cwd: "/work/restored" },
+        workspace: { sessionId: "restored", displayName: "Restored" },
+      }],
+      "restored",
+    )
+    expect(store.getState().contextPacks).toEqual({
+      restored: { draft: null, sealed: null, review: null, build: null },
+    })
+  })
+
+  it("keeps addressed transitions atomic and preserves sibling references", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+    })
+    const initialDraft = requireDraft(store, "a", "Implement A")
+    const initialReview = reviewCandidate(initialDraft)
+    expect(store.publishContextPackReview("a", initialReview)).toBe(true)
+
+    const siblingDraft = requireDraft(store, "b", "Implement B")
+    const siblingBinding: ContextBuildBinding = {
+      parentId: "b",
+      childId: "builder-b",
+      parentGeneration: 4,
+      childGeneration: 1,
+      draftRevision: siblingDraft.revision,
+      state: "building",
+    }
+    expect(store.bindContextBuild("b", siblingBinding)).toBe(true)
+    const siblingReview = reviewCandidate(siblingDraft)
+    expect(store.publishContextPackReview("b", siblingReview)).toBe(true)
+    const siblingSealed = sealedCandidate(siblingDraft, siblingReview, 50)
+    expect(store.sealContextPack("b", siblingSealed)).toBe(true)
+    const sibling = store.getState().contextPacks.b!
+    expect(sibling).toMatchObject({
+      draft: siblingDraft,
+      sealed: siblingSealed,
+      review: siblingReview,
+      build: { ...siblingBinding, state: "ready_for_review" },
+    })
+
+    const operatorResult = store.applyContextPackOperatorMutation("a", {
+      kind: "set_brief_section",
+      section: "architecture",
+      text: "Store-owned",
+    })
+    expect(operatorResult?.kind).toBe("applied")
+    expect(store.getState().contextPacks.a?.review).toBeNull()
+    expect(store.publishContextPackReview("a", initialReview)).toBe(false)
+    expect(store.getState().contextPacks.b).toBe(sibling)
+
+    const draft = store.getState().contextPacks.a!.draft!
+    const binding: ContextBuildBinding = {
+      parentId: "a",
+      childId: "builder-a",
+      parentGeneration: 7,
+      childGeneration: 2,
+      draftRevision: draft.revision,
+      state: "building",
+    }
+    expect(store.bindContextBuild("a", binding)).toBe(true)
+    expect(store.bindContextBuild("a", { ...binding, childId: "other" })).toBe(false)
+
+    const candidate = reviewCandidate(draft)
+    expect(store.publishContextPackReview("a", candidate)).toBe(true)
+    expect(store.getState().contextPacks.a?.build?.state).toBe("ready_for_review")
+
+    const staleResult = store.applyContextPackBuilderMutation("a", {
+      readRevision: draft.revision - 1,
+      mutation: { kind: "set_brief_section", section: "relationships", text: "stale" },
+    })
+    expect(staleResult?.kind).toBe("stale")
+    expect(store.getState().contextPacks.a?.review).toBe(candidate)
+
+    const appliedResult = store.applyContextPackBuilderMutation("a", {
+      readRevision: draft.revision,
+      mutation: { kind: "set_brief_section", section: "relationships", text: "current" },
+    })
+    expect(appliedResult?.kind).toBe("applied")
+    expect(store.getState().contextPacks.a?.review).toBeNull()
+    expect(store.getState().contextPacks.a?.build?.state).toBe("building")
+    expect(store.getState().contextPacks.b).toBe(sibling)
+
+    const currentDraft = store.getState().contextPacks.a!.draft!
+    const currentCandidate = reviewCandidate(currentDraft)
+    expect(store.publishContextPackReview("a", currentCandidate)).toBe(true)
+    const sealed = sealedCandidate(currentDraft, currentCandidate)
+    expect(store.sealContextPack("a", sealed)).toBe(true)
+    const beforeRelease = store.getState().contextPacks.a!
+    expect(beforeRelease.draft).not.toBe(sibling.draft)
+    expect(beforeRelease.review).not.toBe(sibling.review)
+    expect(beforeRelease.sealed).not.toBe(sibling.sealed)
+    expect(beforeRelease.build).not.toBe(sibling.build)
+    expect(store.releaseContextBuild("a", { ...binding, childGeneration: 99 })).toBe(false)
+    expect(store.releaseContextBuild("a", binding)).toBe(true)
+    expect(store.getState().contextPacks.a).toEqual({
+      draft: currentDraft,
+      sealed,
+      review: currentCandidate,
+      build: null,
+    })
+    expect(store.getState().contextPacks.b).toBe(sibling)
+
+    const refined = store.refineContextPackDraft("a")
+    expect(refined?.kind).toBe("created")
+    expect(refined?.kind === "created" ? refined.draft.revision : -1).toBe(sealed.revision + 1)
+    expect(store.getState().contextPacks.a?.review).toBeNull()
+    expect(store.getState().contextPacks.a?.sealed).toBe(sealed)
+  })
+
+  it("cleans up only removed sessions and drops all live state on replacement", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "parent", providerKind: "claude-code", title: "Parent", cwd: "/work/parent" },
+        { id: "sibling", providerKind: "cursor", title: "Sibling", cwd: "/work/sibling" },
+      ],
+    })
+    requireDraft(store, "parent", "Parent task")
+    const siblingDraft = requireDraft(store, "sibling", "Sibling task")
+    const siblingProjection = store.getState().contextPacks.sibling
+
+    store.addSession({ id: "dynamic", providerKind: "codex", title: "Dynamic", cwd: "/work/dynamic" })
+    requireDraft(store, "dynamic", "Dynamic task")
+    store.removeSession("dynamic")
+    expect(store.getState().contextPacks.dynamic).toBeUndefined()
+    expect(store.getState().contextPacks.sibling).toBe(siblingProjection)
+
+    const childId = "context-child"
+    const childRegistration = {
+      seed: { id: childId, providerKind: "codex", title: "Child", cwd: "/work/child" },
+      parentId: "parent",
+      parentGeneration: 3,
+      childGeneration: 1,
+      task: "Curate",
+      desiredOutcome: "Review",
+      policy: acceptedPolicy(),
+    } as const
+    expect(store.addDelegatedSession(childRegistration)).toEqual({ kind: "accepted" })
+    requireDraft(store, childId, "Child task")
+    store.publishDelegatedChildState({
+      parentId: "parent",
+      childId,
+      parentGeneration: 3,
+      childGeneration: 1,
+      status: "running",
+      sessionStatus: "working",
+    })
+    store.publishDelegatedChildState({
+      parentId: "parent",
+      childId,
+      parentGeneration: 3,
+      childGeneration: 1,
+      status: "finished",
+      sessionStatus: "finished",
+      at: 20,
+    })
+    store.removeDelegationChild({
+      parentId: "parent",
+      childId,
+      parentGeneration: 3,
+      childGeneration: 1,
+    })
+    expect(store.getState().contextPacks[childId]).toBeUndefined()
+    expect(store.getState().contextPacks.sibling).toBe(siblingProjection)
+
+    const siblingReview = reviewCandidate(siblingDraft)
+    expect(store.publishContextPackReview("sibling", siblingReview)).toBe(true)
+    expect(store.bindContextBuild("sibling", {
+      parentId: "sibling",
+      childId: "builder",
+      parentGeneration: 1,
+      childGeneration: 1,
+      draftRevision: siblingDraft.revision,
+      state: "building",
+    })).toBe(true)
+    expect(store.sealContextPack("sibling", sealedCandidate(siblingDraft, siblingReview))).toBe(true)
+
+    store.replaceSessions(
+      [{
+        seed: { id: "sibling", providerKind: "cursor", title: "Replacement", cwd: "/work/new" },
+        workspace: { sessionId: "sibling", displayName: "Replacement" },
+      }],
+      "sibling",
+    )
+    expect(store.getState().contextPacks).toEqual({
+      sibling: { draft: null, sealed: null, review: null, build: null },
+    })
+  })
+
+  it("runs a controller-style lifecycle without altering a sibling session", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "owner", providerKind: "claude-code", title: "Owner", cwd: "/work/owner" },
+        { id: "sibling", providerKind: "codex", title: "Sibling", cwd: "/work/sibling" },
+      ],
+    })
+    const sibling = store.getState().contextPacks.sibling
+    const draft = requireDraft(store, "owner", "Prepare the handoff")
+    const binding: ContextBuildBinding = {
+      parentId: "owner",
+      childId: "builder",
+      parentGeneration: 4,
+      childGeneration: 1,
+      draftRevision: draft.revision,
+      state: "building",
+    }
+    expect(store.bindContextBuild("owner", binding)).toBe(true)
+    const candidate = reviewCandidate(draft)
+    expect(store.publishContextPackReview("owner", candidate)).toBe(true)
+    expect(store.releaseContextBuild("owner", binding)).toBe(true)
+    expect(store.sealContextPack("owner", sealedCandidate(draft, candidate, 250))).toBe(true)
+
+    expect(store.getState().contextPacks.sibling).toBe(sibling)
+    expect(store.getState().contextPacks.owner?.sealed?.payload).toBe(candidate.payload)
   })
 })

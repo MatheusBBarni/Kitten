@@ -88,6 +88,11 @@ import {
   selectSessionSteeringStatus,
   selectSessionExplorerPosition,
   selectVisibleExplorerPosition,
+  selectContextPack,
+  selectContextPackBuild,
+  selectContextPackDraft,
+  selectContextPackReview,
+  selectContextPackSealed,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -125,6 +130,78 @@ const CLARIFICATION_PAYLOAD: ClarificationPayload = {
     options: [{ id: "controller", label: "Controller" }],
   }],
 }
+
+describe("Context Pack selectors", () => {
+  it("returns stable null fallbacks for missing and uninitialized values", () => {
+    const store = createAppStore({
+      seeds: [{ id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" }],
+    })
+    const state = store.getState()
+
+    expect(selectContextPack("missing")(state)).toBeNull()
+    expect(selectContextPack(null)(state)).toBeNull()
+    expect(selectContextPackDraft("a")(state)).toBeNull()
+    expect(selectContextPackSealed("a")(state)).toBeNull()
+    expect(selectContextPackReview("a")(state)).toBeNull()
+    expect(selectContextPackBuild("a")(state)).toBeNull()
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    const updated = store.getState()
+    expect(selectContextPackDraft("a")(updated)).toBeNull()
+    expect(selectContextPackSealed("a")(updated)).toBeNull()
+    expect(selectContextPackReview("a")(updated)).toBeNull()
+    expect(selectContextPackBuild("a")(updated)).toBeNull()
+  })
+
+  it("preserves every addressed selector identity across unrelated session updates", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+    })
+    const created = store.createContextPackDraft("a", "Implement A")
+    if (created?.kind !== "created") throw new Error("expected draft")
+    const binding = {
+      parentId: "a",
+      childId: "builder",
+      parentGeneration: 1,
+      childGeneration: 1,
+      draftRevision: created.draft.revision,
+      state: "building",
+    } as const
+    expect(store.bindContextBuild("a", binding)).toBe(true)
+
+    const selectPack = selectContextPack("a")
+    const selectDraft = selectContextPackDraft("a")
+    const selectBuild = selectContextPackBuild("a")
+    const pack = selectPack(store.getState())
+    const draft = selectDraft(store.getState())
+    const build = selectBuild(store.getState())
+    const notifications: unknown[] = []
+    store.subscribeSelector(selectPack, (value) => notifications.push(value))
+
+    store.createContextPackDraft("b", "Implement B")
+    store.applyEvent("b", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "agent_message", messageId: "token", textDelta: "x" })
+
+    expect(selectPack(store.getState())).toBe(pack)
+    expect(selectDraft(store.getState())).toBe(draft)
+    expect(selectBuild(store.getState())).toBe(build)
+    expect(selectContextPackReview("a")(store.getState())).toBeNull()
+    expect(selectContextPackSealed("a")(store.getState())).toBeNull()
+    expect(notifications).toEqual([])
+
+    store.applyContextPackOperatorMutation("a", {
+      kind: "set_brief_section",
+      section: "architecture",
+      text: "Changed",
+    })
+    expect(notifications).toHaveLength(1)
+    expect(selectDraft(store.getState())).not.toBe(draft)
+    expect(selectBuild(store.getState())).toBe(build)
+  })
+})
 
 /**
  * Selectors are asserted on two axes: the value they project, and the identity of

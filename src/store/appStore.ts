@@ -23,6 +23,12 @@
  */
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
+import {
+  applyBuilderMutation as applyBuilderContextPackMutation,
+  applyOperatorMutation as applyOperatorContextPackMutation,
+  createDraft,
+  startFreshFromSealed,
+} from "../core/contextPack.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
 import {
@@ -58,6 +64,15 @@ import {
   type ShellState,
   type ThemePreference,
   type ConversationAvailability,
+  type ContextBuildBinding,
+  type ContextPackDraftResult,
+  type ContextPackInstructions,
+  type ContextPackMutation,
+  type ContextPackMutationResult,
+  type ContextPackReviewCandidate,
+  type ContextPackState,
+  type RevisionFencedContextPackMutation,
+  type SealedContextPack,
   type TeardownState,
   type WorkspaceState,
   type WorkspaceEvent,
@@ -286,6 +301,8 @@ export interface OverlayState {
  */
 export interface AppState {
   sessions: Record<SessionId, SessionState>
+  /** Session-owned Context Pack custody. Review candidates and build bindings are live-only. */
+  contextPacks: Readonly<Record<SessionId, ContextPackState>>
   /** Per-session live transcript presentation state; intentionally absent from run records. */
   transcriptWindows: Record<SessionId, TranscriptWindowState>
   /** Current-run explorer visibility and lazy per-session positions. */
@@ -423,6 +440,39 @@ export interface AppStore {
   ): boolean
   /** Clear one reducer-owned recovery payload after the composer has copied it. */
   acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void
+  /** Create and own a new addressed draft while retaining any current sealed pack. */
+  createContextPackDraft(
+    sessionId: SessionId,
+    original: string,
+    options?: {
+      readonly mode?: ContextPackInstructions["mode"]
+      readonly discovered?: string
+      readonly budgetLimit?: number
+    },
+  ): ContextPackDraftResult | null
+  /** Start a distinct addressed draft from the current immutable sealed value. */
+  refineContextPackDraft(sessionId: SessionId): ContextPackDraftResult | null
+  /** Apply one operator-authorized mutation to the addressed current draft. */
+  applyContextPackOperatorMutation(
+    sessionId: SessionId,
+    mutation: ContextPackMutation,
+  ): ContextPackMutationResult | null
+  /** Apply one bridge-authorized, revision-fenced builder mutation. */
+  applyContextPackBuilderMutation(
+    sessionId: SessionId,
+    mutation: RevisionFencedContextPackMutation,
+  ): ContextPackMutationResult | null
+  /** Publish one already-materialized exact review candidate for the current draft revision. */
+  publishContextPackReview(
+    sessionId: SessionId,
+    candidate: ContextPackReviewCandidate,
+  ): boolean
+  /** Publish one core-validated sealed value for the exact current review candidate. */
+  sealContextPack(sessionId: SessionId, sealed: SealedContextPack): boolean
+  /** Bind one live Context Build to the addressed current draft. */
+  bindContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
+  /** Release only the matching live Context Build generation. */
+  releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
@@ -552,11 +602,13 @@ class AppStoreImpl implements AppStore {
   constructor(options: AppStoreOptions) {
     const seeds = options.seeds ?? defaultSessionSeeds()
     const sessions = {} as Record<SessionId, SessionState>
+    const contextPacks = {} as Record<SessionId, ContextPackState>
     const transcriptWindows = {} as Record<SessionId, TranscriptWindowState>
     const restoration = {} as Record<SessionId, RestorationMode | null>
     const clarificationCapabilities = {} as Record<SessionId, ClarificationCapability>
     for (const seed of seeds) {
       sessions[seed.id] = createSessionState(seed)
+      contextPacks[seed.id] = createContextPackState()
       transcriptWindows[seed.id] = createTranscriptWindowState()
       restoration[seed.id] = null
       clarificationCapabilities[seed.id] = unknownClarificationCapability()
@@ -571,6 +623,7 @@ class AppStoreImpl implements AppStore {
     })
     this.state = {
       sessions,
+      contextPacks,
       transcriptWindows,
       explorer: { visible: false, positions: {} },
       delegation: createDelegationState(),
@@ -848,6 +901,140 @@ class AppStoreImpl implements AppStore {
     })
   }
 
+  createContextPackDraft(
+    sessionId: SessionId,
+    original: string,
+    options: {
+      readonly mode?: ContextPackInstructions["mode"]
+      readonly discovered?: string
+      readonly budgetLimit?: number
+    } = {},
+  ): ContextPackDraftResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current || current.build) return null
+    const result = createDraft(original, options)
+    if (result.kind !== "created") return result
+    this.commitContextPack(sessionId, {
+      ...current,
+      draft: result.draft,
+      review: null,
+    })
+    return result
+  }
+
+  refineContextPackDraft(sessionId: SessionId): ContextPackDraftResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.sealed || current.build) return null
+    const result = startFreshFromSealed(current.sealed)
+    if (result.kind !== "created") return result
+    this.commitContextPack(sessionId, {
+      ...current,
+      draft: result.draft,
+      review: null,
+    })
+    return result
+  }
+
+  applyContextPackOperatorMutation(
+    sessionId: SessionId,
+    mutation: ContextPackMutation,
+  ): ContextPackMutationResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.draft) return null
+    const result = applyOperatorContextPackMutation(current.draft, mutation)
+    if (result.kind !== "applied") return result
+    this.commitContextPack(sessionId, {
+      ...current,
+      draft: result.draft,
+      review: null,
+      build: current.build?.state === "ready_for_review"
+        ? { ...current.build, state: "building" }
+        : current.build,
+    })
+    return result
+  }
+
+  applyContextPackBuilderMutation(
+    sessionId: SessionId,
+    mutation: RevisionFencedContextPackMutation,
+  ): ContextPackMutationResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.draft) return null
+    const result = applyBuilderContextPackMutation(current.draft, mutation)
+    if (result.kind !== "applied") return result
+    this.commitContextPack(sessionId, {
+      ...current,
+      draft: result.draft,
+      review: null,
+      build: current.build?.state === "ready_for_review"
+        ? { ...current.build, state: "building" }
+        : current.build,
+    })
+    return result
+  }
+
+  publishContextPackReview(
+    sessionId: SessionId,
+    candidate: ContextPackReviewCandidate,
+  ): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (
+      !current?.draft ||
+      candidate.revision !== current.draft.revision ||
+      candidate.manifest.revision !== current.draft.revision
+    ) {
+      return false
+    }
+    if (current.review === candidate) return true
+    const build = current.build
+      ? { ...current.build, state: "ready_for_review" as const }
+      : null
+    this.commitContextPack(sessionId, { ...current, review: candidate, build })
+    return true
+  }
+
+  sealContextPack(sessionId: SessionId, sealed: SealedContextPack): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (
+      !current?.draft ||
+      !current.review ||
+      sealed.revision !== current.draft.revision ||
+      sealed.revision !== current.review.revision ||
+      sealed.manifest.revision !== current.review.manifest.revision ||
+      sealed.payload !== current.review.payload ||
+      sealed.bytes !== current.review.bytes ||
+      sealed.packEstimate !== current.review.packEstimate ||
+      sealed.redactionCount !== current.review.redactionCount
+    ) {
+      return false
+    }
+    if (current.sealed === sealed) return true
+    this.commitContextPack(sessionId, { ...current, sealed })
+    return true
+  }
+
+  bindContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (
+      !current?.draft ||
+      current.build ||
+      binding.parentId !== sessionId ||
+      binding.draftRevision !== current.draft.revision ||
+      binding.state !== "building"
+    ) {
+      return false
+    }
+    this.commitContextPack(sessionId, { ...current, build: binding })
+    return true
+  }
+
+  releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.build || !sameContextBuildIdentity(current.build, binding)) return false
+    this.commitContextPack(sessionId, { ...current, build: null })
+    return true
+  }
+
   applyShellEvent(event: ShellEvent): void {
     const next = shellReducer(this.state.shell, event)
     if (next === this.state.shell) return
@@ -906,6 +1093,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      contextPacks: { ...this.state.contextPacks, [seed.id]: createContextPackState() },
       transcriptWindows: {
         ...this.state.transcriptWindows,
         [seed.id]: createTranscriptWindowState(),
@@ -983,6 +1171,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      contextPacks: { ...this.state.contextPacks, [seed.id]: createContextPackState() },
       transcriptWindows: {
         ...this.state.transcriptWindows,
         [seed.id]: createTranscriptWindowState(),
@@ -1064,6 +1253,7 @@ class AppStoreImpl implements AppStore {
       sessionId: identity.childId,
     })
     const sessions = { ...this.state.sessions }
+    const contextPacks = { ...this.state.contextPacks }
     const transcriptWindows = { ...this.state.transcriptWindows }
     const explorerPositions = { ...this.state.explorer.positions }
     const restoration = { ...this.state.restoration }
@@ -1071,6 +1261,7 @@ class AppStoreImpl implements AppStore {
     const harnessDeliveries = { ...this.state.harnessDeliveries }
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[identity.childId]
+    delete contextPacks[identity.childId]
     delete transcriptWindows[identity.childId]
     delete explorerPositions[identity.childId]
     delete restoration[identity.childId]
@@ -1081,6 +1272,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      contextPacks,
       transcriptWindows,
       explorer: { ...this.state.explorer, positions: explorerPositions },
       delegation,
@@ -1099,11 +1291,13 @@ class AppStoreImpl implements AppStore {
     selectedVisibleId: SessionId | null,
   ): void {
     const sessions: Record<SessionId, SessionState> = {}
+    const contextPacks: Record<SessionId, ContextPackState> = {}
     const transcriptWindows: Record<SessionId, TranscriptWindowState> = {}
     const restoration: Record<SessionId, RestorationMode | null> = {}
     const clarificationCapabilities: Record<SessionId, ClarificationCapability> = {}
     for (const entry of entries) {
       sessions[entry.seed.id] = createSessionState(entry.seed)
+      contextPacks[entry.seed.id] = createContextPackState()
       transcriptWindows[entry.seed.id] = createTranscriptWindowState()
       restoration[entry.seed.id] = null
       clarificationCapabilities[entry.seed.id] = unknownClarificationCapability()
@@ -1115,6 +1309,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      contextPacks,
       transcriptWindows,
       explorer: { ...this.state.explorer, positions: {} },
       delegation: createDelegationState(),
@@ -1133,6 +1328,7 @@ class AppStoreImpl implements AppStore {
     if (!this.state.sessions[sessionId] || !this.state.workspace.conversations[sessionId]) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "close_succeeded", sessionId })
     const sessions = { ...this.state.sessions }
+    const contextPacks = { ...this.state.contextPacks }
     const transcriptWindows = { ...this.state.transcriptWindows }
     const explorerPositions = { ...this.state.explorer.positions }
     const restoration = { ...this.state.restoration }
@@ -1140,6 +1336,7 @@ class AppStoreImpl implements AppStore {
     const harnessDeliveries = { ...this.state.harnessDeliveries }
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[sessionId]
+    delete contextPacks[sessionId]
     delete transcriptWindows[sessionId]
     delete explorerPositions[sessionId]
     delete restoration[sessionId]
@@ -1149,6 +1346,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      contextPacks,
       transcriptWindows,
       explorer: { ...this.state.explorer, positions: explorerPositions },
       workspace,
@@ -1474,6 +1672,13 @@ class AppStoreImpl implements AppStore {
     })
   }
 
+  private commitContextPack(sessionId: SessionId, contextPack: ContextPackState): void {
+    this.commit({
+      ...this.state,
+      contextPacks: { ...this.state.contextPacks, [sessionId]: contextPack },
+    })
+  }
+
   private updateTranscriptWindow(
     sessionId: SessionId,
     transcriptWindow: TranscriptWindowState,
@@ -1523,8 +1728,25 @@ class AppStoreImpl implements AppStore {
   }
 }
 
+function createContextPackState(): ContextPackState {
+  return { draft: null, sealed: null, review: null, build: null }
+}
+
 function createTranscriptWindowState(): TranscriptWindowState {
   return { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null }
+}
+
+function sameContextBuildIdentity(
+  left: ContextBuildBinding,
+  right: ContextBuildBinding,
+): boolean {
+  return (
+    left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision
+  )
 }
 
 function createExplorerPosition(workspaceRoot: string, generation = 0): ExplorerPosition {

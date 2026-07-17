@@ -63,6 +63,11 @@ import type {
   ManagedWorktreeBinding,
   ManagedWorktreeReason,
   ConversationAvailability,
+  ContextBuildBinding,
+  ContextPackReviewCandidate,
+  ContextPackState,
+  DraftContextPack,
+  SealedContextPack,
   TeardownState,
   WorkspaceConversation,
   WorkspaceState,
@@ -346,6 +351,36 @@ const delegatedParentCloseSummaryCache = new WeakMap<
 /** The active conversation, retained while the shell owns keyboard focus. */
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
   state.workspace.selectedVisibleId
+
+/** The complete addressed Context Pack custody projection, or stable `null` when absent. */
+export const selectContextPack =
+  (sessionId: SessionId | null): Selector<ContextPackState | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId] : null) ?? null
+
+/** The addressed current mutable draft only. */
+export const selectContextPackDraft =
+  (sessionId: SessionId | null): Selector<DraftContextPack | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.draft : null) ?? null
+
+/** The addressed current immutable sealed pack only. */
+export const selectContextPackSealed =
+  (sessionId: SessionId | null): Selector<SealedContextPack | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.sealed : null) ?? null
+
+/** The addressed live-only exact review candidate only. */
+export const selectContextPackReview =
+  (sessionId: SessionId | null): Selector<ContextPackReviewCandidate | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.review : null) ?? null
+
+/** The addressed live-only Context Build binding only. */
+export const selectContextPackBuild =
+  (sessionId: SessionId | null): Selector<ContextBuildBinding | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.build : null) ?? null
 
 /** The complete ephemeral delegation projection for controller/store integration. */
 export const selectDelegationState: Selector<DelegationState> = (state) => state.delegation
