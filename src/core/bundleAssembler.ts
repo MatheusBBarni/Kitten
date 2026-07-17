@@ -103,7 +103,13 @@ export function attachSealedContextPack(
 
   return {
     kind: "attached",
-    bundle: { ...bundle, files, pendingDiffs, contextPack },
+    bundle: {
+      ...bundle,
+      files,
+      pendingDiffs,
+      contextPack,
+      redactionCount: bundle.redactionCount + (contextPack.redactionCount ?? 0),
+    },
   }
 }
 

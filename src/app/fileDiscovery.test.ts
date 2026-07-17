@@ -136,7 +136,7 @@ describe("createRepositoryFileSource", () => {
       env: { KITTEN_FILE_TEST: "1" },
     })
 
-    await expect(source.list("/repo root/nested")).resolves.toEqual({
+    await expect(source.list("/repo root")).resolves.toEqual({
       kind: "ready",
       paths: ["a-first.ts", "src/My File.ts", "z-last.ts"],
     })
@@ -148,7 +148,7 @@ describe("createRepositoryFileSource", () => {
       ["git", "check-attr", "-z", "--stdin", "linguist-generated", "text"],
     ])
     expect(calls[0]).toMatchObject({
-      cwd: "/repo root/nested",
+      cwd: "/repo root",
       stdin: "ignore",
       stdout: "pipe",
       stderr: "ignore",
@@ -157,6 +157,22 @@ describe("createRepositoryFileSource", () => {
     expect(calls[0]?.env.KITTEN_FILE_TEST).toBe("1")
     expect(decodeStdin(calls[2]!.stdin)).toEqual(paths)
     expect(decodeStdin(calls[3]!.stdin)).toEqual(paths)
+  })
+
+  it("returns only safe paths relative to a session launched below the repository root", async () => {
+    const source = createRepositoryFileSource({
+      spawn: createSpawn("/repo", [
+        "README.md",
+        "packages/app/src/current.ts",
+        "packages/library/src/other.ts",
+      ]),
+      fileSystem: safeFileSystem(),
+    })
+
+    await expect(source.list("/repo/packages/app")).resolves.toEqual({
+      kind: "ready",
+      paths: ["src/current.ts"],
+    })
   })
 
   it("subtracts every ignored path, including a tracked path matching current rules", async () => {
@@ -448,7 +464,7 @@ describe("createRepositoryFileSource", () => {
 
       await expect(source.list(join(root, "src"))).resolves.toEqual({
         kind: "ready",
-        paths: ["one/index.ts", "src/My File.ts", "src/safe.ts", "two/index.ts"],
+        paths: ["My File.ts", "safe.ts"],
       })
     } finally {
       await rm(root, { recursive: true, force: true })

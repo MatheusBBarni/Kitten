@@ -327,6 +327,36 @@ describe("createRunStore", () => {
     })
   })
 
+  it("persists a retained sealed Context Pack attachment in a handoff bundle", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const payload = "# Reviewed attachment\r\n\r\n[REDACTED]"
+      const record = makeV4Record(cwd, {
+        handoffBundle: {
+          intent: "continue",
+          summary: "Continue with the reviewed Context Pack.",
+          files: [],
+          pendingDiffs: [],
+          contextPack: {
+            payload,
+            bytes: new TextEncoder().encode(payload).byteLength,
+            sealedAt: 777,
+            revision: 4,
+            sourceIdentities: ["file:dev:1"],
+            redactionCount: 1,
+          },
+          redactionCount: 1,
+        },
+      })
+      const store = createRunStore({ enabled: true, path: base })
+
+      store.save(record)
+
+      const loaded = store.load(cwd, record.runId)
+      expect(loaded?.handoffBundle).toEqual(record.handoffBundle)
+    })
+  })
+
   it("drops a malformed sibling Context Pack while restoring the valid projection", () => {
     withTempStore((base) => {
       const cwd = join(base, "worktree")

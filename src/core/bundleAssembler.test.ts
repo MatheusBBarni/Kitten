@@ -92,6 +92,16 @@ describe("sealed Context Pack attachment", () => {
     })).toEqual({ kind: "blocked", reason: "context_pack_already_attached" })
   })
 
+  it("includes the sealed pack's redactions in the combined preview count", () => {
+    const attached = attachSealedContextPack(bundle, sealedPack(), {
+      files: {},
+      pendingDiffs: {},
+    })
+    if (attached.kind !== "attached") throw new Error("expected attachment")
+
+    expect(attached.bundle.redactionCount).toBe(1)
+  })
+
   it("deduplicates exact identities while retaining the same path with a different identity", () => {
     const attached = attachSealedContextPack(bundle, sealedPack(), {
       files: {

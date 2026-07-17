@@ -152,7 +152,17 @@ export function createRepositoryFileSource(
           return !isBinaryRepositoryFilePrefix(prefix)
         })
 
-        return { kind: "ready", paths: eligible.sort(compareLexically) }
+        // `git ls-files` always reports paths relative to the repository top-level,
+        // while every caller resolves a selected path against the addressed session's
+        // cwd. Return only safe paths below that cwd, rewritten into its coordinate
+        // space, so a selection cannot miss or name a coincidental sibling file.
+        const sessionRoot = resolve(cwd)
+        const sessionPaths = eligible.flatMap((path) => {
+          const relativePath = relative(sessionRoot, resolve(root, path)).split(sep).join("/")
+          return isSafeRepositoryRelativePath(sessionRoot, relativePath) ? [relativePath] : []
+        })
+
+        return { kind: "ready", paths: sessionPaths.sort(compareLexically) }
       } catch {
         return discoveryFailed()
       }

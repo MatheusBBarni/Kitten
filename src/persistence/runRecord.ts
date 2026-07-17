@@ -33,6 +33,23 @@ const SHELL_COMMAND_SCHEMA = z.strictObject({
   exitCode: z.number().finite().nullable(),
 })
 
+const HANDOFF_CONTEXT_PACK_SCHEMA = z.strictObject({
+  payload: z.string(),
+  bytes: NONNEGATIVE_INTEGER_SCHEMA,
+  sealedAt: z.number().finite().nonnegative(),
+  revision: NONNEGATIVE_INTEGER_SCHEMA,
+  sourceIdentities: z.array(z.string()).readonly(),
+  redactionCount: NONNEGATIVE_INTEGER_SCHEMA.optional(),
+}).superRefine((sealed, context) => {
+  if (new TextEncoder().encode(sealed.payload).byteLength !== sealed.bytes) {
+    context.addIssue({
+      code: "custom",
+      message: "Handoff Context Pack byte count does not match the exact payload",
+      path: ["bytes"],
+    })
+  }
+})
+
 const HANDOFF_BUNDLE_SCHEMA = z.strictObject({
   intent: z.literal("continue"),
   summary: z.string(),
@@ -44,6 +61,7 @@ const HANDOFF_BUNDLE_SCHEMA = z.strictObject({
       commands: z.array(SHELL_COMMAND_SCHEMA),
     })
     .optional(),
+  contextPack: HANDOFF_CONTEXT_PACK_SCHEMA.optional(),
   redactionCount: z.number().finite(),
 })
 
