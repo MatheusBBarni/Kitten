@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  CONTEXT_BRIEF_SECTION_KEYS,
   DEFAULT_PROVIDER_ORDER,
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_KINDS,
@@ -11,10 +12,14 @@ import {
   type ClarificationOutcome,
   type ClarificationPayload,
   type ConfigOption,
+  type ContextBrief,
+  type ContextSelection,
   type ManagedWorktreeAvailability,
   type ManagedWorktreeBinding,
   type ManagedWorktreeReason,
   type ProviderRuntimeProfile,
+  type RecipientFit,
+  type RevisionFencedContextPackMutation,
   type SessionId,
 } from "./types.ts"
 
@@ -250,5 +255,54 @@ describe("visibleConfigOptions", () => {
 
   it("exposes exactly model and thought_level as the visible categories", () => {
     expect(VISIBLE_CATEGORIES).toEqual(["model", "thought_level"])
+  })
+})
+
+describe("context-pack protocol-free vocabulary", () => {
+  it("keeps the fixed brief sections and closed selection kinds explicit", () => {
+    const brief: ContextBrief = {
+      architecture: "Core owns deterministic values.",
+      selectedContext: "src/core/contextPack.ts",
+      relationships: "The application supplies bounded artifacts.",
+      ambiguities: "Recipient counters arrive later.",
+      budgetOmissions: "No omitted source.",
+    }
+    const selections: ContextSelection["kind"][] = ["full_file", "file_slice", "diff"]
+
+    expect(CONTEXT_BRIEF_SECTION_KEYS).toEqual([
+      "architecture",
+      "selectedContext",
+      "relationships",
+      "ambiguities",
+      "budgetOmissions",
+    ])
+    expect(Object.keys(brief)).toEqual([...CONTEXT_BRIEF_SECTION_KEYS])
+    expect(selections).toEqual(["full_file", "file_slice", "diff"])
+  })
+
+  it("represents recipient outcomes as one closed discriminated union", () => {
+    const outcomes: RecipientFit[] = [
+      { kind: "fit", exactCount: 100, remaining: 900 },
+      { kind: "unavailable", reason: "stale_evidence" },
+      { kind: "insufficient", exactCount: 1_100, remaining: -100 },
+    ]
+
+    expect(outcomes.map((outcome) => outcome.kind)).toEqual(["fit", "unavailable", "insufficient"])
+  })
+
+  it("rejects raw source content and custom brief shapes at compile time", () => {
+    const acceptSelection = (_selection: ContextSelection): void => undefined
+    const acceptBrief = (_brief: ContextBrief): void => undefined
+    const acceptBuilderMutation = (_mutation: RevisionFencedContextPackMutation): void => undefined
+    const source = { identity: "file:src/a.ts", digest: "a".repeat(64), bytes: 1 }
+
+    // @ts-expect-error Draft selections are metadata-only and cannot retain source content.
+    acceptSelection({ kind: "full_file", path: "src/a.ts", source, rationale: "needed", relationship: "used", content: "x" })
+    // @ts-expect-error All five fixed Context Brief sections are required.
+    acceptBrief({ architecture: "", selectedContext: "", relationships: "", ambiguities: "" })
+    // @ts-expect-error Builders cannot mutate the operator-owned Pack Budget.
+    acceptBuilderMutation({ readRevision: 0, mutation: { kind: "set_budget", limit: 1 } })
+
+    expect(true).toBe(true)
   })
 })
