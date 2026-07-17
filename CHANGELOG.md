@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.4.0...kitten-v0.5.0) (2026-07-17)
+
+
+### Features
+
+* add Context Packs, File Explorer, and ACP support ([#35](https://github.com/MatheusBBarni/Kitten/issues/35)) ([96bfca7](https://github.com/MatheusBBarni/Kitten/commit/96bfca787ffad6d70d11e4caa6ba913e520cc1ef))
+
+
+### Fixes
+
+* restore npm token for release publishing ([5eb6d2c](https://github.com/MatheusBBarni/Kitten/commit/5eb6d2c3caccc2710eecc8d0f34069e5b36c7451))
+
 ## [0.4.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.3.0...kitten-v0.4.0) (2026-07-16)
 
 
