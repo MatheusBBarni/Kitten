@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Store Explorer State, Transitions, and Narrow Selectors
 type: refactor
 complexity: medium
@@ -28,11 +28,11 @@ Make the AppStore the single owner of current-run explorer state for every open 
 
 ## Subtasks
 
-- [ ] 1.1 Define the minimal session-addressed explorer state and initial state.
-- [ ] 1.2 Add focused-pane and explorer transition actions to the AppStore.
-- [ ] 1.3 Add request-generation and removal-cleanup behavior.
-- [ ] 1.4 Expose narrow selectors for the visible and focused session explorer state.
-- [ ] 1.5 Cover isolation, stale-result, and cleanup behavior in store and selector tests.
+- [x] 1.1 Define the minimal session-addressed explorer state and initial state.
+- [x] 1.2 Add focused-pane and explorer transition actions to the AppStore.
+- [x] 1.3 Add request-generation and removal-cleanup behavior.
+- [x] 1.4 Expose narrow selectors for the visible and focused session explorer state.
+- [x] 1.5 Cover isolation, stale-result, and cleanup behavior in store and selector tests.
 
 ## Implementation Details
 
@@ -65,12 +65,12 @@ Follow the TechSpec “State Model and Store Actions” and “State Invariants�
 ## Tests
 
 - Unit tests:
-  - [ ] Two sessions retain distinct selection, expansion, scroll, and notice state.
-  - [ ] A stale generation or mismatched workspace root cannot overwrite current explorer state.
-  - [ ] Removing a session removes only that session’s explorer state.
-  - [ ] Unrelated session updates preserve the selected explorer slice identity.
+  - [x] Two sessions retain distinct selection, expansion, scroll, and notice state.
+  - [x] A stale generation or mismatched workspace root cannot overwrite current explorer state.
+  - [x] Removing a session removes only that session’s explorer state.
+  - [x] Unrelated session updates preserve the selected explorer slice identity.
 - Integration tests:
-  - [ ] Focus switching restores the selected session’s current-run explorer state without touching another session.
+  - [x] Focus switching restores the selected session’s current-run explorer state without touching another session.
 - Test coverage target: >=80%
 - All tests must pass
 

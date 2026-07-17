@@ -41,6 +41,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }

@@ -354,6 +354,7 @@ describe("delegation pure consumer integration", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -433,6 +434,7 @@ describe("delegation pure consumer integration", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }

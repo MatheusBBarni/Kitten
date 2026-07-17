@@ -17,6 +17,7 @@ import {
   main,
   runtimeSetup,
   wantsAskUserMcp,
+  wantsContextPackMcp,
   wantsHelp,
   wantsReloadProbe,
   wantsSelfCheck,
@@ -355,8 +356,13 @@ describe("wantsSelfCheck", () => {
 
   it("enters MCP child mode only for the explicit reserved flag", () => {
     expect(wantsAskUserMcp(["bun", "index.ts", "--ask-user-mcp"])).toBe(true)
+    expect(wantsAskUserMcp(["bun", "index.ts", "--context-pack-mcp"])).toBe(false)
     expect(wantsAskUserMcp(["bun", "index.ts", "--self-check"])).toBe(false)
     expect(wantsAskUserMcp(["bun", "index.ts"])).toBe(false)
+
+    expect(wantsContextPackMcp(["bun", "index.ts", "--context-pack-mcp"])).toBe(true)
+    expect(wantsContextPackMcp(["bun", "index.ts", "--ask-user-mcp"])).toBe(false)
+    expect(wantsContextPackMcp(["bun", "index.ts", "--self-check"])).toBe(false)
   })
 
   it("detects the opt-in real-adapter reload probe flag independently", () => {
@@ -397,6 +403,33 @@ describe("reserved MCP child dispatch", () => {
 
     expect(errors).toEqual(["ASK_USER MCP FAILED: unavailable\n"])
     expect(errors.join("")).not.toContain("private transport detail")
+    expect(exits).toEqual([1])
+  })
+
+  it("dispatches the isolated Context Pack child before normal boot", async () => {
+    let childRuns = 0
+    expect(await dispatchReservedChildMode(
+      ["bun", "index.ts", "--context-pack-mcp"],
+      {},
+      { run: async () => { childRuns += 1 } },
+    )).toBe(true)
+    expect(childRuns).toBe(1)
+  })
+
+  it("keeps Context Pack child failures generic and separate from the mixed bridge", async () => {
+    const errors: string[] = []
+    const exits: number[] = []
+    expect(await dispatchReservedChildMode(
+      ["bun", "index.ts", "--context-pack-mcp"],
+      {},
+      {
+        run: async () => { throw new Error("private context route") },
+        writeError: (output) => errors.push(output),
+        exit: (code) => exits.push(code),
+      },
+    )).toBe(true)
+    expect(errors).toEqual(["CONTEXT PACK MCP FAILED: unavailable\n"])
+    expect(errors.join("")).not.toContain("private context route")
     expect(exits).toEqual([1])
   })
 })

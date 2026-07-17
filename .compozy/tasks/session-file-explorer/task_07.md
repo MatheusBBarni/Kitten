@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Explorer Command Registry, Keyboard Tree, and Responsive Presentation
 type: frontend
 complexity: high

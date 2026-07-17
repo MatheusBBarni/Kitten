@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Context Pack File Explorer membership
 type: frontend
 complexity: high
@@ -29,11 +29,11 @@ Add a focused session-addressed File Explorer to the Context Pack panel for expl
 
 ## Subtasks
 
-- [ ] 12.1 Add a session-addressed Context Pack File Explorer component.
-- [ ] 12.2 Render safe repository-relative paths and whole-file membership states.
-- [ ] 12.3 Wire keyboard/mouse add and remove to the addressed operator action.
-- [ ] 12.4 Mount the explorer in the Context Pack panel.
-- [ ] 12.5 Add stale-result, identity, denial, and panel-routing coverage.
+- [x] 12.1 Add a session-addressed Context Pack File Explorer component.
+- [x] 12.2 Render safe repository-relative paths and whole-file membership states.
+- [x] 12.3 Wire keyboard/mouse add and remove to the addressed operator action.
+- [x] 12.4 Mount the explorer in the Context Pack panel.
+- [x] 12.5 Add stale-result, identity, denial, and panel-routing coverage.
 
 ## Implementation Details
 
@@ -71,14 +71,14 @@ Follow the TechSpec File Explorer membership rules. Existing prompt @ completion
 ## Tests
 
 - Unit tests:
-  - [ ] Ready discovery renders lexical paths and marks an existing whole-file selection as in the Context Pack.
-  - [ ] Enter and Space add an unselected whole file then remove exactly that whole-file identity.
-  - [ ] Removing a whole-file entry does not remove a same-path slice or diff selection.
-  - [ ] Loading, empty, and unavailable states have explicit text and no actionable file row.
-  - [ ] Missing draft, sealed-only state, stale mutation, and typed denial preserve selections and show bounded feedback.
+  - [x] Ready discovery renders lexical paths and marks an existing whole-file selection as in the Context Pack.
+  - [x] Enter and Space add an unselected whole file then remove exactly that whole-file identity.
+  - [x] Removing a whole-file entry does not remove a same-path slice or diff selection.
+  - [x] Loading, empty, and unavailable states have explicit text and no actionable file row.
+  - [x] Missing draft, sealed-only state, stale mutation, and typed denial preserve selections and show bounded feedback.
 - Integration tests:
-  - [ ] A deferred session-A discovery response is ignored after the panel switches to session B.
-  - [ ] The mounted explorer always receives the panel's captured session rather than a later global focus.
+  - [x] A deferred session-A discovery response is ignored after the panel switches to session B.
+  - [x] The mounted explorer always receives the panel's captured session rather than a later global focus.
 - Test coverage target: >=80%
 - All tests must pass
 

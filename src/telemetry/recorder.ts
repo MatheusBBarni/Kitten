@@ -131,6 +131,10 @@ export type TelemetryEventType =
   | "file_selector_query_rendered"
   | "file_selector_selected"
   | "file_selector_corrected"
+  | "explorer_opened"
+  | "explorer_refreshed"
+  | "explorer_file_opened"
+  | "explorer_fallback"
   | "clarification_capability_classified"
   | "clarification_presented"
   | "clarification_settled"
@@ -165,7 +169,21 @@ export type TelemetryEventType =
   | "managed_worktree_cleanup_refused"
   | "managed_worktree_cleaned"
   | "agent_run_control"
+  | "kitten_mcp_bridge_failure"
   | "steering_outcome"
+  | "context_pack_draft_created"
+  | "build_started"
+  | "build_denied"
+  | "build_settled"
+  | "review_ready"
+  | "review_blocked"
+  | "sealed"
+  | "seal_denied"
+  | "fit_available"
+  | "fit_unavailable"
+  | "fit_insufficient"
+  | "delivery_confirmed"
+  | "delivery_denied"
 
 /** Closed lifecycle values for structured-clarification telemetry. */
 export type ClarificationCapabilityStatus = "supported" | "unsupported"
@@ -210,6 +228,26 @@ export type FileSelectorDiscoveryOutcome = "ready" | "unavailable"
 /** Closed post-render states for the warm local-query latency metric. */
 export type FileSelectorRenderState = "results" | "empty" | "unavailable"
 
+/** Closed explorer refresh results; no source detail or tree size may cross this boundary. */
+export type ExplorerRefreshOutcome = "refreshed" | "source-failed"
+
+/** Closed settled file-open results; no file, editor, command, or error detail is accepted. */
+export type ExplorerFileOpenOutcome =
+  | "unsupported"
+  | "source-failed"
+  | "default-opened"
+  | "custom-opened"
+  | "final-failure"
+
+/** The only fallback fact recorded before the final file-open outcome. */
+export type ExplorerFallbackOutcome = "fallback"
+
+/** Complete content-free explorer vocabulary serialized through `TelemetryRecord.outcome`. */
+export type ExplorerTelemetryOutcome =
+  | ExplorerRefreshOutcome
+  | ExplorerFileOpenOutcome
+  | ExplorerFallbackOutcome
+
 /** The two entry points whose adoption the resume metrics compare. */
 export type ResumeMode = "picker" | "last-run"
 
@@ -247,6 +285,8 @@ export type AgentRunDurationBucket =
   | "100_to_499ms"
   | "500_to_1999ms"
   | "2s_or_more"
+/** Closed bridge outcome categories; no transport reason or identity crosses this boundary. */
+export type McpBridgeFailureCategory = "capacity_limited" | "unavailable" | "invalid_request"
 
 /** Closed, content-free dimensions for one steering lifecycle observation. */
 export type SteeringTelemetryOutcome =
@@ -257,6 +297,83 @@ export type SteeringTelemetryOutcome =
   | "unavailable"
 export type SteeringCapabilityClass = "native" | "fallback" | "unavailable"
 export type SteeringDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+/** Closed Context Pack dimensions. Exact counts, bytes, durations, and identities never cross the recorder API. */
+export type ContextPackSelectionCountBucket = "zero" | "one" | "two_to_four" | "five_to_nine" | "ten_or_more"
+export type ContextPackRedactionCountBucket = "zero" | "one" | "two_to_four" | "five_or_more"
+export type ContextPackByteBucket = "under_8kb" | "8_to_31kb" | "32_to_127kb" | "128kb_or_more"
+export type ContextPackDurationBucket = "under_1s" | "1_to_4s" | "5_to_29s" | "30s_or_more"
+export type ContextPackBuildDenialReason =
+  | "controller_unavailable"
+  | "capability_unavailable"
+  | "draft_unavailable"
+  | "build_active"
+  | "workspace_unavailable"
+  | "startup_failed"
+export type ContextPackBuildOutcome = "ready_for_review" | "failed"
+export type ContextPackReviewBlockingReason =
+  | "draft_unavailable"
+  | "source_unavailable"
+  | "source_stale"
+  | "invalid_draft"
+  | "over_budget"
+export type ContextPackSealDenialReason =
+  | "review_unavailable"
+  | "candidate_stale"
+  | "source_stale"
+  | "invalid_candidate"
+  | "over_budget"
+export type ContextPackFitUnavailableReason =
+  | "missing_evidence"
+  | "stale_evidence"
+  | "invalid_evidence"
+  | "payload_mismatch"
+export type ContextPackDeliveryDenialReason =
+  | "sealed_unavailable"
+  | "sealed_changed"
+  | "fit_unavailable"
+  | "fit_insufficient"
+  | "dispatch_failed"
+
+export interface ContextPackDraftCreatedInput {
+  readonly selectionCountBucket: ContextPackSelectionCountBucket
+}
+export interface ContextPackBuildStartedInput {
+  readonly selectionCountBucket: ContextPackSelectionCountBucket
+}
+export interface ContextPackBuildDeniedInput {
+  readonly reason: ContextPackBuildDenialReason
+}
+export interface ContextPackBuildSettledInput {
+  readonly outcome: ContextPackBuildOutcome
+}
+export interface ContextPackReviewReadyInput {
+  readonly selectionCountBucket: ContextPackSelectionCountBucket
+  readonly redactionCountBucket: ContextPackRedactionCountBucket
+  readonly byteBucket: ContextPackByteBucket
+}
+export interface ContextPackReviewBlockedInput {
+  readonly reason: ContextPackReviewBlockingReason
+}
+export interface ContextPackSealedInput extends ContextPackReviewReadyInput {}
+export interface ContextPackSealDeniedInput {
+  readonly reason: ContextPackSealDenialReason
+}
+export interface ContextPackFitAvailableInput {
+  readonly byteBucket: ContextPackByteBucket
+}
+export interface ContextPackFitUnavailableInput {
+  readonly reason: ContextPackFitUnavailableReason
+}
+export interface ContextPackFitInsufficientInput {
+  readonly byteBucket: ContextPackByteBucket
+}
+export interface ContextPackDeliveryConfirmedInput {
+  readonly byteBucket: ContextPackByteBucket
+}
+export interface ContextPackDeliveryDeniedInput {
+  readonly reason: ContextPackDeliveryDenialReason
+}
 
 /** The exact steering record written locally; lifecycle identity never crosses this boundary. */
 export interface SteeringOutcomeRecord {
@@ -338,7 +455,7 @@ export interface TelemetryRecord {
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
   /** Fixed file-discovery outcome; never a source error, path, or query. */
-  outcome?: FileSelectorDiscoveryOutcome | AgentRunOutcome | SteeringTelemetryOutcome
+  outcome?: FileSelectorDiscoveryOutcome | ExplorerTelemetryOutcome | AgentRunOutcome | SteeringTelemetryOutcome
   /** Fixed warm-query render state; never a candidate count or candidate content. */
   state?: FileSelectorRenderState
   /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
@@ -395,8 +512,20 @@ export interface TelemetryRecord {
   operation?: AgentRunOperation
   /** Bounded request cardinality; never a raw task or child list length. */
   batchSizeBucket?: AgentRunBatchSizeBucket
+  /** Closed bridge failure category; never a route, call, transport reason, or error. */
+  mcpBridgeFailureCategory?: McpBridgeFailureCategory
   /** Closed steering transport class; never an adapter recipe or configuration. */
   capabilityClass?: SteeringCapabilityClass
+  /** Closed Context Pack reason category; never an error, path, recipe, recipient, or destination. */
+  contextPackReason?: ContextPackBuildDenialReason | ContextPackReviewBlockingReason |
+    ContextPackSealDenialReason | ContextPackFitUnavailableReason | ContextPackDeliveryDenialReason
+  /** Closed terminal Context Build result. */
+  contextPackOutcome?: ContextPackBuildOutcome
+  /** Coarse Context Pack cardinality/size/duration buckets; exact values never reach the sink. */
+  selectionCountBucket?: ContextPackSelectionCountBucket
+  redactionCountBucket?: ContextPackRedactionCountBucket
+  byteBucket?: ContextPackByteBucket
+  contextPackDurationBucket?: ContextPackDurationBucket
 }
 
 /** Where recorded events go. The default is a local JSONL file; tests inject memory. */
@@ -469,6 +598,14 @@ export interface TelemetryRecorder {
   fileSelectorSelected(sessionId: SessionId, durationMs: number): void
   /** One pending accepted reference was edited through before submission. */
   fileSelectorCorrected(sessionId: SessionId): void
+  /** The hidden explorer became visible for one run-local session ordinal. */
+  explorerOpened(sessionId: SessionId): void
+  /** An explicit refresh settled with one closed source outcome. */
+  explorerRefreshed(sessionId: SessionId, outcome: ExplorerRefreshOutcome): void
+  /** A user-initiated file open settled with one closed final outcome. */
+  explorerFileOpened(sessionId: SessionId, outcome: ExplorerFileOpenOutcome): void
+  /** A failed custom dispatch began its one allowed system-default fallback. */
+  explorerFallback(sessionId: SessionId): void
   /** A provider recipe was classified without recording any recipe identity. */
   clarificationCapabilityClassified(
     provider: ProviderKind,
@@ -565,12 +702,40 @@ export interface TelemetryRecorder {
   managedWorktreeCleaned(): void
   /** Record one settled route-authorized control using only approved closed dimensions. */
   agentRunControl(input: AgentRunTelemetryInput): void
+  /** Record one bridge failure using only its closed semantic category. */
+  mcpBridgeFailure(category: McpBridgeFailureCategory): void
   /** Record one steering lifecycle outcome, deduplicated and timed by a private key. */
   steeringOutcome(
     lifecycleKey: string,
     outcome: SteeringTelemetryOutcome,
     capabilityClass: SteeringCapabilityClass,
   ): void
+  /** Record one accepted draft creation using only a coarse selection bucket. */
+  contextPackDraftCreated(input: ContextPackDraftCreatedInput): void
+  /** Start one private Context Build lifecycle after launch settles as accepted. */
+  contextPackBuildStarted(lifecycleKey: string, input: ContextPackBuildStartedInput): void
+  /** Record one settled Context Build denial. */
+  contextPackBuildDenied(input: ContextPackBuildDeniedInput): void
+  /** Settle one private Context Build lifecycle exactly once. */
+  contextPackBuildSettled(lifecycleKey: string, input: ContextPackBuildSettledInput): void
+  /** Record one published review candidate. */
+  contextPackReviewReady(input: ContextPackReviewReadyInput): void
+  /** Record one settled review refusal. */
+  contextPackReviewBlocked(input: ContextPackReviewBlockedInput): void
+  /** Record one sealed exact candidate using only coarse buckets. */
+  contextPackSealed(input: ContextPackSealedInput): void
+  /** Record one settled seal refusal. */
+  contextPackSealDenied(input: ContextPackSealDeniedInput): void
+  /** Record one fit decision with current sufficient evidence. */
+  contextPackFitAvailable(input: ContextPackFitAvailableInput): void
+  /** Record one unavailable fit decision. */
+  contextPackFitUnavailable(input: ContextPackFitUnavailableInput): void
+  /** Record one insufficient fit decision. */
+  contextPackFitInsufficient(input: ContextPackFitInsufficientInput): void
+  /** Record one explicitly confirmed delivery after dispatch settles. */
+  contextPackDeliveryConfirmed(input: ContextPackDeliveryConfirmedInput): void
+  /** Record one settled delivery refusal. */
+  contextPackDeliveryDenied(input: ContextPackDeliveryDeniedInput): void
   /** Start the picker-open-to-interactive clock before opening its store slot. */
   resumePickerOpened(): void
   /** Close the picker clock after its interactive tree commits. */
@@ -621,6 +786,10 @@ const NOOP_RECORDER: TelemetryRecorder = {
   fileSelectorQueryRendered() {},
   fileSelectorSelected() {},
   fileSelectorCorrected() {},
+  explorerOpened() {},
+  explorerRefreshed() {},
+  explorerFileOpened() {},
+  explorerFallback() {},
   clarificationCapabilityClassified() {},
   clarificationPresented() {},
   clarificationSettled() {},
@@ -662,7 +831,21 @@ const NOOP_RECORDER: TelemetryRecorder = {
   managedWorktreeCleanupRefused() {},
   managedWorktreeCleaned() {},
   agentRunControl() {},
+  mcpBridgeFailure() {},
   steeringOutcome() {},
+  contextPackDraftCreated() {},
+  contextPackBuildStarted() {},
+  contextPackBuildDenied() {},
+  contextPackBuildSettled() {},
+  contextPackReviewReady() {},
+  contextPackReviewBlocked() {},
+  contextPackSealed() {},
+  contextPackSealDenied() {},
+  contextPackFitAvailable() {},
+  contextPackFitUnavailable() {},
+  contextPackFitInsufficient() {},
+  contextPackDeliveryConfirmed() {},
+  contextPackDeliveryDenied() {},
   resumePickerOpened() {},
   resumePickerInteractive() {},
   watch() {
@@ -748,6 +931,8 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly managedWorktreeProvisionSettled = new Set<string>()
   private readonly steeringLifecycleStarts = new Map<string, number>()
   private readonly steeringLifecycleOutcomes = new Set<string>()
+  private readonly contextPackBuildStarts = new Map<string, number>()
+  private readonly contextPackBuildSettledKeys = new Set<string>()
   private nextAgentRef = 1
 
   constructor(options: TelemetryRecorderOptions) {
@@ -865,6 +1050,28 @@ class ActiveRecorder implements TelemetryRecorder {
     this.record({ type: "file_selector_corrected", agent: sessionId })
   }
 
+  explorerOpened(sessionId: SessionId): void {
+    this.record({ type: "explorer_opened", agentRef: this.agentRef(sessionId) })
+  }
+
+  explorerRefreshed(sessionId: SessionId, outcome: ExplorerRefreshOutcome): void {
+    if (!isExplorerRefreshOutcome(outcome)) return
+    this.record({ type: "explorer_refreshed", agentRef: this.agentRef(sessionId), outcome })
+  }
+
+  explorerFileOpened(sessionId: SessionId, outcome: ExplorerFileOpenOutcome): void {
+    if (!isExplorerFileOpenOutcome(outcome)) return
+    this.record({ type: "explorer_file_opened", agentRef: this.agentRef(sessionId), outcome })
+  }
+
+  explorerFallback(sessionId: SessionId): void {
+    this.record({
+      type: "explorer_fallback",
+      agentRef: this.agentRef(sessionId),
+      outcome: "fallback",
+    })
+  }
+
   clarificationCapabilityClassified(
     provider: ProviderKind,
     capability: ClarificationCapabilityStatus,
@@ -929,6 +1136,7 @@ class ActiveRecorder implements TelemetryRecorder {
   }
 
   providerReadiness(provider: ProviderKind, readinessOutcome: ProviderReadinessOutcome): void {
+    if (!isProviderKind(provider) || !isProviderReadinessOutcome(readinessOutcome)) return
     this.record({ type: "provider_readiness", provider, readinessOutcome })
   }
 
@@ -1172,6 +1380,14 @@ class ActiveRecorder implements TelemetryRecorder {
     })
   }
 
+  mcpBridgeFailure(category: McpBridgeFailureCategory): void {
+    if (!isMcpBridgeFailureCategory(category)) return
+    this.record({
+      type: "kitten_mcp_bridge_failure",
+      mcpBridgeFailureCategory: category,
+    })
+  }
+
   steeringOutcome(
     lifecycleKey: string,
     outcome: SteeringTelemetryOutcome,
@@ -1192,6 +1408,97 @@ class ActiveRecorder implements TelemetryRecorder {
       capabilityClass,
       durationBucket: bucketSteeringDuration(at - startedAt),
     }, at)
+  }
+
+  contextPackDraftCreated(input: ContextPackDraftCreatedInput): void {
+    if (
+      !hasExactKeys(input, ["selectionCountBucket"]) ||
+      !isContextPackSelectionCountBucket(input.selectionCountBucket)
+    ) return
+    this.record({
+      type: "context_pack_draft_created",
+      selectionCountBucket: input.selectionCountBucket,
+    })
+  }
+
+  contextPackBuildStarted(lifecycleKey: string, input: ContextPackBuildStartedInput): void {
+    if (
+      this.contextPackBuildStarts.has(lifecycleKey) ||
+      this.contextPackBuildSettledKeys.has(lifecycleKey) ||
+      !hasExactKeys(input, ["selectionCountBucket"]) ||
+      !isContextPackSelectionCountBucket(input.selectionCountBucket)
+    ) return
+    const at = this.now()
+    this.contextPackBuildStarts.set(lifecycleKey, at)
+    this.record({ type: "build_started", selectionCountBucket: input.selectionCountBucket }, at)
+  }
+
+  contextPackBuildDenied(input: ContextPackBuildDeniedInput): void {
+    if (!hasExactKeys(input, ["reason"]) || !isContextPackBuildDenialReason(input.reason)) return
+    this.record({ type: "build_denied", contextPackReason: input.reason })
+  }
+
+  contextPackBuildSettled(lifecycleKey: string, input: ContextPackBuildSettledInput): void {
+    if (
+      this.contextPackBuildSettledKeys.has(lifecycleKey) ||
+      !this.contextPackBuildStarts.has(lifecycleKey) ||
+      !hasExactKeys(input, ["outcome"]) ||
+      !isContextPackBuildOutcome(input.outcome)
+    ) return
+    const at = this.now()
+    const startedAt = this.contextPackBuildStarts.get(lifecycleKey)!
+    this.contextPackBuildStarts.delete(lifecycleKey)
+    this.contextPackBuildSettledKeys.add(lifecycleKey)
+    this.record({
+      type: "build_settled",
+      contextPackOutcome: input.outcome,
+      contextPackDurationBucket: bucketContextPackDuration(at - startedAt),
+    }, at)
+  }
+
+  contextPackReviewReady(input: ContextPackReviewReadyInput): void {
+    if (!isContextPackAggregateInput(input)) return
+    this.record({ type: "review_ready", ...input })
+  }
+
+  contextPackReviewBlocked(input: ContextPackReviewBlockedInput): void {
+    if (!hasExactKeys(input, ["reason"]) || !isContextPackReviewBlockingReason(input.reason)) return
+    this.record({ type: "review_blocked", contextPackReason: input.reason })
+  }
+
+  contextPackSealed(input: ContextPackSealedInput): void {
+    if (!isContextPackAggregateInput(input)) return
+    this.record({ type: "sealed", ...input })
+  }
+
+  contextPackSealDenied(input: ContextPackSealDeniedInput): void {
+    if (!hasExactKeys(input, ["reason"]) || !isContextPackSealDenialReason(input.reason)) return
+    this.record({ type: "seal_denied", contextPackReason: input.reason })
+  }
+
+  contextPackFitAvailable(input: ContextPackFitAvailableInput): void {
+    if (!isContextPackByteInput(input)) return
+    this.record({ type: "fit_available", byteBucket: input.byteBucket })
+  }
+
+  contextPackFitUnavailable(input: ContextPackFitUnavailableInput): void {
+    if (!hasExactKeys(input, ["reason"]) || !isContextPackFitUnavailableReason(input.reason)) return
+    this.record({ type: "fit_unavailable", contextPackReason: input.reason })
+  }
+
+  contextPackFitInsufficient(input: ContextPackFitInsufficientInput): void {
+    if (!isContextPackByteInput(input)) return
+    this.record({ type: "fit_insufficient", byteBucket: input.byteBucket })
+  }
+
+  contextPackDeliveryConfirmed(input: ContextPackDeliveryConfirmedInput): void {
+    if (!isContextPackByteInput(input)) return
+    this.record({ type: "delivery_confirmed", byteBucket: input.byteBucket })
+  }
+
+  contextPackDeliveryDenied(input: ContextPackDeliveryDeniedInput): void {
+    if (!hasExactKeys(input, ["reason"]) || !isContextPackDeliveryDenialReason(input.reason)) return
+    this.record({ type: "delivery_denied", contextPackReason: input.reason })
   }
 
   resumePickerOpened(): void {
@@ -1420,6 +1727,27 @@ function isProviderKind(value: unknown): value is ProviderKind {
   return value === "claude-code" || value === "codex" || value === "cursor"
 }
 
+function isProviderReadinessOutcome(value: unknown): value is ProviderReadinessOutcome {
+  return value === "ready" ||
+    value === "binary_missing" ||
+    value === "version_mismatch" ||
+    value === "uncertified_recipe" ||
+    value === "authentication_required" ||
+    value === "handshake_failed"
+}
+
+function isExplorerRefreshOutcome(value: unknown): value is ExplorerRefreshOutcome {
+  return value === "refreshed" || value === "source-failed"
+}
+
+function isExplorerFileOpenOutcome(value: unknown): value is ExplorerFileOpenOutcome {
+  return value === "unsupported" ||
+    value === "source-failed" ||
+    value === "default-opened" ||
+    value === "custom-opened" ||
+    value === "final-failure"
+}
+
 function isExploreStartupFailureCategory(value: unknown): value is ExploreStartupFailureCategory {
   return value === "bridge-unavailable" ||
     value === "session-start-failed" ||
@@ -1461,8 +1789,104 @@ function isSteeringTelemetryOutcome(value: unknown): value is SteeringTelemetryO
     value === "unavailable"
 }
 
+function isMcpBridgeFailureCategory(value: unknown): value is McpBridgeFailureCategory {
+  return value === "capacity_limited" || value === "unavailable" || value === "invalid_request"
+}
+
 function isSteeringCapabilityClass(value: unknown): value is SteeringCapabilityClass {
   return value === "native" || value === "fallback" || value === "unavailable"
+}
+
+function isContextPackSelectionCountBucket(value: unknown): value is ContextPackSelectionCountBucket {
+  return value === "zero" || value === "one" || value === "two_to_four" ||
+    value === "five_to_nine" || value === "ten_or_more"
+}
+
+function isContextPackRedactionCountBucket(value: unknown): value is ContextPackRedactionCountBucket {
+  return value === "zero" || value === "one" || value === "two_to_four" || value === "five_or_more"
+}
+
+function isContextPackByteBucket(value: unknown): value is ContextPackByteBucket {
+  return value === "under_8kb" || value === "8_to_31kb" ||
+    value === "32_to_127kb" || value === "128kb_or_more"
+}
+
+function isContextPackBuildDenialReason(value: unknown): value is ContextPackBuildDenialReason {
+  return value === "controller_unavailable" || value === "capability_unavailable" ||
+    value === "draft_unavailable" || value === "build_active" ||
+    value === "workspace_unavailable" || value === "startup_failed"
+}
+
+function isContextPackBuildOutcome(value: unknown): value is ContextPackBuildOutcome {
+  return value === "ready_for_review" || value === "failed"
+}
+
+function isContextPackReviewBlockingReason(value: unknown): value is ContextPackReviewBlockingReason {
+  return value === "draft_unavailable" || value === "source_unavailable" ||
+    value === "source_stale" || value === "invalid_draft" || value === "over_budget"
+}
+
+function isContextPackSealDenialReason(value: unknown): value is ContextPackSealDenialReason {
+  return value === "review_unavailable" || value === "candidate_stale" ||
+    value === "source_stale" || value === "invalid_candidate" || value === "over_budget"
+}
+
+function isContextPackFitUnavailableReason(value: unknown): value is ContextPackFitUnavailableReason {
+  return value === "missing_evidence" || value === "stale_evidence" ||
+    value === "invalid_evidence" || value === "payload_mismatch"
+}
+
+function isContextPackDeliveryDenialReason(value: unknown): value is ContextPackDeliveryDenialReason {
+  return value === "sealed_unavailable" || value === "sealed_changed" ||
+    value === "fit_unavailable" || value === "fit_insufficient" || value === "dispatch_failed"
+}
+
+function isContextPackAggregateInput(value: unknown): value is ContextPackReviewReadyInput {
+  if (!hasExactKeys(value, ["selectionCountBucket", "redactionCountBucket", "byteBucket"])) return false
+  return isContextPackSelectionCountBucket(value.selectionCountBucket) &&
+    isContextPackRedactionCountBucket(value.redactionCountBucket) &&
+    isContextPackByteBucket(value.byteBucket)
+}
+
+function isContextPackByteInput(value: unknown): value is ContextPackFitAvailableInput {
+  return hasExactKeys(value, ["byteBucket"]) && isContextPackByteBucket(value.byteBucket)
+}
+
+/** Reduce an exact selection count before it crosses the Context Pack recorder boundary. */
+export function bucketContextPackSelectionCount(count: number): ContextPackSelectionCountBucket {
+  const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+  if (normalized === 0) return "zero"
+  if (normalized === 1) return "one"
+  if (normalized <= 4) return "two_to_four"
+  if (normalized <= 9) return "five_to_nine"
+  return "ten_or_more"
+}
+
+/** Reduce an exact redaction count before it crosses the Context Pack recorder boundary. */
+export function bucketContextPackRedactionCount(count: number): ContextPackRedactionCountBucket {
+  const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+  if (normalized === 0) return "zero"
+  if (normalized === 1) return "one"
+  if (normalized <= 4) return "two_to_four"
+  return "five_or_more"
+}
+
+/** Reduce exact serialized bytes before they cross the Context Pack recorder boundary. */
+export function bucketContextPackBytes(bytes: number): ContextPackByteBucket {
+  const normalized = Number.isFinite(bytes) ? Math.max(0, Math.floor(bytes)) : 0
+  if (normalized < 8 * 1024) return "under_8kb"
+  if (normalized < 32 * 1024) return "8_to_31kb"
+  if (normalized < 128 * 1024) return "32_to_127kb"
+  return "128kb_or_more"
+}
+
+/** Reduce exact build duration before it reaches the local Context Pack record. */
+export function bucketContextPackDuration(durationMs: number): ContextPackDurationBucket {
+  const normalized = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0
+  if (normalized < 1_000) return "under_1s"
+  if (normalized < 5_000) return "1_to_4s"
+  if (normalized < 30_000) return "5_to_29s"
+  return "30s_or_more"
 }
 
 /** Reduce exact steering latency before any value reaches the local sink. */

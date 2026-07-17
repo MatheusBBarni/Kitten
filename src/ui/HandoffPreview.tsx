@@ -38,6 +38,7 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { HandoffFlow } from "../app/handoff.ts"
+import { deduplicateHandoffBundle } from "../core/bundleAssembler.ts"
 import type { ConfigOption, PendingDiff, ShellCommandRecord } from "../core/types.ts"
 import type { HandoffPreviewOverlay } from "../store/appStore.ts"
 import { selectHandoffPreview, selectIsApprovalOpen, selectIsClarificationOpen, selectSessionHeadroom } from "../store/selectors.ts"
@@ -64,6 +65,8 @@ export function redactionNotice(count: number): string {
 export const SUMMARY_HEADING = "Summary"
 export const TARGET_HEADROOM_LABEL = "Target headroom"
 export const TARGET_CONFIG_HEADING = "Target model & reasoning effort"
+export const CONTEXT_PACK_HEADING = "Context Pack attachment"
+export const CONTEXT_PACK_LABEL = "Sealed Context Pack"
 export const FILES_HEADING = "Referenced files"
 export const DIFFS_HEADING = "Pending diffs"
 export const SHELL_HEADING = "Shell context"
@@ -113,19 +116,24 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
   const selectedTargetHeadroom = useAppSelector(targetHeadroomSelector)
   const targetHeadroom = formatHeadroom(selectedTargetHeadroom)
   const shellCommands = bundle.shell?.commands ?? []
-  const shellOffset = bundle.files.length + bundle.pendingDiffs.length
-  const itemCount = shellOffset + shellCommands.length
 
   const [selected, setSelected] = useState(0)
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(() => new Set())
   const [excludedDiffs, setExcludedDiffs] = useState<ReadonlySet<string>>(() => new Set())
   const [excludedCommands, setExcludedCommands] = useState<ReadonlySet<string>>(() => new Set())
+  const [excludeContextPack, setExcludeContextPack] = useState(false)
   const [editing, setEditing] = useState(false)
   const [summaryDraft, setSummaryDraft] = useState(bundle.summary)
   const [editingTargetConfig, setEditingTargetConfig] = useState(false)
   const [targetSelected, setTargetSelected] = useState(0)
   const targetSelectedRef = useRef(0)
   const [targetConfig, setTargetConfig] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const ordinary = deduplicateHandoffBundle(bundle, !excludeContextPack)
+  const contextPackCount = bundle.contextPack ? 1 : 0
+  const fileOffset = contextPackCount
+  const diffOffset = fileOffset + ordinary.files.length
+  const shellOffset = diffOffset + ordinary.pendingDiffs.length
+  const itemCount = shellOffset + shellCommands.length
 
   // The textarea is an editing surface, not the summary's authority. Read mode and
   // send both consume `summaryDraft`, so leaving edit mode can never expose or forward
@@ -139,12 +147,16 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
 
   const toggle = useCallback(
     (index: number): void => {
-      const file = bundle.files[index]
+      if (bundle.contextPack && index === 0) {
+        setExcludeContextPack((excluded) => !excluded)
+        return
+      }
+      const file = ordinary.files[index - fileOffset]
       if (file) {
         setExcludedFiles((paths) => without(paths, file.path))
         return
       }
-      const diff = bundle.pendingDiffs[index - bundle.files.length]
+      const diff = ordinary.pendingDiffs[index - diffOffset]
       if (diff) {
         setExcludedDiffs((ids) => without(ids, diff.toolCallId))
         return
@@ -152,7 +164,7 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
       const command = shellCommands[index - shellOffset]
       if (command) setExcludedCommands((ids) => without(ids, command.id))
     },
-    [bundle, shellCommands, shellOffset],
+    [bundle.contextPack, diffOffset, fileOffset, ordinary.files, ordinary.pendingDiffs, shellCommands, shellOffset],
   )
 
   const targetRows = useMemo(() => modelEffortValueRows(targetConfigOptions), [targetConfigOptions])
@@ -187,9 +199,10 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
       excludedFiles,
       excludedDiffs,
       excludedCommands,
+      excludeContextPack,
       targetConfig: targetConfigEdits,
     })
-  }, [excludedCommands, excludedDiffs, excludedFiles, flow, summaryDraft, targetConfigEdits])
+  }, [excludeContextPack, excludedCommands, excludedDiffs, excludedFiles, flow, summaryDraft, targetConfigEdits])
 
   const onKey = useCallback(
     (key: KeyEvent): void => {
@@ -272,7 +285,8 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
 
   const sourceName = controller.runtime(sourceSessionId)?.displayName ?? sourceSessionId
   const targetName = controller.runtime(targetSessionId)?.displayName ?? targetSessionId
-  const selectedDiff = bundle.pendingDiffs[selected - bundle.files.length]
+  const selectedContextPack = bundle.contextPack && selected === 0 ? bundle.contextPack : undefined
+  const selectedDiff = ordinary.pendingDiffs[selected - diffOffset]
   const selectedCommand = shellCommands[selected - shellOffset]
 
   return (
@@ -352,18 +366,29 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
         </box>
       )}
 
+      {bundle.contextPack ? (
+        <>
+          <SectionHeading>{CONTEXT_PACK_HEADING}</SectionHeading>
+          <ItemRow
+            label={`${CONTEXT_PACK_LABEL} (${bundle.contextPack.bytes} bytes)`}
+            kept={!excludeContextPack}
+            highlighted={!editing && !editingTargetConfig && selected === 0}
+          />
+        </>
+      ) : null}
+
       <SectionHeading>{FILES_HEADING}</SectionHeading>
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        {bundle.files.length === 0 ? (
+        {ordinary.files.length === 0 ? (
           <EmptySection />
         ) : (
-          bundle.files.map((file, index) => (
+          ordinary.files.map((file, index) => (
             <ItemRow
               key={file.path}
               label={`${file.path} (${file.reason})`}
               href={fileProvenanceTarget(file.path, renderer.capabilities?.hyperlinks ?? false)}
               kept={!excludedFiles.has(file.path)}
-              highlighted={!editing && !editingTargetConfig && selected === index}
+              highlighted={!editing && !editingTargetConfig && selected === fileOffset + index}
             />
           ))
         )}
@@ -371,15 +396,15 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
 
       <SectionHeading>{DIFFS_HEADING}</SectionHeading>
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        {bundle.pendingDiffs.length === 0 ? (
+        {ordinary.pendingDiffs.length === 0 ? (
           <EmptySection />
         ) : (
-          bundle.pendingDiffs.map((diff, index) => (
+          ordinary.pendingDiffs.map((diff, index) => (
             <ItemRow
               key={diff.toolCallId}
               label={diff.path}
               kept={!excludedDiffs.has(diff.toolCallId)}
-              highlighted={!editing && !editingTargetConfig && selected === bundle.files.length + index}
+              highlighted={!editing && !editingTargetConfig && selected === diffOffset + index}
             />
           ))
         )}
@@ -408,6 +433,9 @@ function HandoffDialog({ overlay, flow }: { overlay: HandoffPreviewOverlay; flow
         row the developer is deciding about - off a 24-row terminal, and they cannot
         judge a diff they have not selected anyway.
       */}
+      {selectedContextPack && !excludeContextPack && !editing && !editingTargetConfig
+        ? <SelectedContextPack payload={selectedContextPack.payload} />
+        : null}
       {selectedDiff && !editing && !editingTargetConfig ? <SelectedDiff diff={selectedDiff} /> : null}
       {selectedCommand && !editing && !editingTargetConfig ? <SelectedCommand command={selectedCommand} /> : null}
 
@@ -486,6 +514,16 @@ function ItemRow({ label, href, kept, highlighted }: { label: string; href?: str
         <span fg={labelColor}>{label}</span>
       )}
     </text>
+  )
+}
+
+/** Inspect the exact sealed payload as one indivisible attachment. */
+function SelectedContextPack({ payload }: { payload: string }): ReactNode {
+  const palette = usePalette()
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 1, marginTop: 1, overflow: "hidden" }}>
+      <Markdown content={payload} fg={palette.text} />
+    </box>
   )
 }
 

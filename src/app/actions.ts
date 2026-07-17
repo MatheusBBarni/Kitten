@@ -25,6 +25,14 @@ import {
   type ClarificationOutcome,
   type ConfigOption,
   type DefaultApplyResult,
+  type ContextPackAssemblyFailureReason,
+  type ContextPackEvidenceDenialReason,
+  type ContextPackMaterializationBlockedReason,
+  type ContextPackMaterializationStaleReason,
+  type ContextPackReviewCandidate,
+  type ContextPackSealFailureReason,
+  type RecipientFit,
+  type SealedContextPack,
   type ProviderKind,
   type ProviderModelDefault,
   type SessionId,
@@ -33,10 +41,11 @@ import {
 import type { StatuslineLayout } from "../core/statusline.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
-import type { AppStore } from "../store/appStore.ts"
+import type { AppStore, ContextBuildDraftPreparation } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 import type { CleanupManagedWorktreeResult } from "./managedWorktree.ts"
+import type { ContextPackExportResult } from "./contextPackExport.ts"
 
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
@@ -71,6 +80,132 @@ export type ExploreLaunchResult =
 export type ExploreAvailabilityResult =
   | { readonly kind: "available" }
   | { readonly kind: "denied"; readonly reason: ExploreDenialReason }
+
+/** Explicit choice of the draft revision the controller must prepare before launch. */
+export type ContextBuildDraftChoice = ContextBuildDraftPreparation
+
+export interface StartContextBuildInput {
+  readonly parentId: SessionId
+  readonly draft: ContextBuildDraftChoice
+}
+
+/** Closed Context Build denials keep UI callbacks fail-soft and fallback-free. */
+export type ContextBuildDenialReason =
+  | ContextPackEvidenceDenialReason
+  | "unknown_parent"
+  | "parent_unavailable"
+  | "parent_generation_mismatch"
+  | "workspace_mismatch"
+  | "session_mismatch"
+  | "build_active"
+  | "draft_unavailable"
+  | "invalid_draft"
+  | "binding_changed"
+  | "bridge_unavailable"
+  | "startup_failed"
+  | "controller_disposed"
+
+export type ContextBuildAvailabilityResult =
+  | { readonly kind: "available" }
+  | { readonly kind: "denied"; readonly reason: ContextBuildDenialReason }
+
+export type ContextBuildStartResult =
+  | { readonly kind: "started"; readonly childId: SessionId; readonly draftRevision: number }
+  | { readonly kind: "denied"; readonly reason: ContextBuildDenialReason }
+
+/** Closed result for the operator's explicit first Context Pack draft. */
+export type ContextPackDraftCreationResult =
+  | { readonly kind: "created"; readonly revision: number }
+  | {
+      readonly kind: "blocked"
+      readonly reason:
+        | "unknown_session"
+        | "draft_active"
+        | "build_active"
+        | "invalid_instructions"
+        | "controller_disposed"
+        | "creation_failed"
+    }
+
+export type ContextPackReviewBlockingReason =
+  | ContextPackMaterializationBlockedReason
+  | ContextPackMaterializationStaleReason
+  | ContextPackAssemblyFailureReason
+  | "over_budget"
+  | "unknown_session"
+  | "draft_unavailable"
+  | "workspace_mismatch"
+  | "draft_changed"
+
+export type ContextPackReviewResult =
+  | { readonly kind: "reviewed"; readonly candidate: ContextPackReviewCandidate }
+  | { readonly kind: "blocked"; readonly reason: ContextPackReviewBlockingReason }
+
+/** One explicit whole-file membership edit addressed to the draft revision the operator saw. */
+export interface ContextPackFileMembershipInput {
+  readonly sessionId: SessionId
+  readonly path: string
+  readonly readRevision: number
+  readonly operation: "add" | "remove"
+}
+
+export type ContextPackFileMembershipDenialReason =
+  | ContextPackMaterializationBlockedReason
+  | ContextPackMaterializationStaleReason
+  | "unknown_session"
+  | "draft_unavailable"
+  | "workspace_mismatch"
+  | "selection_already_present"
+  | "selection_unavailable"
+  | "invalid_mutation"
+  | "mutation_failed"
+
+/** Closed result; source metadata and the mutable draft never cross into component state. */
+export type ContextPackFileMembershipResult =
+  | {
+      readonly kind: "applied"
+      readonly operation: "add" | "remove"
+      readonly revision: number
+    }
+  | {
+      readonly kind: "stale"
+      readonly readRevision: number
+      readonly currentRevision: number
+    }
+  | { readonly kind: "denied"; readonly reason: ContextPackFileMembershipDenialReason }
+
+export type ContextPackSealBlockingReason =
+  | ContextPackReviewBlockingReason
+  | ContextPackSealFailureReason
+  | "review_unavailable"
+  | "candidate_changed"
+
+export type ContextPackSealActionResult =
+  | { readonly kind: "sealed"; readonly sealed: SealedContextPack }
+  | { readonly kind: "blocked"; readonly reason: ContextPackSealBlockingReason }
+
+export type ContextPackSendHereResult =
+  | { readonly kind: "sent"; readonly result: PromptResult }
+  | {
+      readonly kind: "blocked"
+      readonly reason: "sealed_unavailable" | "sealed_changed" | "dispatch_failed" | "recipient_fit"
+      readonly fit?: Exclude<RecipientFit, { readonly kind: "fit" }>
+    }
+
+export interface ContextPackExportActionInput {
+  readonly sessionId: SessionId
+  /** Exact operator-selected destination; no default is inferred by the controller. */
+  readonly destination: string
+  readonly writeConfirmed: boolean
+  readonly overwriteConfirmed: boolean
+}
+
+export type ContextPackExportActionResult =
+  | ContextPackExportResult
+  | {
+      readonly kind: "blocked"
+      readonly reason: "sealed_unavailable" | "sealed_changed"
+    }
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
@@ -149,6 +284,25 @@ export interface FileSelectorTelemetry {
   fileSelectorCorrected(sessionId: SessionId): void
 }
 
+/** Closed explorer refresh results accepted at the action-to-recorder boundary. */
+export type ExplorerRefreshOutcome = "refreshed" | "source-failed"
+
+/** Closed final file-open results accepted at the action-to-recorder boundary. */
+export type ExplorerFileOpenOutcome =
+  | "unsupported"
+  | "source-failed"
+  | "default-opened"
+  | "custom-opened"
+  | "final-failure"
+
+/** Content-free explorer facts available to controller actions. */
+export interface ExplorerTelemetry {
+  explorerOpened(sessionId: SessionId): void
+  explorerRefreshed(sessionId: SessionId, outcome: ExplorerRefreshOutcome): void
+  explorerFileOpened(sessionId: SessionId, outcome: ExplorerFileOpenOutcome): void
+  explorerFallback(sessionId: SessionId): void
+}
+
 /** Closed Session Tabs dimensions accepted by the UI-facing telemetry facade. */
 export type TabCreationSource = "inherited" | "default"
 export type TabSelectionSource = "mouse" | "kitty_chord" | "sessions_fallback" | "attention_jump" | "model_select"
@@ -167,7 +321,7 @@ export interface TabTelemetry {
  * both slices.
  */
 export type ActionTelemetry = FocusTelemetry & Partial<
-  SwitchTelemetry & DefaultApplyTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & TabTelemetry
+  SwitchTelemetry & DefaultApplyTelemetry & PromptHistoryTelemetry & FileSelectorTelemetry & ExplorerTelemetry & TabTelemetry
 >
 
 /** The default when no recorder is injected: record nothing. */
@@ -239,6 +393,8 @@ export interface ActionDeps {
   startNewRun?: () => Promise<void>
   /** Replace one unavailable restored session with a fresh promptable session. */
   startFreshSession?: (sessionId: SessionId) => Promise<boolean>
+  /** Recheck one eligible unavailable Cursor runtime without exposing controller internals. */
+  recheckCursor?: (sessionId: SessionId) => Promise<void>
   /** Create and start one controller-owned conversation runtime. */
   createConversation?: () => Promise<SessionId | null>
   /** Create, register, and dispatch one controller-owned delegated child. */
@@ -249,6 +405,26 @@ export interface ActionDeps {
   startExploreChild?: (input: ExploreLaunchRequest) => Promise<ExploreLaunchResult>
   /** Advisory only; launch always re-attests. */
   exploreAvailability?: (parentId: SessionId) => ExploreAvailabilityResult
+  /** Authoritative fail-closed Context Build launch. */
+  startContextBuild?: (input: StartContextBuildInput) => Promise<ContextBuildStartResult>
+  /** Advisory only; Context Build launch always re-attests exact explore-v2 evidence. */
+  contextBuildAvailability?: (input: StartContextBuildInput) => ContextBuildAvailabilityResult
+  /** Create one fresh operator-authored draft before a Context Build is enabled. */
+  createContextPackDraft?: (sessionId: SessionId, original: string) => ContextPackDraftCreationResult
+  /** Materialize and publish only one exact redacted review candidate. */
+  reviewContextPack?: (sessionId: SessionId) => Promise<ContextPackReviewResult>
+  /** Materialize and revision-fence one explicit whole-file membership edit. */
+  mutateContextPackFileMembership?: (
+    input: ContextPackFileMembershipInput,
+  ) => Promise<ContextPackFileMembershipResult>
+  /** Recheck and atomically seal only the addressed current candidate revision. */
+  sealContextPack?: (sessionId: SessionId, candidateRevision: number) => Promise<ContextPackSealActionResult>
+  /** Recompute recipient fit from current live evidence. */
+  assessContextPackRecipientFit?: (sessionId: SessionId) => RecipientFit
+  /** Explicitly deliver the exact sealed payload through the existing send boundary. */
+  sendContextPackHere?: (sessionId: SessionId) => Promise<ContextPackSendHereResult>
+  /** Explicitly export the exact current sealed payload to the operator-selected destination. */
+  exportContextPack?: (input: ContextPackExportActionInput) => Promise<ContextPackExportActionResult>
   /** Send additional direction to one live, owned delegated child. */
   steerDelegatedChild?: (childId: SessionId, text: string) => Promise<PromptResult | null>
   /** Cancel one live, owned delegated child without exposing its runtime. */
@@ -263,6 +439,8 @@ export interface ActionDeps {
 
 /** The actions the UI is allowed to call. Nothing else reaches the agents. */
 export interface ControllerActions {
+  /** Deliberately recheck one unavailable configured Cursor session without throwing into the UI. */
+  recheckCursor(sessionId: SessionId): void
   /** Create a fresh visible conversation, or return `null` when none can be created. */
   createConversation(): Promise<SessionId | null>
   /** Start explicit child work in the background while retaining parent focus. */
@@ -273,6 +451,26 @@ export interface ControllerActions {
   startExploreChild(input: ExploreLaunchRequest): Promise<ExploreLaunchResult>
   /** Read current advisory eligibility without reserving or starting anything. */
   exploreAvailability(parentId: SessionId): ExploreAvailabilityResult
+  /** Start one exact explore-v2 Context Build bound to the addressed draft. */
+  startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult>
+  /** Read advisory Context Build eligibility without preparing a draft or binding. */
+  contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult
+  /** Create one fresh operator-authored draft without starting a Context Build. */
+  createContextPackDraft(sessionId: SessionId, original: string): ContextPackDraftCreationResult
+  /** Materialize and publish one exact redacted candidate for the addressed draft. */
+  reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult>
+  /** Add or remove one exact whole-file membership from the addressed observed draft. */
+  mutateContextPackFileMembership(
+    input: ContextPackFileMembershipInput,
+  ): Promise<ContextPackFileMembershipResult>
+  /** Recheck and seal the exact addressed candidate revision. */
+  sealContextPack(sessionId: SessionId, candidateRevision: number): Promise<ContextPackSealActionResult>
+  /** Recompute current fail-closed fit for the addressed sealed pack and session. */
+  assessContextPackRecipientFit(sessionId: SessionId): RecipientFit
+  /** Explicitly send the exact sealed pack here after a new final fit check. */
+  sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult>
+  /** Explicitly export the exact sealed pack after write and overwrite confirmations. */
+  exportContextPack(input: ContextPackExportActionInput): Promise<ContextPackExportActionResult>
   /** Send non-empty additional direction to one current, non-terminal owned child. */
   steerDelegatedChild(childId: SessionId, text: string): Promise<PromptResult | null>
   /** Idempotently cancel one current, non-terminal owned child. */
@@ -390,6 +588,7 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const repositoryFileSource = deps.repositoryFileSource
   const startNewRun = deps.startNewRun ?? (async () => {})
   const startFreshSession = deps.startFreshSession ?? (async () => false)
+  const recheckCursor = deps.recheckCursor ?? (async () => {})
   const createConversation = deps.createConversation ?? (async () => null)
   const startDelegatedChild = deps.startDelegatedChild ?? (async () => null)
   const cleanupManagedWorktree = deps.cleanupManagedWorktree ?? (async () => ({
@@ -398,6 +597,48 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   }))
   const startExploreChild = deps.startExploreChild ?? (async () => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
   const exploreAvailability = deps.exploreAvailability ?? (() => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
+  const startContextBuild = deps.startContextBuild ?? (async () => ({
+    kind: "denied" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const contextBuildAvailability = deps.contextBuildAvailability ?? (() => ({
+    kind: "denied" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const createContextPackDraft = deps.createContextPackDraft ?? ((sessionId: SessionId, original: string): ContextPackDraftCreationResult => {
+    const contextPack = store.getState().contextPacks[sessionId]
+    if (!contextPack) return { kind: "blocked", reason: "unknown_session" }
+    if (contextPack.build) return { kind: "blocked", reason: "build_active" }
+    if (contextPack.draft) return { kind: "blocked", reason: "draft_active" }
+    const result = store.createContextPackDraft(sessionId, original)
+    if (result === null) return { kind: "blocked", reason: "creation_failed" }
+    if (result.kind !== "created") return { kind: "blocked", reason: "invalid_instructions" }
+    return { kind: "created", revision: result.draft.revision }
+  })
+  const reviewContextPack = deps.reviewContextPack ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "draft_unavailable" as const,
+  }))
+  const mutateContextPackFileMembership = deps.mutateContextPackFileMembership ?? (async () => ({
+    kind: "denied" as const,
+    reason: "draft_unavailable" as const,
+  }))
+  const sealContextPack = deps.sealContextPack ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "review_unavailable" as const,
+  }))
+  const assessContextPackRecipientFit = deps.assessContextPackRecipientFit ?? (() => ({
+    kind: "unavailable" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const sendContextPackHere = deps.sendContextPackHere ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "sealed_unavailable" as const,
+  }))
+  const exportContextPack = deps.exportContextPack ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "sealed_unavailable" as const,
+  }))
   const steerDelegatedChild = deps.steerDelegatedChild ?? (async () => null)
   const cancelDelegatedChild = deps.cancelDelegatedChild ?? (async () => {})
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
@@ -650,6 +891,14 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   }
 
   return {
+    recheckCursor(sessionId): void {
+      try {
+        void recheckCursor(sessionId).catch((error) => onError(sessionId, error))
+      } catch (error) {
+        onError(sessionId, error)
+      }
+    },
+
     async createConversation(): Promise<SessionId | null> {
       const creationSource: TabCreationSource = store.getState().workspace.selectedVisibleId
         ? "inherited"
@@ -698,6 +947,86 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
         return exploreAvailability(parentId)
       } catch {
         return { kind: "denied", reason: "missing-attestation" }
+      }
+    },
+
+    async startContextBuild(input): Promise<ContextBuildStartResult> {
+      try {
+        return await startContextBuild(input)
+      } catch (error) {
+        onError(input.parentId, error)
+        return { kind: "denied", reason: "startup_failed" }
+      }
+    },
+
+    contextBuildAvailability(input): ContextBuildAvailabilityResult {
+      try {
+        return contextBuildAvailability(input)
+      } catch {
+        return { kind: "denied", reason: "missing_evidence" }
+      }
+    },
+
+    createContextPackDraft(sessionId, original): ContextPackDraftCreationResult {
+      try {
+        return createContextPackDraft(sessionId, original)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "creation_failed" }
+      }
+    },
+
+    async reviewContextPack(sessionId): Promise<ContextPackReviewResult> {
+      try {
+        return await reviewContextPack(sessionId)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "draft_unavailable" }
+      }
+    },
+
+    async mutateContextPackFileMembership(input): Promise<ContextPackFileMembershipResult> {
+      try {
+        return await mutateContextPackFileMembership(input)
+      } catch (error) {
+        onError(input.sessionId, error)
+        return { kind: "denied", reason: "mutation_failed" }
+      }
+    },
+
+    async sealContextPack(sessionId, candidateRevision): Promise<ContextPackSealActionResult> {
+      try {
+        return await sealContextPack(sessionId, candidateRevision)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "review_unavailable" }
+      }
+    },
+
+    assessContextPackRecipientFit(sessionId): RecipientFit {
+      try {
+        return assessContextPackRecipientFit(sessionId)
+      } catch {
+        return { kind: "unavailable", reason: "missing_evidence" }
+      }
+    },
+
+    async sendContextPackHere(sessionId): Promise<ContextPackSendHereResult> {
+      try {
+        return await sendContextPackHere(sessionId)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "dispatch_failed" }
+      }
+    },
+
+    async exportContextPack(input): Promise<ContextPackExportActionResult> {
+      try {
+        return await exportContextPack(input)
+      } catch {
+        // Export errors are deliberately content-free and never forwarded as raw
+        // filesystem errors into state, telemetry, or the controller error sink.
+        return { kind: "blocked", reason: "filesystem_failure" }
       }
     },
 

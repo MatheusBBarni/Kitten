@@ -40,6 +40,8 @@ Kitten launches the agents' published [Agent Client Protocol](https://github.com
 
 Cursor is Kitten's third local coding-agent session. Kitten starts Cursor through its native `agent acp` stdio server and supports only the reviewed, certified local profile. This integration does not connect to Cursor cloud agents, background agents, or other remote Cursor products.
 
+Authentication stays in Cursor's native flow. Kitten does not collect or manage Cursor credentials, and it does not use direct CLI model lists or flags to control an active ACP session. Model and reasoning controls reflect only capabilities advertised by that active session.
+
 Cursor is checked independently. If its CLI is missing, unauthenticated, incompatible, or outside Kitten's certified profile, Kitten reports a Cursor-specific recovery action while ready Claude Code and Codex sessions remain usable. Until a credentialed contract run is reviewed, Kitten does not claim an exact certified Cursor version or enable unverified Cursor-only capabilities.
 
 ## Showcase Site

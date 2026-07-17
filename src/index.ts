@@ -22,6 +22,10 @@ import {
   createAskUserMcpRegistrar,
 } from "./agent/askUserMcp.ts"
 import { createAgentRunMcpRegistrar } from "./agent/agentRunMcp.ts"
+import {
+  CONTEXT_PACK_MCP_MODE_FLAG,
+  runContextPackMcp,
+} from "./agent/contextPackMcp.ts"
 import { runKittenMcp } from "./agent/kittenMcp.ts"
 import { createSessionController, type AgentRuntimeState, type SessionController, type SessionControllerOptions } from "./app/controller.ts"
 import {
@@ -680,6 +684,11 @@ export function wantsAskUserMcp(argv: readonly string[]): boolean {
   return argv.includes(ASK_USER_MCP_MODE_FLAG)
 }
 
+/** Whether this executable is the isolated Context Pack MCP child. */
+export function wantsContextPackMcp(argv: readonly string[]): boolean {
+  return argv.includes(CONTEXT_PACK_MCP_MODE_FLAG)
+}
+
 export interface ReservedChildModeOptions {
   readonly run?: () => Promise<void>
   readonly writeError?: (output: string) => void
@@ -692,6 +701,16 @@ export async function dispatchReservedChildMode(
   env: NodeJS.ProcessEnv,
   options: ReservedChildModeOptions = {},
 ): Promise<boolean> {
+  if (wantsContextPackMcp(argv)) {
+    const run = options.run ?? (() => runContextPackMcp(env))
+    try {
+      await run()
+    } catch {
+      ;(options.writeError ?? ((output) => process.stderr.write(output)))("CONTEXT PACK MCP FAILED: unavailable\n")
+      ;(options.exit ?? ((code) => process.exit(code)))(1)
+    }
+    return true
+  }
   if (!wantsAskUserMcp(argv)) return false
   const run = options.run ?? (() => runKittenMcp({
     instructions: ASK_USER_MCP_INSTRUCTIONS,

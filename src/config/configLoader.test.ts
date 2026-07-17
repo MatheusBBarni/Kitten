@@ -137,6 +137,61 @@ describe("defaults", () => {
   })
 })
 
+describe("editor preference", () => {
+  it("Should resolve an absent editor block to a fresh system-default preference", async () => {
+    expect(defaultAppConfig().editor).toEqual({ kind: "system-default" })
+    expect(parseAppConfig("{}").editor).toEqual({ kind: "system-default" })
+    expect(parseAppConfig('{"editor":{"kind":"system-default"}}').editor).toEqual({ kind: "system-default" })
+
+    const path = join(await makeTempDir(), "missing.json")
+    await expect(loadAppConfig({ path })).resolves.toMatchObject({
+      editor: { kind: "system-default" },
+    })
+  })
+
+  it("Should load a strict custom executable with exactly one full file placeholder", async () => {
+    const editor = {
+      kind: "custom" as const,
+      executable: "/opt/bin/code",
+      args: ["--wait", "{file}"],
+    }
+    const path = await writeConfig(JSON.stringify({ editor }))
+
+    expect((await loadAppConfig({ path })).editor).toEqual(editor)
+  })
+
+  it("Should defensively copy custom arguments while resolving application config", () => {
+    const editor = {
+      kind: "custom" as const,
+      executable: "/opt/bin/code",
+      args: ["--wait", "{file}"],
+    }
+
+    const config = mergeAppConfig({ editor })
+
+    expect(config.editor).toEqual(editor)
+    expect(config.editor).not.toBe(editor)
+    if (config.editor.kind !== "custom") throw new Error("expected custom editor preference")
+    expect(config.editor.args).not.toBe(editor.args)
+    editor.args[0] = "--mutated"
+    expect(config.editor.args).toEqual(["--wait", "{file}"])
+  })
+
+  it.each([
+    ["a missing placeholder", { kind: "custom", executable: "code", args: ["--wait"] }],
+    ["repeated placeholders", { kind: "custom", executable: "code", args: ["{file}", "{file}"] }],
+    ["a partial placeholder", { kind: "custom", executable: "code", args: ["--goto={file}"] }],
+    ["a blank executable", { kind: "custom", executable: "   ", args: ["{file}"] }],
+    ["an unknown custom key", { kind: "custom", executable: "code", args: ["{file}"], shell: true }],
+    ["an unknown system-default key", { kind: "system-default", args: ["{file}"] }],
+  ])("Should reject %s as a hard config error", (_case, editor) => {
+    const parse = () => parseAppConfig(JSON.stringify({ editor }))
+
+    expect(parse).toThrow(ConfigError)
+    expect(parse).toThrow(/editor/)
+  })
+})
+
 describe("statusline config", () => {
   it("Should preserve the legacy footer and require no disclosure acknowledgement when omitted", async () => {
     expect(defaultAppConfig().statusline).toEqual({ llmDisclosureAcknowledged: false, layout: null })
@@ -464,6 +519,7 @@ describe("user overrides", () => {
     expect(resolveProviderRuntimeProfile({ ...base, args: ["acp", "--debug"] }, [certified])).toEqual({ kind: "standard" })
     expect(resolveProviderRuntimeProfile({ ...base, env: { CURSOR_HOME: "/tmp" } }, [certified])).toEqual({ kind: "standard" })
     expect(resolveProviderRuntimeProfile({ ...base, args: ["--debug", "acp"] }, [certified])).toEqual({ kind: "standard" })
+    expect(resolveProviderRuntimeProfile(base, [{ ...certified, certifiedVersion: "not-semver" }])).toEqual({ kind: "standard" })
     expect(defaultAppConfig().providers.cursor).not.toHaveProperty("runtimeProfile")
   })
 
@@ -486,6 +542,34 @@ describe("user overrides", () => {
     expect(matchCertifiedCursorRuntimeProfile({ ...native, args: ["acp", "--debug"] }, "1.2.3", [certified])).toBeUndefined()
     expect(matchCertifiedCursorRuntimeProfile({ ...native, args: ["--debug", "acp"] }, "1.2.3", [certified])).toBeUndefined()
     expect(matchCertifiedCursorRuntimeProfile({ ...native, env: { CURSOR_HOME: "/tmp" } }, "1.2.3", [certified])).toBeUndefined()
+    expect(matchCertifiedCursorRuntimeProfile(native, "not-semver", [{ ...certified, certifiedVersion: "not-semver" }])).toBeUndefined()
+  })
+
+  it("Should require every expected environment entry and reject every added entry", () => {
+    const certified = {
+      kind: "cursor-certified" as const,
+      command: "agent" as const,
+      args: ["acp"] as const,
+      env: { CURSOR_CHANNEL: "stable", CURSOR_MODE: "local" },
+      certifiedVersion: "1.2.3",
+      authenticationMethod: "cursor_login" as const,
+    }
+    const exact = {
+      id: "cursor" as const,
+      command: "agent",
+      args: ["acp"],
+      env: { CURSOR_MODE: "local", CURSOR_CHANNEL: "stable" },
+    }
+
+    expect(matchCertifiedCursorRuntimeProfile(exact, "1.2.3", [certified])).toEqual(certified)
+    expect(matchCertifiedCursorRuntimeProfile({ ...exact, env: { CURSOR_CHANNEL: "stable" } }, "1.2.3", [certified])).toBeUndefined()
+    expect(
+      matchCertifiedCursorRuntimeProfile(
+        { ...exact, env: { ...exact.env, CURSOR_HOME: "/tmp" } },
+        "1.2.3",
+        [certified],
+      ),
+    ).toBeUndefined()
   })
 })
 

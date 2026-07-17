@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add targeted unavailable-Cursor recheck
 type: backend
 complexity: medium

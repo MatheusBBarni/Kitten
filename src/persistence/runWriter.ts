@@ -1,8 +1,10 @@
 import type { HandoffBundle, Turn } from "../core/types.ts"
+import { draftToManifest } from "../core/contextPack.ts"
 import type { AppState, AppStore, Unsubscribe } from "../store/appStore.ts"
+import { PERSISTED_DRAFT_CONTEXT_PACK_MANIFEST_SCHEMA } from "./runRecord.ts"
 import type {
   PersistedConversationV2,
-  PersistedRunRecordV3,
+  PersistedRunRecordV4,
   PersistedWorkspaceConversationV2,
 } from "./runRecord.ts"
 import type { RunStore } from "./runStore.ts"
@@ -140,10 +142,11 @@ class ActiveRunWriter implements RunWriter {
     }
   }
 
-  private snapshot(state: AppState): PersistedRunRecordV3 {
+  private snapshot(state: AppState): PersistedRunRecordV4 {
     const conversations: Record<string, PersistedConversationV2> = {}
     const workspaceConversations: Record<string, PersistedWorkspaceConversationV2> = {}
-    const harnessDeliveries: PersistedRunRecordV3["harnessDeliveries"] = {}
+    const harnessDeliveries: PersistedRunRecordV4["harnessDeliveries"] = {}
+    const contextPacks: PersistedRunRecordV4["contextPacks"] = {}
     const order: string[] = []
     for (const sessionId of state.workspace.order) {
       const session = state.sessions[sessionId]
@@ -185,13 +188,31 @@ class ActiveRunWriter implements RunWriter {
               state: delivery.state,
             }
       }
+      const contextPack = state.contextPacks[sessionId]
+      if (contextPack?.draft || contextPack?.sealed) {
+        contextPacks[sessionId] = {
+          ...(contextPack.draft
+            ? { draft: PERSISTED_DRAFT_CONTEXT_PACK_MANIFEST_SCHEMA.parse(draftToManifest(contextPack.draft)) }
+            : {}),
+          ...(contextPack.sealed
+            ? {
+                sealed: {
+                  payload: contextPack.sealed.payload,
+                  bytes: contextPack.sealed.bytes,
+                  sealedAt: contextPack.sealed.sealedAt,
+                  revision: contextPack.sealed.revision,
+                },
+              }
+            : {}),
+        }
+      }
     }
 
     const selectedVisibleId = state.workspace.selectedVisibleId
     const selected = selectedVisibleId === null ? undefined : state.sessions[selectedVisibleId]
 
     return {
-      version: 3,
+      version: 4,
       runId: this.runId,
       // A run belongs to the launch project even when focus moves between sessions
       // configured with different working directories. Boot and the picker use this
@@ -208,6 +229,7 @@ class ActiveRunWriter implements RunWriter {
       },
       handoffBundle: this.lastHandoffBundle,
       harnessDeliveries,
+      contextPacks,
     }
   }
 

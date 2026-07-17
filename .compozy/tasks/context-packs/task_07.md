@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Controller-owned Context Build lifecycle
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Add the controller and action lifecycle that explicitly starts one eligible Cont
 
 ## Subtasks
 
-- [ ] 7.1 Add the typed Context Build action and availability result.
-- [ ] 7.2 Preflight exact evidence, parent generation, workspace, and exclusivity.
-- [ ] 7.3 Atomically prepare and bind the draft before spawning one child.
-- [ ] 7.4 Register the dedicated bridge and settle the matching lifecycle.
-- [ ] 7.5 Add launch race, cleanup, and focus-preservation coverage.
+- [x] 7.1 Add the typed Context Build action and availability result.
+- [x] 7.2 Preflight exact evidence, parent generation, workspace, and exclusivity.
+- [x] 7.3 Atomically prepare and bind the draft before spawning one child.
+- [x] 7.4 Register the dedicated bridge and settle the matching lifecycle.
+- [x] 7.5 Add launch race, cleanup, and focus-preservation coverage.
 
 ## Implementation Details
 
@@ -72,13 +72,13 @@ Follow the TechSpec ControllerActions and delegation lifecycle. The action/contr
 ## Tests
 
 - Unit tests:
-  - [ ] Missing or stale explore-v2 evidence returns an explicit denial and starts no child.
-  - [ ] A build binds the addressed draft revision before child launch and denies a concurrent second build.
-  - [ ] Parent-generation, workspace, and session mismatch deny before bridge registration.
-  - [ ] Child failure, parent close, and matching settlement release only the matching binding.
+  - [x] Missing or stale explore-v2 evidence returns an explicit denial and starts no child.
+  - [x] A build binds the addressed draft revision before child launch and denies a concurrent second build.
+  - [x] Parent-generation, workspace, and session mismatch deny before bridge registration.
+  - [x] Child failure, parent close, and matching settlement release only the matching binding.
 - Integration tests:
-  - [ ] A background Context Build completing for session B leaves selectedVisibleId, focus, and overlays for session A unchanged.
-  - [ ] Stale async cleanup cannot release a newer binding for the same session.
+  - [x] A background Context Build completing for session B leaves selectedVisibleId, focus, and overlays for session A unchanged.
+  - [x] Stale async cleanup cannot release a newer binding for the same session.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -44,6 +44,47 @@ describe("persistUserConfig", () => {
     expect(written).toEqual({ ...existing, theme: "dark" })
   })
 
+  it("preserves every unrelated config family while applying a whole editor patch", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    const existing = {
+      persistenceEnabled: false,
+      telemetryEnabled: true,
+      transcriptWindowingEnabled: true,
+      theme: "catppuccin-mocha",
+      welcomeBanner: "off",
+      providers: { codex: { command: "/opt/bin/codex-acp", args: ["--stdio"], env: { TOKEN: "private" } } },
+      providerDefaults: { codex: { model: "gpt-5.4", effort: "high" } },
+      sessions: [{ provider: "codex", cwd: dir, title: "Primary" }],
+      mcpServers: { github: { type: "stdio", command: "github-mcp", args: ["serve"], env: { A: "1" } } },
+      shell: { enabled: false, command: "/bin/fish", scrollback: 2_500 },
+      statusline: { llmDisclosureAcknowledged: true, separator: " | ", line: ["BRANCH", "MODEL"] },
+    }
+    const editor = { kind: "custom" as const, executable: "/opt/bin/code", args: ["--wait", "{file}"] }
+    await writeFile(path, JSON.stringify(existing))
+
+    await persistUserConfig({ editor }, { path })
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ ...existing, editor })
+    const loaded = await loadAppConfig({ path })
+    expect(loaded.editor).toEqual(editor)
+    expect(loaded).toMatchObject({
+      persistenceEnabled: false,
+      telemetryEnabled: true,
+      transcriptWindowingEnabled: true,
+      theme: "catppuccin-mocha",
+      welcomeBanner: "off",
+      providerDefaults: existing.providerDefaults,
+      sessions: existing.sessions,
+      shell: existing.shell,
+    })
+    expect(loaded.providers.codex).toMatchObject(existing.providers.codex)
+    expect(loaded.statusline).toEqual({
+      llmDisclosureAcknowledged: true,
+      layout: { separator: " | ", line: ["BRANCH", "MODEL"] },
+    })
+  })
+
   it("merges one provider's model or reasoning patch without replacing other saved defaults", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
@@ -86,6 +127,34 @@ describe("persistUserConfig", () => {
     const invalidPatch = { theme: "neon" } as unknown as Partial<UserConfig>
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/theme/)
+
+    expect(await readFile(path)).toEqual(original)
+    expect(await readdir(dir)).toEqual(["config.json"])
+  })
+
+  it("rejects invalid serialized editor data before creating a target or parent directory", async () => {
+    const dir = await makeTempDir()
+    const parent = join(dir, "nested")
+    const path = join(parent, "config.json")
+    const invalidPatch = {
+      editor: { kind: "custom", executable: "code", args: ["--goto={file}"] },
+    } as unknown as Partial<UserConfig>
+
+    await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/editor\.args/)
+
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it("rejects invalid serialized editor data before replacing an existing target", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    const original = Buffer.from('{\n  "editor": { "kind": "system-default" },\n  "theme": "light"\n}\n')
+    const invalidPatch = {
+      editor: { kind: "custom", executable: "code", args: ["{file}", "{file}"] },
+    } as unknown as Partial<UserConfig>
+    await writeFile(path, original)
+
+    await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/editor\.args/)
 
     expect(await readFile(path)).toEqual(original)
     expect(await readdir(dir)).toEqual(["config.json"])
@@ -155,6 +224,22 @@ describe("persistUserConfig", () => {
 })
 
 describe("writer-loader integration", () => {
+  it("round-trips an atomic custom editor save as the same validated preference", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    const editor = { kind: "custom" as const, executable: "/opt/bin/code", args: ["--wait", "{file}"] }
+
+    await persistUserConfig({ editor }, { path })
+
+    expect((await loadAppConfig({ path })).editor).toEqual(editor)
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ editor })
+
+    await persistUserConfig({ theme: "dark" }, { path })
+
+    expect((await loadAppConfig({ path })).editor).toEqual(editor)
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ editor, theme: "dark" })
+  })
+
   it.each([
     ["true", true],
     ["false", false],

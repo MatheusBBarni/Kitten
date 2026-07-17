@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import type { PersistedRunRecordV3 } from "../src/persistence/runRecord.ts"
+import type { PersistedRunRecordV4 } from "../src/persistence/runRecord.ts"
 import { createRunWriter } from "../src/persistence/runWriter.ts"
 import type { RunStore } from "../src/persistence/runStore.ts"
 import { createAppStore } from "../src/store/appStore.ts"
@@ -18,10 +18,10 @@ describe("privacy-safe steering observability", () => {
     const dir = mkdtempSync(join(tmpdir(), "kitten-steering-observability-"))
     try {
       const telemetryPath = join(dir, "telemetry.jsonl")
-      const records: PersistedRunRecordV3[] = []
+      const records: PersistedRunRecordV4[] = []
       const runStore: RunStore = {
         save(record) {
-          if (record.version !== 3) throw new Error("expected schema-neutral V3 snapshot")
+          if (record.version !== 4) throw new Error("expected schema-neutral V4 snapshot")
           records.push(record)
         },
         list: () => [],
@@ -89,7 +89,7 @@ describe("privacy-safe steering observability", () => {
         sessionRef: "safe-run",
       })
       expect(records).toHaveLength(1)
-      expect(records[0]?.version).toBe(3)
+      expect(records[0]?.version).toBe(4)
 
       const persistedRaw = JSON.stringify(records[0])
       for (const sentinel of [

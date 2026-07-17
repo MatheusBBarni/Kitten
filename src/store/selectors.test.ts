@@ -47,6 +47,8 @@ import {
   selectExploreAvailabilityPresentation,
   selectDelegatedParentCloseSummary,
   selectFocusedPane,
+  selectExplorerVisible,
+  selectFocusedExplorerPosition,
   selectFocusedSessionId,
   selectFocusedSession,
   selectFocusedTranscriptProjection,
@@ -56,6 +58,7 @@ import {
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectIsFocused,
+  selectIsExplorerFocused,
   selectIsShellFocused,
   selectIsSessionsOpen,
   selectSessionPicker,
@@ -83,6 +86,15 @@ import {
   selectSessionSteeringRecovery,
   selectSessionSteeringRecoveryAvailable,
   selectSessionSteeringStatus,
+  selectSessionExplorerPosition,
+  selectVisibleExplorerPosition,
+  selectCursorRecovery,
+  selectContextPack,
+  selectContextPackAttention,
+  selectContextPackBuild,
+  selectContextPackDraft,
+  selectContextPackReview,
+  selectContextPackSealed,
 } from "./selectors.ts"
 
 /** A model + effort config-option pair, as an agent advertises them. */
@@ -120,6 +132,155 @@ const CLARIFICATION_PAYLOAD: ClarificationPayload = {
     options: [{ id: "controller", label: "Controller" }],
   }],
 }
+
+describe("Context Pack selectors", () => {
+  it("returns stable null fallbacks for missing and uninitialized values", () => {
+    const store = createAppStore({
+      seeds: [{ id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" }],
+    })
+    const state = store.getState()
+
+    expect(selectContextPack("missing")(state)).toBeNull()
+    expect(selectContextPack(null)(state)).toBeNull()
+    expect(selectContextPackDraft("a")(state)).toBeNull()
+    expect(selectContextPackSealed("a")(state)).toBeNull()
+    expect(selectContextPackReview("a")(state)).toBeNull()
+    expect(selectContextPackBuild("a")(state)).toBeNull()
+
+    store.applyEvent("a", { kind: "status", status: "working" })
+    const updated = store.getState()
+    expect(selectContextPackDraft("a")(updated)).toBeNull()
+    expect(selectContextPackSealed("a")(updated)).toBeNull()
+    expect(selectContextPackReview("a")(updated)).toBeNull()
+    expect(selectContextPackBuild("a")(updated)).toBeNull()
+  })
+
+  it("preserves every addressed selector identity across unrelated session updates", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+    })
+    const created = store.createContextPackDraft("a", "Implement A")
+    if (created?.kind !== "created") throw new Error("expected draft")
+    const binding = {
+      parentId: "a",
+      childId: "builder",
+      parentGeneration: 1,
+      childGeneration: 1,
+      draftRevision: created.draft.revision,
+      state: "building",
+    } as const
+    expect(store.bindContextBuild("a", binding)).toBe(true)
+
+    const selectPack = selectContextPack("a")
+    const selectDraft = selectContextPackDraft("a")
+    const selectBuild = selectContextPackBuild("a")
+    const pack = selectPack(store.getState())
+    const draft = selectDraft(store.getState())
+    const build = selectBuild(store.getState())
+    const notifications: unknown[] = []
+    store.subscribeSelector(selectPack, (value) => notifications.push(value))
+
+    store.createContextPackDraft("b", "Implement B")
+    store.applyEvent("b", { kind: "status", status: "working" })
+    store.applyEvent("a", { kind: "agent_message", messageId: "token", textDelta: "x" })
+
+    expect(selectPack(store.getState())).toBe(pack)
+    expect(selectDraft(store.getState())).toBe(draft)
+    expect(selectBuild(store.getState())).toBe(build)
+    expect(selectContextPackReview("a")(store.getState())).toBeNull()
+    expect(selectContextPackSealed("a")(store.getState())).toBeNull()
+    expect(notifications).toEqual([])
+
+    store.applyContextPackOperatorMutation("a", {
+      kind: "set_brief_section",
+      section: "architecture",
+      text: "Changed",
+    })
+    expect(notifications).toHaveLength(1)
+    expect(selectDraft(store.getState())).not.toBe(draft)
+    expect(selectBuild(store.getState())).toBe(build)
+  })
+
+  it("returns one stable absent attention projection without Context Pack attention", () => {
+    const store = createAppStore({
+      seeds: [{ id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" }],
+    })
+    const selectAttention = selectContextPackAttention("a")
+    const absent = selectAttention(store.getState())
+
+    expect(absent).toBeNull()
+    expect(selectContextPackAttention("missing")(store.getState())).toBeNull()
+    expect(selectContextPackAttention(null)(store.getState())).toBeNull()
+    store.createContextPackDraft("a", "Prepare context")
+    store.applyEvent("a", { kind: "status", status: "working" })
+    expect(selectAttention(store.getState())).toBe(absent)
+  })
+
+  it("projects review-ready Context Pack attention without forging SessionStatus", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+      selectedVisibleId: "a",
+    })
+    store.applyEvent("b", { kind: "status", status: "working" })
+    const prepared = store.prepareContextBuild("b", {
+      kind: "start_fresh",
+      original: "Prepare B",
+    }, {
+      parentId: "b",
+      childId: "builder-b",
+      parentGeneration: 1,
+      childGeneration: 1,
+    })
+    if (prepared.kind !== "prepared") throw new Error("expected prepared Context Build")
+    const sessionStatus = store.getState().sessions.b?.status
+    const agentAttention = store.getState().workspace.conversations.b?.attention
+
+    expect(store.settleContextBuild("b", prepared.binding, "ready_for_review")).toBeTrue()
+    const projection = selectContextPackAttention("b")(store.getState())
+    expect(projection).toEqual({ kind: "ready_for_review", label: "Context ready" })
+    expect(selectContextPackAttention("b")(store.getState())).toBe(projection)
+    expect(store.getState().sessions.b?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.b?.attention).toBe(agentAttention)
+  })
+
+  it("clears only Context Pack attention on explicit session selection", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+      selectedVisibleId: "a",
+    })
+    const prepared = store.prepareContextBuild("b", {
+      kind: "start_fresh",
+      original: "Prepare B",
+    }, {
+      parentId: "b",
+      childId: "builder-b",
+      parentGeneration: 1,
+      childGeneration: 1,
+    })
+    if (prepared.kind !== "prepared") throw new Error("expected prepared Context Build")
+    expect(store.settleContextBuild("b", prepared.binding, "ready_for_review")).toBeTrue()
+    const draft = store.getState().contextPacks.b?.draft
+    const sessionStatus = store.getState().sessions.b?.status
+    const agentAttention = store.getState().workspace.conversations.b?.attention
+
+    store.selectConversation("b")
+
+    expect(selectContextPackAttention("b")(store.getState())).toBeNull()
+    expect(store.getState().contextPacks.b?.draft).toBe(draft)
+    expect(store.getState().contextPacks.b?.review).toBeNull()
+    expect(store.getState().sessions.b?.status).toBe(sessionStatus)
+    expect(store.getState().workspace.conversations.b?.attention).toBe(agentAttention)
+  })
+})
 
 /**
  * Selectors are asserted on two axes: the value they project, and the identity of
@@ -167,6 +328,95 @@ const enqueueSteering = (
     blocks: [{ type: "text", text }],
   })
 }
+
+describe("Cursor recovery selector", () => {
+  it("returns only the bounded projection for an unavailable Cursor session", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "cursor", providerKind: "cursor", title: "Cursor", cwd: "/w" },
+        { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w" },
+      ],
+    })
+    const recovery = {
+      reason: "authentication_required",
+      action: "authenticate_natively",
+      recheckable: true,
+    } as const
+
+    store.setConversationAvailability("cursor", {
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: recovery,
+    })
+    store.setConversationAvailability("codex", {
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: recovery,
+    })
+
+    expect(selectCursorRecovery("cursor")(store.getState())).toBe(recovery)
+    expect(selectCursorRecovery("codex")(store.getState())).toBeNull()
+    expect(selectCursorRecovery("missing")(store.getState())).toBeNull()
+    expect(selectCursorRecovery(null)(store.getState())).toBeNull()
+  })
+
+  it("returns null for starting, ready, and unavailable Cursor sessions without a projection", () => {
+    const store = createAppStore({
+      seeds: [{ id: "cursor", providerKind: "cursor", title: "Cursor", cwd: "/w" }],
+    })
+    const selectRecovery = selectCursorRecovery("cursor")
+
+    expect(selectRecovery(store.getState())).toBeNull()
+    store.setConversationAvailability("cursor", { kind: "ready" })
+    expect(selectRecovery(store.getState())).toBeNull()
+    store.setConversationAvailability("cursor", {
+      kind: "unavailable",
+      reasonCode: "teardown-failed",
+      retryable: true,
+    })
+    expect(selectRecovery(store.getState())).toBeNull()
+  })
+
+  it("publishes changed recovery values and stays silent for equal or sibling updates", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "cursor", providerKind: "cursor", title: "Cursor", cwd: "/w" },
+        { id: "codex", providerKind: "codex", title: "Codex", cwd: "/w" },
+      ],
+    })
+    const seen: unknown[] = []
+    store.subscribeSelector(selectCursorRecovery("cursor"), (recovery) => seen.push(recovery))
+
+    const unavailable = {
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: {
+        reason: "uncertified_recipe",
+        action: "await_maintainer_review",
+        recheckable: false,
+      },
+    } as const
+    store.setConversationAvailability("cursor", unavailable)
+    store.setConversationAvailability("cursor", { ...unavailable, cursorRecovery: { ...unavailable.cursorRecovery } })
+    store.setConversationAvailability("codex", { kind: "ready" })
+    store.setConversationAvailability("cursor", {
+      ...unavailable,
+      cursorRecovery: {
+        reason: "binary_missing",
+        action: "install_cursor_cli",
+        recheckable: true,
+      },
+    })
+
+    expect(seen).toEqual([
+      unavailable.cursorRecovery,
+      { reason: "binary_missing", action: "install_cursor_cli", recheckable: true },
+    ])
+  })
+})
 
 describe("steering selectors", () => {
   it("projects compact idle, queued, sending, and failed status", () => {
@@ -316,6 +566,66 @@ describe("focus selectors", () => {
 
     store.setFocusedPane({ kind: "agent", sessionId: "codex" })
     expect(selectIsShellFocused(store.getState())).toBe(false)
+  })
+})
+
+describe("explorer selectors", () => {
+  it("projects hidden and uninitialized explorer state without allocating defaults", () => {
+    const store = createAppStore()
+    const state = store.getState()
+
+    expect(selectExplorerVisible(state)).toBe(false)
+    expect(selectIsExplorerFocused(state)).toBe(false)
+    expect(selectSessionExplorerPosition("claude-code")(state)).toBeNull()
+    expect(selectSessionExplorerPosition("missing")(state)).toBeNull()
+    expect(selectSessionExplorerPosition(null)(state)).toBeNull()
+    expect(selectFocusedExplorerPosition(state)).toBeNull()
+    expect(selectVisibleExplorerPosition(state)).toBeNull()
+  })
+
+  it("preserves an addressed session slice identity across unrelated explorer updates", () => {
+    const store = createAppStore()
+    store.setExplorerSelection("claude-code", "src/claude.ts")
+    store.setExplorerSelection("codex", "src/codex.ts")
+    const selectClaude = selectSessionExplorerPosition("claude-code")
+    const selected = selectClaude(store.getState())
+    const publications: unknown[] = []
+    store.subscribeSelector(selectClaude, (position) => publications.push(position))
+
+    store.setExplorerExpanded("codex", "src", true)
+    store.setExplorerScrollTop("codex", 12)
+    store.setExplorerNotice("codex", { code: "fallback-dispatched" })
+
+    expect(selectClaude(store.getState())).toBe(selected)
+    expect(publications).toEqual([])
+  })
+
+  it("restores each focused session's position without mutating the other", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    store.setExplorerSelection("claude-code", "src/claude.ts")
+    store.setExplorerExpanded("claude-code", "src", true)
+    store.setExplorerScrollTop("claude-code", 4)
+    store.setExplorerNotice("claude-code", { code: "refresh-complete" })
+    store.setExplorerSelection("codex", "test/codex.test.ts")
+    store.setExplorerExpanded("codex", "test", true)
+    store.setExplorerScrollTop("codex", 9)
+    store.setExplorerNotice("codex", { code: "launch-failed" })
+    const claude = selectFocusedExplorerPosition(store.getState())
+    const codex = selectSessionExplorerPosition("codex")(store.getState())
+
+    store.toggleExplorer("claude-code")
+    expect(selectExplorerVisible(store.getState())).toBe(true)
+    expect(selectIsExplorerFocused(store.getState())).toBe(true)
+    expect(selectVisibleExplorerPosition(store.getState())).toBe(claude)
+
+    store.setFocus("codex")
+    expect(selectFocusedExplorerPosition(store.getState())).toBe(codex)
+    expect(selectVisibleExplorerPosition(store.getState())).toBe(codex)
+    expect(selectIsExplorerFocused(store.getState())).toBe(false)
+
+    store.setFocus("claude-code")
+    expect(selectFocusedExplorerPosition(store.getState())).toBe(claude)
+    expect(selectSessionExplorerPosition("codex")(store.getState())).toBe(codex)
   })
 })
 

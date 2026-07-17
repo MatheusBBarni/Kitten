@@ -309,6 +309,19 @@ export type ConversationUnavailableReason =
   | "restore-unavailable"
   | "teardown-failed"
 
+/**
+ * Closed, user-safe recovery semantics for an unavailable Cursor session.
+ *
+ * The projection deliberately contains no runtime error, command, path, version,
+ * credential, or probe detail. Presentation code maps these values to copy later.
+ */
+export type CursorRecoveryState =
+  | { readonly reason: "binary_missing"; readonly action: "install_cursor_cli"; readonly recheckable: true }
+  | { readonly reason: "version_mismatch"; readonly action: "restore_reviewed_profile"; readonly recheckable: true }
+  | { readonly reason: "authentication_required"; readonly action: "authenticate_natively"; readonly recheckable: true }
+  | { readonly reason: "uncertified_recipe"; readonly action: "await_maintainer_review"; readonly recheckable: false }
+  | { readonly reason: "handshake_failed"; readonly action: "retry_handshake"; readonly recheckable: true }
+
 /** Runtime standing exposed to the workspace without carrying raw ACP errors. */
 export type ConversationAvailability =
   | { kind: "starting" }
@@ -317,6 +330,7 @@ export type ConversationAvailability =
       kind: "unavailable"
       reasonCode: ConversationUnavailableReason
       retryable: boolean
+      cursorRecovery?: CursorRecoveryState
     }
 
 /** Prevents duplicate teardown while lifecycle remains unchanged until success. */
@@ -420,6 +434,9 @@ export type ToolCallKind =
 /** Progress of a single tool call. `completed` means applied; `failed` is terminal. */
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed"
 
+/** Closed, protocol-free reason for a classified tool-call failure. */
+export type ToolCallFailureKind = "temporary_capacity" | "unavailable"
+
 /** A unified diff proposed or produced by a tool call, scoped to one file path. */
 export interface ToolCallDiff {
   path: string
@@ -438,6 +455,7 @@ export interface ToolCallRecord {
   locations: string[]
   /** Bounded, value-free description of ACP tool-call input retained for the transcript. */
   inputSummary?: string
+  failureKind?: ToolCallFailureKind
   diff?: ToolCallDiff
 }
 
@@ -447,10 +465,11 @@ export interface ToolCallRecord {
  * Both ACP `tool_call` and `tool_call_update` notifications translate to a single
  * domain `tool_call` event carrying this partial: `toolCallId` is always present,
  * every other field is optional. Omitting a field preserves the prior value on
- * upsert; setting `diff` to `null` clears the stored diff. `inputSummary` contains
- * only an adapter-derived, value-free input shape. This partial shape is what makes
- * the "omitted fields preserved, explicit nulls clear" merge semantics expressible
- * (a fully-populated {@link ToolCallRecord} cannot express omission).
+ * upsert; setting `failureKind` or `diff` to `null` clears that stored field.
+ * `inputSummary` contains only an adapter-derived, value-free input shape. This
+ * partial shape is what makes the "omitted fields preserved, explicit nulls clear"
+ * merge semantics expressible (a fully-populated {@link ToolCallRecord} cannot
+ * express omission).
  */
 export interface ToolCallUpdate {
   toolCallId: string
@@ -459,6 +478,7 @@ export interface ToolCallUpdate {
   status?: ToolCallStatus
   locations?: string[]
   inputSummary?: string
+  failureKind?: ToolCallFailureKind | null
   diff?: ToolCallDiff | null
 }
 
@@ -647,6 +667,8 @@ export interface PendingDiff {
   toolCallId: string
   path: string
   unified: string
+  /** Exact controller-resolved source identity used only for sealed-pack deduplication. */
+  sourceIdentity?: string
 }
 
 /**
@@ -775,13 +797,35 @@ export type DomainSessionEvent =
  * in V1 (ADR-002); an LLM-backed assembler can replace the producer later without
  * changing this shape.
  */
+/** One ordinary handoff file plus independently resolved source identity evidence. */
+export interface HandoffFileReference {
+  path: string
+  reason: "read" | "edited"
+  /** Missing evidence never authorizes path-only deduplication. */
+  sourceIdentity?: string
+}
+
+/** Controller-owned identity evidence for ordinary handoff items. */
+export interface HandoffSourceIdentityIndex {
+  readonly files: Readonly<Record<string, string>>
+  readonly pendingDiffs: Readonly<Record<string, string>>
+}
+
+/** One whole exact sealed payload attached to a handoff; no editable block model exists. */
+export interface HandoffContextPackAttachment extends DurableSealedContextPack {
+  readonly sourceIdentities: readonly string[]
+  readonly redactionCount?: number
+}
+
 export interface HandoffBundle {
   intent: "continue"
   summary: string // deterministic transcript excerpt in V1
-  files: { path: string; reason: "read" | "edited" }[]
+  files: HandoffFileReference[]
   pendingDiffs: PendingDiff[]
   /** Redacted shell state offered to the developer for explicit preview curation. */
   shell?: ShellSnapshot
+  /** At most one immutable sealed pack participates in the combined preview. */
+  contextPack?: HandoffContextPackAttachment
   redactionCount: number // secrets stripped before preview
 }
 
@@ -882,6 +926,15 @@ export type ThemePresetId = "catppuccin-mocha" | "catppuccin-latte"
 /** The user's persisted theme choice; `auto` follows the terminal-reported mode. */
 export type ThemePreference = "auto" | "light" | "dark" | ThemePresetId
 
+/** Shell-free external-editor invocation persisted as one closed preference. */
+export type EditorPreference =
+  | { readonly kind: "system-default" }
+  | {
+      readonly kind: "custom"
+      readonly executable: string
+      readonly args: readonly string[]
+    }
+
 /** Whether the welcome banner follows first-run state, always expands, or stays hidden. */
 export type WelcomeBannerPreference = "auto" | "always" | "off"
 
@@ -910,6 +963,7 @@ export interface AppConfig {
   /** Default-off gate for the bounded live-run transcript projection experiment. */
   transcriptWindowingEnabled: boolean
   theme: ThemePreference
+  editor: EditorPreference
   welcomeBanner: WelcomeBannerPreference
   statusline: StatuslinePreference
 }
@@ -932,3 +986,415 @@ export interface TelemetryEvent {
   sessionRef: string
   charBucket?: number // never prompt/code content
 }
+
+/** The fixed, reviewable Context Brief contract. Custom sections are not supported in V1. */
+export const CONTEXT_BRIEF_SECTION_KEYS = [
+  "architecture",
+  "selectedContext",
+  "relationships",
+  "ambiguities",
+  "budgetOmissions",
+] as const
+
+export type ContextBriefSection = (typeof CONTEXT_BRIEF_SECTION_KEYS)[number]
+
+export interface ContextBrief {
+  readonly architecture: string
+  readonly selectedContext: string
+  readonly relationships: string
+  readonly ambiguities: string
+  readonly budgetOmissions: string
+}
+
+/** Provider-neutral curation budget; recipient-specific counting remains a separate gate. */
+export interface ContextPackBudget {
+  readonly unit: "estimated_tokens"
+  readonly limit: number
+}
+
+export type ContextPackInstructionMode = "preserve" | "augment" | "rewrite"
+
+/** Original operator authority and the reviewed builder-authored instruction contribution. */
+export interface ContextPackInstructions {
+  readonly original: string
+  readonly mode: ContextPackInstructionMode
+  readonly discovered: string
+}
+
+/** Source identity/digest fence plus exact materialized artifact byte length; never copied content. */
+export interface ContextPackSourceReference {
+  readonly identity: string
+  readonly digest: string
+  readonly bytes: number
+}
+
+interface ContextSelectionBase {
+  readonly path: string
+  readonly source: ContextPackSourceReference
+  readonly rationale: string
+  readonly relationship: string
+}
+
+export interface ContextFullFileSelection extends ContextSelectionBase {
+  readonly kind: "full_file"
+}
+
+export interface ContextFileSliceSelection extends ContextSelectionBase {
+  readonly kind: "file_slice"
+  readonly range: {
+    readonly startLine: number
+    readonly endLine: number
+  }
+}
+
+export type ContextDiffScope = "staged" | "unstaged" | "pending"
+
+export interface ContextDiffSelection extends ContextSelectionBase {
+  readonly kind: "diff"
+  readonly scope: ContextDiffScope
+}
+
+/** The complete V1 selection vocabulary. Drafts carry metadata only. */
+export type ContextSelection =
+  | ContextFullFileSelection
+  | ContextFileSliceSelection
+  | ContextDiffSelection
+
+export type ContextPackStaleReason =
+  | "source_changed"
+  | "source_missing"
+  | "outside_workspace"
+  | "ineligible_source"
+  | "oversized_source"
+
+export type ContextPackStaleState =
+  | { readonly kind: "fresh" }
+  | { readonly kind: "needs_revalidation" }
+  | { readonly kind: "stale"; readonly reason: ContextPackStaleReason }
+
+export interface DraftContextPack {
+  readonly revision: number
+  readonly instructions: ContextPackInstructions
+  readonly budget: ContextPackBudget
+  readonly brief: ContextBrief
+  readonly selections: readonly ContextSelection[]
+  readonly stale: ContextPackStaleState
+}
+
+/** Metadata-only persistence/refinement shape. Raw materialized content has no field here. */
+export interface DraftContextPackManifest {
+  readonly version: 1
+  readonly revision: number
+  readonly instructions: ContextPackInstructions
+  readonly budget: ContextPackBudget
+  readonly brief: ContextBrief
+  readonly selections: readonly ContextSelection[]
+}
+
+/** One exact source fact rechecked at review and seal time. */
+export interface ContextPackSourceFence extends ContextPackSourceReference {
+  readonly selectionKey: string
+}
+
+/** Bounded content supplied to pure assembly by the application materializer. */
+export interface MaterializedContextArtifact {
+  readonly selectionKey: string
+  readonly source: ContextPackSourceReference
+  readonly content: string
+}
+
+/** Workspace-relative selector accepted by the controller-owned bounded materializer. */
+export type BoundedArtifactRead =
+  | { readonly kind: "full_file"; readonly path: string }
+  | {
+      readonly kind: "file_slice"
+      readonly path: string
+      readonly range: { readonly startLine: number; readonly endLine: number }
+    }
+  | {
+      readonly kind: "diff"
+      readonly path: string
+      readonly scope: "staged" | "unstaged"
+    }
+
+/** Ephemeral exact bytes returned by a bounded workspace read; never persisted or telemetered. */
+export interface BoundedArtifact {
+  readonly source: ContextPackSourceReference
+  readonly content: string
+}
+
+export interface ContextPackMaterializationLimits {
+  readonly maxArtifactBytes: number
+  readonly maxTotalBytes: number
+}
+
+export type ContextPackMaterializationBlockedReason =
+  | "invalid_workspace"
+  | "invalid_limits"
+  | "invalid_path"
+  | "source_missing"
+  | "outside_workspace"
+  | "ineligible_source"
+  | "binary_source"
+  | "malformed_source"
+  | "invalid_range"
+  | "unsupported_diff_scope"
+  | "oversized_artifact"
+  | "total_bytes_exceeded"
+  | "diff_failed"
+
+export type ContextPackMaterializationStaleReason =
+  | "source_changed_during_read"
+  | "source_identity_changed"
+  | "source_digest_changed"
+  | "source_bytes_changed"
+
+export type BoundedArtifactReadResult =
+  | { readonly kind: "ready"; readonly artifact: BoundedArtifact }
+  | {
+      readonly kind: "blocked"
+      readonly reason: ContextPackMaterializationBlockedReason
+      readonly path: string
+    }
+  | {
+      readonly kind: "stale"
+      readonly reason: ContextPackMaterializationStaleReason
+      readonly path: string
+    }
+
+export type ContextPackMaterializationResult =
+  | {
+      readonly kind: "materialized"
+      readonly artifacts: readonly MaterializedContextArtifact[]
+      readonly totalBytes: number
+    }
+  | {
+      readonly kind: "blocked"
+      readonly reason: ContextPackMaterializationBlockedReason
+      readonly selectionKey?: string
+      readonly path?: string
+    }
+  | {
+      readonly kind: "stale"
+      readonly reason: ContextPackMaterializationStaleReason
+      readonly selectionKey: string
+      readonly path: string
+    }
+
+export type ContextPackReviewVerdict =
+  | { readonly kind: "ready" }
+  | { readonly kind: "blocked"; readonly reason: "over_budget" }
+
+/** Complete, redacted, deterministic live review value. It is never persisted before sealing. */
+export interface ContextPackReviewCandidate {
+  readonly revision: number
+  readonly manifest: DraftContextPackManifest
+  readonly payload: string
+  readonly bytes: number
+  readonly packEstimate: number
+  readonly redactionCount: number
+  readonly sourceFences: readonly ContextPackSourceFence[]
+  readonly verdict: ContextPackReviewVerdict
+}
+
+/** Durable subset of an approved payload. Persistence restores only these exact fields. */
+export interface DurableSealedContextPack {
+  readonly revision: number
+  readonly payload: string
+  readonly bytes: number
+  readonly sealedAt: number
+}
+
+/** Immutable, recipient-neutral exact payload approved by the operator. */
+export interface SealedContextPack extends DurableSealedContextPack {
+  readonly manifest: DraftContextPackManifest
+  readonly packEstimate: number
+  readonly redactionCount: number
+  readonly sourceFences: readonly ContextPackSourceFence[]
+}
+
+/** Restart-safe sealed custody without reconstructed review or source authority. */
+export interface RestoredSealedContextPack extends DurableSealedContextPack {
+  readonly restored: true
+}
+
+export type ContextPackSealedState = SealedContextPack | RestoredSealedContextPack
+
+export type ContextBuildState = "building" | "ready_for_review"
+
+/** Live-only generation and revision authority; persistence must never recreate it. */
+export interface ContextBuildBinding {
+  readonly parentId: SessionId
+  readonly childId: SessionId
+  readonly parentGeneration: number
+  readonly childGeneration: number
+  readonly draftRevision: number
+  readonly state: ContextBuildState
+}
+
+export interface ContextPackState {
+  readonly draft: DraftContextPack | null
+  readonly sealed: ContextPackSealedState | null
+  readonly review: ContextPackReviewCandidate | null
+  readonly build: ContextBuildBinding | null
+  /** Live-only operator cue; never participates in ACP session status or persistence. */
+  readonly attention?: "ready_for_review"
+}
+
+export type ContextPackValidationCode =
+  | "invalid_revision"
+  | "invalid_instructions"
+  | "invalid_instruction_mode"
+  | "invalid_discovered_instructions"
+  | "invalid_budget"
+  | "invalid_brief"
+  | "invalid_stale_state"
+  | "invalid_selection"
+  | "duplicate_selection"
+  | "invalid_path"
+  | "invalid_source_identity"
+  | "invalid_source_digest"
+  | "invalid_source_bytes"
+  | "invalid_rationale"
+  | "invalid_relationship"
+  | "invalid_slice_range"
+  | "invalid_diff_scope"
+  | "unauthorized_mutation"
+  | "unsupported_fields"
+
+export interface ContextPackValidationIssue {
+  readonly code: ContextPackValidationCode
+  readonly selectionIndex?: number
+}
+
+export type ContextPackValidationResult =
+  | { readonly kind: "valid" }
+  | { readonly kind: "invalid"; readonly issues: readonly ContextPackValidationIssue[] }
+
+export type ContextPackDraftResult =
+  | { readonly kind: "created"; readonly draft: DraftContextPack }
+  | { readonly kind: "invalid"; readonly issues: readonly ContextPackValidationIssue[] }
+
+export type ContextPackRestoreResult =
+  | { readonly kind: "restored"; readonly draft: DraftContextPack }
+  | { readonly kind: "invalid"; readonly issues: readonly ContextPackValidationIssue[] }
+
+export type ContextPackMutation =
+  | { readonly kind: "set_instructions"; readonly instructions: ContextPackInstructions }
+  | { readonly kind: "set_budget"; readonly limit: number }
+  | { readonly kind: "set_brief_section"; readonly section: ContextBriefSection; readonly text: string }
+  | { readonly kind: "upsert_selection"; readonly selection: ContextSelection }
+  | { readonly kind: "remove_selection"; readonly selectionKey: string }
+
+/** The child may refine discovered context but never replace operator authority or budget. */
+export type BuilderContextPackMutation =
+  | Extract<ContextPackMutation, { kind: "set_brief_section" | "upsert_selection" | "remove_selection" }>
+  | { readonly kind: "set_discovered_instructions"; readonly discovered: string }
+
+export interface RevisionFencedContextPackMutation {
+  readonly readRevision: number
+  readonly mutation: BuilderContextPackMutation
+}
+
+export type ContextPackMutationResult =
+  | { readonly kind: "applied"; readonly draft: DraftContextPack }
+  | { readonly kind: "stale"; readonly readRevision: number; readonly currentRevision: number }
+  | { readonly kind: "invalid"; readonly issues: readonly ContextPackValidationIssue[] }
+
+export type ContextPackAssemblyFailureReason =
+  | "invalid_draft"
+  | "stale_draft"
+  | "missing_artifact"
+  | "unexpected_artifact"
+  | "duplicate_artifact"
+  | "source_fence_mismatch"
+  | "artifact_size_mismatch"
+  | "redaction_failed"
+
+export type ContextPackAssemblyResult =
+  | { readonly kind: "assembled"; readonly candidate: ContextPackReviewCandidate }
+  | {
+      readonly kind: "blocked"
+      readonly reason: ContextPackAssemblyFailureReason
+      readonly selectionKey?: string
+      readonly issues?: readonly ContextPackValidationIssue[]
+    }
+
+export type ContextPackSealFailureReason =
+  | "invalid_draft"
+  | "candidate_revision_mismatch"
+  | "candidate_blocked"
+  | "candidate_payload_mismatch"
+  | "source_fence_mismatch"
+  | "invalid_sealed_at"
+
+export type ContextPackSealResult =
+  | { readonly kind: "sealed"; readonly sealed: SealedContextPack }
+  | { readonly kind: "blocked"; readonly reason: ContextPackSealFailureReason }
+
+export type RecipientFitUnavailableReason =
+  | "missing_evidence"
+  | "stale_evidence"
+  | "invalid_evidence"
+  | "payload_mismatch"
+
+export type RecipientFitEvidence =
+  | { readonly kind: "missing" }
+  | { readonly kind: "stale" }
+  | {
+      readonly kind: "current"
+      readonly sealedRevision: number
+      readonly payloadBytes: number
+      readonly exactCount: number
+      readonly capacity: number
+      readonly used: number
+      readonly reserve: number
+      readonly counterVersion: string
+      readonly evidenceVersion: string
+    }
+
+export type RecipientFit =
+  | { readonly kind: "fit"; readonly exactCount: number; readonly remaining: number }
+  | { readonly kind: "unavailable"; readonly reason: RecipientFitUnavailableReason }
+  | { readonly kind: "insufficient"; readonly exactCount: number; readonly remaining: number }
+
+/** Closed evidence failures shared by Context Build and Recipient Profile preflights. */
+export type ContextPackEvidenceDenialReason =
+  | "missing_evidence"
+  | "malformed_evidence"
+  | "unsupported_recipe"
+  | "stale_evidence"
+  | "recipe_mismatch"
+
+/** The complete authority an explore-v2 Context Build may receive. */
+export type ContextBuildOperation =
+  | "ask_user:scoped"
+  | "draft:read-bounded"
+  | "workspace:read-bounded"
+  | "draft:mutate-revision-fenced"
+
+export type ContextBuildAvailability =
+  | {
+      readonly status: "available"
+      readonly capabilityVersion: "explore-v2"
+      readonly evidenceVersion: string
+      readonly operations: readonly ContextBuildOperation[]
+      readonly recipe: ResolvedAgentConfig
+      readonly model: string
+    }
+  | { readonly status: "unavailable"; readonly reason: ContextPackEvidenceDenialReason }
+
+export interface ResolvedRecipientProfile {
+  readonly profileVersion: string
+  readonly evidenceVersion: string
+  readonly recipe: ResolvedAgentConfig
+  readonly model: string
+  readonly freshSessionCapacity: number
+  readonly reserve: number
+  readonly counterVersion: string
+  readonly validUntil: number
+}
+
+export type RecipientProfileAvailability =
+  | { readonly status: "available"; readonly profile: ResolvedRecipientProfile }
+  | { readonly status: "unavailable"; readonly reason: ContextPackEvidenceDenialReason }

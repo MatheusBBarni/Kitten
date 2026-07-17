@@ -39,6 +39,7 @@ import {
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
+import { CONTEXT_PACK_TITLE } from "./ContextPackPanel.tsx"
 import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -330,6 +331,59 @@ describe("CockpitApp layout", () => {
     const ready = await waitForFrame((frame) => frame.includes(WELCOME_GREETING))
     expect(ready).not.toContain("This agent is not ready.")
     await destroyMounted(renderer)
+  })
+})
+
+describe("/context selected-session routing", () => {
+  it("opens without starting work and follows the selected session projection", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 100, 30)
+
+    try {
+      await runSlashCommand(setup, "context")
+      const claude = await setup.waitForFrame((frame) => frame.includes(`${CONTEXT_PACK_TITLE} · Claude Code`))
+      expect(claude).toContain("Phase: Unavailable")
+      expect(controller.calls.startContextBuild).toEqual([])
+      expect(controller.calls.reviewContextPack).toEqual([])
+      expect(controller.calls.sealContextPack).toEqual([])
+      expect(controller.calls.sendContextPackHere).toEqual([])
+      expect(controller.calls.exportContextPack).toEqual([])
+
+      await actAsync(() => controller.actions.switchFocus("codex"))
+      const codex = await setup.waitForFrame((frame) => frame.includes(`${CONTEXT_PACK_TITLE} · Codex`))
+      expect(codex).not.toContain(`${CONTEXT_PACK_TITLE} · Claude Code`)
+      expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
+  })
+
+  it("stays below Approval and Clarification without opening or preempting either", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 100, 30)
+
+    try {
+      await runSlashCommand(setup, "context")
+      await setup.waitForFrame((frame) => frame.includes(CONTEXT_PACK_TITLE))
+
+      await actAsync(() => openApproval(controller))
+      const approval = await setup.waitForFrame((frame) => frame.includes(APPROVAL_TITLE))
+      expect(approval).not.toContain(`${CONTEXT_PACK_TITLE} · Claude Code`)
+
+      await actAsync(() => openClarification(controller))
+      const clarification = await setup.waitForFrame((frame) => frame.includes(CLARIFICATION_TITLE))
+      expect(clarification).not.toContain(`${CONTEXT_PACK_TITLE} · Claude Code`)
+
+      await actAsync(() => {
+        controller.store.closeClarification()
+        controller.store.closeApproval()
+      })
+      expect(await setup.waitForFrame((frame) => frame.includes(`${CONTEXT_PACK_TITLE} · Claude Code`))).toContain("Phase: Unavailable")
+      expect(controller.calls.startContextBuild).toEqual([])
+      expect(controller.calls.reviewContextPack).toEqual([])
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
   })
 })
 

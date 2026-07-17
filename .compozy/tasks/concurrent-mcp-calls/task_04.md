@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Classify bundled MCP failures at the ACP boundary
 type: backend
 complexity: medium

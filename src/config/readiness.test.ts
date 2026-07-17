@@ -90,6 +90,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
@@ -265,6 +266,8 @@ describe("checkAgentReadiness - Cursor preflight", () => {
     })
 
     expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "binary_not_found" })
+    expect(result.ready === false && result.message).toContain("local Cursor CLI is not available")
+    expect(result.ready === false && result.message).not.toContain('command "agent"')
     expect(probed).toBe(false)
     expect(created).toBe(false)
   })
@@ -288,7 +291,9 @@ describe("checkAgentReadiness - Cursor preflight", () => {
     })
 
     expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "uncertified_recipe" })
-    expect(result.ready === false && result.message).toContain("built-in `agent acp` recipe")
+    expect(result.ready === false && result.message).toContain("has not been reviewed for support")
+    expect(result.ready === false && result.message).toContain("not a local repair")
+    expect(result.ready === false && result.message).not.toContain("/opt/cursor/agent")
     expect(probed).toBe(false)
     expect(created).toBe(false)
   })
@@ -310,7 +315,10 @@ describe("checkAgentReadiness - Cursor preflight", () => {
     })
 
     expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "version_mismatch" })
-    expect(result.ready === false && result.message).toContain("certified Cursor CLI version")
+    expect(result.ready === false && result.message).toContain("does not match Kitten's reviewed profile")
+    if (probeResult.stdout.trim()) {
+      expect(result.ready === false && result.message).not.toContain(probeResult.stdout.trim())
+    }
     expect(created).toBe(false)
   })
 
@@ -371,8 +379,46 @@ describe("checkAgentReadiness - Cursor preflight", () => {
     })
 
     expect(authenticationRequired).toMatchObject({ ready: false, reason: "authentication_required" })
-    expect(authenticationRequired.ready === false && authenticationRequired.message).toContain("sign in to Cursor")
+    expect(authenticationRequired.ready === false && authenticationRequired.message).toContain("Sign in with the Cursor CLI")
+    expect(authenticationRequired.ready === false && authenticationRequired.message).not.toContain("sign in to Cursor")
     expect(genericFailure).toMatchObject({ ready: false, reason: "handshake_failed" })
+    expect(genericFailure.ready === false && genericFailure.message).toContain("local ACP connection could not be established")
+    expect(genericFailure.ready === false && genericFailure.message).not.toContain("initialize failed")
+  })
+
+  it.each([
+    [
+      "connection construction throws",
+      () => {
+        throw new Error("/private/runtime/path: secret transport detail")
+      },
+      undefined,
+    ],
+    [
+      "connection times out",
+      () => stubConnection(() => new Promise<ReadyState>(() => {})).connection,
+      5,
+    ],
+    [
+      "connection negotiates another protocol version",
+      () => stubConnection(async () => ({
+        ready: true,
+        protocolVersion: SUPPORTED_PROTOCOL_VERSION + 1,
+        canLoadSession: false,
+      })).connection,
+      undefined,
+    ],
+  ] as const)("Should collapse Cursor %s to a content-free handshake failure", async (_case, createConnection, timeoutMs) => {
+    const result = await checkAgentReadiness(CURSOR, {
+      binaryExists: alwaysInstalled,
+      probeCursorVersion: async () => ({ exitCode: 0, stdout: CURSOR_VERSION }),
+      createConnection,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    })
+
+    expect(result).toMatchObject({ agentId: "cursor", ready: false, reason: "handshake_failed" })
+    expect(result.ready === false && result.message).toContain("local ACP connection could not be established")
+    expect(result.ready === false && result.message).not.toMatch(/private|secret|protocol version|agent acp/i)
   })
 
   it.each([CLAUDE, CODEX])("Should bypass Cursor version probing for $id", async (config) => {

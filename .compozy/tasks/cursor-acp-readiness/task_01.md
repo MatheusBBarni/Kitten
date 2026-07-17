@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Preserve exact Cursor profile and readiness taxonomy
 type: backend
 complexity: medium
@@ -28,10 +28,10 @@ Protect the exact built-in Cursor trust boundary while making every preflight ou
 </requirements>
 
 ## Subtasks
-- [ ] 1.1 Preserve the compiled exact-profile boundary and prove the empty production registry remains fail-closed.
-- [ ] 1.2 Cover exact recipe, environment, and semantic-version acceptance and rejection behavior.
-- [ ] 1.3 Cover every bounded preflight and connection readiness outcome with truthful recovery language.
-- [ ] 1.4 Prove failed Cursor preflight does not construct a connection or affect ready sibling sessions.
+- [x] 1.1 Preserve the compiled exact-profile boundary and prove the empty production registry remains fail-closed.
+- [x] 1.2 Cover exact recipe, environment, and semantic-version acceptance and rejection behavior.
+- [x] 1.3 Cover every bounded preflight and connection readiness outcome with truthful recovery language.
+- [x] 1.4 Prove failed Cursor preflight does not construct a connection or affect ready sibling sessions.
 
 ## Implementation Details
 
@@ -64,13 +64,13 @@ Constrain this work to the TechSpec sections **System Architecture**, **Data Mod
 ## Tests
 
 - Unit tests:
-  - [ ] Default Cursor remains `agent acp` with an empty environment and resolves to standard runtime behavior while the production registry is empty.
-  - [ ] An injected reviewed profile accepts only exact command, ordered arguments, complete environment, and matching semantic version.
-  - [ ] Absolute command paths, added or reordered arguments, added environment keys, malformed versions, and mismatched versions fail closed.
-  - [ ] Missing binary, nonzero probe, thrown probe, and malformed version return their bounded outcomes without connection creation.
+  - [x] Default Cursor remains `agent acp` with an empty environment and resolves to standard runtime behavior while the production registry is empty.
+  - [x] An injected reviewed profile accepts only exact command, ordered arguments, complete environment, and matching semantic version.
+  - [x] Absolute command paths, added or reordered arguments, added environment keys, malformed versions, and mismatched versions fail closed.
+  - [x] Missing binary, nonzero probe, thrown probe, and malformed version return their bounded outcomes without connection creation.
 - Integration tests:
-  - [ ] An uncertified Cursor recipe returns `uncertified_recipe` before binary probing, version probing, or connection construction.
-  - [ ] Each Cursor failure leaves ready Claude Code and Codex sessions usable and emits only the matching closed readiness outcome.
+  - [x] An uncertified Cursor recipe returns `uncertified_recipe` before binary probing, version probing, or connection construction.
+  - [x] Each Cursor failure leaves ready Claude Code and Codex sessions usable and emits only the matching closed readiness outcome.
 - Test coverage target: >=80%
 - All tests must pass
 

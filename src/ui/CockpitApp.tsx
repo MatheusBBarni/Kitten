@@ -48,6 +48,7 @@ import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider, useAppSelector, useController, useShellBufferType } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
 import { ConversationActivity } from "./ConversationActivity.tsx"
+import { ContextPackPanel } from "./ContextPackPanel.tsx"
 import { DelegationDialog } from "./DelegationDialog.tsx"
 import { EmptyWorkspace } from "./EmptyWorkspace.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
@@ -122,6 +123,7 @@ function CockpitFrame({
   const renderer = useRenderer()
   const { width, height } = useTerminalDimensions()
   const [helpOpen, setHelpOpen] = useState(false)
+  const [contextOpen, setContextOpen] = useState(false)
   const [externalRunNotice, setExternalRunNotice] = useState<ExternalRunNotice | null>(null)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
@@ -249,6 +251,13 @@ function CockpitFrame({
           )
           return
         }
+        case "context-pack": {
+          const sessionId = state.workspace.selectedVisibleId
+          if (state.focusedPane.kind !== "agent" || state.focusedPane.sessionId !== sessionId) return
+          setHelpOpen(false)
+          setContextOpen(true)
+          return
+        }
         case "reveal-history": {
           const sessionId = state.workspace.selectedVisibleId
           if (sessionId) controller.store.revealTranscriptHistory(sessionId, Number.MAX_SAFE_INTEGER)
@@ -296,7 +305,7 @@ function CockpitFrame({
         return
       }
 
-      if (overlayOpen) return
+      if (overlayOpen || contextOpen) return
 
       const command = matchCommand(key, keyboardCapability)
       const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
@@ -328,19 +337,19 @@ function CockpitFrame({
         runCockpitCommand(command)
       }
     },
-    [controller, helpOpen, keyboardCapability, overlayOpen, renderer, runCockpitCommand],
+    [contextOpen, controller, helpOpen, keyboardCapability, overlayOpen, renderer, runCockpitCommand],
   )
   useKeyboard(onKey)
 
   const onPaste = useCallback(
     (event: PasteEvent) => {
-      if (overlayOpen || controller.store.getState().focusedPane.kind !== "shell") return
+      if (overlayOpen || contextOpen || controller.store.getState().focusedPane.kind !== "shell") return
       event.preventDefault()
       setExternalRunNotice(null)
       if (!controller.shell.ready) return
       controller.shell.runtime.paste(event.bytes)
     },
-    [controller, overlayOpen],
+    [contextOpen, controller, overlayOpen],
   )
   usePaste(onPaste)
 
@@ -363,6 +372,7 @@ function CockpitFrame({
   // only the transient shell mode needs a fixed pane title here.
   const paneTitle = isShellFocused ? "Shell · focused" : undefined
   const shellFullHeight = isShellFocused && shellBufferType === "alternate"
+  const closeContext = useCallback(() => setContextOpen(false), [])
 
   return (
     <box
@@ -398,19 +408,21 @@ function CockpitFrame({
             <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
               {focusedSessionId === null ? (
                 <EmptyWorkspace />
+              ) : contextOpen ? (
+                <ContextPackPanel sessionId={focusedSessionId} onClose={closeContext} />
               ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
                 <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
               ) : (
                 (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} workspaceChrome />)
               )}
             </box>
-            <ConversationActivity />
+            {contextOpen ? null : <ConversationActivity />}
           </>
         )}
         {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
       </box>
 
-      {shellFullHeight ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
+      {shellFullHeight || contextOpen ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
 
       {shellFullHeight ? null : <StatusStrip />}
 

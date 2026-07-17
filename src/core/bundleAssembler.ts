@@ -19,7 +19,16 @@
  */
 
 import { createSecretRedactor, type SecretRedactor } from "./secretRedactor.ts"
-import type { HandoffBundle, PendingDiff, ProviderKind, SessionState, ShellSnapshot, Turn } from "./types.ts"
+import type {
+  ContextPackSealedState,
+  HandoffBundle,
+  HandoffSourceIdentityIndex,
+  PendingDiff,
+  ProviderKind,
+  SessionState,
+  ShellSnapshot,
+  Turn,
+} from "./types.ts"
 
 /**
  * The hand-off assembly strategy (TechSpec "Core Interfaces").
@@ -49,6 +58,87 @@ export const DEFAULT_BUNDLE_LIMITS: BundleLimits = {
 export interface DeterministicAssemblerOptions {
   limits?: Partial<BundleLimits>
   redactor?: SecretRedactor
+}
+
+export type AttachSealedContextPackResult =
+  | { readonly kind: "attached"; readonly bundle: HandoffBundle }
+  | { readonly kind: "blocked"; readonly reason: "context_pack_already_attached" }
+
+/**
+ * Add one whole sealed custody value without parsing, redacting, trimming, or
+ * serializing its payload. Ordinary source identities are resolved independently
+ * by the application layer; missing identity evidence deliberately deduplicates
+ * nothing.
+ */
+export function attachSealedContextPack(
+  bundle: HandoffBundle,
+  sealed: ContextPackSealedState,
+  identities: HandoffSourceIdentityIndex,
+): AttachSealedContextPackResult {
+  if (bundle.contextPack) {
+    return { kind: "blocked", reason: "context_pack_already_attached" }
+  }
+
+  const sourceIdentities = "sourceFences" in sealed
+    ? [...new Set(sealed.sourceFences.map((fence) => fence.identity))].sort(compareText)
+    : []
+  const contextPack = Object.freeze({
+    revision: sealed.revision,
+    payload: sealed.payload,
+    bytes: sealed.bytes,
+    sealedAt: sealed.sealedAt,
+    sourceIdentities: Object.freeze(sourceIdentities),
+    ...("redactionCount" in sealed ? { redactionCount: sealed.redactionCount } : {}),
+  })
+  const files = bundle.files.map((file) => {
+    const { sourceIdentity: _untrustedIdentity, ...ordinaryFile } = file
+    const sourceIdentity = identities.files[file.path]
+    return sourceIdentity === undefined ? ordinaryFile : { ...ordinaryFile, sourceIdentity }
+  })
+  const pendingDiffs = bundle.pendingDiffs.map((diff) => {
+    const { sourceIdentity: _untrustedIdentity, ...ordinaryDiff } = diff
+    const sourceIdentity = identities.pendingDiffs[diff.toolCallId]
+    return sourceIdentity === undefined ? ordinaryDiff : { ...ordinaryDiff, sourceIdentity }
+  })
+
+  return {
+    kind: "attached",
+    bundle: {
+      ...bundle,
+      files,
+      pendingDiffs,
+      contextPack,
+      redactionCount: bundle.redactionCount + (contextPack.redactionCount ?? 0),
+    },
+  }
+}
+
+/**
+ * Project ordinary blocks for a combined preview. Exact source identity is the
+ * only deduplication key; path, row index, digest, and tool-call id alone never
+ * hide material. Excluding the whole attachment disables deduplication and thus
+ * restores every ordinary block.
+ */
+export function deduplicateHandoffBundle(
+  bundle: HandoffBundle,
+  includeContextPack = true,
+): Pick<HandoffBundle, "files" | "pendingDiffs"> {
+  if (!includeContextPack || !bundle.contextPack) {
+    return { files: bundle.files, pendingDiffs: bundle.pendingDiffs }
+  }
+  const attachedIdentities = new Set(bundle.contextPack.sourceIdentities)
+  return {
+    files: bundle.files.filter(
+      (file) => file.sourceIdentity === undefined || !attachedIdentities.has(file.sourceIdentity),
+    ),
+    pendingDiffs: bundle.pendingDiffs.filter(
+      (diff) => diff.sourceIdentity === undefined || !attachedIdentities.has(diff.sourceIdentity),
+    ),
+  }
+}
+
+function compareText(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1
 }
 
 /** Appended to a turn whose text was cut to fit {@link BundleLimits.maxTurnChars}. */

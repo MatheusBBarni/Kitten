@@ -1,3 +1,14 @@
+import type { ResolvedAgentConfig } from "../core/types.ts"
+import {
+  CERTIFIED_CONTEXT_BUILD_PROFILES,
+  CERTIFIED_RECIPIENT_PROFILES,
+  resolveContextPackCapabilities,
+  type CertifiedContextBuildProfile,
+  type CertifiedRecipientProfile,
+  type ContextPackCapabilityComposition,
+  type ContextPackRuntimeEvidence,
+} from "./contextPackCapability.ts"
+
 /** The exact ACP SDK release covered by harness adapter certification. */
 export const HARNESS_CONTRACT_SDK_VERSION = "1.2.1"
 
@@ -79,6 +90,10 @@ export interface HarnessRecipe {
   readonly command: string
   readonly args: readonly string[]
   readonly env: Readonly<Record<string, string>>
+}
+
+export interface HarnessCapabilityComposition extends ContextPackCapabilityComposition {
+  readonly harness: HarnessCapability
 }
 
 const EXACT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u
@@ -192,6 +207,26 @@ export function resolveHarnessCapability(
   const profile = releaseMatches.find((candidate) => sameRecipe(candidate.recipe, recipe))
   if (!profile) return { status: "unsupported", reason: "recipe_mismatch" }
   return { status: "supported", profileId: profile.profileId, encoder: profile.encoder }
+}
+
+/**
+ * Resolve the ordinary prompt harness beside the separately certified Context
+ * Pack capabilities. A supported ordinary harness never implies build or
+ * recipient authority.
+ */
+export function resolveHarnessCapabilityComposition(
+  recipe: ResolvedAgentConfig,
+  harnessEvidence: HarnessRuntimeEvidence | undefined,
+  contextPackEvidence: ContextPackRuntimeEvidence,
+  now: number,
+  harnessProfiles: readonly CertifiedHarnessProfile[] = CERTIFIED_HARNESS_PROFILES,
+  buildProfiles: readonly CertifiedContextBuildProfile[] = CERTIFIED_CONTEXT_BUILD_PROFILES,
+  recipientProfiles: readonly CertifiedRecipientProfile[] = CERTIFIED_RECIPIENT_PROFILES,
+): HarnessCapabilityComposition {
+  return {
+    harness: resolveHarnessCapability(recipe, harnessEvidence, harnessProfiles),
+    ...resolveContextPackCapabilities(recipe, contextPackEvidence, now, buildProfiles, recipientProfiles),
+  }
 }
 
 /** Adapter-side exact match. Envelope profile IDs alone never grant capability. */

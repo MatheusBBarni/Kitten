@@ -52,6 +52,7 @@ import type {
   SessionId,
   SessionState,
   SessionStatus,
+  SessionUsage,
   SteeringPhase,
   SteeringState,
   ShellState,
@@ -63,6 +64,12 @@ import type {
   ManagedWorktreeBinding,
   ManagedWorktreeReason,
   ConversationAvailability,
+  ContextBuildBinding,
+  ContextPackReviewCandidate,
+  ContextPackState,
+  CursorRecoveryState,
+  DraftContextPack,
+  ContextPackSealedState,
   TeardownState,
   WorkspaceConversation,
   WorkspaceState,
@@ -73,6 +80,7 @@ import type {
   ApprovalOverlay,
   ClarificationOverlay,
   DelegationOverlay,
+  ExplorerPosition,
   FocusedPane,
   HandoffPreviewOverlay,
   HandoffTargetOverlay,
@@ -346,6 +354,57 @@ const delegatedParentCloseSummaryCache = new WeakMap<
 export const selectFocusedSessionId: Selector<SessionId | null> = (state) =>
   state.workspace.selectedVisibleId
 
+/** The complete addressed Context Pack custody projection, or stable `null` when absent. */
+export const selectContextPack =
+  (sessionId: SessionId | null): Selector<ContextPackState | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId] : null) ?? null
+
+/** The addressed current mutable draft only. */
+export const selectContextPackDraft =
+  (sessionId: SessionId | null): Selector<DraftContextPack | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.draft : null) ?? null
+
+/** The addressed current immutable sealed pack only. */
+export const selectContextPackSealed =
+  (sessionId: SessionId | null): Selector<ContextPackSealedState | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.sealed : null) ?? null
+
+/** The addressed live-only exact review candidate only. */
+export const selectContextPackReview =
+  (sessionId: SessionId | null): Selector<ContextPackReviewCandidate | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.review : null) ?? null
+
+/** The addressed live-only Context Build binding only. */
+export const selectContextPackBuild =
+  (sessionId: SessionId | null): Selector<ContextBuildBinding | null> =>
+  (state) =>
+    (sessionId ? state.contextPacks[sessionId]?.build : null) ?? null
+
+export interface ContextPackAttentionPresentation {
+  readonly kind: "ready_for_review"
+  readonly label: "Context ready"
+}
+
+const CONTEXT_PACK_READY_ATTENTION: ContextPackAttentionPresentation = Object.freeze({
+  kind: "ready_for_review",
+  label: "Context ready",
+})
+
+function contextPackAttentionPresentation(
+  contextPack: ContextPackState | undefined,
+): ContextPackAttentionPresentation | null {
+  return contextPack?.attention === "ready_for_review" ? CONTEXT_PACK_READY_ATTENTION : null
+}
+
+/** Distinct live Context Pack attention; never synthesized from ACP SessionStatus. */
+export const selectContextPackAttention =
+  (sessionId: SessionId | null): Selector<ContextPackAttentionPresentation | null> =>
+  (state) => contextPackAttentionPresentation(sessionId ? state.contextPacks[sessionId] : undefined)
+
 /** The complete ephemeral delegation projection for controller/store integration. */
 export const selectDelegationState: Selector<DelegationState> = (state) => state.delegation
 
@@ -410,6 +469,17 @@ export const selectConversationAvailability =
   (state) =>
     (sessionId ? state.workspace.conversations[sessionId]?.availability : null) ?? null
 
+/** Safe Cursor recovery semantics for one unavailable Cursor session only. */
+export const selectCursorRecovery =
+  (sessionId: SessionId | null): Selector<CursorRecoveryState | null> =>
+  (state) => {
+    if (!sessionId || state.sessions[sessionId]?.providerKind !== "cursor") return null
+    const availability = state.workspace.conversations[sessionId]?.availability
+    return availability?.kind === "unavailable"
+      ? availability.cursorRecovery ?? null
+      : null
+  }
+
 /** Ephemeral empty-workspace action feedback. */
 export const selectWorkspaceNotice: Selector<WorkspaceNotice | null> = (state) =>
   state.workspaceNotice
@@ -420,6 +490,29 @@ export const selectKeyboardCapability: Selector<KeyboardCapability> = (state) =>
 
 /** The pane that currently owns keyboard input. */
 export const selectFocusedPane: Selector<FocusedPane> = (state) => state.focusedPane
+
+/** Whether the current-run explorer surface is revealed. */
+export const selectExplorerVisible: Selector<boolean> = (state) => state.explorer.visible
+
+/** Whether the selected session's explorer currently owns keyboard input. */
+export const selectIsExplorerFocused: Selector<boolean> = (state) =>
+  state.focusedPane.kind === "explorer"
+
+/** One session's lazy current-run explorer position, absent until first use. */
+export const selectSessionExplorerPosition =
+  (sessionId: SessionId | null): Selector<ExplorerPosition | null> =>
+  (state) =>
+    (sessionId ? state.explorer.positions[sessionId] : undefined) ?? null
+
+/** The selected conversation's current-run explorer position. */
+export const selectFocusedExplorerPosition: Selector<ExplorerPosition | null> = (state) => {
+  const sessionId = state.workspace.selectedVisibleId
+  return (sessionId ? state.explorer.positions[sessionId] : undefined) ?? null
+}
+
+/** The selected conversation's position only while the explorer is revealed. */
+export const selectVisibleExplorerPosition: Selector<ExplorerPosition | null> = (state) =>
+  state.explorer.visible ? selectFocusedExplorerPosition(state) : null
 
 /** The semantic shell slice. */
 export const selectShell: Selector<ShellState> = (state) => state.shell
@@ -635,6 +728,12 @@ export const selectSessionHeadroom =
     if (!usage || usage.size <= 0) return null
     return Math.round(((usage.size - usage.used) / usage.size) * 100)
   }
+
+/** Exact immutable usage object that invalidates a displayed Context Pack fit assessment. */
+export const selectSessionUsage =
+  (sessionId: SessionId): Selector<SessionUsage | null> =>
+  (state) =>
+    state.sessions[sessionId]?.usage ?? null
 
 /** One session's live-restore outcome, or `null` during a normal non-restored run. */
 export const selectRestoration =
@@ -1161,6 +1260,8 @@ export interface WorkspaceConversationView {
   delegation: DelegationPresentation | null
   /** The same cached managed-worktree review object exposed by session-list rows. */
   review: ManagedWorktreeReviewPresentation | null
+  /** Textual Context Pack cue kept separate from agent execution attention. */
+  contextPackAttention: ContextPackAttentionPresentation | null
 }
 
 export interface SharedWorkspaceCue {
@@ -1217,6 +1318,7 @@ function workspaceConversationView(
   const selected = state.workspace.selectedVisibleId === sessionId
   const delegation = delegationPresentation(state, sessionId)
   const review = managedWorktreeReviewPresentation(session.worktreeBinding)
+  const contextPackAttention = contextPackAttentionPresentation(state.contextPacks[sessionId])
   const key = [
     session.providerKind,
     session.cwd,
@@ -1227,6 +1329,7 @@ function workspaceConversationView(
     sharedCount,
     delegationPresentationKey(delegation),
     projectionObjectKey(review),
+    projectionObjectKey(contextPackAttention),
   ].join("\u0000")
   let byKey = conversationViewCache.get(conversation)
   if (!byKey) {
@@ -1256,6 +1359,7 @@ function workspaceConversationView(
     sharedWorkspaceCount: sharedCount,
     delegation,
     review,
+    contextPackAttention,
   }
   byKey.set(key, view)
   return view

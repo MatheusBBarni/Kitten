@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Containment-Safe Lazy Workspace Tree Source
 type: backend
 complexity: medium

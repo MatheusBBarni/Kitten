@@ -20,7 +20,15 @@
 
 import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRequest, PromptBlock } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
+import { CONTEXT_PACK_MCP_INSTRUCTIONS, type ContextPackMcpOperation } from "../agent/contextPackMcp.ts"
+import { lstatSync, realpathSync } from "node:fs"
+import { isAbsolute, resolve } from "node:path"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
+import {
+  CONTEXT_BUILD_OPERATIONS,
+  resolveContextBuildCapability,
+  resolveRecipientProfile,
+} from "../config/contextPackCapability.ts"
 import {
   EXPLORE_ATTESTATION_VERSION,
   resolveExploreCapability,
@@ -34,34 +42,43 @@ import {
 } from "../config/harnessCapability.ts"
 import {
   connectionReadinessFailure,
+  handshakeReadinessFailure,
   preflightAgentReadiness,
   type AgentReadinessPreflight,
+  type ConnectionReadinessFailure,
+  type PreflightNotReadyReason,
   type ReadinessPreflightOptions,
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type CursorRecoveryState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
+import { assembleCandidate, assessRecipientFit, contextSelectionKey, createDraft, restoreManifest, sealCandidate } from "../core/contextPack.ts"
+import { createSecretRedactor, type SecretRedactor } from "../core/secretRedactor.ts"
 import {
   type HarnessDeliveryCheckpoint,
   migratePersistedRunV1,
+  migratePersistedRunToV4,
   type PersistedAgent,
+  type PersistedContextPack,
   type PersistedConversationV2,
   type PersistedRunRecord,
-  type PersistedRunRecordV2,
-  type PersistedRunRecordV3,
+  type PersistedRunRecordV4,
 } from "../persistence/runRecord.ts"
 import {
   createShellRuntime as createRealShellRuntime,
   type ShellRuntime,
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
-import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type DelegatedChildIdentity, type DelegatedChildStatePublication, type Unsubscribe } from "../store/appStore.ts"
+import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type ContextBuildDraftPreparation, type DelegatedChildIdentity, type DelegatedChildStatePublication, type Unsubscribe } from "../store/appStore.ts"
 import {
   bucketAgentRunBatchSize,
   bucketAgentRunDuration,
+  bucketContextPackBytes,
+  bucketContextPackRedactionCount,
+  bucketContextPackSelectionCount,
   createUsageSeenJsonlFileSink,
   logUsageSeen,
   resolveTelemetryPath,
@@ -79,8 +96,22 @@ import {
   type UsageSeenSink,
   type ProviderReadinessOutcome,
   type AgentRunTelemetryInput,
+  type McpBridgeFailureCategory,
   type SteeringCapabilityClass,
   type SteeringTelemetryOutcome,
+  type ContextPackBuildDeniedInput,
+  type ContextPackBuildSettledInput,
+  type ContextPackBuildStartedInput,
+  type ContextPackDeliveryConfirmedInput,
+  type ContextPackDeliveryDeniedInput,
+  type ContextPackDraftCreatedInput,
+  type ContextPackFitAvailableInput,
+  type ContextPackFitInsufficientInput,
+  type ContextPackFitUnavailableInput,
+  type ContextPackReviewBlockedInput,
+  type ContextPackReviewReadyInput,
+  type ContextPackSealDeniedInput,
+  type ContextPackSealedInput,
 } from "../telemetry/recorder.ts"
 import {
   createControllerActions,
@@ -89,9 +120,21 @@ import {
   type CloseChoice,
   type CloseConversationResult,
   type ControllerActions,
+  type ContextBuildAvailabilityResult,
+  type ContextBuildDenialReason,
+  type ContextBuildStartResult,
+  type ContextPackDraftCreationResult,
+  type ContextPackReviewResult,
+  type ContextPackFileMembershipInput,
+  type ContextPackFileMembershipResult,
+  type ContextPackExportActionInput,
+  type ContextPackExportActionResult,
+  type ContextPackSealActionResult,
+  type ContextPackSendHereResult,
   type ExploreAvailabilityResult,
   type ExploreLaunchResult,
   type StartDelegatedChildInput,
+  type StartContextBuildInput,
   type SteeringResult,
 } from "./actions.ts"
 import { createSteeringCoordinator, type SteeringCoordinator } from "./steeringCoordinator.ts"
@@ -105,18 +148,39 @@ import {
   type HarnessDelivery,
 } from "./harnessDelivery.ts"
 import {
+  isPathContainedBy,
+  isSafeRepositoryRelativePath,
   repositoryFileSource as productionRepositoryFileSource,
   type RepositoryFileSource,
 } from "./fileDiscovery.ts"
 import {
+  KittenMcpBridgeError,
   createKittenMcpBridge as createRealKittenMcpBridge,
   type AgentRunControl,
   type AgentRunRoute,
   type AgentRunSnapshot,
   type AgentRunTask,
   type KittenMcpBridge,
+  type KittenMcpBridgeFailureReason,
   type KittenMcpBridgeOptions,
 } from "./kittenMcpBridge.ts"
+import {
+  createContextPackBridge as createRealContextPackBridge,
+  type ContextPackBridge,
+  type ContextPackBridgeAuthorization,
+  type ContextPackBridgeDisposalReason,
+  type ContextPackBridgeFacade,
+  type ContextPackBridgeRoute,
+  type CreateContextPackBridgeOptions,
+} from "./contextPackBridge.ts"
+import {
+  createContextPackMaterializer,
+  type ContextPackMaterializer,
+} from "./contextPackMaterializer.ts"
+import {
+  createContextPackExporter,
+  type ContextPackExporter,
+} from "./contextPackExport.ts"
 import {
   createManagedWorktreeProvisioner,
   type CleanupManagedWorktreeResult,
@@ -179,11 +243,25 @@ export interface ControllerTelemetry extends ActionTelemetry {
   managedWorktreeCleanupRefused?(reason: ManagedWorktreeReason): void
   managedWorktreeCleaned?(): void
   agentRunControl?(input: AgentRunTelemetryInput): void
+  mcpBridgeFailure?(category: McpBridgeFailureCategory): void
   steeringOutcome?(
     lifecycleKey: string,
     outcome: SteeringTelemetryOutcome,
     capabilityClass: SteeringCapabilityClass,
   ): void
+  contextPackDraftCreated?(input: ContextPackDraftCreatedInput): void
+  contextPackBuildStarted?(lifecycleKey: string, input: ContextPackBuildStartedInput): void
+  contextPackBuildDenied?(input: ContextPackBuildDeniedInput): void
+  contextPackBuildSettled?(lifecycleKey: string, input: ContextPackBuildSettledInput): void
+  contextPackReviewReady?(input: ContextPackReviewReadyInput): void
+  contextPackReviewBlocked?(input: ContextPackReviewBlockedInput): void
+  contextPackSealed?(input: ContextPackSealedInput): void
+  contextPackSealDenied?(input: ContextPackSealDeniedInput): void
+  contextPackFitAvailable?(input: ContextPackFitAvailableInput): void
+  contextPackFitUnavailable?(input: ContextPackFitUnavailableInput): void
+  contextPackFitInsufficient?(input: ContextPackFitInsufficientInput): void
+  contextPackDeliveryConfirmed?(input: ContextPackDeliveryConfirmedInput): void
+  contextPackDeliveryDenied?(input: ContextPackDeliveryDeniedInput): void
 }
 
 /**
@@ -226,6 +304,41 @@ export type AgentRuntimeState =
       error: string
     })
 
+export type CursorReadinessCause = PreflightNotReadyReason | ConnectionReadinessFailure["reason"]
+
+const CURSOR_RECOVERY_BY_CAUSE = {
+  binary_not_found: Object.freeze({
+    reason: "binary_missing",
+    action: "install_cursor_cli",
+    recheckable: true,
+  }),
+  version_mismatch: Object.freeze({
+    reason: "version_mismatch",
+    action: "restore_reviewed_profile",
+    recheckable: true,
+  }),
+  authentication_required: Object.freeze({
+    reason: "authentication_required",
+    action: "authenticate_natively",
+    recheckable: true,
+  }),
+  uncertified_recipe: Object.freeze({
+    reason: "uncertified_recipe",
+    action: "await_maintainer_review",
+    recheckable: false,
+  }),
+  handshake_failed: Object.freeze({
+    reason: "handshake_failed",
+    action: "retry_handshake",
+    recheckable: true,
+  }),
+} as const satisfies Record<CursorReadinessCause, CursorRecoveryState>
+
+/** Project one normalized Cursor readiness cause without consulting runtime error text. */
+export function projectCursorRecovery(cause: CursorReadinessCause): CursorRecoveryState {
+  return CURSOR_RECOVERY_BY_CAUSE[cause]
+}
+
 /** The controller-owned shell boundary, including a legible degraded state. */
 export type ShellRuntimeState =
   | { readonly ready: true; readonly runtime: ShellRuntime }
@@ -240,6 +353,8 @@ export interface SessionControllerOptions {
   store?: AppStore
   /** How to build a connection for a provider. Defaults to a real spawning connection. */
   createConnection?: (config: ResolvedAgentConfig) => AgentConnection
+  /** How to build the restricted Context Build child connection. Defaults to ACP filesystem disabled. */
+  createContextBuildConnection?: (config: ResolvedAgentConfig) => AgentConnection
   /** Lightweight recipe/binary/version check used before every Cursor connection. */
   preflightAgentReadiness?: (
     config: ResolvedAgentConfig,
@@ -277,12 +392,29 @@ export interface SessionControllerOptions {
   resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
   /** Closed explore attestation decision; injectable with reviewed fake evidence in tests. */
   resolveExploreCapability?: (config: ResolvedAgentConfig) => ExploreCapability
+  /** Closed explore-v2 decision; called again for every Context Build launch. */
+  resolveContextBuildCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
+  /** Closed Recipient Profile decision; called again for every fit or delivery decision. */
+  resolveRecipientProfile?: (config: ResolvedAgentConfig) => RecipientProfileAvailability
+  /** Exact payload counter for the version named by the current Recipient Profile. */
+  countContextPackPayload?: (
+    payload: string,
+    profile: ResolvedRecipientProfile,
+  ) => number | null
+  /** Deterministic review redactor; injectable only for failure and race coverage. */
+  contextPackRedactor?: SecretRedactor
   /** Schedule one accepted clarification timeout and return its cancellation hook. */
   scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Schedule one bounded steering settlement wait and return its cancellation hook. */
   scheduleSteeringSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Controller-owned bridge factory; injectable for lifecycle and composition tests. */
   createKittenMcpBridge?: (options: KittenMcpBridgeOptions) => KittenMcpBridge
+  /** Dedicated Context Pack bridge factory; never shares the mixed child action surface. */
+  createContextPackBridge?: (options: CreateContextPackBridgeOptions) => ContextPackBridge
+  /** Bounded workspace reader used only through the dedicated Context Pack bridge. */
+  contextPackMaterializer?: ContextPackMaterializer
+  /** Confirmed exact-payload export boundary; injectable for no-write controller tests. */
+  contextPackExporter?: ContextPackExporter
   /** Executable and optional entrypoint arguments used by generated bridge declarations. */
   kittenMcpExecutable?: { readonly command: string; readonly args?: readonly string[] }
 }
@@ -303,6 +435,10 @@ export interface SessionController {
   runtime(sessionId: SessionId): AgentRuntimeState | undefined
   /** Whether the session completed its handshake and holds a live ACP session. */
   isReady(sessionId: SessionId): boolean
+  /** Resolve exact ordinary-item source identities without granting path-only deduplication. */
+  handoffSourceIdentities?(sessionId: SessionId, bundle: HandoffBundle): HandoffSourceIdentityIndex
+  /** Recompute fit for one reviewed sealed attachment against the addressed target. */
+  assessHandoffRecipientFit?(targetSessionId: SessionId, sealed: DurableSealedContextPack): RecipientFit
   /** Replace the controller-owned provider-default snapshot without mutating sessions. */
   updateProviderDefaults(defaults: Partial<Record<ProviderKind, ProviderModelDefault>>): void
   /** Replace the current sessions with the independently restored sides of one persisted run. */
@@ -337,6 +473,8 @@ export type AgentInteractionOutcome = PermissionOutcome | ClarificationOutcome
 export interface ClarificationRequestHandle {
   readonly requestId: string
   readonly outcome: Promise<ClarificationOutcome>
+  /** Cancel only this request for an explicit session-loss reason. */
+  cancel(reason: ClarificationSessionLossReason): boolean
   /** Settle this exact request as timed out; late or duplicate attempts are inert. */
   timeout(): boolean
 }
@@ -504,6 +642,7 @@ export function createInteractionCoordinator(
   function settleExact(
     entry: PendingInteraction,
     outcome: AgentInteractionOutcome,
+    lossReason?: ClarificationSessionLossReason,
   ): boolean {
     if (entry.lifecycle === "terminal") return false
     if ((entry.kind === "permission") !== ("outcome" in outcome)) return false
@@ -511,7 +650,7 @@ export function createInteractionCoordinator(
     if (wasActive) active = null
     else if (!removeExact(queued, entry) && !removeExact(suspended, entry)) return false
 
-    if (!terminalize(entry, outcome)) return false
+    if (!terminalize(entry, outcome, lossReason)) return false
     if (wasActive) advance()
     return true
   }
@@ -584,6 +723,7 @@ export function createInteractionCoordinator(
         return {
           requestId,
           outcome: Promise.resolve({ kind: "cancelled" }),
+          cancel: () => false,
           timeout: () => false,
         }
       }
@@ -611,6 +751,7 @@ export function createInteractionCoordinator(
       return {
         requestId,
         outcome,
+        cancel: (reason) => settleExact(entry, { kind: "cancelled" }, reason),
         timeout: () => settleExact(entry, { kind: "timed_out" }),
       }
     },
@@ -674,6 +815,25 @@ interface AgentRuntime {
   mcpScope: "ordinary" | "explore"
 }
 
+/** Controller-owned I/O handles for one store-bound, non-conversation Context Build child. */
+interface ContextBuildChildRuntime {
+  readonly binding: ContextBuildBinding
+  readonly route: ContextPackBridgeRoute
+  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
+  readonly clarificationHandles: Set<ClarificationRequestHandle>
+  connection: AgentConnection | null
+  acpSessionId: string | null
+  unsubscribe: Unsubscribe | null
+  settled: boolean
+}
+
+interface ContextBuildPreflight {
+  readonly parentRuntime: AgentRuntime & { readonly config: ResolvedAgentConfig }
+  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
+  readonly parentGeneration: number
+  readonly workspaceRoot: string
+}
+
 interface ActivePromptLifecycle {
   readonly turnId: string
   readonly generation: number
@@ -694,9 +854,12 @@ interface SteeringRecoveryTransfer {
 export async function createSessionController(options: SessionControllerOptions): Promise<SessionController> {
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
+  const createContextBuildConnection = options.createContextBuildConnection ?? defaultCreateContextBuildConnection
   const preflight = options.preflightAgentReadiness ?? preflightAgentReadiness
   const attestExplore = options.resolveExploreCapability ?? ((config: ResolvedAgentConfig) =>
     resolveExploreCapability(config, undefined))
+  const attestContextBuild = options.resolveContextBuildCapability ?? ((config: ResolvedAgentConfig) =>
+    resolveContextBuildCapability(config, undefined, options.now?.() ?? Date.now()))
   // Resolve once per cockpit boot so every fresh, restored, and dynamically added
   // session receives the same validated stdio server list.
   const mcpResolution = resolveMcpServers(options.config.mcpServers)
@@ -744,6 +907,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const steeringCoordinators = new Map<SessionId, SteeringCoordinator>()
   const activeAgentRunStarts = new Set<string>()
   const pendingClarificationCounts = new Map<string, number>()
+  const contextBuildChildren = new Map<SessionId, ContextBuildChildRuntime>()
   let activeInteraction: ActiveAgentInteraction | null = null
   const interactionCoordinator = createInteractionCoordinator({
     newRequestId: options.newInteractionId,
@@ -796,6 +960,16 @@ export async function createSessionController(options: SessionControllerOptions)
     },
   })
   const kittenMcpExecutable = options.kittenMcpExecutable ?? defaultKittenMcpExecutable()
+  const contextPackMaterializer = options.contextPackMaterializer ?? createContextPackMaterializer()
+  const contextPackExporter = options.contextPackExporter ?? createContextPackExporter()
+  const contextPackRedactor = options.contextPackRedactor ?? createSecretRedactor()
+  const attestRecipientProfile = options.resolveRecipientProfile ?? ((config: ResolvedAgentConfig) =>
+    resolveRecipientProfile(config, undefined, now()))
+  const countContextPackPayload = options.countContextPackPayload ?? (() => null)
+  const contextPackBridge = (options.createContextPackBridge ?? createRealContextPackBridge)({
+    executablePath: kittenMcpExecutable.command,
+    executableArgs: kittenMcpExecutable.args,
+  })
   const agentRunControl: AgentRunControl = {
     start: startAgentRunBatch,
     poll: pollAgentRun,
@@ -813,6 +987,9 @@ export async function createSessionController(options: SessionControllerOptions)
     },
     cancelClarifications(sessionId, generation, reason) {
       interactionCoordinator.cancelSession(sessionId, generation, reason)
+    },
+    onFailure(reason) {
+      options.recorder?.mcpBridgeFailure?.(mcpBridgeFailureCategory(reason))
     },
   })
   let disposed = false
@@ -929,6 +1106,18 @@ export async function createSessionController(options: SessionControllerOptions)
     }
     store.applyEvent(runtime.seed.id, event)
     if (event.kind === "status") publishDelegatedRuntimeStatus(runtime, event.status)
+  }
+
+  /** Bind updates to the exact connection generation that created the subscription. */
+  function subscribeRuntimeUpdates(
+    runtime: AgentRuntime,
+    connection: AgentConnection,
+    generation: number,
+  ): Unsubscribe {
+    return connection.onUpdate((event) => {
+      if (!isCurrentGeneration(runtime, generation)) return
+      applyRuntimeEvent(runtime, event)
+    })
   }
 
   function delegatedIdentity(childId: SessionId): DelegatedChildIdentity | null {
@@ -1081,7 +1270,12 @@ export async function createSessionController(options: SessionControllerOptions)
         publishDelegatedRuntimeStatus(runtime, "working")
       }
     })
-    return { requestId: handle.requestId, outcome, timeout: handle.timeout }
+    return {
+      requestId: handle.requestId,
+      outcome,
+      cancel: handle.cancel,
+      timeout: handle.timeout,
+    }
   }
 
   async function enqueueClarification(
@@ -1108,6 +1302,7 @@ export async function createSessionController(options: SessionControllerOptions)
     generation: number,
     reason: ClarificationSessionLossReason,
   ): void {
+    terminateContextBuildForParent(runtime.seed.id, generation)
     try {
       kittenMcpBridge.cancelSession(runtime.seed.id, generation, reason)
     } catch (error) {
@@ -1235,7 +1430,13 @@ export async function createSessionController(options: SessionControllerOptions)
       if (!preflightResult.ready) {
         options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
         readinessRecorded = true
-        await failSession(runtime, undefined, preflightResult.message, "connection-failed")
+        await failSession(
+          runtime,
+          undefined,
+          preflightResult.message,
+          "connection-failed",
+          preflightResult.reason,
+        )
         return
       }
       connection = create(config)
@@ -1249,11 +1450,19 @@ export async function createSessionController(options: SessionControllerOptions)
         const failure = longLivedReadinessFailure(config, ready)
         options.recorder?.providerReadiness?.(config.id, failure.reason)
         readinessRecorded = true
-        await failSession(runtime, connection, failure.message, "connection-failed")
+        await failSession(
+          runtime,
+          connection,
+          failure.message,
+          "connection-failed",
+          failure.reason,
+        )
         return
       }
-      options.recorder?.providerReadiness?.(config.id, "ready")
-      readinessRecorded = true
+      if (config.id !== "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
       // The agent may advertise its current model/effort in the `session/new` response,
       // which the adapter emits as a `config_options` event *during* `newSession`. The
       // permanent subscription below is bound only after `startSession` resets the slice,
@@ -1278,7 +1487,7 @@ export async function createSessionController(options: SessionControllerOptions)
       // an event that arrived first would be thrown away.
       store.startSession(seed.id, acpSessionId)
       if (seededConfig) store.applyEvent(seed.id, seededConfig)
-      const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
+      const unsubscribe = subscribeRuntimeUpdates(runtime, connection, generation)
       connection.onPermission((request) => enqueuePermission(runtime, request))
       connection.onClarification((payload) => enqueueClarification(runtime, payload))
       runtime.state = {
@@ -1295,6 +1504,10 @@ export async function createSessionController(options: SessionControllerOptions)
       runtime.acpSessionId = acpSessionId
       runtime.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
+      if (config.id === "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
     } catch (error) {
       if (!isCurrentGeneration(runtime, generation)) {
         if (runtime.connection === connection) await disposeQuietly(connection)
@@ -1302,7 +1515,10 @@ export async function createSessionController(options: SessionControllerOptions)
       }
       if (!readinessRecorded) options.recorder?.providerReadiness?.(config.id, "handshake_failed")
       onError(seed.id, error)
-      await failSession(runtime, connection, errorMessage(error), "connection-failed")
+      const message = config.id === "cursor"
+        ? handshakeReadinessFailure(config).message
+        : errorMessage(error)
+      await failSession(runtime, connection, message, "connection-failed", "handshake_failed")
     }
   }
 
@@ -1312,6 +1528,7 @@ export async function createSessionController(options: SessionControllerOptions)
     connection: AgentConnection | undefined,
     error: string,
     reasonCode: "connection-failed" | "restore-unavailable" | "provider-unavailable",
+    cursorReadinessCause?: CursorReadinessCause,
   ): Promise<void> {
     terminalizeSteering(runtime.seed.id)
     abandonPromptLifecycle(runtime.seed.id)
@@ -1334,12 +1551,16 @@ export async function createSessionController(options: SessionControllerOptions)
     }
     runtime.connection = null
     runtime.acpSessionId = null
+    runtime.unsubscribe?.()
     runtime.unsubscribe = null
     runtime.acceptEvents = false
     store.setConversationAvailability(runtime.seed.id, {
       kind: "unavailable",
       reasonCode,
       retryable: runtime.config !== null,
+      ...(runtime.seed.providerKind === "cursor" && cursorReadinessCause
+        ? { cursorRecovery: projectCursorRecovery(cursorReadinessCause) }
+        : {}),
     })
     await disposeQuietly(connection)
   }
@@ -1370,7 +1591,7 @@ export async function createSessionController(options: SessionControllerOptions)
     }
     store.startSession(seed.id, acpSessionId!)
     if (seededConfig) store.applyEvent(seed.id, seededConfig)
-    const unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(runtime, event))
+    const unsubscribe = subscribeRuntimeUpdates(runtime, connection, generation)
     connection.onPermission((request) => enqueuePermission(runtime, request))
     connection.onClarification((payload) => enqueueClarification(runtime, payload))
     return { acpSessionId: acpSessionId!, unsubscribe }
@@ -1434,7 +1655,13 @@ export async function createSessionController(options: SessionControllerOptions)
         options.recorder?.providerReadiness?.(config.id, preflightOutcome(preflightResult.reason))
         readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
-        await failSession(previous, undefined, preflightResult.message, "restore-unavailable")
+        await failSession(
+          previous,
+          undefined,
+          preflightResult.message,
+          "restore-unavailable",
+          preflightResult.reason,
+        )
         return false
       }
       connection = create(config)
@@ -1449,12 +1676,19 @@ export async function createSessionController(options: SessionControllerOptions)
         options.recorder?.providerReadiness?.(config.id, failure.reason)
         readinessRecorded = true
         store.setRestoration(seed.id, "unavailable")
-        await failSession(previous, connection, failure.message, "restore-unavailable")
+        await failSession(
+          previous,
+          connection,
+          failure.message,
+          "restore-unavailable",
+          failure.reason,
+        )
         return false
       }
-      options.recorder?.providerReadiness?.(config.id, "ready")
-      readinessRecorded = true
-
+      if (config.id !== "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
       let acpSessionId: string
       // A zero-turn record has no history to restore. Some ACP adapters (including
       // Codex) do not make that just-created session durable until its first turn,
@@ -1463,7 +1697,7 @@ export async function createSessionController(options: SessionControllerOptions)
       if (ready.canLoadSession && stored?.sessionId && stored.messageCount > 0) {
         acpSessionId = stored.sessionId
         store.startSession(seed.id, acpSessionId, { preserveWorkspaceAttention: true })
-        unsubscribe = connection.onUpdate((event) => applyRuntimeEvent(previous, event))
+        unsubscribe = subscribeRuntimeUpdates(previous, connection, generation)
         connection.onPermission((request) => enqueuePermission(previous, request))
         connection.onClarification((payload) => enqueueClarification(previous, payload))
         try {
@@ -1522,6 +1756,10 @@ export async function createSessionController(options: SessionControllerOptions)
       previous.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
       restoreSteeringRecovery(seed.id, generation, steeringRecovery)
+      if (config.id === "cursor") {
+        options.recorder?.providerReadiness?.(config.id, "ready")
+        readinessRecorded = true
+      }
       return true
     } catch (error) {
       if (!isCurrentGeneration(previous, generation)) {
@@ -1533,7 +1771,10 @@ export async function createSessionController(options: SessionControllerOptions)
       unsubscribe?.()
       store.setRestoration(seed.id, "unavailable")
       onError(seed.id, error)
-      await failSession(previous, connection, errorMessage(error), "restore-unavailable")
+      const message = config.id === "cursor"
+        ? handshakeReadinessFailure(config).message
+        : errorMessage(error)
+      await failSession(previous, connection, message, "restore-unavailable", "handshake_failed")
       return false
     }
   }
@@ -2248,6 +2489,764 @@ export async function createSessionController(options: SessionControllerOptions)
     return { kind: "started", childId: child.snapshot.childId }
   }
 
+  function contextBuildPreflight(
+    input: StartContextBuildInput,
+  ): ContextBuildPreflight | Extract<ContextBuildAvailabilityResult, { readonly kind: "denied" }> {
+    if (disposed) return { kind: "denied", reason: "controller_disposed" }
+    const state = store.getState()
+    const runtime = runtimes.get(input.parentId)
+    const session = state.sessions[input.parentId]
+    const conversation = state.workspace.conversations[input.parentId]
+    if (!runtime || !session || !conversation) {
+      return { kind: "denied", reason: "unknown_parent" }
+    }
+    if (
+      runtime.seed.id !== input.parentId ||
+      session.id !== input.parentId ||
+      conversation.sessionId !== input.parentId ||
+      session.providerKind !== runtime.seed.providerKind ||
+      runtime.config?.id !== runtime.seed.providerKind
+    ) {
+      return { kind: "denied", reason: "session_mismatch" }
+    }
+    if (
+      !runtime.config ||
+      !runtime.state.ready ||
+      !runtime.connection ||
+      runtime.acpSessionId === null ||
+      conversation.teardownState !== "open"
+    ) {
+      return { kind: "denied", reason: "parent_unavailable" }
+    }
+    if (
+      runtime.generation <= 0 ||
+      connectionGenerations.get(input.parentId) !== runtime.generation
+    ) {
+      return { kind: "denied", reason: "parent_generation_mismatch" }
+    }
+    if (
+      !isAbsolute(session.cwd) ||
+      session.cwd !== runtime.seed.cwd ||
+      session.cwd.trim().length === 0
+    ) {
+      return { kind: "denied", reason: "workspace_mismatch" }
+    }
+
+    const pack = state.contextPacks[input.parentId]
+    if (!pack) return { kind: "denied", reason: "unknown_parent" }
+    if (pack.build) return { kind: "denied", reason: "build_active" }
+    if (input.draft.kind === "refine") {
+      if (!pack.sealed || !("manifest" in pack.sealed)) {
+        return { kind: "denied", reason: "draft_unavailable" }
+      }
+    } else if (input.draft.kind === "use_current") {
+      if (!pack.draft) return { kind: "denied", reason: "draft_unavailable" }
+    } else if (createDraft(input.draft.original, {
+      ...(input.draft.mode === undefined ? {} : { mode: input.draft.mode }),
+      ...(input.draft.discovered === undefined ? {} : { discovered: input.draft.discovered }),
+      ...(input.draft.budgetLimit === undefined ? {} : { budgetLimit: input.draft.budgetLimit }),
+    }).kind !== "created") {
+      return { kind: "denied", reason: "invalid_draft" }
+    }
+
+    let capability: ContextBuildAvailability
+    try {
+      capability = attestContextBuild(runtime.config)
+    } catch {
+      return { kind: "denied", reason: "malformed_evidence" }
+    }
+    if (capability.status === "unavailable") {
+      return { kind: "denied", reason: capability.reason }
+    }
+    if (!validContextBuildCapability(capability, runtime.config)) {
+      return { kind: "denied", reason: "recipe_mismatch" }
+    }
+    return {
+      parentRuntime: runtime as AgentRuntime & { config: ResolvedAgentConfig },
+      capability,
+      parentGeneration: runtime.generation,
+      workspaceRoot: session.cwd,
+    }
+  }
+
+  function contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult {
+    const result = contextBuildPreflight(input)
+    return "kind" in result ? result : { kind: "available" }
+  }
+
+  function createContextPackDraft(
+    sessionId: SessionId,
+    original: string,
+  ): ContextPackDraftCreationResult {
+    if (disposed) return { kind: "blocked", reason: "controller_disposed" }
+    const contextPack = store.getState().contextPacks[sessionId]
+    if (!contextPack) return { kind: "blocked", reason: "unknown_session" }
+    if (contextPack.build) return { kind: "blocked", reason: "build_active" }
+    if (contextPack.draft) return { kind: "blocked", reason: "draft_active" }
+    const result = store.createContextPackDraft(sessionId, original)
+    if (result === null) return { kind: "blocked", reason: "creation_failed" }
+    if (result.kind !== "created") return { kind: "blocked", reason: "invalid_instructions" }
+    options.recorder?.contextPackDraftCreated?.({
+      selectionCountBucket: bucketContextPackSelectionCount(result.draft.selections.length),
+    })
+    return { kind: "created", revision: result.draft.revision }
+  }
+
+  function deniedContextBuild(reason: ContextBuildDenialReason): ContextBuildStartResult {
+    options.recorder?.contextPackBuildDenied?.({ reason: contextPackBuildDenialReason(reason) })
+    return { kind: "denied", reason }
+  }
+
+  function ownsContextBuild(child: ContextBuildChildRuntime): boolean {
+    if (child.settled || contextBuildChildren.get(child.binding.childId) !== child) return false
+    const current = store.getState().contextPacks[child.binding.parentId]?.build
+    const parent = runtimes.get(child.binding.parentId)
+    const session = store.getState().sessions[child.binding.parentId]
+    return current !== null && current !== undefined &&
+      sameContextBuildBinding(current, child.binding) &&
+      parent?.generation === child.binding.parentGeneration &&
+      parent.seed.cwd === child.route.workspaceRoot &&
+      session?.cwd === child.route.workspaceRoot
+  }
+
+  function cancelContextBuildClarifications(child: ContextBuildChildRuntime): void {
+    for (const handle of [...child.clarificationHandles]) {
+      child.clarificationHandles.delete(handle)
+      handle.cancel("connection_error")
+    }
+  }
+
+  function releaseContextBuildChild(
+    child: ContextBuildChildRuntime,
+    releaseOptions: {
+      readonly bridgeReason?: "child_settled" | "parent_generation_changed" | "launch_denied"
+      readonly outcome?: "ready_for_review" | "failed"
+    } = {},
+  ): void {
+    if (child.settled) return
+    child.settled = true
+    if (releaseOptions.bridgeReason) {
+      try {
+        contextPackBridge.revoke(child.route, releaseOptions.bridgeReason)
+      } catch (error) {
+        onError(child.binding.parentId, error)
+      }
+    }
+    cancelContextBuildClarifications(child)
+    child.unsubscribe?.()
+    child.unsubscribe = null
+    if (contextBuildChildren.get(child.binding.childId) === child) {
+      contextBuildChildren.delete(child.binding.childId)
+    }
+    if (releaseOptions.outcome) {
+      const settled = store.settleContextBuild(
+        child.binding.parentId,
+        child.binding,
+        releaseOptions.outcome,
+      )
+      if (settled) {
+        options.recorder?.contextPackBuildSettled?.(child.binding.childId, {
+          outcome: releaseOptions.outcome,
+        })
+      }
+    } else {
+      store.releaseContextBuild(child.binding.parentId, child.binding)
+    }
+    const connection = child.connection
+    child.connection = null
+    child.acpSessionId = null
+    if (connection) void disposeQuietly(connection).catch((error) => onError(child.binding.parentId, error))
+  }
+
+  function terminateContextBuildForParent(
+    parentId: SessionId,
+    parentGeneration: number,
+  ): void {
+    for (const child of [...contextBuildChildren.values()]) {
+      if (
+        child.binding.parentId === parentId &&
+        child.binding.parentGeneration === parentGeneration
+      ) {
+        releaseContextBuildChild(child, { bridgeReason: "parent_generation_changed" })
+      }
+    }
+  }
+
+  function createContextBuildFacade(child: ContextBuildChildRuntime): ContextPackBridgeFacade {
+    const authorized = (input: ContextPackBridgeAuthorization): boolean => {
+      if (!ownsContextBuild(child) || !sameContextBuildRoute(input.route, child.route)) return false
+      if (input.workspaceRoot !== child.route.workspaceRoot) return false
+      return child.capability.operations.includes(contextBuildOperationFor(input.operation))
+    }
+    return {
+      authorize: authorized,
+      readDraft(route): DraftContextPack | null {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) return null
+        return store.getState().contextPacks[route.parentId]?.draft ?? null
+      },
+      async readWorkspace(route, workspaceRoot, request, limits) {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) {
+          return { kind: "blocked", reason: "invalid_workspace", path: request.path }
+        }
+        return await contextPackMaterializer.read(workspaceRoot, request, limits)
+      },
+      mutateDraft(route, input): ContextPackMutationResult | null {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) return null
+        return store.applyContextPackBuilderMutation(route.parentId, input)
+      },
+      async askUser(route, form): Promise<ClarificationOutcome> {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) {
+          return { kind: "cancelled" }
+        }
+        const parent = runtimes.get(route.parentId)
+        if (!parent || parent.generation !== route.parentGeneration || !acceptsRuntimeEvents(parent)) {
+          return { kind: "cancelled" }
+        }
+        const handle = enqueueClarificationHandle(parent, form)
+        child.clarificationHandles.add(handle)
+        try {
+          return await handle.outcome
+        } finally {
+          child.clarificationHandles.delete(handle)
+        }
+      },
+      dispose(_route, reason: ContextPackBridgeDisposalReason): void {
+        cancelContextBuildClarifications(child)
+        if (
+          !child.settled &&
+          (reason === "authorization_denied" || reason === "route_replaced" || reason === "bridge_disposed")
+        ) {
+          if (reason === "bridge_disposed") releaseContextBuildChild(child)
+          else releaseContextBuildChild(child, { outcome: "failed" })
+        }
+      },
+    }
+  }
+
+  function launchInvalidationReason(child: ContextBuildChildRuntime): ContextBuildDenialReason {
+    const parent = runtimes.get(child.binding.parentId)
+    const session = store.getState().sessions[child.binding.parentId]
+    if (!parent || parent.generation !== child.binding.parentGeneration) return "parent_generation_mismatch"
+    if (parent.seed.cwd !== child.route.workspaceRoot || session?.cwd !== child.route.workspaceRoot) {
+      return "workspace_mismatch"
+    }
+    return "binding_changed"
+  }
+
+  async function startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult> {
+    const preflight = contextBuildPreflight(input)
+    if ("kind" in preflight) return deniedContextBuild(preflight.reason)
+
+    const childId = newSessionId()
+    if (
+      childId.trim().length === 0 ||
+      runtimes.has(childId) ||
+      contextBuildChildren.has(childId) ||
+      store.getState().sessions[childId]
+    ) {
+      return deniedContextBuild("startup_failed")
+    }
+    const childGeneration = nextConnectionGeneration(childId, connectionGenerations)
+    const prepared = store.prepareContextBuild(input.parentId, input.draft as ContextBuildDraftPreparation, {
+      parentId: input.parentId,
+      childId,
+      parentGeneration: preflight.parentGeneration,
+      childGeneration,
+    })
+    if (prepared.kind === "denied") {
+      return deniedContextBuild(
+        prepared.reason === "unknown_session" ? "unknown_parent" : prepared.reason,
+      )
+    }
+    if (input.draft.kind !== "use_current") {
+      options.recorder?.contextPackDraftCreated?.({
+        selectionCountBucket: bucketContextPackSelectionCount(prepared.draft.selections.length),
+      })
+    }
+
+    const route: ContextPackBridgeRoute = {
+      parentId: prepared.binding.parentId,
+      childId: prepared.binding.childId,
+      parentGeneration: prepared.binding.parentGeneration,
+      childGeneration: prepared.binding.childGeneration,
+      draftRevision: prepared.binding.draftRevision,
+      workspaceRoot: preflight.workspaceRoot,
+    }
+    const child: ContextBuildChildRuntime = {
+      binding: prepared.binding,
+      route,
+      capability: preflight.capability,
+      clarificationHandles: new Set(),
+      connection: null,
+      acpSessionId: null,
+      unsubscribe: null,
+      settled: false,
+    }
+    contextBuildChildren.set(childId, child)
+    if (!ownsContextBuild(child)) {
+      const reason = launchInvalidationReason(child)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return deniedContextBuild(reason)
+    }
+
+    let bridgeServer: import("../core/types.ts").McpServerConfig
+    try {
+      bridgeServer = contextPackBridge.register({
+        route,
+        facade: createContextBuildFacade(child),
+      })
+    } catch (error) {
+      onError(input.parentId, error)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return deniedContextBuild("bridge_unavailable")
+    }
+    if (!ownsContextBuild(child)) {
+      const reason = launchInvalidationReason(child)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return deniedContextBuild(reason)
+    }
+
+    let connection: AgentConnection
+    try {
+      connection = createContextBuildConnection(preflight.capability.recipe)
+      if (connection === preflight.parentRuntime.connection) {
+        throw new Error("Context Build must own a distinct child connection")
+      }
+      child.connection = connection
+      child.unsubscribe = connection.onUpdate(() => {})
+      connection.onPermission(async () => ({ outcome: "cancelled" }))
+      connection.onClarification(async () => ({ kind: "cancelled" }))
+      const ready = await connection.connect()
+      if (!ready.ready) throw new Error("Context Build child is not ready")
+      if (!ownsContextBuild(child)) {
+        const reason = launchInvalidationReason(child)
+        releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+        return deniedContextBuild(reason)
+      }
+      child.acpSessionId = await connection.newSession(preflight.workspaceRoot, [bridgeServer])
+      if (!ownsContextBuild(child)) {
+        const reason = launchInvalidationReason(child)
+        releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+        return deniedContextBuild(reason)
+      }
+    } catch (error) {
+      onError(input.parentId, error)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return deniedContextBuild("startup_failed")
+    }
+
+    let settlement: Promise<unknown>
+    try {
+      settlement = connection.prompt(child.acpSessionId!, [{
+        type: "text",
+        text: `${CONTEXT_PACK_MCP_INSTRUCTIONS}\n\nPrepare the bound draft for operator review, then stop.`,
+      }])
+    } catch (error) {
+      onError(input.parentId, error)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return deniedContextBuild("startup_failed")
+    }
+    void settlement.then(
+      () => releaseContextBuildChild(child, {
+        bridgeReason: "child_settled",
+        outcome: "ready_for_review",
+      }),
+      (error) => {
+        onError(input.parentId, error)
+        releaseContextBuildChild(child, {
+          bridgeReason: "child_settled",
+          outcome: "failed",
+        })
+      },
+    )
+    options.recorder?.contextPackBuildStarted?.(childId, {
+      selectionCountBucket: bucketContextPackSelectionCount(prepared.draft.selections.length),
+    })
+    return { kind: "started", childId, draftRevision: prepared.draft.revision }
+  }
+
+  function contextPackWorkspace(
+    sessionId: SessionId,
+  ): { readonly workspaceRoot: string; readonly draft: DraftContextPack } |
+    {
+      readonly kind: "blocked"
+      readonly reason: "unknown_session" | "draft_unavailable" | "workspace_mismatch"
+    } {
+    const state = store.getState()
+    const session = state.sessions[sessionId]
+    const runtime = runtimes.get(sessionId)
+    if (!session || !runtime || !state.contextPacks[sessionId]) {
+      return { kind: "blocked", reason: "unknown_session" }
+    }
+    const draft = state.contextPacks[sessionId]?.draft
+    if (!draft) return { kind: "blocked", reason: "draft_unavailable" }
+    if (
+      !isAbsolute(session.cwd) ||
+      session.cwd.trim().length === 0 ||
+      session.cwd !== runtime.seed.cwd
+    ) {
+      return { kind: "blocked", reason: "workspace_mismatch" }
+    }
+    return { workspaceRoot: session.cwd, draft }
+  }
+
+  async function mutateContextPackFileMembership(
+    input: ContextPackFileMembershipInput,
+  ): Promise<ContextPackFileMembershipResult> {
+    const workspace = contextPackWorkspace(input.sessionId)
+    if ("kind" in workspace) return { kind: "denied", reason: workspace.reason }
+    if (workspace.draft.revision !== input.readRevision) {
+      return {
+        kind: "stale",
+        readRevision: input.readRevision,
+        currentRevision: workspace.draft.revision,
+      }
+    }
+
+    const existing = workspace.draft.selections.find(
+      (selection) => selection.kind === "full_file" && selection.path === input.path,
+    )
+    if (input.operation === "remove") {
+      if (!existing) return { kind: "denied", reason: "selection_unavailable" }
+      const result = store.applyContextPackOperatorMutation(input.sessionId, {
+        kind: "remove_selection",
+        selectionKey: contextSelectionKey(existing),
+      })
+      if (!result) return { kind: "denied", reason: "draft_unavailable" }
+      return result.kind === "applied"
+        ? { kind: "applied", operation: "remove", revision: result.draft.revision }
+        : { kind: "denied", reason: "invalid_mutation" }
+    }
+
+    if (existing) return { kind: "denied", reason: "selection_already_present" }
+    const materialized = await contextPackMaterializer.read(
+      workspace.workspaceRoot,
+      { kind: "full_file", path: input.path },
+    )
+    if (materialized.kind !== "ready") {
+      return { kind: "denied", reason: materialized.reason }
+    }
+
+    const currentDraft = store.getState().contextPacks[input.sessionId]?.draft
+    if (!currentDraft) return { kind: "denied", reason: "draft_unavailable" }
+    if (currentDraft.revision !== input.readRevision) {
+      return {
+        kind: "stale",
+        readRevision: input.readRevision,
+        currentRevision: currentDraft.revision,
+      }
+    }
+    const result = store.applyContextPackOperatorMutation(input.sessionId, {
+      kind: "upsert_selection",
+      selection: {
+        kind: "full_file",
+        path: input.path,
+        source: materialized.artifact.source,
+        rationale: "Added explicitly by the operator",
+        relationship: "Whole-file Context Pack membership",
+      },
+    })
+    if (!result) return { kind: "denied", reason: "draft_unavailable" }
+    return result.kind === "applied"
+      ? { kind: "applied", operation: "add", revision: result.draft.revision }
+      : { kind: "denied", reason: "invalid_mutation" }
+  }
+
+  function settledContextPackReview(result: ContextPackReviewResult): ContextPackReviewResult {
+    if (result.kind === "reviewed") {
+      options.recorder?.contextPackReviewReady?.(contextPackAggregateBuckets(result.candidate))
+    } else {
+      options.recorder?.contextPackReviewBlocked?.({
+        reason: contextPackReviewBlockingReason(result.reason),
+      })
+    }
+    return result
+  }
+
+  async function reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult> {
+    const workspace = contextPackWorkspace(sessionId)
+    if ("kind" in workspace) return settledContextPackReview(workspace)
+    const materialized = await contextPackMaterializer.materialize(
+      workspace.workspaceRoot,
+      workspace.draft.selections,
+    )
+    if (materialized.kind !== "materialized") {
+      return settledContextPackReview({ kind: "blocked", reason: materialized.reason })
+    }
+    if (store.getState().contextPacks[sessionId]?.draft !== workspace.draft) {
+      return settledContextPackReview({ kind: "blocked", reason: "draft_changed" })
+    }
+
+    const assembled = assembleCandidate(workspace.draft, materialized.artifacts, contextPackRedactor)
+    if (assembled.kind === "blocked") {
+      return settledContextPackReview({ kind: "blocked", reason: assembled.reason })
+    }
+    if (assembled.candidate.verdict.kind === "blocked") {
+      return settledContextPackReview({
+        kind: "blocked",
+        reason: assembled.candidate.verdict.reason,
+      })
+    }
+    if (!store.publishContextPackReview(sessionId, assembled.candidate)) {
+      return settledContextPackReview({ kind: "blocked", reason: "draft_changed" })
+    }
+    return settledContextPackReview({ kind: "reviewed", candidate: assembled.candidate })
+  }
+
+  function settledContextPackSeal(result: ContextPackSealActionResult): ContextPackSealActionResult {
+    if (result.kind === "sealed") {
+      options.recorder?.contextPackSealed?.(contextPackAggregateBuckets(result.sealed))
+    } else {
+      options.recorder?.contextPackSealDenied?.({
+        reason: contextPackSealDenialReason(result.reason),
+      })
+    }
+    return result
+  }
+
+  async function sealContextPack(
+    sessionId: SessionId,
+    candidateRevision: number,
+  ): Promise<ContextPackSealActionResult> {
+    const workspace = contextPackWorkspace(sessionId)
+    if ("kind" in workspace) return settledContextPackSeal(workspace)
+    const reviewed = store.getState().contextPacks[sessionId]?.review
+    if (!reviewed) {
+      return settledContextPackSeal({ kind: "blocked", reason: "review_unavailable" })
+    }
+    if (reviewed.revision !== candidateRevision || workspace.draft.revision !== candidateRevision) {
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_revision_mismatch" })
+    }
+
+    const materialized = await contextPackMaterializer.materialize(
+      workspace.workspaceRoot,
+      workspace.draft.selections,
+    )
+    if (materialized.kind !== "materialized") {
+      return settledContextPackSeal({ kind: "blocked", reason: materialized.reason })
+    }
+    const current = store.getState().contextPacks[sessionId]
+    if (current?.draft !== workspace.draft || current.review !== reviewed) {
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_changed" })
+    }
+
+    const reassembled = assembleCandidate(workspace.draft, materialized.artifacts, contextPackRedactor)
+    if (reassembled.kind === "blocked") {
+      return settledContextPackSeal({ kind: "blocked", reason: reassembled.reason })
+    }
+    if (reassembled.candidate.verdict.kind === "blocked") {
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_blocked" })
+    }
+    if (!sameContextPackReviewCandidate(reviewed, reassembled.candidate)) {
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_changed" })
+    }
+
+    const result = sealCandidate({
+      draft: workspace.draft,
+      candidate: reviewed,
+      currentSourceFences: reassembled.candidate.sourceFences,
+      sealedAt: now(),
+    })
+    if (result.kind === "blocked") return settledContextPackSeal(result)
+    if (!store.sealContextPack(sessionId, result.sealed)) {
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_changed" })
+    }
+    return settledContextPackSeal(result)
+  }
+
+  function recipientFitEvidence(
+    sessionId: SessionId,
+    sealed: DurableSealedContextPack,
+  ): RecipientFitEvidence {
+    const runtime = runtimes.get(sessionId)
+    const session = store.getState().sessions[sessionId]
+    if (
+      disposed ||
+      !runtime?.config ||
+      !runtime.state.ready ||
+      !runtime.connection ||
+      runtime.acpSessionId === null ||
+      !session?.usage
+    ) {
+      return { kind: "missing" }
+    }
+
+    let availability: RecipientProfileAvailability
+    try {
+      availability = attestRecipientProfile(runtime.config)
+    } catch {
+      return invalidRecipientFitEvidence(sealed)
+    }
+    if (availability.status === "unavailable") {
+      if (availability.reason === "stale_evidence") return { kind: "stale" }
+      if (availability.reason === "malformed_evidence") return invalidRecipientFitEvidence(sealed)
+      return { kind: "missing" }
+    }
+
+    const profile = availability.profile
+    const currentModel = session.configOptions.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+    if (
+      profile.validUntil < now() ||
+      profile.recipe.id !== runtime.config.id ||
+      session.usage.size !== profile.freshSessionCapacity ||
+      (currentModel !== undefined && currentModel !== profile.model)
+    ) {
+      return { kind: "stale" }
+    }
+
+    let exactCount: number | null
+    try {
+      exactCount = countContextPackPayload(sealed.payload, profile)
+    } catch {
+      return invalidRecipientFitEvidence(sealed)
+    }
+    if (exactCount === null) return { kind: "missing" }
+    return {
+      kind: "current",
+      sealedRevision: sealed.revision,
+      payloadBytes: sealed.bytes,
+      exactCount,
+      capacity: session.usage.size,
+      used: session.usage.used,
+      reserve: profile.reserve,
+      counterVersion: profile.counterVersion,
+      evidenceVersion: profile.evidenceVersion,
+    }
+  }
+
+  function assessContextPackRecipientFit(sessionId: SessionId): RecipientFit {
+    const sealed = store.getState().contextPacks[sessionId]?.sealed
+    if (!sealed) {
+      const fit = { kind: "unavailable", reason: "missing_evidence" } as const
+      options.recorder?.contextPackFitUnavailable?.({ reason: fit.reason })
+      return fit
+    }
+    return settledContextPackFit(
+      sealed,
+      assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed)),
+    )
+  }
+
+  function settledContextPackFit(
+    sealed: DurableSealedContextPack,
+    fit: RecipientFit,
+  ): RecipientFit {
+    if (fit.kind === "fit") {
+      options.recorder?.contextPackFitAvailable?.({ byteBucket: bucketContextPackBytes(sealed.bytes) })
+    } else if (fit.kind === "unavailable") {
+      options.recorder?.contextPackFitUnavailable?.({ reason: fit.reason })
+    } else {
+      options.recorder?.contextPackFitInsufficient?.({ byteBucket: bucketContextPackBytes(sealed.bytes) })
+    }
+    return fit
+  }
+
+  function assessHandoffRecipientFit(
+    targetSessionId: SessionId,
+    sealed: DurableSealedContextPack,
+  ): RecipientFit {
+    return assessRecipientFit(sealed, recipientFitEvidence(targetSessionId, sealed))
+  }
+
+  function handoffSourceIdentities(
+    sessionId: SessionId,
+    bundle: HandoffBundle,
+  ): HandoffSourceIdentityIndex {
+    const files = Object.create(null) as Record<string, string>
+    const pendingDiffs = Object.create(null) as Record<string, string>
+    const session = store.getState().sessions[sessionId]
+    const runtime = runtimes.get(sessionId)
+    if (
+      !session ||
+      !runtime ||
+      !isAbsolute(session.cwd) ||
+      session.cwd !== runtime.seed.cwd
+    ) return { files, pendingDiffs }
+
+    let realRoot: string
+    try {
+      realRoot = realpathSync(session.cwd)
+    } catch {
+      return { files, pendingDiffs }
+    }
+
+    const fileIdentity = (path: string): string | null => {
+      if (!isSafeRepositoryRelativePath(session.cwd, path)) return null
+      try {
+        const absolutePath = resolve(session.cwd, path)
+        const stat = lstatSync(absolutePath)
+        if (!stat.isFile()) return null
+        const realSource = realpathSync(absolutePath)
+        if (!isPathContainedBy(realRoot, realSource)) return null
+        return `${String(stat.dev)}:${String(stat.ino)}`
+      } catch {
+        return null
+      }
+    }
+
+    for (const file of bundle.files) {
+      const identity = fileIdentity(file.path)
+      if (identity !== null) files[file.path] = `file:${identity}`
+    }
+    for (const diff of bundle.pendingDiffs) {
+      const identity = fileIdentity(diff.path)
+      if (identity !== null) pendingDiffs[diff.toolCallId] = `diff:pending:${identity}`
+    }
+    return { files, pendingDiffs }
+  }
+
+  async function sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult> {
+    const sealed = store.getState().contextPacks[sessionId]?.sealed
+    if (!sealed) {
+      options.recorder?.contextPackDeliveryDenied?.({ reason: "sealed_unavailable" })
+      return { kind: "blocked", reason: "sealed_unavailable" }
+    }
+
+    const fit = settledContextPackFit(
+      sealed,
+      assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed)),
+    )
+    if (fit.kind !== "fit") {
+      options.recorder?.contextPackDeliveryDenied?.({
+        reason: fit.kind === "unavailable" ? "fit_unavailable" : "fit_insufficient",
+      })
+      return { kind: "blocked", reason: "recipient_fit", fit }
+    }
+
+    const current = store.getState().contextPacks[sessionId]?.sealed
+    if (!current || !sameSealedCustody(sealed, current)) {
+      options.recorder?.contextPackDeliveryDenied?.({ reason: "sealed_changed" })
+      return { kind: "blocked", reason: "sealed_changed" }
+    }
+    const result = await actions.sendPrompt([{ type: "text", text: sealed.payload }], sessionId)
+    if (result) {
+      options.recorder?.contextPackDeliveryConfirmed?.({
+        byteBucket: bucketContextPackBytes(sealed.bytes),
+      })
+      return { kind: "sent", result }
+    }
+    options.recorder?.contextPackDeliveryDenied?.({ reason: "dispatch_failed" })
+    return { kind: "blocked", reason: "dispatch_failed" }
+  }
+
+  async function exportContextPack(
+    input: ContextPackExportActionInput,
+  ): Promise<ContextPackExportActionResult> {
+    const sealed = store.getState().contextPacks[input.sessionId]?.sealed
+    if (!sealed) return { kind: "blocked", reason: "sealed_unavailable" }
+
+    const current = store.getState().contextPacks[input.sessionId]?.sealed
+    if (!current || !sameSealedCustody(sealed, current)) {
+      return { kind: "blocked", reason: "sealed_changed" }
+    }
+    return await contextPackExporter.export({
+      sealed,
+      destination: input.destination,
+      writeConfirmed: input.writeConfirmed,
+      overwriteConfirmed: input.overwriteConfirmed,
+    })
+  }
+
   async function startAgentRunBatch(
     route: AgentRunRoute,
     tasks: readonly AgentRunTask[],
@@ -2257,10 +3256,10 @@ export async function createSessionController(options: SessionControllerOptions)
     const routeKey = `${route.parentId}\u0000${route.parentGeneration}`
     let ownsStartGuard = false
     try {
-      if (activeAgentRunStarts.has(routeKey)) throw new Error("Agent-run start is busy")
+      if (activeAgentRunStarts.has(routeKey)) throw new KittenMcpBridgeError("busy")
       if (!agentRunRouteAvailable(route)) {
         telemetryOutcome = "unavailable"
-        throw new Error("Agent-run route is unavailable")
+        throw new KittenMcpBridgeError("unavailable")
       }
       activeAgentRunStarts.add(routeKey)
       ownsStartGuard = true
@@ -2278,6 +3277,7 @@ export async function createSessionController(options: SessionControllerOptions)
     } catch (error) {
       if (telemetryOutcome !== "unavailable" && !agentRunRouteAvailable(route)) {
         telemetryOutcome = "unavailable"
+        throw new KittenMcpBridgeError("unavailable")
       }
       throw error
     } finally {
@@ -2695,6 +3695,59 @@ export async function createSessionController(options: SessionControllerOptions)
     await actions.applyProviderDefaults(sessionId)
   }
 
+  /**
+   * Replace only one configured unavailable Cursor runtime after an explicit user
+   * recheck. Eligibility is checked before any mutation; the fresh generation then
+   * reuses the ordinary startup path and its bounded Cursor failure normalization.
+   */
+  async function recheckCursor(sessionId: SessionId): Promise<void> {
+    const runtime = runtimes.get(sessionId)
+    const conversation = store.getState().workspace.conversations[sessionId]
+    if (
+      disposed ||
+      !runtime?.config ||
+      runtime.seed.providerKind !== "cursor" ||
+      runtime.config.id !== "cursor" ||
+      runtime.state.ready ||
+      runtime.closing ||
+      conversation?.teardownState === "closing" ||
+      conversation?.availability.kind !== "unavailable"
+    ) return
+
+    const replacedGeneration = runtime.generation
+    terminalizeSteering(sessionId)
+    abandonPromptLifecycle(sessionId)
+    terminalizeHarnessDelivery(runtime, replacedGeneration)
+    invalidateBridge(runtime, replacedGeneration, "session_replaced")
+    interactionCoordinator.cancelSession(sessionId, replacedGeneration, "session_replaced")
+    runtime.closing = true
+    runtime.acceptEvents = false
+    runtime.unsubscribe?.()
+    runtime.unsubscribe = null
+    const previousConnection = runtime.connection
+    runtime.connection = null
+    runtime.acpSessionId = null
+    // The store keeps SessionId stable while an empty ACP id makes the replacement
+    // boundary explicit even when the new preflight fails before session creation.
+    store.startSession(sessionId, "")
+    await disposeQuietly(previousConnection ?? undefined)
+    if (
+      disposed ||
+      runtimes.get(sessionId) !== runtime ||
+      runtime.generation !== replacedGeneration
+    ) return
+
+    const generation = nextConnectionGeneration(sessionId, connectionGenerations)
+    runtime.generation = generation
+    runtime.harnessDelivery = null
+    runtime.bridgeMcpServer = null
+    runtime.bridgeGeneration = null
+    runtime.closing = false
+    runtime.acceptEvents = true
+    runtime.cancelCompleted = false
+    await startSession(runtime.seed, runtime.config, generation)
+  }
+
   const actions = createControllerActions({
     store,
     getSession,
@@ -2721,9 +3774,19 @@ export async function createSessionController(options: SessionControllerOptions)
     cleanupManagedWorktree,
     startExploreChild,
     exploreAvailability,
+    startContextBuild,
+    contextBuildAvailability,
+    createContextPackDraft,
+    reviewContextPack,
+    mutateContextPackFileMembership,
+    sealContextPack,
+    assessContextPackRecipientFit,
+    sendContextPackHere,
+    exportContextPack,
     steerDelegatedChild,
     cancelDelegatedChild,
     closeConversation,
+    recheckCursor,
     startNewRun: async () => {
       if (disposed) return
       store.setRestorationBundle(null)
@@ -2781,6 +3844,8 @@ export async function createSessionController(options: SessionControllerOptions)
     runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),
     runtime: (sessionId) => runtimes.get(sessionId)?.state,
     isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
+    handoffSourceIdentities,
+    assessHandoffRecipientFit,
     updateProviderDefaults(defaults): void {
       providerDefaults = cloneProviderDefaults(defaults)
     },
@@ -2789,9 +3854,11 @@ export async function createSessionController(options: SessionControllerOptions)
       if (disposed) return
       options.recorder?.resumeLoadStarted?.()
       store.setRestorationBundle(record.handoffBundle)
-      const restoredRecord = record.version === 1
-        ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
-        : record
+      const restoredRecord = migratePersistedRunToV4(
+        record.version === 1
+          ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
+          : record,
+      )
       interactionCoordinator.cancelAll()
       const steeringRecoveries = new Map<SessionId, SteeringRecoveryTransfer>()
       for (const runtime of runtimes.values()) {
@@ -2809,7 +3876,11 @@ export async function createSessionController(options: SessionControllerOptions)
 
       const entries = restoreEntries(restoredRecord)
       store.replaceSessions(
-        entries.map((entry) => ({ seed: entry.seed, workspace: entry.workspace })),
+        entries.map((entry) => ({
+          seed: entry.seed,
+          workspace: entry.workspace,
+          contextPack: entry.contextPack,
+        })),
         restoredRecord.workspace.selectedVisibleId,
       )
       for (const entry of entries) {
@@ -2860,8 +3931,11 @@ export async function createSessionController(options: SessionControllerOptions)
         abandonPromptLifecycle(runtime.seed.id)
         terminalizeHarnessDelivery(runtime)
       }
+      for (const child of [...contextBuildChildren.values()]) {
+        releaseContextBuildChild(child, { bridgeReason: "parent_generation_changed" })
+      }
       disposed = true
-      await kittenMcpBridge.dispose()
+      await Promise.all([kittenMcpBridge.dispose(), contextPackBridge.dispose()])
       interactionCoordinator.dispose()
       steeringCoordinators.clear()
       activePrompts.clear()
@@ -2949,6 +4023,234 @@ function nextConnectionGeneration(
   return generation
 }
 
+function validContextBuildCapability(
+  capability: Extract<ContextBuildAvailability, { readonly status: "available" }>,
+  config: ResolvedAgentConfig,
+): boolean {
+  return capability.capabilityVersion === "explore-v2" &&
+    capability.evidenceVersion.trim().length > 0 &&
+    capability.model.trim().length > 0 &&
+    sameContextBuildOperations(capability.operations, CONTEXT_BUILD_OPERATIONS) &&
+    capability.recipe.id === config.id &&
+    capability.recipe.command === config.command &&
+    sameStringArray(capability.recipe.args, config.args) &&
+    sameStringRecord(capability.recipe.env, config.env)
+}
+
+function sameContextBuildOperations(
+  left: readonly ContextBuildOperation[],
+  right: readonly ContextBuildOperation[],
+): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameStringRecord(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return sameStringArray(leftKeys, rightKeys) && leftKeys.every((key) => left[key] === right[key])
+}
+
+function sameContextBuildBinding(left: ContextBuildBinding, right: ContextBuildBinding): boolean {
+  return left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision
+}
+
+function contextPackAggregateBuckets(input: {
+  readonly manifest: { readonly selections: readonly unknown[] }
+  readonly redactionCount: number
+  readonly bytes: number
+}): ContextPackReviewReadyInput {
+  return {
+    selectionCountBucket: bucketContextPackSelectionCount(input.manifest.selections.length),
+    redactionCountBucket: bucketContextPackRedactionCount(input.redactionCount),
+    byteBucket: bucketContextPackBytes(input.bytes),
+  }
+}
+
+function contextPackBuildDenialReason(
+  reason: ContextBuildDenialReason,
+): ContextPackBuildDeniedInput["reason"] {
+  switch (reason) {
+    case "missing_evidence":
+    case "malformed_evidence":
+    case "unsupported_recipe":
+    case "stale_evidence":
+    case "recipe_mismatch":
+      return "capability_unavailable"
+    case "draft_unavailable":
+    case "invalid_draft":
+      return "draft_unavailable"
+    case "build_active":
+      return "build_active"
+    case "workspace_mismatch":
+      return "workspace_unavailable"
+    case "bridge_unavailable":
+    case "startup_failed":
+      return "startup_failed"
+    case "unknown_parent":
+    case "parent_unavailable":
+    case "parent_generation_mismatch":
+    case "session_mismatch":
+    case "binding_changed":
+    case "controller_disposed":
+      return "controller_unavailable"
+  }
+}
+
+function contextPackReviewBlockingReason(
+  reason: Extract<ContextPackReviewResult, { readonly kind: "blocked" }>["reason"],
+): ContextPackReviewBlockedInput["reason"] {
+  switch (reason) {
+    case "over_budget":
+      return "over_budget"
+    case "unknown_session":
+    case "draft_unavailable":
+    case "workspace_mismatch":
+      return "draft_unavailable"
+    case "source_changed_during_read":
+    case "source_identity_changed":
+    case "source_digest_changed":
+    case "source_bytes_changed":
+    case "stale_draft":
+    case "source_fence_mismatch":
+    case "draft_changed":
+      return "source_stale"
+    case "invalid_draft":
+      return "invalid_draft"
+    case "invalid_workspace":
+    case "invalid_limits":
+    case "invalid_path":
+    case "source_missing":
+    case "outside_workspace":
+    case "ineligible_source":
+    case "binary_source":
+    case "malformed_source":
+    case "invalid_range":
+    case "unsupported_diff_scope":
+    case "oversized_artifact":
+    case "total_bytes_exceeded":
+    case "diff_failed":
+    case "missing_artifact":
+    case "unexpected_artifact":
+    case "duplicate_artifact":
+    case "artifact_size_mismatch":
+    case "redaction_failed":
+      return "source_unavailable"
+  }
+}
+
+function contextPackSealDenialReason(
+  reason: Extract<ContextPackSealActionResult, { readonly kind: "blocked" }>["reason"],
+): ContextPackSealDeniedInput["reason"] {
+  switch (reason) {
+    case "review_unavailable":
+    case "unknown_session":
+    case "draft_unavailable":
+    case "workspace_mismatch":
+      return "review_unavailable"
+    case "over_budget":
+    case "candidate_blocked":
+      return "over_budget"
+    case "source_changed_during_read":
+    case "source_identity_changed":
+    case "source_digest_changed":
+    case "source_bytes_changed":
+    case "source_fence_mismatch":
+      return "source_stale"
+    case "draft_changed":
+    case "candidate_changed":
+    case "candidate_revision_mismatch":
+    case "stale_draft":
+      return "candidate_stale"
+    case "invalid_workspace":
+    case "invalid_limits":
+    case "invalid_path":
+    case "source_missing":
+    case "outside_workspace":
+    case "ineligible_source":
+    case "binary_source":
+    case "malformed_source":
+    case "invalid_range":
+    case "unsupported_diff_scope":
+    case "oversized_artifact":
+    case "total_bytes_exceeded":
+    case "diff_failed":
+    case "invalid_draft":
+    case "missing_artifact":
+    case "unexpected_artifact":
+    case "duplicate_artifact":
+    case "artifact_size_mismatch":
+    case "redaction_failed":
+    case "candidate_payload_mismatch":
+    case "invalid_sealed_at":
+      return "invalid_candidate"
+  }
+}
+
+function sameContextBuildRoute(left: ContextPackBridgeRoute, right: ContextPackBridgeRoute): boolean {
+  return left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision &&
+    left.workspaceRoot === right.workspaceRoot
+}
+
+function invalidRecipientFitEvidence(sealed: DurableSealedContextPack): RecipientFitEvidence {
+  return {
+    kind: "current",
+    sealedRevision: sealed.revision,
+    payloadBytes: sealed.bytes,
+    exactCount: Number.NaN,
+    capacity: Number.NaN,
+    used: Number.NaN,
+    reserve: Number.NaN,
+    counterVersion: "",
+    evidenceVersion: "",
+  }
+}
+
+function sameContextPackReviewCandidate(
+  left: ContextPackReviewCandidate,
+  right: ContextPackReviewCandidate,
+): boolean {
+  return left.revision === right.revision &&
+    left.payload === right.payload &&
+    left.bytes === right.bytes &&
+    left.packEstimate === right.packEstimate &&
+    left.redactionCount === right.redactionCount &&
+    JSON.stringify(left.manifest) === JSON.stringify(right.manifest) &&
+    JSON.stringify(left.sourceFences) === JSON.stringify(right.sourceFences) &&
+    JSON.stringify(left.verdict) === JSON.stringify(right.verdict)
+}
+
+function sameSealedCustody(left: ContextPackSealedState, right: ContextPackSealedState): boolean {
+  return left === right &&
+    left.revision === right.revision &&
+    left.payload === right.payload &&
+    left.bytes === right.bytes &&
+    left.sealedAt === right.sealedAt
+}
+
+function contextBuildOperationFor(operation: ContextPackMcpOperation): ContextBuildOperation {
+  switch (operation) {
+    case "ask_user": return "ask_user:scoped"
+    case "read_draft": return "draft:read-bounded"
+    case "read_workspace": return "workspace:read-bounded"
+    case "mutate_draft": return "draft:mutate-revision-fenced"
+  }
+}
+
 function clarificationCountKey(sessionId: SessionId, generation: number): string {
   return `${sessionId}\u0000${generation}`
 }
@@ -2962,7 +4264,28 @@ function cancelledClarificationHandle(requestId: string): ClarificationRequestHa
   return {
     requestId,
     outcome: Promise.resolve({ kind: "cancelled" }),
+    cancel: () => false,
     timeout: () => false,
+  }
+}
+
+function mcpBridgeFailureCategory(reason: KittenMcpBridgeFailureReason): McpBridgeFailureCategory {
+  switch (reason) {
+    case "connection_concurrency_limit":
+    case "connection_call_limit":
+      return "capacity_limited"
+    case "connection_frame_too_large":
+    case "connection_malformed_frame":
+    case "connection_invalid_request":
+    case "connection_duplicate_call_id":
+      return "invalid_request"
+    case "registration_endpoint_failed":
+    case "registration_capability_failed":
+    case "registration_listen_failed":
+    case "connection_unauthorized":
+    case "connection_io_error":
+    case "connection_request_failed":
+      return "unavailable"
   }
 }
 
@@ -3013,9 +4336,10 @@ interface RestoreEntry {
   workspace: WorkspaceConversationSeed
   stored: PersistedAgent
   checkpoint: HarnessDeliveryCheckpoint | undefined
+  contextPack: ContextPackState
 }
 
-function restoreEntries(record: PersistedRunRecordV2 | PersistedRunRecordV3): RestoreEntry[] {
+function restoreEntries(record: PersistedRunRecordV4): RestoreEntry[] {
   const entries: RestoreEntry[] = []
   for (const sessionId of record.workspace.order) {
     const descriptor: PersistedConversationV2 | undefined = record.conversations[sessionId]
@@ -3048,10 +4372,25 @@ function restoreEntries(record: PersistedRunRecordV2 | PersistedRunRecordV3): Re
         messageCount: descriptor.messageCount,
         status: descriptor.status,
       },
-      checkpoint: record.version === 3 ? record.harnessDeliveries[sessionId] : undefined,
+      checkpoint: record.harnessDeliveries[sessionId],
+      contextPack: restorePersistedContextPack(record.contextPacks[sessionId]),
     })
   }
   return entries
+}
+
+function restorePersistedContextPack(projection: PersistedContextPack | undefined): ContextPackState {
+  if (!projection) return { draft: null, sealed: null, review: null, build: null }
+  const restoredDraft = projection.draft ? restoreManifest(projection.draft) : null
+  if (restoredDraft?.kind === "invalid") {
+    return { draft: null, sealed: null, review: null, build: null }
+  }
+  return {
+    draft: restoredDraft?.kind === "restored" ? restoredDraft.draft : null,
+    sealed: projection.sealed ? { ...projection.sealed, restored: true } : null,
+    review: null,
+    build: null,
+  }
 }
 
 function orderedRuntimes(store: AppStore, runtimes: Map<SessionId, AgentRuntime>): AgentRuntime[] {
@@ -3078,6 +4417,10 @@ async function disposeAgentRuntimes(runtimes: Map<SessionId, AgentRuntime>): Pro
 
 function defaultCreateConnection(config: ResolvedAgentConfig): AgentConnection {
   return createAgentConnection({ config })
+}
+
+function defaultCreateContextBuildConnection(config: ResolvedAgentConfig): AgentConnection {
+  return createAgentConnection({ config, fileSystemAccess: "none" })
 }
 
 /** Tear an owned runtime down; a noisy teardown must not mask the shutdown path. */

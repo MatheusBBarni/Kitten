@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Preserve Root Installer and Documentation Contract
 type: docs
 complexity: high

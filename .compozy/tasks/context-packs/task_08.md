@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Review, sealing, and fail-closed Send Here
 type: backend
 complexity: critical
@@ -29,11 +29,11 @@ Implement controller-owned review, exact sealing, shared Recipient Fit, and the 
 
 ## Subtasks
 
-- [ ] 8.1 Add controller review materialization, validation, redaction, and candidate publication.
-- [ ] 8.2 Add exact sealing with source/revision/freshness rechecks.
-- [ ] 8.3 Route all recipient decisions through shared current Recipient Fit.
-- [ ] 8.4 Add explicit Send Here dispatch through the existing confirmation boundary.
-- [ ] 8.5 Prove stale, blocked, and changed-evidence behavior leaves bytes and focus intact.
+- [x] 8.1 Add controller review materialization, validation, redaction, and candidate publication.
+- [x] 8.2 Add exact sealing with source/revision/freshness rechecks.
+- [x] 8.3 Route all recipient decisions through shared current Recipient Fit.
+- [x] 8.4 Add explicit Send Here dispatch through the existing confirmation boundary.
+- [x] 8.5 Prove stale, blocked, and changed-evidence behavior leaves bytes and focus intact.
 
 ## Implementation Details
 
@@ -72,14 +72,14 @@ Follow the TechSpec review/seal/fit flow and ADR-005. Do not implement handoff a
 ## Tests
 
 - Unit tests:
-  - [ ] Review publishes only redacted exact candidate bytes after all materialization/fence/budget checks pass.
-  - [ ] Source drift, stale candidate revision, redaction failure, and over-budget material block review or seal with typed reasons.
-  - [ ] Seal never mutates an older sealed value when candidate revision or source fence changes.
-  - [ ] Fit reports available, unavailable, and insufficient from current evidence rather than Pack Estimate alone.
-  - [ ] Send Here invokes existing send confirmation only after a new successful fit and exact-byte recheck.
+  - [x] Review publishes only redacted exact candidate bytes after all materialization/fence/budget checks pass.
+  - [x] Source drift, stale candidate revision, redaction failure, and over-budget material block review or seal with typed reasons.
+  - [x] Seal never mutates an older sealed value when candidate revision or source fence changes.
+  - [x] Fit reports available, unavailable, and insufficient from current evidence rather than Pack Estimate alone.
+  - [x] Send Here invokes existing send confirmation only after a new successful fit and exact-byte recheck.
 - Integration tests:
-  - [ ] Evidence changing between review and send blocks delivery without focus movement, byte modification, or an override path.
-  - [ ] A confirmed permitted Send Here flow preserves the exact sealed payload at the final confirmation boundary.
+  - [x] Evidence changing between review and send blocks delivery without focus movement, byte modification, or an override path.
+  - [x] A confirmed permitted Send Here flow preserves the exact sealed payload at the final confirmation boundary.
 - Test coverage target: >=80%
 - All tests must pass
 

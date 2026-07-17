@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Content-free composition telemetry
 type: backend
 complexity: medium

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Model closed MCP failure state in the core
 type: refactor
 complexity: medium
@@ -32,10 +32,10 @@ later adapter and UI work can rely on a stable, privacy-safe record.
 
 ## Subtasks
 
-- [ ] 3.1 Define the closed domain failure vocabulary in the core type model.
-- [ ] 3.2 Extend tool-call record and partial-update merge semantics for omission and explicit clearing.
-- [ ] 3.3 Preserve generic tool-call behavior when no classification exists.
-- [ ] 3.4 Validate public store reduction with the new optional field.
+- [x] 3.1 Define the closed domain failure vocabulary in the core type model.
+- [x] 3.2 Extend tool-call record and partial-update merge semantics for omission and explicit clearing.
+- [x] 3.3 Preserve generic tool-call behavior when no classification exists.
+- [x] 3.4 Validate public store reduction with the new optional field.
 
 ## Implementation Details
 
@@ -72,13 +72,13 @@ parsing belongs to the later ACP-boundary task.
 ## Tests
 
 - Unit tests:
-  - [ ] A new tool call with `temporary_capacity` stores that exact closed kind alongside its ordinary status and title.
-  - [ ] A later update omitting the failure kind preserves the prior value while still updating status, locations, or diff.
-  - [ ] A later update with `failureKind: null` clears only the failure kind and leaves other record fields intact.
-  - [ ] A generic failed tool call with no classification retains the current defaults and is not labeled capacity or unavailable.
-  - [ ] Core source and public types remain free of ACP, MCP, socket, endpoint, capability, and raw-error imports or fields.
+  - [x] A new tool call with `temporary_capacity` stores that exact closed kind alongside its ordinary status and title.
+  - [x] A later update omitting the failure kind preserves the prior value while still updating status, locations, or diff.
+  - [x] A later update with `failureKind: null` clears only the failure kind and leaves other record fields intact.
+  - [x] A generic failed tool call with no classification retains the current defaults and is not labeled capacity or unavailable.
+  - [x] Core source and public types remain free of ACP, MCP, socket, endpoint, capability, and raw-error imports or fields.
 - Integration tests:
-  - [ ] Applying `DomainSessionEvent` tool-call updates through `AppStore` preserves, then explicitly clears, the failure kind in the selected session transcript.
+  - [x] Applying `DomainSessionEvent` tool-call updates through `AppStore` preserves, then explicitly clears, the failure kind in the selected session transcript.
 - Test coverage target: >=80%
 - All tests must pass
 

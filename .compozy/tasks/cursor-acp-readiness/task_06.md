@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Review native evidence and add the exact Cursor profile
 type: backend
 complexity: high

@@ -59,7 +59,6 @@ export type KittenMcpBridgeFailureReason =
   | "connection_duplicate_call_id"
   | "connection_concurrency_limit"
   | "connection_call_limit"
-  | "connection_stream_limit"
   | "connection_io_error"
   | "connection_request_failed"
 
@@ -169,7 +168,7 @@ interface Route {
   readonly listener: KittenMcpBridgeListener
   readonly callIds: Set<string>
   readonly pending: Map<string, PendingCall>
-  boundSocket: KittenMcpBridgeSocket | null
+  readonly sockets: Set<KittenMcpBridgeSocket>
   totalCalls: number
   closing: boolean
 }
@@ -240,7 +239,7 @@ export function createKittenMcpBridge(options: KittenMcpBridgeOptions): KittenMc
     } finally {
       removeEndpoint(route.endpoint)
     }
-    route.boundSocket = null
+    route.sockets.clear()
   }
 
   function closeConnection(
@@ -254,20 +253,22 @@ export function createKittenMcpBridge(options: KittenMcpBridgeOptions): KittenMc
     const route = state.route
     state.route = null
     connections.delete(socket)
-    if (route && !route.closing && route.boundSocket === socket) {
-      const hasPendingCall = [...route.pending.values()].some((pending) => pending.socket === socket)
-      if (!reason && !hasPendingCall) {
-        // Child-mode calls close their socket after receiving a terminal result.
-        // Release that idle connection so the authenticated route can serve the
-        // next bundled-tool call; a mid-call disconnect still fails the route below.
-        route.boundSocket = null
-        socket.end()
-      } else {
-        closeRoute(route, "connection_error")
+    if (route) {
+      route.sockets.delete(socket)
+      if (!route.closing) {
+        for (const [callId, pending] of route.pending) {
+          if (pending.socket !== socket) continue
+          route.pending.delete(callId)
+          if (!pending.handle) continue
+          try {
+            pending.handle.cancel("connection_error")
+          } catch {
+            report("connection_request_failed")
+          }
+        }
       }
-    } else {
-      socket.end()
     }
+    socket.end()
   }
 
   function send(
@@ -337,12 +338,8 @@ export function createKittenMcpBridge(options: KittenMcpBridgeOptions): KittenMc
       rejectConnection(socket, state, "connection_unauthorized", "unavailable", frame.callId)
       return
     }
-    if (route.boundSocket && route.boundSocket !== socket) {
-      rejectConnection(socket, state, "connection_stream_limit", "busy", frame.callId)
-      return
-    }
     state.route = route
-    route.boundSocket = socket
+    route.sockets.add(socket)
 
     const reservation = reserveCall(route, frame.callId)
     if (reservation !== "ok") {
@@ -361,9 +358,9 @@ export function createKittenMcpBridge(options: KittenMcpBridgeOptions): KittenMc
       void beginCall(route, frame.callId, frame.form, socket).then(
         (outcome) => {
           route.pending.delete(frame.callId)
-          if (!route.closing) send(socket, { kind: "result", callId: frame.callId, outcome })
+          if (canSend(route, socket)) send(socket, { kind: "result", callId: frame.callId, outcome })
         },
-        () => failCall(route, socket, frame.callId),
+        (error) => failCall(route, socket, frame.callId, error),
       )
       return
     }
@@ -372,16 +369,22 @@ export function createKittenMcpBridge(options: KittenMcpBridgeOptions): KittenMc
     void dispatchAgentRun(agentRunControl, route, frame.request).then(
       (result) => {
         route.pending.delete(frame.callId)
-        if (!route.closing) send(socket, { kind: "agent_run_result", callId: frame.callId, result })
+        if (canSend(route, socket)) send(socket, { kind: "agent_run_result", callId: frame.callId, result })
       },
-      () => failCall(route, socket, frame.callId),
+      (error) => failCall(route, socket, frame.callId, error),
     )
   }
 
-  function failCall(route: Route, socket: KittenMcpBridgeSocket, callId: string): void {
-    report("connection_request_failed")
+  function canSend(route: Route, socket: KittenMcpBridgeSocket): boolean {
+    const state = connections.get(socket)
+    return !route.closing && state !== undefined && !state.closed
+  }
+
+  function failCall(route: Route, socket: KittenMcpBridgeSocket, callId: string, cause: unknown): void {
+    const error = cause instanceof KittenMcpBridgeError && cause.code === "busy" ? "busy" : "unavailable"
+    report(error === "busy" ? "connection_concurrency_limit" : "connection_request_failed")
     route.pending.delete(callId)
-    if (!route.closing) send(socket, { kind: "error", callId, error: "unavailable" })
+    if (canSend(route, socket)) send(socket, { kind: "error", callId, error })
   }
 
   function onData(socket: KittenMcpBridgeSocket, chunk: Uint8Array): void {
@@ -465,7 +468,7 @@ export function createKittenMcpBridge(options: KittenMcpBridgeOptions): KittenMc
         listener,
         callIds: new Set(),
         pending: new Map(),
-        boundSocket: null,
+        sockets: new Set(),
         totalCalls: 0,
         closing: false,
       }

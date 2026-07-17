@@ -12,6 +12,7 @@ describe("Cursor README contract", () => {
     expect(CURSOR_SECTION).toContain("`agent acp`")
     expect(CURSOR_SECTION).toContain("certified local profile")
     expect(CURSOR_SECTION).toContain("does not connect to Cursor cloud agents, background agents")
+    expect(CURSOR_SECTION).toContain("other remote Cursor products")
   })
 
   it("keeps ready siblings usable across every documented Cursor recovery boundary", () => {
@@ -21,6 +22,18 @@ describe("Cursor README contract", () => {
     expect(CURSOR_SECTION).toContain("ready Claude Code and Codex sessions remain usable")
     expect(CURSOR_SECTION).toContain("does not claim an exact certified Cursor version")
     expect(CURSOR_SECTION).not.toMatch(/certified Cursor (?:CLI )?version\s+v?\d+\.\d+\.\d+/i)
+  })
+
+  it("keeps credentials native and active-session controls ACP-authoritative", () => {
+    expect(CURSOR_SECTION).toContain("Authentication stays in Cursor's native flow")
+    expect(CURSOR_SECTION).toContain("does not collect or manage Cursor credentials")
+    expect(CURSOR_SECTION).toContain("does not use direct CLI model lists or flags")
+    expect(CURSOR_SECTION).toContain("active ACP session")
+  })
+
+  it("does not publish a literal certified semantic version before native review", () => {
+    expect(CURSOR_SECTION).not.toMatch(/certified(?: local)? profile[^\n]*\bv?\d+\.\d+\.\d+\b/i)
+    expect(CURSOR_SECTION).not.toMatch(/\bv?\d+\.\d+\.\d+\b[^\n]*certified(?: local)? profile/i)
   })
 
   it("requires target choice, a curatable preview, and explicit confirmation without promising perfect redaction", () => {

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Generation-bound Context Pack bridge
 type: backend
 complexity: critical
@@ -29,11 +29,11 @@ Create a dedicated same-binary MCP surface for Context Builds. It must authorize
 
 ## Subtasks
 
-- [ ] 6.1 Define strict MCP input/output schemas and scoped route contracts.
-- [ ] 6.2 Implement the dedicated Context Pack bridge and authorization facade.
-- [ ] 6.3 Add child-mode registration that composes only scoped ask_user and Context Pack tools.
-- [ ] 6.4 Register the same-binary child entry point without changing the mixed bridge.
-- [ ] 6.5 Test every forbidden operation, route mismatch, and cleanup race.
+- [x] 6.1 Define strict MCP input/output schemas and scoped route contracts.
+- [x] 6.2 Implement the dedicated Context Pack bridge and authorization facade.
+- [x] 6.3 Add child-mode registration that composes only scoped ask_user and Context Pack tools.
+- [x] 6.4 Register the same-binary child entry point without changing the mixed bridge.
+- [x] 6.5 Test every forbidden operation, route mismatch, and cleanup race.
 
 ## Implementation Details
 
@@ -72,13 +72,13 @@ Follow the TechSpec closed MCP surface and ADR-004. Controller lifecycle orchest
 ## Tests
 
 - Unit tests:
-  - [ ] tools/list contains only scoped ask_user plus read_draft, read_workspace, and mutate_draft with strict schemas.
-  - [ ] Parent, child, generation, revision, root, path, and byte mismatches are denied without store mutation.
-  - [ ] Expected-revision mutations succeed once and stale mutations preserve the newer draft.
-  - [ ] Disposal rejects all later reads and writes.
+  - [x] tools/list contains only scoped ask_user plus read_draft, read_workspace, and mutate_draft with strict schemas.
+  - [x] Parent, child, generation, revision, root, path, and byte mismatches are denied without store mutation.
+  - [x] Expected-revision mutations succeed once and stale mutations preserve the newer draft.
+  - [x] Disposal rejects all later reads and writes.
 - Integration tests:
-  - [ ] Direct calls attempting agent_run, shell, general Git, external MCP, cross-session access, seal, send, export, or approval fail generically.
-  - [ ] Parent generation change and child settlement leave no callable route or live builder authority.
+  - [x] Direct calls attempting agent_run, shell, general Git, external MCP, cross-session access, seal, send, export, or approval fail generically.
+  - [x] Parent generation change and child settlement leave no callable route or live builder authority.
 - Test coverage target: >=80%
 - All tests must pass
 

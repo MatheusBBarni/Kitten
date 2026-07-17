@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Fresh-generation controller composition
 type: backend
 complexity: high

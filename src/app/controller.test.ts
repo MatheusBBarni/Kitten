@@ -19,19 +19,26 @@ import {
 import { defaultAppConfig } from "../config/configLoader.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
 import type { ExploreCapability } from "../config/exploreCapability.ts"
+import { CONTEXT_BUILD_OPERATIONS } from "../config/contextPackCapability.ts"
+import type { SecretRedactor } from "../core/secretRedactor.ts"
 import { evaluateExplorePolicy } from "../core/explorePolicy.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
   AgentConfig,
   AppConfig,
+  BoundedArtifactReadResult,
   ClarificationOutcome,
   ClarificationPayload,
   ConfigOption,
+  ContextBuildAvailability,
+  ContextPackMaterializationResult,
   DomainSessionEvent,
   ManagedWorktreeBinding,
   McpServerConfig,
   ProviderKind,
   ResolvedAgentConfig,
+  RecipientProfileAvailability,
+  ResolvedRecipientProfile,
   SessionId,
   ShellEvent,
 } from "../core/types.ts"
@@ -41,16 +48,18 @@ import type {
   PersistedRunRecordV1,
   PersistedRunRecordV2,
   PersistedRunRecordV3,
+  PersistedRunRecordV4,
 } from "../persistence/runRecord.ts"
 import {
   createInMemoryShellRuntimeFactory,
   type ShellRuntime,
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
-import { selectAgentModel } from "../store/selectors.ts"
+import { selectAgentModel, selectCursorRecovery } from "../store/selectors.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import {
   createTelemetryRecorder,
+  type McpBridgeFailureCategory,
   type TelemetryRecord,
   type TelemetryRecorder,
   type UsageSeenRecord,
@@ -61,6 +70,7 @@ import { composePromptBlocks, createControllerActions, nextSessionId, type Actio
 import {
   createInteractionCoordinator,
   createSessionController,
+  projectCursorRecovery,
   type ActiveAgentInteraction,
   type SessionController,
 } from "./controller.ts"
@@ -79,9 +89,21 @@ import {
   type AgentRunControl,
   type AgentRunRoute,
   type KittenMcpBridge,
+  type KittenMcpBridgeFailureReason,
   type KittenMcpBridgeOptions,
   type BridgeRegistration,
 } from "./kittenMcpBridge.ts"
+import type {
+  ContextPackBridge,
+  ContextPackBridgeRegistration,
+  ContextPackBridgeRoute,
+  CreateContextPackBridgeOptions,
+} from "./contextPackBridge.ts"
+import type { ContextPackMaterializer } from "./contextPackMaterializer.ts"
+import {
+  createContextPackExporter,
+  type ContextPackExporter,
+} from "./contextPackExport.ts"
 
 /**
  * The controller is verified two ways.
@@ -115,6 +137,7 @@ const APP_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
@@ -196,6 +219,24 @@ function testExploreCapability(config: ResolvedAgentConfig, limits = { perParent
     status: "supported",
     policy: decision.policy,
     recipe: { ...config, args: [...config.args], env: { ...config.env } },
+  }
+}
+
+function testContextBuildCapability(config: ResolvedAgentConfig): ContextBuildAvailability {
+  return {
+    status: "available",
+    capabilityVersion: "explore-v2",
+    evidenceVersion: "controller-test-v1",
+    operations: [...CONTEXT_BUILD_OPERATIONS],
+    recipe: {
+      ...config,
+      args: [...config.args],
+      env: { ...config.env },
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
+      runtimeProfile: { kind: "standard" },
+    },
+    model: "test-context-model",
   }
 }
 
@@ -392,6 +433,54 @@ describe("interaction coordinator", () => {
     expect(await submissionWins.outcome).toEqual(submitted)
   })
 
+  it("cancels only the exact active or suspended clarification and keeps late settlement inert", async () => {
+    const ids = ["suspended", "active", "resumed", "replacement"]
+    const active: Array<ActiveAgentInteraction | null> = []
+    const settled: Array<{ requestId: string; outcome: ClarificationOutcome; reason?: string }> = []
+    const coordinator = createInteractionCoordinator({
+      newRequestId: () => ids.shift()!,
+      onActiveChanged: (interaction) => active.push(interaction),
+      onClarificationSettled: (interaction, outcome, reason) => {
+        settled.push({ requestId: interaction.requestId, outcome, ...(reason ? { reason } : {}) })
+      },
+    })
+    const suspended = coordinator.enqueueClarification("alpha", 1, CLARIFICATION_PAYLOAD)
+    const current = coordinator.enqueueClarification("alpha", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Keep this clarification active",
+    })
+
+    expect(suspended.cancel("connection_error")).toBe(true)
+    expect(await suspended.outcome).toEqual({ kind: "cancelled" })
+    expect(active.at(-1)?.requestId).toBe(current.requestId)
+    expect(suspended.cancel("connection_error")).toBe(false)
+    expect(suspended.timeout()).toBe(false)
+    expect(coordinator.resolveActive(suspended.requestId, 1, { kind: "skipped" })).toBe(false)
+
+    const resumed = coordinator.enqueueClarification("alpha", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Resume after exact active cancellation",
+    })
+    const replacement = coordinator.enqueueClarification("alpha", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Cancel only this active clarification",
+    })
+    expect(replacement.cancel("connection_error")).toBe(true)
+    expect(await replacement.outcome).toEqual({ kind: "cancelled" })
+    expect(active.at(-1)?.requestId).toBe(resumed.requestId)
+    expect(current.timeout()).toBe(true)
+    expect(active.at(-1)?.requestId).toBe(resumed.requestId)
+    expect(coordinator.resolveActive(resumed.requestId, 1, { kind: "skipped" })).toBe(true)
+    expect(await resumed.outcome).toEqual({ kind: "skipped" })
+    expect(await current.outcome).toEqual({ kind: "timed_out" })
+    expect(settled.filter(({ requestId }) => requestId === suspended.requestId)).toEqual([
+      { requestId: suspended.requestId, outcome: { kind: "cancelled" }, reason: "connection_error" },
+    ])
+    expect(settled.filter(({ requestId }) => requestId === replacement.requestId)).toEqual([
+      { requestId: replacement.requestId, outcome: { kind: "cancelled" }, reason: "connection_error" },
+    ])
+  })
+
   it("times out a suspended clarification without reviving it before the prior permission", async () => {
     const { coordinator, active } = setupCoordinator()
     const permission = coordinator.enqueuePermission("alpha", 1, PERMISSION_REQUEST)
@@ -412,6 +501,953 @@ describe("interaction coordinator", () => {
 
     expect(coordinator.resolveActive("request-1", 1, { outcome: "cancelled" })).toBe(true)
     expect(await permission).toEqual({ outcome: "cancelled" })
+  })
+})
+
+describe("createSessionController - Context Build lifecycle", () => {
+  async function setupContextBuild(overrides: {
+    readonly buildOptions?: readonly StubOptions[]
+    readonly resolveCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
+    readonly resolveRecipientProfile?: (config: ResolvedAgentConfig) => RecipientProfileAvailability
+    readonly countContextPackPayload?: (payload: string, profile: ResolvedRecipientProfile) => number | null
+    readonly materializer?: ContextPackMaterializer
+    readonly exporter?: ContextPackExporter
+    readonly redactor?: SecretRedactor
+    readonly now?: () => number
+    readonly newChildIds?: readonly SessionId[]
+    readonly store?: AppStore
+    readonly recorder?: TelemetryRecorder
+  } = {}) {
+    const created: StubConnection[] = []
+    const configs: ResolvedAgentConfig[] = []
+    const childIds = [...(overrides.newChildIds ?? ["context-builder-1", "context-builder-2"])]
+    const contextBridge = createRecordingContextPackBridge()
+    const ordinaryBridge = createRecordingBridge()
+    const createTrackedConnection = (config: ResolvedAgentConfig): StubConnection => {
+      configs.push(config)
+      const buildIndex = Math.max(0, created.length - 2)
+      const connection = createStubConnection(
+        config.id,
+        created.length < 2 ? {} : overrides.buildOptions?.[buildIndex] ?? {},
+      )
+      created.push(connection)
+      return connection
+    }
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      store: overrides.store,
+      createConnection: createTrackedConnection,
+      createContextBuildConnection: createTrackedConnection,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      newSessionId: () => childIds.shift() ?? "unexpected-context-builder",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveContextBuildCapability: overrides.resolveCapability ?? testContextBuildCapability,
+      resolveRecipientProfile: overrides.resolveRecipientProfile,
+      countContextPackPayload: overrides.countContextPackPayload,
+      contextPackMaterializer: overrides.materializer,
+      contextPackExporter: overrides.exporter,
+      contextPackRedactor: overrides.redactor,
+      now: overrides.now,
+      createKittenMcpBridge: ordinaryBridge.factory,
+      createContextPackBridge: contextBridge.factory,
+      recorder: overrides.recorder,
+    })
+    return { controller, created, configs, contextBridge }
+  }
+
+  const freshDraft = (parentId: SessionId, original = "Curate the controller lifecycle") => ({
+    parentId,
+    draft: { kind: "start_fresh" as const, original },
+  })
+
+  const reviewMaterializer = (
+    materialize: () => ContextPackMaterializationResult = () => ({
+      kind: "materialized",
+      artifacts: [],
+      totalBytes: 0,
+    }),
+  ): ContextPackMaterializer => ({
+    async read(_workspaceRoot, request) {
+      return { kind: "blocked", reason: "source_missing", path: request.path }
+    },
+    async materialize() {
+      return materialize()
+    },
+  })
+
+  const recipientProfile = (
+    config: ResolvedAgentConfig,
+    capacity = 2_000,
+  ): RecipientProfileAvailability => ({
+    status: "available",
+    profile: {
+      profileVersion: "recipient-profile-v1",
+      evidenceVersion: "recipient-evidence-v1",
+      recipe: config,
+      model: "test-model",
+      freshSessionCapacity: capacity,
+      reserve: 100,
+      counterVersion: "counter-v1",
+      validUntil: 10_000,
+    },
+  })
+
+  async function reviewedAndSealed(
+    test: Awaited<ReturnType<typeof setupContextBuild>>,
+    sessionId: SessionId,
+    original = "Curate exact context",
+  ) {
+    const draft = test.controller.store.createContextPackDraft(sessionId, original)
+    if (draft?.kind !== "created") throw new Error("expected draft")
+    const reviewed = await test.controller.actions.reviewContextPack(sessionId)
+    if (reviewed.kind !== "reviewed") throw new Error(`expected review: ${reviewed.reason}`)
+    const sealed = await test.controller.actions.sealContextPack(sessionId, reviewed.candidate.revision)
+    if (sealed.kind !== "sealed") throw new Error(`expected seal: ${sealed.reason}`)
+    return { draft: draft.draft, candidate: reviewed.candidate, sealed: sealed.sealed }
+  }
+
+  it("re-attests explore-v2 and denies missing or newly stale evidence before creating a child", async () => {
+    const missing = await setupContextBuild({
+      resolveCapability: () => ({ status: "unavailable", reason: "missing_evidence" }),
+    })
+    const missingParent = missing.controller.store.getState().workspace.selectedVisibleId!
+    expect(missing.controller.actions.contextBuildAvailability(freshDraft(missingParent))).toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+    expect(await missing.controller.actions.startContextBuild(freshDraft(missingParent))).toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+    expect(missing.created).toHaveLength(2)
+    expect(missing.contextBridge.registrations).toHaveLength(0)
+    await missing.controller.dispose()
+
+    let attestations = 0
+    const stale = await setupContextBuild({
+      resolveCapability: (config) => {
+        attestations += 1
+        return attestations === 1
+          ? testContextBuildCapability(config)
+          : { status: "unavailable", reason: "stale_evidence" }
+      },
+    })
+    const staleParent = stale.controller.store.getState().workspace.selectedVisibleId!
+    expect(stale.controller.actions.contextBuildAvailability(freshDraft(staleParent))).toEqual({ kind: "available" })
+    expect(await stale.controller.actions.startContextBuild(freshDraft(staleParent))).toEqual({
+      kind: "denied",
+      reason: "stale_evidence",
+    })
+    expect(attestations).toBe(2)
+    expect(stale.created).toHaveLength(2)
+    expect(stale.contextBridge.registrations).toHaveLength(0)
+    await stale.controller.dispose()
+  })
+
+  it("denies session and workspace mismatches before dedicated bridge registration", async () => {
+    const workspace = await setupContextBuild()
+    workspace.controller.store.replaceSessions([
+      {
+        seed: { id: "claude-code", providerKind: "claude-code", title: "Claude", cwd: "/different/workspace" },
+        workspace: { sessionId: "claude-code", displayName: "Claude" },
+      },
+      {
+        seed: { id: "codex", providerKind: "codex", title: "Codex", cwd: CWD },
+        workspace: { sessionId: "codex", displayName: "Codex" },
+      },
+    ], "claude-code")
+    expect(workspace.controller.runtime("claude-code")?.cwd).toBe(CWD)
+    expect(workspace.controller.store.getState().sessions["claude-code"]?.cwd).toBe("/different/workspace")
+    expect(await workspace.controller.actions.startContextBuild(freshDraft("claude-code"))).toEqual({
+      kind: "denied",
+      reason: "workspace_mismatch",
+    })
+    expect(workspace.contextBridge.registrations).toHaveLength(0)
+    await workspace.controller.dispose()
+
+    const session = await setupContextBuild()
+    session.controller.store.replaceSessions([
+      {
+        seed: { id: "claude-code", providerKind: "codex", title: "Wrong provider", cwd: CWD },
+        workspace: { sessionId: "claude-code", displayName: "Wrong provider" },
+      },
+      {
+        seed: { id: "codex", providerKind: "codex", title: "Codex", cwd: CWD },
+        workspace: { sessionId: "codex", displayName: "Codex" },
+      },
+    ], "claude-code")
+    expect(await session.controller.actions.startContextBuild(freshDraft("claude-code"))).toEqual({
+      kind: "denied",
+      reason: "session_mismatch",
+    })
+    expect(session.contextBridge.registrations).toHaveLength(0)
+    await session.controller.dispose()
+  })
+
+  it("binds the exact draft before child launch and denies a concurrent second build", async () => {
+    const newSessionWait = deferred()
+    const promptWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [{ newSessionWait: newSessionWait.promise, promptWait: promptWait.promise }],
+    })
+    const parentId = test.controller.store.getState().workspace.selectedVisibleId!
+    const first = test.controller.actions.startContextBuild(freshDraft(parentId))
+    await waitFor(
+      () => test.created.length === 3 && test.created[2]!.newSessionCwds.length === 1,
+      "Context Build child to reach session creation",
+    )
+
+    const binding = test.controller.store.getState().contextPacks[parentId]!.build!
+    expect(binding).toMatchObject({
+      parentId,
+      childId: "context-builder-1",
+      parentGeneration: 1,
+      childGeneration: 1,
+      state: "building",
+    })
+    expect(binding.draftRevision).toBe(test.controller.store.getState().contextPacks[parentId]!.draft!.revision)
+    expect(test.contextBridge.registrations).toHaveLength(1)
+    expect(await test.controller.actions.startContextBuild(freshDraft(parentId, "Concurrent"))).toEqual({
+      kind: "denied",
+      reason: "build_active",
+    })
+    expect(test.created).toHaveLength(3)
+
+    newSessionWait.resolve()
+    expect(await first).toEqual({
+      kind: "started",
+      childId: "context-builder-1",
+      draftRevision: binding.draftRevision,
+    })
+    expect(test.created[2]!.newSessionCwds).toEqual([CWD])
+    expect(test.created[2]!.newSessionMcpServers).toEqual([[
+      expect.objectContaining({ name: "kitten-context-pack" }),
+    ]])
+    const overlays = test.controller.store.getState().overlays
+    expect(await test.created[2]!.ask(PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+    expect(await test.created[2]!.clarify(CLARIFICATION_PAYLOAD)).toEqual({ kind: "cancelled" })
+    expect(test.controller.store.getState().overlays).toBe(overlays)
+    expect(test.configs[2]).toMatchObject({
+      id: test.configs[0]!.id,
+      command: test.configs[0]!.command,
+      args: test.configs[0]!.args,
+      env: test.configs[0]!.env,
+    })
+
+    promptWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks[parentId]?.build === null,
+      "Context Build settlement",
+    )
+    await test.controller.dispose()
+  })
+
+  it("starts Context Build from the explicit operator-created draft without replacing it", async () => {
+    const promptWait = deferred()
+    const test = await setupContextBuild({ buildOptions: [{ promptWait: promptWait.promise }] })
+    const parentId = test.controller.store.getState().workspace.selectedVisibleId!
+
+    expect(test.controller.actions.createContextPackDraft(
+      parentId,
+      "Preserve these original operator instructions",
+    )).toEqual({ kind: "created", revision: 0 })
+    const started = await test.controller.actions.startContextBuild({
+      parentId,
+      draft: { kind: "use_current" },
+    })
+
+    expect(started).toEqual({
+      kind: "started",
+      childId: "context-builder-1",
+      draftRevision: 0,
+    })
+    expect(test.controller.store.getState().contextPacks[parentId]?.draft?.instructions.original)
+      .toBe("Preserve these original operator instructions")
+    expect(test.controller.store.getState().contextPacks[parentId]?.build).toMatchObject({
+      childId: "context-builder-1",
+      draftRevision: 0,
+    })
+
+    promptWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks[parentId]?.build === null,
+      "Context Build settlement",
+    )
+    await test.controller.dispose()
+  })
+
+  it("records Context Pack outcomes only after each controller result settles", async () => {
+    const records: TelemetryRecord[] = []
+    let currentTime = 100
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      sessionRef: "context-pack-run",
+      now: () => currentTime,
+    })
+    const promptWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [{ promptWait: promptWait.promise }],
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 100,
+      recorder,
+      now: () => currentTime,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    records.length = 0
+
+    const started = await test.controller.actions.startContextBuild(freshDraft(sessionId))
+    expect(started.kind).toBe("started")
+    expect(records.map(({ type }) => type)).toEqual([
+      "context_pack_draft_created",
+      "build_started",
+    ])
+
+    currentTime += 6_000
+    promptWait.resolve()
+    await waitFor(
+      () => records.some(({ type }) => type === "build_settled"),
+      "settled Context Build telemetry",
+    )
+    expect(records.find(({ type }) => type === "build_settled")).toMatchObject({
+      contextPackOutcome: "ready_for_review",
+      contextPackDurationBucket: "5_to_29s",
+    })
+
+    const reviewed = await test.controller.actions.reviewContextPack(sessionId)
+    if (reviewed.kind !== "reviewed") throw new Error("expected review")
+    expect(records.at(-1)?.type).toBe("review_ready")
+    const sealed = await test.controller.actions.sealContextPack(sessionId, reviewed.candidate.revision)
+    if (sealed.kind !== "sealed") throw new Error("expected seal")
+    expect(records.at(-1)?.type).toBe("sealed")
+
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 100, size: 2_000 })
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId).kind).toBe("fit")
+    expect(records.at(-1)?.type).toBe("fit_available")
+    expect((await test.controller.actions.sendContextPackHere(sessionId)).kind).toBe("sent")
+    expect(records.slice(-2).map(({ type }) => type)).toEqual([
+      "fit_available",
+      "delivery_confirmed",
+    ])
+
+    const serialized = JSON.stringify(records)
+    expect(serialized).not.toContain(sessionId)
+    expect(serialized).not.toContain("context-builder-1")
+    expect(serialized).not.toContain(sealed.sealed.payload)
+    await test.controller.dispose()
+  })
+
+  it("does not record a private build callback after the store rejects its stale binding", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      sessionRef: "context-pack-stale-build",
+    })
+    const promptWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [{ promptWait: promptWait.promise }],
+      recorder,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    records.length = 0
+
+    expect((await test.controller.actions.startContextBuild(freshDraft(sessionId))).kind).toBe("started")
+    const binding = test.controller.store.getState().contextPacks[sessionId]?.build
+    if (!binding) throw new Error("expected live Context Build binding")
+    expect(test.controller.store.releaseContextBuild(sessionId, binding)).toBe(true)
+
+    promptWait.resolve()
+    await waitFor(
+      () => test.contextBridge.revocations.length === 1,
+      "stale Context Build callback cleanup",
+    )
+    expect(records.map(({ type }) => type)).toEqual([
+      "context_pack_draft_created",
+      "build_started",
+    ])
+    await test.controller.dispose()
+  })
+
+  it("records only closed denial categories after denied controller results", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      sessionRef: "context-pack-denied",
+    })
+    const test = await setupContextBuild({
+      resolveCapability: () => ({ status: "unavailable", reason: "stale_evidence" }),
+      recorder,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    records.length = 0
+
+    expect(await test.controller.actions.startContextBuild(freshDraft(sessionId))).toEqual({
+      kind: "denied",
+      reason: "stale_evidence",
+    })
+    expect(await test.controller.actions.reviewContextPack(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "draft_unavailable",
+    })
+    expect(await test.controller.actions.sealContextPack(sessionId, 1)).toEqual({
+      kind: "blocked",
+      reason: "draft_unavailable",
+    })
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "unavailable",
+      reason: "missing_evidence",
+    })
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "sealed_unavailable",
+    })
+
+    expect(records.map(({ type, contextPackReason }) => ({ type, contextPackReason }))).toEqual([
+      { type: "build_denied", contextPackReason: "capability_unavailable" },
+      { type: "review_blocked", contextPackReason: "draft_unavailable" },
+      { type: "seal_denied", contextPackReason: "review_unavailable" },
+      { type: "fit_unavailable", contextPackReason: "missing_evidence" },
+      { type: "delivery_denied", contextPackReason: "sealed_unavailable" },
+    ])
+    await test.controller.dispose()
+  })
+
+  it("releases matching failure and parent-close bindings without leaving child authority", async () => {
+    const failureWait = deferred()
+    const failure = await setupContextBuild({
+      buildOptions: [{ promptWait: failureWait.promise, promptThrows: new Error("child failed") }],
+    })
+    const failureParent = failure.controller.store.getState().workspace.selectedVisibleId!
+    const sessionStatus = failure.controller.store.getState().sessions[failureParent]?.status
+    const agentAttention = failure.controller.store.getState().workspace.conversations[failureParent]?.attention
+    expect((await failure.controller.actions.startContextBuild(freshDraft(failureParent))).kind).toBe("started")
+    failureWait.resolve()
+    await waitFor(
+      () => failure.controller.store.getState().contextPacks[failureParent]?.build === null,
+      "failed Context Build cleanup",
+    )
+    expect(failure.contextBridge.revocations.at(-1)?.reason).toBe("child_settled")
+    expect(failure.controller.store.getState().contextPacks[failureParent]?.attention).toBeUndefined()
+    expect(failure.controller.store.getState().sessions[failureParent]?.status).toBe(sessionStatus)
+    expect(failure.controller.store.getState().workspace.conversations[failureParent]?.attention).toBe(agentAttention)
+    await failure.controller.dispose()
+
+    const closeWait = deferred()
+    const closing = await setupContextBuild({
+      buildOptions: [{ promptWait: closeWait.promise }],
+    })
+    const closingParent = closing.controller.store.getState().workspace.selectedVisibleId!
+    expect((await closing.controller.actions.startContextBuild(freshDraft(closingParent))).kind).toBe("started")
+    const close = closing.controller.closeConversation(closingParent, "close")
+    expect(closing.controller.store.getState().contextPacks[closingParent]?.build).toBeNull()
+    expect(closing.contextBridge.revocations.at(-1)?.reason).toBe("parent_generation_changed")
+    closeWait.resolve()
+    await close
+    await closing.controller.dispose()
+  })
+
+  it("completes a background build as attention only without changing another session's focus or overlays", async () => {
+    const promptWait = deferred()
+    const test = await setupContextBuild({ buildOptions: [{ promptWait: promptWait.promise }] })
+    test.controller.store.selectConversation("claude-code")
+    test.controller.store.setFocus("claude-code")
+    test.controller.store.openSettings()
+    const before = test.controller.store.getState()
+    const selected = before.workspace.selectedVisibleId
+    const focusedPane = before.focusedPane
+    const overlays = before.overlays
+    const sessionStatus = before.sessions.codex?.status
+    const agentAttention = before.workspace.conversations.codex?.attention
+
+    expect((await test.controller.actions.startContextBuild(freshDraft("codex"))).kind).toBe("started")
+    promptWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks.codex?.build === null,
+      "background Context Build attention",
+    )
+
+    const after = test.controller.store.getState()
+    expect(after.workspace.selectedVisibleId).toBe(selected)
+    expect(after.focusedPane).toBe(focusedPane)
+    expect(after.overlays).toBe(overlays)
+    expect(after.contextPacks.codex).toMatchObject({
+      review: null,
+      sealed: null,
+      build: null,
+      attention: "ready_for_review",
+    })
+    expect(after.sessions.codex?.status).toBe(sessionStatus)
+    expect(after.workspace.conversations.codex?.attention).toBe(agentAttention)
+    await test.controller.dispose()
+  })
+
+  it("ignores stale async cleanup after a newer binding owns the same parent draft slot", async () => {
+    const firstWait = deferred()
+    const secondWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [
+        { promptWait: firstWait.promise },
+        { promptWait: secondWait.promise },
+      ],
+      newChildIds: ["context-builder-1", "context-builder-2"],
+    })
+    const parentId = test.controller.store.getState().workspace.selectedVisibleId!
+    expect((await test.controller.actions.startContextBuild(freshDraft(parentId, "First"))).kind).toBe("started")
+    const firstBinding = test.controller.store.getState().contextPacks[parentId]!.build!
+    expect(test.controller.store.releaseContextBuild(parentId, firstBinding)).toBe(true)
+
+    expect((await test.controller.actions.startContextBuild(freshDraft(parentId, "Second"))).kind).toBe("started")
+    const secondBinding = test.controller.store.getState().contextPacks[parentId]!.build!
+    expect(secondBinding.childId).toBe("context-builder-2")
+
+    firstWait.resolve()
+    await Bun.sleep(0)
+    expect(test.controller.store.getState().contextPacks[parentId]!.build).toEqual(secondBinding)
+    expect(test.controller.store.getState().workspace.conversations[parentId]?.attention.status).toBe("idle")
+
+    secondWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks[parentId]?.build === null,
+      "newer Context Build cleanup",
+    )
+    await test.controller.dispose()
+  })
+
+  it("integration: reviews, seals, and sends the exact redacted bytes through final confirmation", async () => {
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 250,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const secret = "sk-ant-abcdefghijklmnopqrstuv"
+    const beforeFocus = test.controller.store.getState().workspace.selectedVisibleId
+    const custody = await reviewedAndSealed(test, sessionId, `Use ${secret} only for the test`)
+
+    expect(custody.candidate.payload).toContain("[REDACTED]")
+    expect(custody.candidate.payload).not.toContain(secret)
+    expect(custody.sealed.payload).toBe(custody.candidate.payload)
+    expect(custody.sealed.bytes).toBe(new TextEncoder().encode(custody.sealed.payload).byteLength)
+
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 400, size: 2_000 })
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "fit",
+      exactCount: 250,
+      remaining: 1_250,
+    })
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "sent",
+      result: { stopReason: "end_turn" },
+    })
+    expect(test.created[0]!.prompts.at(-1)?.blocks).toEqual([
+      { type: "text", text: custody.sealed.payload },
+    ])
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(beforeFocus)
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed?.payload).toBe(custody.sealed.payload)
+
+    const mutation = test.controller.store.applyContextPackOperatorMutation(sessionId, {
+      kind: "set_brief_section",
+      section: "ambiguities",
+      text: "Fresh review required",
+    })
+    expect(mutation?.kind).toBe("applied")
+    const newerReview = await test.controller.actions.reviewContextPack(sessionId)
+    expect(newerReview.kind).toBe("reviewed")
+    expect(await test.controller.actions.sealContextPack(sessionId, custody.candidate.revision)).toEqual({
+      kind: "blocked",
+      reason: "candidate_revision_mismatch",
+    })
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    await test.controller.dispose()
+  })
+
+  it("materializes revision-fenced whole-file membership and removes only its exact identity", async () => {
+    const source = { identity: "file:1:2", digest: "a".repeat(64), bytes: 12 }
+    const nextRead = deferredValue<BoundedArtifactReadResult>()
+    let readCount = 0
+    const materializer: ContextPackMaterializer = {
+      async read(_workspaceRoot, request) {
+        readCount += 1
+        if (request.path === "invalid.ts") {
+          return { kind: "blocked", reason: "invalid_path", path: request.path }
+        }
+        if (request.path === "raced.ts") return await nextRead.promise
+        return { kind: "ready", artifact: { source, content: "hello world\n" } }
+      },
+      async materialize() {
+        return { kind: "materialized", artifacts: [], totalBytes: 0 }
+      },
+    }
+    const test = await setupContextBuild({ materializer })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const created = test.controller.store.createContextPackDraft(sessionId, "Manage membership")
+    if (created?.kind !== "created") throw new Error("expected draft")
+
+    expect(await test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "src/a.ts",
+      readRevision: created.draft.revision,
+      operation: "add",
+    })).toEqual({ kind: "applied", operation: "add", revision: created.draft.revision + 1 })
+    const afterAdd = test.controller.store.getState().contextPacks[sessionId]!.draft!
+    expect(afterAdd.selections[0]).toEqual({
+      kind: "full_file",
+      path: "src/a.ts",
+      source,
+      rationale: "Added explicitly by the operator",
+      relationship: "Whole-file Context Pack membership",
+    })
+
+    for (const selection of [
+      {
+        kind: "file_slice" as const,
+        path: "src/a.ts",
+        range: { startLine: 1, endLine: 1 },
+        source: { ...source, identity: "slice:1:2:1-1" },
+        rationale: "Keep slice",
+        relationship: "Independent",
+      },
+      {
+        kind: "diff" as const,
+        path: "src/a.ts",
+        scope: "unstaged" as const,
+        source: { ...source, identity: "diff:unstaged:1:2" },
+        rationale: "Keep diff",
+        relationship: "Independent",
+      },
+    ]) {
+      expect(test.controller.store.applyContextPackOperatorMutation(sessionId, {
+        kind: "upsert_selection",
+        selection,
+      })?.kind).toBe("applied")
+    }
+    const beforeRemove = test.controller.store.getState().contextPacks[sessionId]!.draft!
+    expect(await test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "src/a.ts",
+      readRevision: beforeRemove.revision,
+      operation: "remove",
+    })).toEqual({ kind: "applied", operation: "remove", revision: beforeRemove.revision + 1 })
+    expect(test.controller.store.getState().contextPacks[sessionId]!.draft!.selections.map(({ kind }) => kind))
+      .toEqual(["file_slice", "diff"])
+
+    const beforeRace = test.controller.store.getState().contextPacks[sessionId]!.draft!
+    const raced = test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "raced.ts",
+      readRevision: beforeRace.revision,
+      operation: "add",
+    })
+    expect(test.controller.store.applyContextPackOperatorMutation(sessionId, {
+      kind: "set_brief_section",
+      section: "ambiguities",
+      text: "Operator edit wins",
+    })?.kind).toBe("applied")
+    nextRead.resolve({ kind: "ready", artifact: { source, content: "raced source" } })
+    expect(await raced).toEqual({
+      kind: "stale",
+      readRevision: beforeRace.revision,
+      currentRevision: beforeRace.revision + 1,
+    })
+    expect(test.controller.store.getState().contextPacks[sessionId]!.draft!.selections.some(
+      ({ kind, path }) => kind === "full_file" && path === "raced.ts",
+    )).toBeFalse()
+
+    const currentRevision = test.controller.store.getState().contextPacks[sessionId]!.draft!.revision
+    expect(await test.controller.actions.mutateContextPackFileMembership({
+      sessionId,
+      path: "invalid.ts",
+      readRevision: currentRevision,
+      operation: "add",
+    })).toEqual({ kind: "denied", reason: "invalid_path" })
+    expect(readCount).toBe(3)
+    await test.controller.dispose()
+  })
+
+  it("requires sealed custody, an explicit destination, write confirmation, and independent overwrite confirmation", async () => {
+    const writes: Array<{ destination: string; markdown: string; mode: string }> = []
+    const exporter = createContextPackExporter({
+      async write(destination, markdown, mode) {
+        writes.push({ destination, markdown, mode })
+        if (mode === "create") {
+          throw Object.assign(new Error("private filesystem detail"), { code: "EEXIST" })
+        }
+      },
+    })
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      exporter,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "sealed_unavailable" })
+
+    const custody = await reviewedAndSealed(test, sessionId)
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "destination_required" })
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: false,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "confirmation_required" })
+    expect(writes).toEqual([])
+
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "overwrite_confirmation_required" })
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({ destination: "/operator/context.md", mode: "create" })
+    expect(writes[0]!.markdown.endsWith(custody.sealed.payload)).toBe(true)
+
+    expect(await test.controller.actions.exportContextPack({
+      sessionId,
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: true,
+    })).toMatchObject({ kind: "exported", payloadBytes: custody.sealed.bytes })
+    expect(writes.at(-1)).toMatchObject({ destination: "/operator/context.md", mode: "overwrite" })
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    await test.controller.dispose()
+  })
+
+  it("never starts export after review, seal, Send Here, or handoff without the explicit export action", async () => {
+    const exportRequests: unknown[] = []
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 100,
+      now: () => 100,
+      exporter: {
+        async export(request) {
+          exportRequests.push(request)
+          return {
+            kind: "exported",
+            payloadBytes: request.sealed.bytes,
+            exportBytes: request.sealed.bytes,
+          }
+        },
+      },
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const custody = await reviewedAndSealed(test, sessionId)
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 100, size: 2_000 })
+    expect((await test.controller.actions.sendContextPackHere(sessionId)).kind).toBe("sent")
+
+    const handoff = createHandoffFlow({ controller: test.controller })
+    expect(handoff.begin()).toEqual({ ok: true })
+    handoff.cancel()
+    expect(exportRequests).toEqual([])
+
+    const exportInput = {
+      sessionId,
+      destination: "/operator/confirmed-context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    } as const
+    expect(await test.controller.actions.exportContextPack(exportInput)).toMatchObject({
+      kind: "exported",
+      payloadBytes: custody.sealed.bytes,
+    })
+    expect(exportRequests).toEqual([{
+      sealed: custody.sealed,
+      destination: exportInput.destination,
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    }])
+    await test.controller.dispose()
+  })
+
+  it("integration: supplies fresh target fit to one combined handoff confirmation", async () => {
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 250,
+      now: () => 100,
+    })
+    const sourceId = test.controller.store.getState().workspace.selectedVisibleId!
+    const targetId = sourceId === "codex" ? "claude-code" : "codex"
+    const custody = await reviewedAndSealed(test, sourceId)
+    test.controller.store.applyEvent(sourceId, {
+      kind: "user_message",
+      messageId: "handoff-source",
+      text: "Continue with the sealed context.",
+    })
+    test.controller.store.applyEvent(targetId, { kind: "usage", used: 400, size: 2_000 })
+
+    expect(test.controller.assessHandoffRecipientFit?.(targetId, custody.sealed)).toEqual({
+      kind: "fit",
+      exactCount: 250,
+      remaining: 1_250,
+    })
+    const flow = createHandoffFlow({ controller: test.controller })
+    expect(flow.begin()).toEqual({ ok: true })
+    const preview = test.controller.store.getState().overlays.handoffPreview
+    expect(preview?.targetSessionId).toBe(targetId)
+    expect(preview?.bundle.contextPack?.payload).toBe(custody.sealed.payload)
+
+    await flow.confirm(createHandoffEdits(preview!.bundle))
+
+    const delivered = test.created.slice(0, 2).flatMap((connection) => connection.prompts)
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]?.blocks.filter((block) => block.text === custody.sealed.payload)).toHaveLength(1)
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(targetId)
+    await test.controller.dispose()
+  })
+
+  it("integration: changed evidence blocks Send Here without focus, byte, or dispatch changes", async () => {
+    let profileAvailable = false
+    let exactCount = 700
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => profileAvailable
+        ? recipientProfile(config, 1_000)
+        : { status: "unavailable", reason: "missing_evidence" },
+      countContextPackPayload: () => exactCount,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const custody = await reviewedAndSealed(test, sessionId)
+    const beforeFocus = test.controller.store.getState().workspace.selectedVisibleId
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 300, size: 1_000 })
+
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "unavailable",
+      reason: "missing_evidence",
+    })
+    profileAvailable = true
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "insufficient",
+      exactCount: 700,
+      remaining: -100,
+    })
+    exactCount = 100
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "fit",
+      exactCount: 100,
+      remaining: 500,
+    })
+    profileAvailable = false
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "recipient_fit",
+      fit: { kind: "unavailable", reason: "missing_evidence" },
+    })
+    expect(test.created[0]!.prompts).toEqual([])
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(beforeFocus)
+    await test.controller.dispose()
+  })
+
+  it("blocks changed source, redaction, budget, revision, and final evidence without mutating custody or focus", async () => {
+    let materializations = 0
+    let evidenceCurrent = true
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(() => {
+        materializations += 1
+        return materializations === 1
+          ? { kind: "materialized", artifacts: [], totalBytes: 0 }
+          : { kind: "stale", reason: "source_digest_changed", selectionKey: "selection", path: "src/a.ts" }
+      }),
+      resolveRecipientProfile: (config) => evidenceCurrent
+        ? recipientProfile(config)
+        : { status: "unavailable", reason: "stale_evidence" },
+      countContextPackPayload: () => 100,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const draft = test.controller.store.createContextPackDraft(sessionId, "Review once")
+    if (draft?.kind !== "created") throw new Error("expected draft")
+    const reviewed = await test.controller.actions.reviewContextPack(sessionId)
+    if (reviewed.kind !== "reviewed") throw new Error("expected review")
+    const beforeFocus = test.controller.store.getState().workspace.selectedVisibleId
+
+    expect(await test.controller.actions.sealContextPack(sessionId, reviewed.candidate.revision)).toEqual({
+      kind: "blocked",
+      reason: "source_digest_changed",
+    })
+    expect(test.controller.store.getState().contextPacks[sessionId]?.review).toBe(reviewed.candidate)
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBeNull()
+
+    const overBudget = await setupContextBuild({ materializer: reviewMaterializer() })
+    const overBudgetId = overBudget.controller.store.getState().workspace.selectedVisibleId!
+    overBudget.controller.store.createContextPackDraft(overBudgetId, "Too large", { budgetLimit: 1 })
+    expect(await overBudget.controller.actions.reviewContextPack(overBudgetId)).toEqual({
+      kind: "blocked",
+      reason: "over_budget",
+    })
+    expect(overBudget.controller.store.getState().contextPacks[overBudgetId]?.review).toBeNull()
+
+    const redaction = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      redactor: { redact: () => { throw new Error("redaction unavailable") } },
+    })
+    const redactionId = redaction.controller.store.getState().workspace.selectedVisibleId!
+    redaction.controller.store.createContextPackDraft(redactionId, "Redact me")
+    expect(await redaction.controller.actions.reviewContextPack(redactionId)).toEqual({
+      kind: "blocked",
+      reason: "redaction_failed",
+    })
+    expect(redaction.controller.store.getState().contextPacks[redactionId]?.review).toBeNull()
+
+    let sealRedactions = 0
+    const sealRedaction = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      redactor: {
+        redact: (text) => {
+          sealRedactions += 1
+          if (sealRedactions > 1) throw new Error("redaction changed")
+          return { text, count: 0 }
+        },
+      },
+    })
+    const sealRedactionId = sealRedaction.controller.store.getState().workspace.selectedVisibleId!
+    sealRedaction.controller.store.createContextPackDraft(sealRedactionId, "Recheck redaction")
+    const sealReview = await sealRedaction.controller.actions.reviewContextPack(sealRedactionId)
+    if (sealReview.kind !== "reviewed") throw new Error("expected seal review")
+    expect(await sealRedaction.controller.actions.sealContextPack(
+      sealRedactionId,
+      sealReview.candidate.revision,
+    )).toEqual({ kind: "blocked", reason: "redaction_failed" })
+    expect(sealRedaction.controller.store.getState().contextPacks[sealRedactionId]?.review)
+      .toBe(sealReview.candidate)
+    expect(sealRedaction.controller.store.getState().contextPacks[sealRedactionId]?.sealed).toBeNull()
+
+    evidenceCurrent = false
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 100, size: 2_000 })
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "sealed_unavailable",
+    })
+    expect(test.created[0]!.prompts).toEqual([])
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(beforeFocus)
+
+    await Promise.all([
+      test.controller.dispose(),
+      overBudget.controller.dispose(),
+      redaction.controller.dispose(),
+      sealRedaction.controller.dispose(),
+    ])
   })
 })
 
@@ -654,6 +1690,8 @@ interface RecordingBridge {
   readonly cancellations: Array<BridgeRegistration & { reason: string }>
   readonly declarations: McpServerConfig[]
   request(sessionId: SessionId, generation: number, payload: ClarificationPayload): Promise<ClarificationOutcome>
+  requestHandle(sessionId: SessionId, generation: number, payload: ClarificationPayload): ReturnType<KittenMcpBridgeOptions["requestClarification"]>
+  fail(reason: KittenMcpBridgeFailureReason): void
   agentRunControl(): AgentRunControl
   disposeCalls(): number
 }
@@ -715,9 +1753,54 @@ function createRecordingBridge(): RecordingBridge {
       if (!callbacks) throw new Error("bridge not created")
       return callbacks.requestClarification(sessionId, generation, payload).outcome
     },
+    requestHandle(sessionId, generation, payload) {
+      if (!callbacks) throw new Error("bridge not created")
+      return callbacks.requestClarification(sessionId, generation, payload)
+    },
+    fail(reason) {
+      if (!callbacks) throw new Error("bridge not created")
+      callbacks.onFailure?.(reason)
+    },
     agentRunControl() {
       if (!callbacks?.agentRunControl) throw new Error("agent-run control not created")
       return callbacks.agentRunControl
+    },
+    disposeCalls: () => disposals,
+  }
+}
+
+interface RecordingContextPackBridge {
+  readonly factory: (options: CreateContextPackBridgeOptions) => ContextPackBridge
+  readonly registrations: ContextPackBridgeRegistration[]
+  readonly revocations: Array<{ route: ContextPackBridgeRoute; reason: string }>
+  disposeCalls(): number
+}
+
+function createRecordingContextPackBridge(): RecordingContextPackBridge {
+  const registrations: ContextPackBridgeRegistration[] = []
+  const revocations: Array<{ route: ContextPackBridgeRoute; reason: string }> = []
+  let disposals = 0
+  return {
+    registrations,
+    revocations,
+    factory() {
+      return {
+        register(input) {
+          registrations.push(input)
+          return {
+            name: "kitten-context-pack",
+            command: "/bridge/context-pack",
+            args: [input.route.childId],
+            env: { KITTEN_CONTEXT_PACK_TEST: input.route.childId },
+          }
+        },
+        revoke(route, reason) {
+          revocations.push({ route, reason })
+        },
+        async dispose() {
+          disposals += 1
+        },
+      }
     },
     disposeCalls: () => disposals,
   }
@@ -805,6 +1888,7 @@ const THREE_SESSION_CONFIG: AppConfig = {
   telemetryEnabled: false,
   transcriptWindowingEnabled: false,
   theme: "auto",
+  editor: { kind: "system-default" },
   welcomeBanner: "auto",
   statusline: { llmDisclosureAcknowledged: false, layout: null },
 }
@@ -931,6 +2015,40 @@ function persistedRunV3(
     },
     handoffBundle: null,
     harnessDeliveries,
+  }
+}
+
+function persistedRunV4(): PersistedRunRecordV4 {
+  const { version: _version, ...v3 } = persistedRunV3({})
+  const payload = "exact restored\r\npayload e\u0301 [REDACTED]"
+  return {
+    version: 4,
+    ...v3,
+    runId: "run-v4",
+    contextPacks: {
+      codex: {
+        draft: {
+          version: 1,
+          revision: 4,
+          instructions: { original: "Restore safely", mode: "augment", discovered: "" },
+          budget: { unit: "estimated_tokens", limit: 80_000 },
+          brief: {
+            architecture: "Persistence boundary",
+            selectedContext: "Run record",
+            relationships: "Controller commits store state",
+            ambiguities: "None",
+            budgetOmissions: "None",
+          },
+          selections: [],
+        },
+        sealed: {
+          payload,
+          bytes: new TextEncoder().encode(payload).byteLength,
+          revision: 4,
+          sealedAt: 1234,
+        },
+      },
+    },
   }
 }
 
@@ -1535,6 +2653,41 @@ describe("createSessionController - startup", () => {
     await controller.dispose()
   })
 
+  it("keeps generation-wide replacement cancellation after one clarification is cancelled by handle", async () => {
+    const { controller, bridge } = await controllerWithStubs()
+    const first = bridge.requestHandle("codex", 1, CLARIFICATION_PAYLOAD)
+    const targeted = bridge.requestHandle("codex", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Cancel this exact request",
+    })
+    const last = bridge.requestHandle("codex", 1, {
+      ...CLARIFICATION_PAYLOAD,
+      prompt: "Replacement must cancel this request",
+    })
+    const settlementCounts = new Map<string, number>()
+    for (const handle of [first, targeted, last]) {
+      void handle.outcome.then(() => {
+        settlementCounts.set(handle.requestId, (settlementCounts.get(handle.requestId) ?? 0) + 1)
+      })
+    }
+
+    expect(targeted.cancel("connection_error")).toBe(true)
+    expect(await targeted.outcome).toEqual({ kind: "cancelled" })
+
+    await controller.actions.startFreshFromContext("saved context", "codex")
+
+    expect(await first.outcome).toEqual({ kind: "cancelled" })
+    expect(await last.outcome).toEqual({ kind: "cancelled" })
+    await Bun.sleep(0)
+    expect([...settlementCounts.values()]).toEqual([1, 1, 1])
+    expect(bridge.cancellations).toContainEqual({
+      sessionId: "codex",
+      generation: 1,
+      reason: "session_replaced",
+    })
+    await controller.dispose()
+  })
+
   it("Should retain an initial focus supplied by the caller's store", async () => {
     const { controller } = await controllerWithStubs()
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
@@ -1809,6 +2962,31 @@ describe("createSessionController - harness delivery lifecycle", () => {
 })
 
 describe("createSessionController - persisted restore", () => {
+  it("restores V4 custody without recreating review or build authority", async () => {
+    const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
+    const { controller } = await controllerForRestore({
+      "claude-code": { ready: readyToLoad },
+      codex: { ready: readyToLoad },
+    })
+    const record = persistedRunV4()
+
+    await controller.restore(record)
+
+    const restored = controller.store.getState().contextPacks.codex!
+    expect(restored.draft?.stale).toEqual({ kind: "needs_revalidation" })
+    expect(restored.sealed).toEqual({ ...record.contextPacks.codex!.sealed!, restored: true })
+    expect(restored.review).toBeNull()
+    expect(restored.build).toBeNull()
+    expect("manifest" in restored.sealed!).toBe(false)
+    expect(controller.store.getState().contextPacks["claude-code"]).toEqual({
+      draft: null,
+      sealed: null,
+      review: null,
+      build: null,
+    })
+    await controller.dispose()
+  })
+
   it("appends a fresh per-generation bridge after ordered user servers on session/load", async () => {
     const userServers: McpServerConfig[] = [
       { name: "alpha-user", command: process.execPath, args: ["alpha"], env: {} },
@@ -2451,6 +3629,22 @@ describe("createSessionController - persisted restore", () => {
 })
 
 describe("createSessionController - Cursor preflight and readiness telemetry", () => {
+  it("exhaustively projects every closed Cursor readiness cause", () => {
+    expect([
+      projectCursorRecovery("binary_not_found"),
+      projectCursorRecovery("version_mismatch"),
+      projectCursorRecovery("authentication_required"),
+      projectCursorRecovery("uncertified_recipe"),
+      projectCursorRecovery("handshake_failed"),
+    ]).toEqual([
+      { reason: "binary_missing", action: "install_cursor_cli", recheckable: true },
+      { reason: "version_mismatch", action: "restore_reviewed_profile", recheckable: true },
+      { reason: "authentication_required", action: "authenticate_natively", recheckable: true },
+      { reason: "uncertified_recipe", action: "await_maintainer_review", recheckable: false },
+      { reason: "handshake_failed", action: "retry_handshake", recheckable: true },
+    ])
+  })
+
   it("preflights before constructing exactly one long-lived Cursor connection and keeps all three providers live", async () => {
     const events: Array<{ kind: "preflight" | "create"; config: unknown }> = []
     const connections = new Map<ProviderKind, StubConnection>()
@@ -2487,11 +3681,271 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
     await controller.dispose()
   })
 
+  it("rechecks only an unavailable Cursor and preserves ready sibling identities and focus", async () => {
+    let cursorPreflights = 0
+    const created = new Map<ProviderKind, StubConnection[]>()
+    const bridge = createRecordingBridge()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        if (config.id !== "cursor") return { ready: true }
+        cursorPreflights += 1
+        return cursorPreflights === 1
+          ? { ready: false, reason: "binary_not_found", message: "Cursor CLI is unavailable." }
+          : { ready: true }
+      },
+      createConnection: (config) => {
+        const connections = created.get(config.id) ?? []
+        const connection = createStubConnection(config.id, {
+          sessionId: config.id === "cursor" ? "cursor-recovered-acp" : `${config.id}-acp`,
+        })
+        connections.push(connection)
+        created.set(config.id, connections)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      createKittenMcpBridge: bridge.factory,
+    })
+    const before = controller.store.getState()
+    const focus = before.workspace.selectedVisibleId
+    const siblingSessions = {
+      claude: before.sessions["claude-code"],
+      codex: before.sessions.codex,
+    }
+    const siblingRuntimes = {
+      claude: controller.runtime("claude-code"),
+      codex: controller.runtime("codex"),
+    }
+    const siblingConnections = {
+      claude: created.get("claude-code")![0]!,
+      codex: created.get("codex")![0]!,
+    }
+
+    expect(controller.isReady("cursor")).toBe(false)
+    expect(() => controller.actions.recheckCursor("cursor")).not.toThrow()
+    await waitFor(() => controller.isReady("cursor"), "Cursor targeted recheck to recover")
+
+    const after = controller.store.getState()
+    expect(cursorPreflights).toBe(2)
+    expect(created.get("cursor")).toHaveLength(1)
+    expect(after.sessions.cursor?.acpSessionId).toBe("cursor-recovered-acp")
+    expect(controller.runtime("cursor")?.sessionId).toBe("cursor")
+    expect(bridge.registrations.filter((entry) => entry.sessionId === "cursor")).toEqual([
+      { sessionId: "cursor", generation: 2 },
+    ])
+    expect(after.workspace.selectedVisibleId).toBe(focus)
+    expect(after.sessions["claude-code"]).toBe(siblingSessions.claude)
+    expect(after.sessions.codex).toBe(siblingSessions.codex)
+    expect(controller.runtime("claude-code")).toBe(siblingRuntimes.claude)
+    expect(controller.runtime("codex")).toBe(siblingRuntimes.codex)
+    expect(created.get("claude-code")).toEqual([siblingConnections.claude])
+    expect(created.get("codex")).toEqual([siblingConnections.codex])
+    expect(siblingConnections.claude.subscriberCount()).toBe(1)
+    expect(siblingConnections.codex.subscriberCount()).toBe(1)
+    expect(await controller.actions.sendPrompt("cursor recovered", "cursor")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("claude stayed live", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex stayed live", "codex")).toEqual({ stopReason: "end_turn" })
+    await controller.dispose()
+  })
+
+  it("replaces an authentication-failed Cursor transport with a fresh promptable session", async () => {
+    const cursorConnections: StubConnection[] = []
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async () => ({ ready: true }),
+      createConnection: (config) => {
+        if (config.id !== "cursor") return createStubConnection(config.id)
+        const connection = createStubConnection("cursor", cursorConnections.length === 0
+          ? { ready: { ready: false, reason: "authentication_required", error: "native login expired" } }
+          : { sessionId: "cursor-replacement-acp" })
+        cursorConnections.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+
+    expect(await controller.actions.sendPrompt("blocked", "cursor")).toBeNull()
+    expect(cursorConnections[0]!.disposeCalls()).toBe(1)
+    controller.actions.recheckCursor("cursor")
+    await waitFor(() => controller.isReady("cursor"), "Cursor authentication recovery")
+
+    expect(cursorConnections).toHaveLength(2)
+    expect(cursorConnections[0]).not.toBe(cursorConnections[1])
+    expect(cursorConnections[0]!.disposeCalls()).toBe(1)
+    expect(cursorConnections[1]!.newSessionCwds).toEqual([CWD])
+    expect(controller.store.getState().sessions.cursor?.acpSessionId).toBe("cursor-replacement-acp")
+    expect(await controller.actions.sendPrompt("ready now", "cursor")).toEqual({ stopReason: "end_turn" })
+    await controller.dispose()
+  })
+
+  it("keeps a repeated bounded Cursor failure isolated from promptable siblings", async () => {
+    let cursorPreflights = 0
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        if (config.id !== "cursor") return { ready: true }
+        cursorPreflights += 1
+        return {
+          ready: false,
+          reason: cursorPreflights === 1 ? "binary_not_found" : "version_mismatch",
+          message: cursorPreflights === 1
+            ? "Cursor CLI is unavailable."
+            : "Cursor version is not the reviewed version.",
+        }
+      },
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const before = controller.store.getState()
+    const siblingSessions = [before.sessions["claude-code"], before.sessions.codex]
+    const siblingRuntimes = [controller.runtime("claude-code"), controller.runtime("codex")]
+
+    controller.actions.recheckCursor("cursor")
+    await waitFor(() => cursorPreflights === 2, "Cursor repeated preflight failure")
+
+    expect(controller.runtime("cursor")).toMatchObject({
+      ready: false,
+      error: "Cursor version is not the reviewed version.",
+    })
+    expect(controller.store.getState().workspace.conversations.cursor?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: {
+        reason: "version_mismatch",
+        action: "restore_reviewed_profile",
+        recheckable: true,
+      },
+    })
+    expect(controller.store.getState().sessions["claude-code"]).toBe(siblingSessions[0])
+    expect(controller.store.getState().sessions.codex).toBe(siblingSessions[1])
+    expect(controller.runtime("claude-code")).toBe(siblingRuntimes[0])
+    expect(controller.runtime("codex")).toBe(siblingRuntimes[1])
+    expect(await controller.actions.sendPrompt("claude still usable", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex still usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.has("cursor")).toBe(false)
+    await controller.dispose()
+  })
+
+  it("is inert for ready, non-Cursor, unknown, closing, unconfigured, and controller-dead targets", async () => {
+    let preflights = 0
+    let constructions = 0
+    const cursorDisposal = deferred()
+    const readyController = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async () => {
+        preflights += 1
+        return { ready: true }
+      },
+      createConnection: (config) => {
+        constructions += 1
+        return createStubConnection(config.id, config.id === "cursor" ? { disposeWait: cursorDisposal.promise } : {})
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const readyState = readyController.store.getState()
+
+    readyController.actions.recheckCursor("cursor")
+    readyController.actions.recheckCursor("codex")
+    readyController.actions.recheckCursor("missing")
+    await Bun.sleep(0)
+    expect(readyController.store.getState()).toBe(readyState)
+    expect(preflights).toBe(1)
+    expect(constructions).toBe(3)
+
+    const closing = readyController.actions.closeConversation("cursor", "close")
+    await waitFor(
+      () => readyController.store.getState().workspace.conversations.cursor?.teardownState === "closing",
+      "Cursor close to enter teardown",
+    )
+    const closingState = readyController.store.getState()
+    readyController.actions.recheckCursor("cursor")
+    await Bun.sleep(0)
+    expect(readyController.store.getState()).toBe(closingState)
+    expect(preflights).toBe(1)
+    expect(constructions).toBe(3)
+    cursorDisposal.resolve()
+    await closing
+
+    const configWithoutCursor: AppConfig = {
+      ...APP_CONFIG,
+      providerDefaults: {},
+      providers: { codex: PROVIDERS.codex } as AppConfig["providers"],
+    }
+    const record = dynamicPersistedRun()
+    record.conversations["codex-review"] = {
+      ...record.conversations["codex-review"]!,
+      providerKind: "cursor",
+    }
+    const unconfiguredController = await createSessionController({
+      config: configWithoutCursor,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id, {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+      }),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+    })
+    await unconfiguredController.restore(record)
+    const unconfiguredState = unconfiguredController.store.getState()
+    unconfiguredController.actions.recheckCursor("codex-review")
+    await Bun.sleep(0)
+    expect(unconfiguredController.store.getState()).toBe(unconfiguredState)
+    expect(unconfiguredController.runtime("codex-review")).toMatchObject({
+      providerKind: "cursor",
+      ready: false,
+      error: "Provider unavailable",
+    })
+
+    await unconfiguredController.dispose()
+    await readyController.dispose()
+    const disposedState = readyController.store.getState()
+    readyController.actions.recheckCursor("cursor")
+    await Bun.sleep(0)
+    expect(readyController.store.getState()).toBe(disposedState)
+    expect(preflights).toBe(1)
+    expect(constructions).toBe(3)
+  })
+
   it.each([
-    ["binary_not_found", "binary_missing"],
-    ["version_mismatch", "version_mismatch"],
-    ["uncertified_recipe", "uncertified_recipe"],
-  ] as const)("isolates Cursor %s before construction and emits only %s", async (reason, outcome) => {
+    ["binary_not_found", "binary_missing", {
+      reason: "binary_missing",
+      action: "install_cursor_cli",
+      recheckable: true,
+    }],
+    ["version_mismatch", "version_mismatch", {
+      reason: "version_mismatch",
+      action: "restore_reviewed_profile",
+      recheckable: true,
+    }],
+    ["uncertified_recipe", "uncertified_recipe", {
+      reason: "uncertified_recipe",
+      action: "await_maintainer_review",
+      recheckable: false,
+    }],
+  ] as const)("isolates Cursor %s before construction and emits only %s", async (reason, outcome, recovery) => {
     const sinkRecords: TelemetryRecord[] = []
     const recorder = createTelemetryRecorder({
       enabled: true,
@@ -2523,14 +3977,77 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
 
     expect(created).not.toContain("cursor")
     expect(controller.runtime("cursor")).toMatchObject({ ready: false, error: `Cursor recovery for ${reason}` })
+    expect(controller.store.getState().workspace.conversations.cursor?.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+      cursorRecovery: recovery,
+    })
+    expect(selectCursorRecovery("cursor")(controller.store.getState())).toEqual(recovery)
     expect(controller.isReady("codex")).toBe(true)
+    expect(controller.isReady("claude-code")).toBe(true)
     expect(await controller.actions.sendPrompt("still usable", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("also usable", "claude-code")).toEqual({ stopReason: "end_turn" })
     expect(connections.get("codex")?.prompts).toHaveLength(1)
+    expect(connections.get("claude-code")?.prompts).toHaveLength(1)
     expect(sinkRecords).toContainEqual(expect.objectContaining({
       type: "provider_readiness",
       provider: "cursor",
       readinessOutcome: outcome,
     }))
+    await controller.dispose()
+  })
+
+  it("uses the same bounded recovery projection for initial and restored Cursor failures", async () => {
+    const rawDetail = "/private/workspace cursor 99.1 credential=secret"
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async () => ({
+        ready: false,
+        reason: "version_mismatch",
+        message: rawDetail,
+      }),
+      createConnection: (config) => createStubConnection(config.id, {
+        ready: { ready: true, protocolVersion: 1, canLoadSession: true },
+      }),
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const initialAvailability = controller.store.getState().workspace.conversations.cursor?.availability
+    const initialRecovery = selectCursorRecovery("cursor")(controller.store.getState())
+    const record = dynamicPersistedRun()
+    record.conversations["codex-review"] = {
+      ...record.conversations["codex-review"]!,
+      providerKind: "cursor",
+    }
+
+    await controller.restore(record)
+
+    const restoredAvailability = controller.store.getState().workspace.conversations["codex-review"]?.availability
+    const restoredRecovery = selectCursorRecovery("codex-review")(controller.store.getState())
+    expect(initialAvailability).toMatchObject({
+      kind: "unavailable",
+      reasonCode: "connection-failed",
+      retryable: true,
+    })
+    expect(restoredAvailability).toMatchObject({
+      kind: "unavailable",
+      reasonCode: "restore-unavailable",
+      retryable: true,
+    })
+    expect(restoredRecovery).toBe(initialRecovery)
+    expect(restoredRecovery).toEqual({
+      reason: "version_mismatch",
+      action: "restore_reviewed_profile",
+      recheckable: true,
+    })
+    expect(JSON.stringify({ initialAvailability, restoredAvailability, restoredRecovery }))
+      .not.toContain(rawDetail)
+    expect(controller.isReady("codex-build")).toBe(true)
+    expect(selectCursorRecovery("codex-build")(controller.store.getState())).toBeNull()
     await controller.dispose()
   })
 
@@ -2558,17 +4075,76 @@ describe("createSessionController - Cursor preflight and readiness telemetry", (
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
 
-    expect(controller.runtime("cursor")).toMatchObject({
+    const cursorRuntime = controller.runtime("cursor")
+    expect(cursorRuntime).toMatchObject({
       ready: false,
-      error: "Cursor: authentication is required: login rejected. Sign in to Cursor, then restart Kitten.",
+      error: "Cursor: authentication is required. Sign in with the Cursor CLI, then restart Kitten.",
     })
+    expect(cursorRuntime && !cursorRuntime.ready ? cursorRuntime.error : "").not.toContain("login rejected")
+    expect(selectCursorRecovery("cursor")(controller.store.getState())).toEqual({
+      reason: "authentication_required",
+      action: "authenticate_natively",
+      recheckable: true,
+    })
+    expect(JSON.stringify(controller.store.getState().workspace.conversations.cursor?.availability))
+      .not.toContain("login rejected")
     expect(records).toContainEqual(expect.objectContaining({
       type: "provider_readiness",
       provider: "cursor",
       readinessOutcome: "authentication_required",
     }))
     expect(await controller.actions.sendPrompt("continue", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("continue", "codex")).toEqual({ stopReason: "end_turn" })
     expect(connections.get("claude-code")?.prompts).toHaveLength(1)
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
+  it.each([
+    ["reported handshake failure", { ready: { ready: false, error: "/private/cursor handshake token" } }],
+    ["thrown session creation failure", { newSessionThrows: new Error("/private/cursor session token") }],
+  ] as const)("normalizes Cursor %s without disturbing ready siblings", async (_case, cursorOptions) => {
+    const records: TelemetryRecord[] = []
+    const connections = new Map<ProviderKind, StubConnection>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+      }),
+      preflightAgentReadiness: async () => ({ ready: true }),
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id, config.id === "cursor" ? cursorOptions : {})
+        connections.set(config.id, connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+
+    const cursorRuntime = controller.runtime("cursor")
+    expect(cursorRuntime).toMatchObject({
+      ready: false,
+      error: "Cursor: the local ACP connection could not be established. " +
+        "Restart Kitten; if it still fails, continue with another ready provider.",
+    })
+    expect(cursorRuntime && !cursorRuntime.ready ? cursorRuntime.error : "").not.toMatch(/private|token/i)
+    expect(selectCursorRecovery("cursor")(controller.store.getState())).toEqual({
+      reason: "handshake_failed",
+      action: "retry_handshake",
+      recheckable: true,
+    })
+    expect(JSON.stringify(controller.store.getState().workspace.conversations.cursor?.availability))
+      .not.toMatch(/private|token/i)
+    expect(records.filter((record) => record.type === "provider_readiness" && record.provider === "cursor"))
+      .toEqual([expect.objectContaining({ readinessOutcome: "handshake_failed" })])
+    expect(await controller.actions.sendPrompt("claude sibling", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex sibling", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(connections.get("claude-code")?.prompts).toHaveLength(1)
+    expect(connections.get("codex")?.prompts).toHaveLength(1)
     await controller.dispose()
   })
 
@@ -2842,6 +4418,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -2876,6 +4453,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -2915,6 +4493,7 @@ describe("createSessionController - multi-session fleet", () => {
       telemetryEnabled: false,
       transcriptWindowingEnabled: false,
       theme: "auto",
+      editor: { kind: "system-default" },
       welcomeBanner: "auto",
       statusline: { llmDisclosureAcknowledged: false, layout: null },
     }
@@ -2997,6 +4576,7 @@ describe("actions - sendPrompt", () => {
         telemetryEnabled: false,
         transcriptWindowingEnabled: false,
         theme: "auto",
+        editor: { kind: "system-default" },
         welcomeBanner: "auto",
         statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
@@ -4112,6 +5692,107 @@ describe("createSessionController - per-conversation close", () => {
 })
 
 describe("createSessionController - route-authorized agent runs", () => {
+  it("maps every injected bridge failure to one closed content-free recorder category", async () => {
+    const bridge = createRecordingBridge()
+    const records: TelemetryRecord[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+        now: () => 91,
+        sessionRef: "anonymous-bridge-run",
+      }),
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner(),
+    })
+    const cases: ReadonlyArray<readonly [KittenMcpBridgeFailureReason, McpBridgeFailureCategory]> = [
+      ["connection_concurrency_limit", "capacity_limited"],
+      ["connection_call_limit", "capacity_limited"],
+      ["connection_frame_too_large", "invalid_request"],
+      ["connection_malformed_frame", "invalid_request"],
+      ["connection_invalid_request", "invalid_request"],
+      ["connection_duplicate_call_id", "invalid_request"],
+      ["registration_endpoint_failed", "unavailable"],
+      ["registration_capability_failed", "unavailable"],
+      ["registration_listen_failed", "unavailable"],
+      ["connection_unauthorized", "unavailable"],
+      ["connection_io_error", "unavailable"],
+      ["connection_request_failed", "unavailable"],
+    ]
+
+    for (const [reason] of cases) bridge.fail(reason)
+
+    const bridgeRecords = records.filter((record) => record.type === "kitten_mcp_bridge_failure")
+    expect(bridgeRecords).toEqual(cases.map(([, category]) => ({
+      type: "kitten_mcp_bridge_failure",
+      at: 91,
+      sessionRef: "anonymous-bridge-run",
+      mcpBridgeFailureCategory: category,
+    })))
+    expect(bridgeRecords.every((record) => Object.keys(record).every((key) =>
+      ["type", "at", "sessionRef", "mcpBridgeFailureCategory"].includes(key)
+    ))).toBe(true)
+    const serialized = JSON.stringify(bridgeRecords)
+    for (const forbidden of [
+      "connection_", "registration_", "prompt", "task", "route", "capability", "endpoint",
+      "callId", "sessionId", "raw error",
+    ]) expect(serialized).not.toContain(forbidden)
+    await controller.dispose()
+  })
+
+  it("projects concurrent starts as busy and stale routes as unavailable with typed bridge errors", async () => {
+    const bridge = createRecordingBridge()
+    const launchEntered = deferred()
+    const releaseLaunch = deferred()
+    let childOrdinal = 0
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => createStubConnection(config.id),
+      createKittenMcpBridge: bridge.factory,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => `typed-child-${++childOrdinal}`,
+      sendInitialTasks: false,
+      resolveExploreCapability: testExploreCapability,
+      managedWorktreeProvisioner: createTestManagedWorktreeProvisioner({
+        provision: async (input) => {
+          launchEntered.resolve()
+          await releaseLaunch.promise
+          return { kind: "provisioned", binding: testManagedWorktreeBinding(input.ownerSessionId) }
+        },
+      }),
+    })
+    const parentId = controller.store.getState().workspace.selectedVisibleId!
+    const route = recordedAgentRunRoute(bridge, parentId)
+    const control = bridge.agentRunControl()
+    const first = control.start(route, [{ task: "First", desiredOutcome: "Running" }])
+    await launchEntered.promise
+
+    await expect(control.start(route, [{ task: "Second", desiredOutcome: "Busy" }])).rejects.toMatchObject({
+      name: "KittenMcpBridgeError",
+      code: "busy",
+    })
+    await expect(control.start(
+      { ...route, parentGeneration: route.parentGeneration + 1 },
+      [{ task: "Stale", desiredOutcome: "Unavailable" }],
+    )).rejects.toMatchObject({
+      name: "KittenMcpBridgeError",
+      code: "unavailable",
+    })
+
+    releaseLaunch.resolve()
+    expect(await first).toHaveLength(1)
+    await controller.dispose()
+  })
+
   it("records only settled operation outcomes, bounded sizes, and controller duration", async () => {
     const bridge = createRecordingBridge()
     const records: TelemetryRecord[] = []
@@ -6097,6 +7778,7 @@ describe("createSessionController - dispose", () => {
         telemetryEnabled: false,
         transcriptWindowingEnabled: false,
         theme: "auto",
+        editor: { kind: "system-default" },
         welcomeBanner: "auto",
         statusline: { llmDisclosureAcknowledged: false, layout: null },
       },
@@ -6628,6 +8310,60 @@ function connectionToMockAgent(
 }
 
 describe("integration - two mock ACP agents", () => {
+  it("recovers Cursor over the real ACP adapter without replacing healthy provider sessions", async () => {
+    let cursorPreflights = 0
+    const agents = new Map<ProviderKind, MockAgentHandle[]>()
+    const controller = await createSessionController({
+      config: CURSOR_APP_CONFIG,
+      cwd: CWD,
+      preflightAgentReadiness: async (config) => {
+        if (config.id !== "cursor") return { ready: true }
+        cursorPreflights += 1
+        return cursorPreflights === 1
+          ? { ready: false, reason: "binary_not_found", message: "Cursor CLI is unavailable." }
+          : { ready: true }
+      },
+      createConnection: (config) => {
+        const providerAgents = agents.get(config.id) ?? []
+        const { connection, agent } = connectionToMockAgent(config, {
+          sessionId: `${config.id}-mock-${providerAgents.length + 1}`,
+        })
+        providerAgents.push(agent)
+        agents.set(config.id, providerAgents)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+    })
+    const before = controller.store.getState()
+    const selected = before.workspace.selectedVisibleId
+    const siblingSessions = [before.sessions["claude-code"], before.sessions.codex]
+    const siblingRuntimes = [controller.runtime("claude-code"), controller.runtime("codex")]
+
+    controller.actions.recheckCursor("cursor")
+    await waitFor(() => controller.isReady("cursor"), "real ACP Cursor recheck")
+
+    expect(cursorPreflights).toBe(2)
+    expect(agents.get("cursor")).toHaveLength(1)
+    expect(agents.get("claude-code")).toHaveLength(1)
+    expect(agents.get("codex")).toHaveLength(1)
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe(selected)
+    expect(controller.store.getState().sessions["claude-code"]).toBe(siblingSessions[0])
+    expect(controller.store.getState().sessions.codex).toBe(siblingSessions[1])
+    expect(controller.runtime("claude-code")).toBe(siblingRuntimes[0])
+    expect(controller.runtime("codex")).toBe(siblingRuntimes[1])
+
+    expect(await controller.actions.sendPrompt("cursor turn", "cursor")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("claude turn", "claude-code")).toEqual({ stopReason: "end_turn" })
+    expect(await controller.actions.sendPrompt("codex turn", "codex")).toEqual({ stopReason: "end_turn" })
+    expect(agents.get("cursor")![0]!.prompts).toHaveLength(1)
+    expect(agents.get("claude-code")![0]!.prompts).toHaveLength(1)
+    expect(agents.get("codex")![0]!.prompts).toHaveLength(1)
+    await controller.dispose()
+  })
+
   it("round-trips ACP elicitation through the controller projection and dedicated response action", async () => {
     const supportedConfig = {
       ...CLAUDE,

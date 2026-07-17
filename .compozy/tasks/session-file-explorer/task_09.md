@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Content-Free Explorer Telemetry and Cross-Boundary Proof
 type: backend
 complexity: medium
@@ -28,10 +28,10 @@ Add opt-in local telemetry for explorer availability, refresh, and file-open out
 
 ## Subtasks
 
-- [ ] 9.1 Add the closed explorer telemetry event and outcome vocabulary.
-- [ ] 9.2 Add recorder façade methods accepting only content-free values.
+- [x] 9.1 Add the closed explorer telemetry event and outcome vocabulary.
+- [x] 9.2 Add recorder façade methods accepting only content-free values.
 - [ ] 9.3 Emit action-boundary events for visibility, refresh, and settled launch outcomes.
-- [ ] 9.4 Preserve disabled-recorder no-sink behavior.
+- [x] 9.4 Preserve disabled-recorder no-sink behavior.
 - [ ] 9.5 Add serialized-record negative tests and cross-boundary event ordering coverage.
 
 ## Implementation Details

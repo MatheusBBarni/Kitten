@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Delegate Root Development Commands and CI to Cockpit
 type: infra
 complexity: high

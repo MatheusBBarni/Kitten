@@ -268,6 +268,155 @@ a:not(.button):hover {
   scroll-margin-block-start: 8rem;
 }
 
+.docs-main {
+  inline-size: min(calc(100% - 2rem), 78rem);
+  margin-inline: auto;
+}
+
+.docs-hero,
+.docs-section {
+  padding-block: var(--space-6);
+  scroll-margin-block-start: 8rem;
+}
+
+.docs-hero {
+  max-inline-size: 56rem;
+}
+
+.docs-hero h1 {
+  max-inline-size: 15ch;
+}
+
+.docs-lede,
+.docs-section-lede {
+  max-inline-size: 62rem;
+  color: var(--color-muted);
+  font-size: clamp(1.05rem, 1.5vw, 1.25rem);
+}
+
+.docs-topic-nav {
+  margin-block-start: var(--space-5);
+}
+
+.docs-topic-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docs-topic-nav a {
+  display: inline-flex;
+  min-block-size: 2.75rem;
+  align-items: center;
+  padding-inline: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.docs-topic-nav a:hover {
+  border-color: var(--color-muted);
+  background: var(--color-surface-raised);
+}
+
+.docs-section {
+  border-block-start: 1px solid var(--color-border);
+}
+
+.docs-section h2 {
+  max-inline-size: 28ch;
+}
+
+.docs-section p,
+.docs-reference-list {
+  max-inline-size: 68rem;
+}
+
+.docs-copy-grid {
+  display: grid;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.docs-note {
+  padding: var(--space-4);
+  border: 1px solid var(--color-accent);
+  border-radius: 0.85rem;
+  background: var(--color-surface);
+}
+
+.docs-note strong {
+  color: var(--color-accent);
+}
+
+.docs-note p {
+  margin: var(--space-1) 0 0;
+  color: var(--color-muted);
+}
+
+.docs-code {
+  max-inline-size: 68rem;
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 0.85rem;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.docs-code code,
+.docs-section code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.docs-code code {
+  display: block;
+  min-inline-size: max-content;
+  font-size: 0.9rem;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.docs-section :not(pre) > code {
+  padding: 0.12em 0.32em;
+  border: 1px solid var(--color-border);
+  border-radius: 0.32rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9em;
+}
+
+.docs-reference-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+}
+
+.docs-reference-list div {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-inline-start: 2px solid var(--color-teal);
+  background: var(--color-surface);
+}
+
+.docs-reference-list dt {
+  color: var(--color-text);
+  font-weight: 800;
+}
+
+.docs-reference-list dd {
+  margin: 0;
+  color: var(--color-muted);
+}
+
 .hero-shell {
   display: grid;
   min-block-size: min(54rem, 88svh);
@@ -443,8 +592,7 @@ a:not(.button):hover {
   background: rgb(10 14 20 / 82%);
 }
 
-.handoff-window-bar,
-.handoff-route {
+.handoff-window-bar {
   display: flex;
   gap: var(--space-2);
   align-items: center;
@@ -474,31 +622,62 @@ a:not(.button):hover {
   font-weight: 800;
 }
 
-.handoff-route {
+.agent-roster {
   margin-block-end: var(--space-3);
 }
 
-.handoff-route span {
-  flex: 1 1 0;
-  padding: 0.55rem 0.45rem;
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
-  background: var(--color-surface-raised);
-  color: var(--color-text);
-  font-size: 0.8rem;
-  font-weight: 800;
-  text-align: center;
+.agent-roster-label,
+.agent-roster-future {
+  color: var(--color-muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
 }
 
-.handoff-route svg {
-  inline-size: 3rem;
-  block-size: 1.4rem;
-  flex: none;
-  fill: none;
-  stroke: var(--color-accent);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
+.agent-roster-label {
+  display: block;
+  margin-block-end: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.agent-roster-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-roster-provider {
+  --provider-accent: var(--color-blue);
+  display: grid;
+  min-block-size: 3.25rem;
+  place-items: center;
+  padding: 0.5rem;
+  border: 1px solid var(--provider-accent);
+  border-radius: 0.5rem;
+  background: var(--color-surface-raised);
+  box-shadow: inset 0 0.18rem 0 var(--provider-accent);
+  color: var(--color-text);
+  font-size: clamp(0.72rem, 2.7vw, 0.85rem);
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.agent-roster-provider:nth-child(2) {
+  --provider-accent: var(--color-accent);
+}
+
+.agent-roster-provider:nth-child(3) {
+  --provider-accent: var(--color-teal);
+}
+
+.agent-roster-future {
+  margin: 0.7rem 0 0;
 }
 
 .handoff-window p {
@@ -742,6 +921,15 @@ a:not(.button):hover {
   .install-status {
     grid-column: 1 / -1;
   }
+
+  .docs-copy-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.58fr);
+  }
+
+  .docs-reference-list div {
+    grid-template-columns: minmax(10rem, 0.3fr) minmax(0, 1fr);
+    align-items: baseline;
+  }
 }
 
 @media (max-width: 25rem) {
@@ -754,9 +942,6 @@ a:not(.button):hover {
     display: none;
   }
 
-  .handoff-route svg {
-    inline-size: 2rem;
-  }
 }
 
 @media (prefers-color-scheme: light) {

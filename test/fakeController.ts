@@ -16,6 +16,16 @@ import {
   previousSessionId,
   type CloseChoice,
   type CloseConversationResult,
+  type ContextBuildAvailabilityResult,
+  type ContextBuildStartResult,
+  type ContextPackDraftCreationResult,
+  type ContextPackReviewResult,
+  type ContextPackFileMembershipInput,
+  type ContextPackFileMembershipResult,
+  type ContextPackExportActionInput,
+  type ContextPackExportActionResult,
+  type ContextPackSealActionResult,
+  type ContextPackSendHereResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type ExploreAvailabilityResult,
@@ -23,6 +33,7 @@ import {
   type ExploreLaunchResult,
   type PromptInput,
   type StartDelegatedChildInput,
+  type StartContextBuildInput,
   type StatuslineWriteResult,
   type SteeringResult,
   type SwitchFocusOptions,
@@ -31,7 +42,15 @@ import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import type { CleanupManagedWorktreeResult } from "../src/app/managedWorktree.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
-import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
+import type {
+  ClarificationOutcome,
+  DefaultApplyResult,
+  DurableSealedContextPack,
+  HandoffBundle,
+  HandoffSourceIdentityIndex,
+  RecipientFit,
+  SessionId,
+} from "../src/core/types.ts"
 import type { StatuslineLayout } from "../src/core/statusline.ts"
 import {
   persistedSelectedConversationId,
@@ -46,9 +65,17 @@ export interface RecordedCalls {
   createConversation: number
   startDelegatedChild: StartDelegatedChildInput[]
   startExploreChild: ExploreLaunchRequest[]
+  startContextBuild: StartContextBuildInput[]
+  createContextPackDraft: { sessionId: SessionId; original: string }[]
+  reviewContextPack: SessionId[]
+  mutateContextPackFileMembership: ContextPackFileMembershipInput[]
+  sealContextPack: { sessionId: SessionId; candidateRevision: number }[]
+  assessContextPackRecipientFit: SessionId[]
+  sendContextPackHere: SessionId[]
   steerDelegatedChild: { childId: SessionId; text: string }[]
   cancelDelegatedChild: SessionId[]
   cleanupManagedWorktree: SessionId[]
+  exportContextPack: ContextPackExportActionInput[]
   renameConversation: { sessionId: SessionId; displayName: string }[]
   selectConversation: SessionId[]
   selectConversationOptions: (SwitchFocusOptions | undefined)[]
@@ -136,12 +163,62 @@ export interface FakeControllerOptions {
     parentId: SessionId,
     store: AppStore,
   ) => ExploreAvailabilityResult
+  /** Typed Context Build launch and advisory seams for Context Pack panel tests. */
+  startContextBuild?: (
+    input: StartContextBuildInput,
+    store: AppStore,
+  ) => ContextBuildStartResult | Promise<ContextBuildStartResult>
+  contextBuildAvailability?: (
+    input: StartContextBuildInput,
+    store: AppStore,
+  ) => ContextBuildAvailabilityResult
+  /** Typed Context Pack custody seams used by the presentation-only panel. */
+  createContextPackDraft?: (
+    sessionId: SessionId,
+    original: string,
+    store: AppStore,
+  ) => ContextPackDraftCreationResult
+  reviewContextPack?: (
+    sessionId: SessionId,
+    store: AppStore,
+  ) => ContextPackReviewResult | Promise<ContextPackReviewResult>
+  mutateContextPackFileMembership?: (
+    input: ContextPackFileMembershipInput,
+    store: AppStore,
+  ) => ContextPackFileMembershipResult | Promise<ContextPackFileMembershipResult>
+  sealContextPack?: (
+    sessionId: SessionId,
+    candidateRevision: number,
+    store: AppStore,
+  ) => ContextPackSealActionResult | Promise<ContextPackSealActionResult>
+  assessContextPackRecipientFit?: (sessionId: SessionId, store: AppStore) => RecipientFit
+  sendContextPackHere?: (
+    sessionId: SessionId,
+    store: AppStore,
+  ) => ContextPackSendHereResult | Promise<ContextPackSendHereResult>
   /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
   sendPrompt?: (
     input: PromptInput,
     sessionId: SessionId | undefined,
     store: AppStore,
   ) => PromptResult | null | Promise<PromptResult | null>
+  /** Deterministic ordinary-item identity evidence for handoff composition tests. */
+  handoffSourceIdentities?: (
+    sessionId: SessionId,
+    bundle: HandoffBundle,
+    store: AppStore,
+  ) => HandoffSourceIdentityIndex
+  /** Deterministic arbitrary-target fit verdict for sealed handoff attachments. */
+  assessHandoffRecipientFit?: (
+    targetSessionId: SessionId,
+    sealed: DurableSealedContextPack,
+    store: AppStore,
+  ) => RecipientFit
+  /** Deterministic confirmed-export result for later Context Pack panel tests. */
+  exportContextPack?: (
+    input: ContextPackExportActionInput,
+    store: AppStore,
+  ) => ContextPackExportActionResult | Promise<ContextPackExportActionResult>
 }
 
 /**
@@ -188,9 +265,17 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     createConversation: 0,
     startDelegatedChild: [],
     startExploreChild: [],
+    startContextBuild: [],
+    createContextPackDraft: [],
+    reviewContextPack: [],
+    mutateContextPackFileMembership: [],
+    sealContextPack: [],
+    assessContextPackRecipientFit: [],
+    sendContextPackHere: [],
     steerDelegatedChild: [],
     cancelDelegatedChild: [],
     cleanupManagedWorktree: [],
+    exportContextPack: [],
     renameConversation: [],
     selectConversation: [],
     selectConversationOptions: [],
@@ -252,6 +337,7 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
     actions: {
+      recheckCursor(): void {},
       async createConversation(): Promise<SessionId | null> {
         calls.createConversation++
         const selected = store.getState().workspace.selectedVisibleId
@@ -345,6 +431,65 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
           ?? (options.startExploreChild
             ? { kind: "available" as const }
             : { kind: "denied" as const, reason: "missing-attestation" as const })
+      },
+      async startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult> {
+        calls.startContextBuild.push(input)
+        return await (options.startContextBuild?.(input, store)
+          ?? { kind: "denied" as const, reason: "missing_evidence" as const })
+      },
+      contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult {
+        return options.contextBuildAvailability?.(input, store)
+          ?? (options.startContextBuild
+            ? { kind: "available" as const }
+            : { kind: "denied" as const, reason: "missing_evidence" as const })
+      },
+      createContextPackDraft(sessionId: SessionId, original: string): ContextPackDraftCreationResult {
+        calls.createContextPackDraft.push({ sessionId, original })
+        const override = options.createContextPackDraft?.(sessionId, original, store)
+        if (override) return override
+        const contextPack = store.getState().contextPacks[sessionId]
+        if (!contextPack) return { kind: "blocked", reason: "unknown_session" }
+        if (contextPack.build) return { kind: "blocked", reason: "build_active" }
+        if (contextPack.draft) return { kind: "blocked", reason: "draft_active" }
+        const result = store.createContextPackDraft(sessionId, original)
+        if (result === null) return { kind: "blocked", reason: "creation_failed" }
+        if (result.kind !== "created") return { kind: "blocked", reason: "invalid_instructions" }
+        return { kind: "created", revision: result.draft.revision }
+      },
+      async reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult> {
+        calls.reviewContextPack.push(sessionId)
+        return await (options.reviewContextPack?.(sessionId, store)
+          ?? { kind: "blocked" as const, reason: "draft_unavailable" as const })
+      },
+      async mutateContextPackFileMembership(
+        input: ContextPackFileMembershipInput,
+      ): Promise<ContextPackFileMembershipResult> {
+        calls.mutateContextPackFileMembership.push(input)
+        return await (options.mutateContextPackFileMembership?.(input, store)
+          ?? { kind: "denied" as const, reason: "mutation_failed" as const })
+      },
+      async sealContextPack(
+        sessionId: SessionId,
+        candidateRevision: number,
+      ): Promise<ContextPackSealActionResult> {
+        calls.sealContextPack.push({ sessionId, candidateRevision })
+        return await (options.sealContextPack?.(sessionId, candidateRevision, store)
+          ?? { kind: "blocked" as const, reason: "review_unavailable" as const })
+      },
+      assessContextPackRecipientFit(sessionId: SessionId): RecipientFit {
+        calls.assessContextPackRecipientFit.push(sessionId)
+        return options.assessContextPackRecipientFit?.(sessionId, store)
+          ?? { kind: "unavailable", reason: "missing_evidence" }
+      },
+      async sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult> {
+        calls.sendContextPackHere.push(sessionId)
+        return await (options.sendContextPackHere?.(sessionId, store)
+          ?? { kind: "blocked" as const, reason: "sealed_unavailable" as const })
+      },
+      async exportContextPack(input): Promise<ContextPackExportActionResult> {
+        calls.exportContextPack.push(input)
+        return await (options.exportContextPack?.(input, store)
+          ?? { kind: "blocked" as const, reason: "sealed_unavailable" as const })
       },
       async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
         calls.steerDelegatedChild.push({ childId, text })
@@ -567,6 +712,18 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     runtimes: () => runtimes,
     runtime: find,
     isReady: (sessionId) => find(sessionId)?.ready === true,
+    handoffSourceIdentities(sessionId, bundle): HandoffSourceIdentityIndex {
+      return options.handoffSourceIdentities?.(sessionId, bundle, store) ?? {
+        files: {},
+        pendingDiffs: {},
+      }
+    },
+    assessHandoffRecipientFit(targetSessionId, sealed): RecipientFit {
+      return options.assessHandoffRecipientFit?.(targetSessionId, sealed, store) ?? {
+        kind: "unavailable",
+        reason: "missing_evidence",
+      }
+    },
     updateProviderDefaults: () => {},
     closeConversation,
     async restore(record, mode = "last-run"): Promise<void> {

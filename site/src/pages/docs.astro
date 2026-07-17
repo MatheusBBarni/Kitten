@@ -1,0 +1,169 @@
+---
+import { getImage } from "astro:assets";
+
+import SiteControls from "../components/SiteControls.astro";
+import { configDocs } from "../config/config-docs.ts";
+import {
+  assertValidShowcaseConfig,
+  showcaseConfig,
+} from "../config/showcase-config.ts";
+import kittenIcon from "../../../assets/kitten-icon.png";
+import "../styles/site.css";
+
+assertValidShowcaseConfig(showcaseConfig);
+
+const favicon = await getImage({
+  src: kittenIcon,
+  width: 64,
+  height: 64,
+  format: "png",
+});
+
+const { navigation, hero, proof, install, repository } = showcaseConfig;
+---
+
+<!doctype html>
+<html lang={configDocs.site.language}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={configDocs.site.description} />
+    <link rel="icon" type="image/png" sizes="64x64" href={favicon.src} />
+    <title>{configDocs.site.title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <SiteControls
+      repository={repository}
+      navigation={navigation}
+      hero={hero}
+      proof={proof}
+      install={install}
+      homeHref="../"
+      proofHref="../#proof"
+      installHref="../#install"
+      docsHref="./"
+      activePage="docs"
+    />
+    <main class="docs-main" id="main-content">
+      <section class="docs-hero" aria-labelledby="docs-heading">
+        <p class="eyebrow">{configDocs.hero.eyebrow}</p>
+        <h1 id="docs-heading">{configDocs.hero.heading}</h1>
+        <p class="docs-lede">{configDocs.hero.body}</p>
+        <nav class="docs-topic-nav" aria-label="Configuration topics">
+          <ul>
+            {
+              configDocs.topics.map((topic) => (
+                <li><a href={`#${topic.id}`}>{topic.label}</a></li>
+              ))
+            }
+          </ul>
+        </nav>
+      </section>
+
+      <section class="docs-section" id="config-location" aria-labelledby="config-location-heading">
+        <h2 id="config-location-heading">File location and validation</h2>
+        <div class="docs-copy-grid">
+          <div>
+            <p>
+              Config is optional. Kitten first checks <code>KITTEN_CONFIG</code>, then
+              <code>$XDG_CONFIG_HOME/kitten/config.json</code>, then
+              <code>~/.config/kitten/config.json</code>.
+            </p>
+            <p>
+              Every field is a delta over Kitten&apos;s defaults. Existing files are strict JSON:
+              unknown keys, malformed JSON, and invalid values stop startup instead of falling
+              back silently.
+            </p>
+          </div>
+          <aside class="docs-note" aria-label="Configuration rule">
+            <strong>Keep secrets out of the file.</strong>
+            <p>Use environment-variable references for MCP server credentials.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section class="docs-section" id="sessions" aria-labelledby="sessions-heading">
+        <h2 id="sessions-heading">Choose the sessions Kitten opens</h2>
+        <p class="docs-section-lede">
+          With no <code>sessions</code> array, Kitten seeds one session for each configured
+          provider in the directory where you launch it. Add an array when you need a specific
+          order, title, task, or working directory.
+        </p>
+        <pre class="docs-code"><code>{configDocs.starterConfig}</code></pre>
+        <dl class="docs-reference-list">
+          <div><dt><code>provider</code></dt><dd>One of <code>claude-code</code>, <code>codex</code>, or <code>cursor</code>.</dd></div>
+          <div><dt><code>cwd</code></dt><dd>Required. Relative paths resolve from the directory where you launch Kitten and must exist.</dd></div>
+          <div><dt><code>title</code></dt><dd>Optional. The directory name is used when it is omitted.</dd></div>
+          <div><dt><code>task</code></dt><dd>Optional initial task text for the session.</dd></div>
+        </dl>
+      </section>
+
+      <section class="docs-section" id="providers" aria-labelledby="providers-heading">
+        <h2 id="providers-heading">Override a provider or set model defaults</h2>
+        <p class="docs-section-lede">
+          Provider overrides merge by field, so changing one command, argument list, display name,
+          or environment value leaves the rest of the recipe in place. The deprecated
+          <code>agents</code> alias still loads, but use <code>providers</code> for new files.
+        </p>
+        <p>
+          Kitten currently recognizes Claude Code, Codex, and Cursor. More Agent Client Protocol
+          (ACP) connections are planned, but a config file cannot invent an unsupported provider key.
+        </p>
+        <pre class="docs-code"><code>{configDocs.providerConfig}</code></pre>
+        <p>
+          <code>providerDefaults</code> accepts only <code>model</code> and <code>effort</code>.
+          They are personal preferences, not a command to change a running session. Kitten applies
+          them through the intentional provider-selection flow and never writes a manual live
+          choice back into this block.
+        </p>
+      </section>
+
+      <section class="docs-section" id="preferences" aria-labelledby="preferences-heading">
+        <h2 id="preferences-heading">Set cockpit preferences</h2>
+        <dl class="docs-reference-list">
+          <div><dt><code>theme</code></dt><dd><code>auto</code>, <code>light</code>, <code>dark</code>, <code>catppuccin-mocha</code>, or <code>catppuccin-latte</code>.</dd></div>
+          <div><dt><code>welcomeBanner</code></dt><dd><code>auto</code>, <code>always</code>, or <code>off</code>.</dd></div>
+          <div><dt><code>clarificationTimeoutSeconds</code></dt><dd>An integer from 1 to 3600. The default is 300 seconds.</dd></div>
+          <div><dt><code>persistenceEnabled</code></dt><dd>Controls local session persistence. It is on by default.</dd></div>
+          <div><dt><code>telemetryEnabled</code></dt><dd>Opt in to local, content-free JSONL counters. It is off by default.</dd></div>
+          <div><dt><code>transcriptWindowingEnabled</code></dt><dd>Opt in to the bounded transcript presentation experiment. It is off by default.</dd></div>
+          <div><dt><code>statusline</code></dt><dd>Requires <code>llmDisclosureAcknowledged</code>; <code>separator</code> and <code>line</code> must be supplied together.</dd></div>
+        </dl>
+      </section>
+
+      <section class="docs-section" id="mcp-and-tools" aria-labelledby="mcp-and-tools-heading">
+        <h2 id="mcp-and-tools-heading">Add local MCP servers and editor tools</h2>
+        <p class="docs-section-lede">
+          <code>mcpServers</code> is a name-keyed map of stdio commands. Remote HTTP and SSE
+          transports are rejected. Kitten already adds its own <code>kitten-ask-user</code>
+          server; do not add that server to this map.
+        </p>
+        <pre class="docs-code"><code>{configDocs.mcpConfig}</code></pre>
+        <p>
+          Set each referenced environment variable before starting Kitten. If a variable cannot be
+          resolved, Kitten skips that declared server and shows a warning.
+        </p>
+        <pre class="docs-code"><code>{configDocs.editorConfig}</code></pre>
+        <p>
+          A custom editor&apos;s <code>args</code> must include exactly one complete
+          <code>{"{file}"}</code> placeholder. Shell <code>scrollback</code> accepts an integer
+          from 0 through 100000.
+        </p>
+      </section>
+
+      <section class="docs-section" id="reloads-and-errors" aria-labelledby="reloads-and-errors-heading">
+        <h2 id="reloads-and-errors-heading">Know what changes immediately</h2>
+        <p>
+          Kitten watches a valid config file. While the cockpit is open, it updates the theme,
+          statusline, and provider-default snapshot. Change providers, sessions, MCP servers,
+          shell settings, persistence, telemetry, or transcript windowing before the next launch.
+        </p>
+        <p>
+          A file that exists but cannot be read or validated is a configuration error. Fix the
+          named field and restart; Kitten does not quietly replace a broken file with defaults.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

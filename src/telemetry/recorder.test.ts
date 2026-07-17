@@ -26,6 +26,7 @@ import {
   TELEMETRY_PATH_ENV_VAR,
   type TelemetryRecord,
   type TelemetrySink,
+  type ProviderReadinessOutcome,
 } from "./recorder.ts"
 
 /** A sink that keeps every record in memory so a test can read them back. */
@@ -156,6 +157,7 @@ describe("opt-in gating", () => {
       batchSizeBucket: "one",
       durationBucket: "under_100ms",
     })
+    recorder.mcpBridgeFailure("capacity_limited")
     store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "x".repeat(400) })
     store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "working" })
     unsubscribe()
@@ -204,6 +206,7 @@ describe("opt-in gating", () => {
       batchSizeBucket: "five_or_more",
       durationBucket: "2s_or_more",
     })
+    recorder.mcpBridgeFailure("unavailable")
   })
 })
 
@@ -335,6 +338,75 @@ describe("steering outcome telemetry", () => {
     const serialized = JSON.stringify(sink.records)
     expect(sink.records).toHaveLength(1)
     for (const sentinel of lifecycleKey.split(":")) expect(serialized).not.toContain(sentinel)
+  })
+})
+
+describe("Kitten MCP bridge failure telemetry", () => {
+  it("serializes only the exact closed category and ignores invalid runtime input", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+
+    recorder.mcpBridgeFailure("capacity_limited")
+    recorder.mcpBridgeFailure("unavailable")
+    recorder.mcpBridgeFailure("invalid_request")
+    recorder.mcpBridgeFailure("RAW_ERROR_SENTINEL" as never)
+
+    expect(sink.records).toEqual([
+      {
+        type: "kitten_mcp_bridge_failure",
+        at: 42,
+        sessionRef: "anonymous-run",
+        mcpBridgeFailureCategory: "capacity_limited",
+      },
+      {
+        type: "kitten_mcp_bridge_failure",
+        at: 42,
+        sessionRef: "anonymous-run",
+        mcpBridgeFailureCategory: "unavailable",
+      },
+      {
+        type: "kitten_mcp_bridge_failure",
+        at: 42,
+        sessionRef: "anonymous-run",
+        mcpBridgeFailureCategory: "invalid_request",
+      },
+    ])
+    expect(sink.records.every((record) => Object.keys(record).every((key) =>
+      ["type", "at", "sessionRef", "mcpBridgeFailureCategory"].includes(key)
+    ))).toBe(true)
+
+    if (false) {
+      // @ts-expect-error bridge telemetry accepts no prompt, task, route, capability, endpoint, id, or error fields
+      recorder.mcpBridgeFailure({ category: "unavailable", prompt: "private" })
+    }
+  })
+
+  it("cannot serialize prompts, tasks, transport identity, call identity, or raw errors", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, sessionRef: "anonymous-run" })
+    const sentinels = [
+      "PROMPT_SENTINEL",
+      "TASK_SENTINEL",
+      "ROUTE_SENTINEL",
+      "CAPABILITY_SENTINEL",
+      "ENDPOINT_SENTINEL",
+      "CALL_ID_SENTINEL",
+      "SESSION_ID_SENTINEL",
+      "RAW_ERROR_SENTINEL",
+    ]
+
+    recorder.mcpBridgeFailure("invalid_request")
+
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel)
+    for (const forbiddenKey of [
+      "prompt", "task", "route", "capability", "endpoint", "callId", "sessionId", "error",
+    ]) expect(sink.records[0]).not.toHaveProperty(forbiddenKey)
   })
 })
 
@@ -1182,6 +1254,167 @@ describe("file-selector events", () => {
   })
 })
 
+describe("session file explorer events", () => {
+  it("records only the allowlisted ordinal and closed outcome for each event family", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "run-1",
+    })
+
+    recorder.explorerOpened("private-session-a")
+    recorder.explorerRefreshed("private-session-a", "refreshed")
+    recorder.explorerRefreshed("private-session-b", "source-failed")
+    recorder.explorerFileOpened("private-session-a", "unsupported")
+    recorder.explorerFileOpened("private-session-a", "source-failed")
+    recorder.explorerFileOpened("private-session-a", "default-opened")
+    recorder.explorerFileOpened("private-session-a", "custom-opened")
+    recorder.explorerFallback("private-session-a")
+    recorder.explorerFileOpened("private-session-a", "final-failure")
+
+    expect(sink.records).toEqual([
+      { type: "explorer_opened", agentRef: 1, at: 42, sessionRef: "run-1" },
+      {
+        type: "explorer_refreshed",
+        agentRef: 1,
+        outcome: "refreshed",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_refreshed",
+        agentRef: 2,
+        outcome: "source-failed",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "unsupported",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "source-failed",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "default-opened",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "custom-opened",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_fallback",
+        agentRef: 1,
+        outcome: "fallback",
+        at: 42,
+        sessionRef: "run-1",
+      },
+      {
+        type: "explorer_file_opened",
+        agentRef: 1,
+        outcome: "final-failure",
+        at: 42,
+        sessionRef: "run-1",
+      },
+    ])
+  })
+
+  it("cannot serialize repository, editor, error, tree, or stable identity content", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 42,
+      sessionRef: "anonymous-run",
+    })
+    const forbidden = [
+      "/private/acme/workspace/src/credential-store.ts",
+      "credential-store.ts",
+      "acme-workspace-stable-id",
+      "/Applications/Private Editor.app/Contents/MacOS/editor",
+      "--reuse-window",
+      "ENOENT: secret launcher detail",
+      "nested-secret-tree-entry",
+      "stable-user-8675309",
+    ]
+    const contentBearingSessionId = forbidden.join("::")
+
+    recorder.explorerOpened(contentBearingSessionId)
+    recorder.explorerRefreshed(contentBearingSessionId, "source-failed")
+    recorder.explorerFallback(contentBearingSessionId)
+    recorder.explorerFileOpened(contentBearingSessionId, "final-failure")
+
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of forbidden) expect(serialized).not.toContain(sentinel)
+    for (const record of sink.records) {
+      expect(Object.keys(record).sort()).toEqual(
+        record.type === "explorer_opened"
+          ? ["agentRef", "at", "sessionRef", "type"]
+          : ["agentRef", "at", "outcome", "sessionRef", "type"],
+      )
+    }
+  })
+
+  it("does not access or construct a sink when disabled", () => {
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled explorer telemetry must not access a sink")
+      },
+    })
+
+    recorder.explorerOpened("content-bearing-session")
+    recorder.explorerRefreshed("content-bearing-session", "refreshed")
+    recorder.explorerFallback("content-bearing-session")
+    recorder.explorerFileOpened("content-bearing-session", "default-opened")
+  })
+
+  it("rejects runtime values outside the closed outcome vocabulary", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+
+    recorder.explorerRefreshed(
+      "codex",
+      "ENOENT: /private/workspace" as unknown as "refreshed",
+    )
+    recorder.explorerFileOpened(
+      "codex",
+      "/Applications/Private Editor.app" as unknown as "final-failure",
+    )
+
+    expect(sink.records).toHaveLength(0)
+  })
+
+  it("keeps refresh and file-open outcomes closed at the typed recorder API", () => {
+    if (false) {
+      const recorder = createTelemetryRecorder({ enabled: false })
+      // @ts-expect-error Refresh outcomes are intentionally fixed.
+      recorder.explorerRefreshed("codex", "credential-store.ts")
+      // @ts-expect-error File-open outcomes are intentionally fixed.
+      recorder.explorerFileOpened("codex", "ENOENT: editor failed")
+      // @ts-expect-error Fallback details cannot cross the facade.
+      recorder.explorerFallback("codex", "private-editor-command")
+    }
+    expect(true).toBe(true)
+  })
+})
+
 describe("prompt-history events", () => {
   it("emits eligibility once on a session's second composer submission", () => {
     const sink = memorySink()
@@ -1439,6 +1672,45 @@ describe("readiness events", () => {
         "type",
       ])
     }
+  })
+
+  it("discards casted raw provider and outcome sentinels at the recorder boundary", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    const sentinels = [
+      "agent acp --profile private-profile",
+      "/private/repository/path",
+      "raw provider error with credential",
+      "private prompt and code",
+      "model-option-id=secret-option-value",
+      "first-task-completed=1",
+    ]
+
+    for (const sentinel of sentinels) {
+      recorder.providerReadiness("cursor", sentinel as ProviderReadinessOutcome)
+      recorder.providerReadiness(sentinel as "cursor", "ready")
+    }
+
+    expect(sink.records).toHaveLength(0)
+    for (const sentinel of sentinels) {
+      expect(JSON.stringify(sink.records)).not.toContain(sentinel)
+    }
+  })
+
+  it("does not access the sink when disabled readiness is reported", () => {
+    let sinkAccesses = 0
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink() {
+        sinkAccesses += 1
+        return { write: () => { sinkAccesses += 1 } }
+      },
+    })
+
+    recorder.providerReadiness("cursor", "authentication_required")
+
+    expect(recorder.enabled).toBe(false)
+    expect(sinkAccesses).toBe(0)
   })
 
   it("records agent_ready and agent_unready from a runtimes snapshot", () => {
@@ -1760,6 +2032,158 @@ describe("attention counters are opt-in (task_09)", () => {
     recorder.maxConcurrentSessions(2)
 
     expect(sink.records).toHaveLength(0)
+  })
+})
+
+describe("Context Pack lifecycle telemetry", () => {
+  it("emits every fixed lifecycle event with only its allowlisted keys", () => {
+    const sink = memorySink()
+    const clock = fakeClock(1_000)
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "run",
+    })
+
+    recorder.contextPackDraftCreated({ selectionCountBucket: "zero" })
+    recorder.contextPackBuildStarted("private-child", { selectionCountBucket: "two_to_four" })
+    recorder.contextPackBuildDenied({ reason: "capability_unavailable" })
+    clock.advance(5_000)
+    recorder.contextPackBuildSettled("private-child", { outcome: "ready_for_review" })
+    recorder.contextPackReviewReady({
+      selectionCountBucket: "two_to_four",
+      redactionCountBucket: "one",
+      byteBucket: "8_to_31kb",
+    })
+    recorder.contextPackReviewBlocked({ reason: "source_stale" })
+    recorder.contextPackSealed({
+      selectionCountBucket: "two_to_four",
+      redactionCountBucket: "one",
+      byteBucket: "8_to_31kb",
+    })
+    recorder.contextPackSealDenied({ reason: "candidate_stale" })
+    recorder.contextPackFitAvailable({ byteBucket: "8_to_31kb" })
+    recorder.contextPackFitUnavailable({ reason: "stale_evidence" })
+    recorder.contextPackFitInsufficient({ byteBucket: "128kb_or_more" })
+    recorder.contextPackDeliveryConfirmed({ byteBucket: "8_to_31kb" })
+    recorder.contextPackDeliveryDenied({ reason: "fit_insufficient" })
+
+    expect(types(sink.records)).toEqual([
+      "context_pack_draft_created",
+      "build_started",
+      "build_denied",
+      "build_settled",
+      "review_ready",
+      "review_blocked",
+      "sealed",
+      "seal_denied",
+      "fit_available",
+      "fit_unavailable",
+      "fit_insufficient",
+      "delivery_confirmed",
+      "delivery_denied",
+    ])
+    expect(sink.records.map((record) => Object.keys(record).sort())).toEqual([
+      ["at", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "contextPackDurationBucket", "contextPackOutcome", "sessionRef", "type"],
+      ["at", "byteBucket", "redactionCountBucket", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "byteBucket", "redactionCountBucket", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "byteBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "byteBucket", "sessionRef", "type"],
+      ["at", "byteBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+    ].map((keys) => [...keys].sort()))
+    expect(sink.records[3]).toMatchObject({
+      contextPackOutcome: "ready_for_review",
+      contextPackDurationBucket: "5_to_29s",
+    })
+  })
+
+  it("rejects forged enums, extra fields, exact counters, and content-bearing sentinels", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    const prohibited = [
+      "instructions", "path", "sourceIdentity", "sourceDigest", "rationale",
+      "materializedBytes", "payload", "recipe", "model", "recipient",
+      "exportDestination", "providerIdentity", "childIdentity", "error",
+    ]
+
+    recorder.contextPackDraftCreated({ selectionCountBucket: "exactly_3" } as never)
+    recorder.contextPackBuildDenied({ reason: "raw provider failure" } as never)
+    recorder.contextPackFitAvailable({ byteBucket: "12345" } as never)
+    recorder.contextPackReviewReady({
+      selectionCountBucket: "one",
+      redactionCountBucket: "zero",
+      byteBucket: "under_8kb",
+      selectionCount: 1,
+      redactionCount: 0,
+      bytes: 12,
+      durationMs: 7,
+    } as never)
+    for (const field of prohibited) {
+      recorder.contextPackReviewReady({
+        selectionCountBucket: "one",
+        redactionCountBucket: "zero",
+        byteBucket: "under_8kb",
+        [field]: `SENTINEL-${field}`,
+      } as never)
+    }
+
+    expect(sink.records).toHaveLength(0)
+    expect(JSON.stringify(sink.records)).not.toContain("SENTINEL")
+  })
+
+  it("deduplicates private build callbacks without suppressing distinct public outcomes", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 1 })
+
+    recorder.contextPackBuildStarted("build-1", { selectionCountBucket: "one" })
+    recorder.contextPackBuildStarted("build-1", { selectionCountBucket: "one" })
+    recorder.contextPackBuildSettled("build-1", { outcome: "failed" })
+    recorder.contextPackBuildSettled("build-1", { outcome: "ready_for_review" })
+    recorder.contextPackBuildSettled("unknown", { outcome: "failed" })
+    recorder.contextPackBuildDenied({ reason: "startup_failed" })
+    recorder.contextPackBuildDenied({ reason: "startup_failed" })
+
+    expect(types(sink.records)).toEqual([
+      "build_started",
+      "build_settled",
+      "build_denied",
+      "build_denied",
+    ])
+  })
+
+  it("never constructs or accesses a sink and performs no lifecycle bookkeeping when disabled", () => {
+    const options = {
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled telemetry accessed its sink")
+      },
+    }
+    const recorder = createTelemetryRecorder(options)
+
+    recorder.contextPackDraftCreated({ selectionCountBucket: "zero" })
+    recorder.contextPackBuildStarted("private", { selectionCountBucket: "zero" })
+    recorder.contextPackBuildDenied({ reason: "startup_failed" })
+    recorder.contextPackBuildSettled("private", { outcome: "failed" })
+    recorder.contextPackReviewReady({ selectionCountBucket: "zero", redactionCountBucket: "zero", byteBucket: "under_8kb" })
+    recorder.contextPackReviewBlocked({ reason: "draft_unavailable" })
+    recorder.contextPackSealed({ selectionCountBucket: "zero", redactionCountBucket: "zero", byteBucket: "under_8kb" })
+    recorder.contextPackSealDenied({ reason: "review_unavailable" })
+    recorder.contextPackFitAvailable({ byteBucket: "under_8kb" })
+    recorder.contextPackFitUnavailable({ reason: "missing_evidence" })
+    recorder.contextPackFitInsufficient({ byteBucket: "under_8kb" })
+    recorder.contextPackDeliveryConfirmed({ byteBucket: "under_8kb" })
+    recorder.contextPackDeliveryDenied({ reason: "sealed_unavailable" })
+
+    expect(recorder.enabled).toBeFalse()
+    expect(recorder).toBe(createTelemetryRecorder({ enabled: false }))
   })
 })
 

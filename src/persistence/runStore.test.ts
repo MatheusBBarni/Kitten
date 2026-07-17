@@ -20,6 +20,7 @@ import {
   type PersistedRunRecordV1,
   type PersistedRunRecordV2,
   type PersistedRunRecordV3,
+  type PersistedRunRecordV4,
 } from "./runRecord.ts"
 import {
   SESSIONS_PATH_ENV_VAR,
@@ -146,6 +147,41 @@ function makeV3Record(cwd: string, overrides: Partial<PersistedRunRecordV3> = {}
   }
 }
 
+function makeV4Record(cwd: string, overrides: Partial<PersistedRunRecordV4> = {}): PersistedRunRecordV4 {
+  const { version: _version, ...v3 } = makeV3Record(cwd)
+  const payload = "exact\r\nsealed café e\u0301 [REDACTED]"
+  return {
+    version: 4,
+    ...v3,
+    runId: "run-v4",
+    contextPacks: {
+      visible: {
+        draft: {
+          version: 1,
+          revision: 3,
+          instructions: { original: "Persist exact context", mode: "augment", discovered: "" },
+          budget: { unit: "estimated_tokens", limit: 80_000 },
+          brief: {
+            architecture: "Persistence boundary",
+            selectedContext: "Run record",
+            relationships: "Writer to store",
+            ambiguities: "None",
+            budgetOmissions: "None",
+          },
+          selections: [],
+        },
+        sealed: {
+          payload,
+          bytes: new TextEncoder().encode(payload).byteLength,
+          revision: 3,
+          sealedAt: 444,
+        },
+      },
+    },
+    ...overrides,
+  }
+}
+
 function resolvedSession(id: string, providerKind: "claude-code" | "codex", cwd: string): ResolvedSession {
   return {
     seed: { id, providerKind, cwd, title: `${id} configured` },
@@ -249,6 +285,146 @@ describe("createRunStore", () => {
       const store = createRunStore({ enabled: true, path: base })
       store.save(record)
       expect(store.load(cwd, record.runId)).toMatchObject({ harnessDeliveries: record.harnessDeliveries })
+    })
+  })
+
+  it("atomically round-trips V4 Context Packs with exact bytes and owner-only mode", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const first = makeV4Record(cwd)
+      const store = createRunStore({ enabled: true, path: base })
+      store.save(first)
+
+      const replacementPayload = "replacement\nwithout normalization e\u0301"
+      const replacement = makeV4Record(cwd, {
+        updatedAt: 999,
+        contextPacks: {
+          visible: {
+            ...first.contextPacks.visible,
+            sealed: {
+              payload: replacementPayload,
+              bytes: new TextEncoder().encode(replacementPayload).byteLength,
+              revision: 4,
+              sealedAt: 555,
+            },
+          },
+        },
+      })
+      store.save(replacement)
+
+      const directory = join(base, "sessions", encodeProjectDirectory(cwd))
+      const path = join(directory, "run-v4.json")
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+      expect(readdirSync(directory)).toEqual(["run-v4.json"])
+      const loaded = store.load(cwd, "run-v4")
+      expect(loaded?.version).toBe(4)
+      if (loaded?.version !== 4) throw new Error("expected V4")
+      expect(loaded.updatedAt).toBe(999)
+      expect(loaded.contextPacks.visible!.sealed!.payload).toBe(replacementPayload)
+      expect(loaded.contextPacks.visible!.sealed!.bytes).toBe(
+        new TextEncoder().encode(replacementPayload).byteLength,
+      )
+    })
+  })
+
+  it("persists a retained sealed Context Pack attachment in a handoff bundle", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const payload = "# Reviewed attachment\r\n\r\n[REDACTED]"
+      const record = makeV4Record(cwd, {
+        handoffBundle: {
+          intent: "continue",
+          summary: "Continue with the reviewed Context Pack.",
+          files: [],
+          pendingDiffs: [],
+          contextPack: {
+            payload,
+            bytes: new TextEncoder().encode(payload).byteLength,
+            sealedAt: 777,
+            revision: 4,
+            sourceIdentities: ["file:dev:1"],
+            redactionCount: 1,
+          },
+          redactionCount: 1,
+        },
+      })
+      const store = createRunStore({ enabled: true, path: base })
+
+      store.save(record)
+
+      const loaded = store.load(cwd, record.runId)
+      expect(loaded?.handoffBundle).toEqual(record.handoffBundle)
+    })
+  })
+
+  it("drops a malformed sibling Context Pack while restoring the valid projection", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const record = makeV4Record(cwd)
+      const raw = structuredClone(record) as unknown as {
+        contextPacks: Record<string, Record<string, unknown>>
+      }
+      raw.contextPacks.background = {
+        draft: record.contextPacks.visible!.draft!,
+        rawSource: "must not survive",
+      }
+      const directory = join(base, "sessions", encodeProjectDirectory(cwd))
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, "run-v4.json"), JSON.stringify(raw), { mode: 0o600 })
+      const diagnostics: string[] = []
+      const store = createRunStore({
+        enabled: true,
+        path: base,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
+      })
+
+      const loaded = store.load(cwd, "run-v4")
+
+      expect(loaded?.version).toBe(4)
+      if (loaded?.version !== 4) throw new Error("expected V4")
+      expect(loaded.contextPacks).toEqual({ visible: record.contextPacks.visible! })
+      expect(JSON.stringify(loaded)).not.toContain("must not survive")
+      expect(diagnostics).toEqual(["invalid_context_pack_projection"])
+    })
+  })
+
+  it("bounds malformed Context Pack diagnostics without retaining invalid entries", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const record = makeV4Record(cwd)
+      for (let index = 0; index < 12; index += 1) {
+        record.contextPacks[`invalid-${index}`] = { unexpected: index } as never
+      }
+      const directory = join(base, "sessions", encodeProjectDirectory(cwd))
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, "run-v4.json"), JSON.stringify(record), { mode: 0o600 })
+      const diagnostics: string[] = []
+      const store = createRunStore({
+        enabled: true,
+        path: base,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
+      })
+
+      const loaded = store.load(cwd, "run-v4")
+
+      expect(loaded?.version).toBe(4)
+      if (loaded?.version !== 4) throw new Error("expected V4")
+      expect(Object.keys(loaded.contextPacks)).toEqual(["visible"])
+      expect(diagnostics).toHaveLength(8)
+      expect(new Set(diagnostics)).toEqual(new Set(["invalid_context_pack_projection"]))
+    })
+  })
+
+  it("rejects prohibited Context Pack fields before the serializer can strip them", () => {
+    withTempStore((base) => {
+      const cwd = join(base, "worktree")
+      const record = makeV4Record(cwd)
+      const projection = record.contextPacks.visible as unknown as Record<string, unknown>
+      projection.rawSource = "private bytes"
+      const store = createRunStore({ enabled: true, path: base })
+
+      expect(() => store.save(record)).toThrow("Invalid persisted Context Pack projection")
+      expect(readdirSync(base)).toEqual([])
     })
   })
 

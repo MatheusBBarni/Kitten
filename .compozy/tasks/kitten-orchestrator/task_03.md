@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Relocate Cockpit Contract Suite and Preserve App Local CWD
 type: test
 complexity: critical

@@ -56,6 +56,7 @@ export type CockpitCommand =
   | "clear-run"
   | "model-select"
   | "statusline"
+  | "context-pack"
   | "reveal-history"
   | "return-to-live"
   | "open-settings"
@@ -95,6 +96,15 @@ export type SettingsCommand = "prev-option" | "next-option" | "switch-tab" | "re
 
 /** Every intent shared by the `/statusline` disclosure, lists, and review screens. */
 export type StatuslineCommand = "prev-option" | "next-option" | "confirm" | "cancel"
+
+/** Every intent the session-addressed Context Pack workspace handles. */
+export type ContextPackCommand =
+  | "prev-action"
+  | "next-action"
+  | "activate"
+  | "scroll-up"
+  | "scroll-down"
+  | "cancel"
 
 /** Every intent the hand-off preview handles while it is on screen. */
 export type HandoffCommand =
@@ -221,6 +231,7 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
   { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
   { command: "statusline", name: "statusline", description: "Describe and review your personal statusline" },
+  { command: "context-pack", name: "context", description: "Inspect and act on this session's Context Pack" },
   { command: "reveal-history", name: "history", description: "Load earlier history for this conversation" },
   { command: "return-to-live", name: "latest", description: "Return this conversation to live activity" },
   { command: "open-settings", name: "settings", description: "Open Kitten settings" },
@@ -799,6 +810,46 @@ export const STATUSLINE_KEYMAP: readonly KeyBinding<StatuslineCommand>[] = [
   },
 ]
 
+/** Session-local navigation and explicit decisions for the `/context` workspace. */
+export const CONTEXT_PACK_KEYMAP: readonly KeyBinding<ContextPackCommand>[] = [
+  {
+    command: "prev-action",
+    keys: "↑ / Shift+Tab",
+    description: "Highlight the previous Context Pack action",
+    matches: any(plain("up"), shiftPlain("tab")),
+  },
+  {
+    command: "next-action",
+    keys: "↓ / Tab",
+    description: "Highlight the next Context Pack action",
+    matches: any(plain("down"), plain("tab")),
+  },
+  {
+    command: "activate",
+    keys: "Enter",
+    description: "Run the highlighted explicit Context Pack action",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "scroll-up",
+    keys: "PageUp",
+    description: "Scroll Context Pack custody details up",
+    matches: plain("pageup"),
+  },
+  {
+    command: "scroll-down",
+    keys: "PageDown",
+    description: "Scroll Context Pack custody details down",
+    matches: plain("pagedown"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Close the Context Pack workspace",
+    matches: plain("escape"),
+  },
+]
+
 /**
  * Everything the help panel lists: the shell's chords, then the editor's.
  *
@@ -917,6 +968,9 @@ export const SETTINGS_HINT = `${bindingKeys(SETTINGS_KEYMAP, "prev-option")}${bi
 /** The keyboard teaching surface shared by statusline choices and review. */
 export const STATUSLINE_HINT = "↑↓ move  Enter choose  Esc cancel"
 
+/** Complete keyboard teaching surface for the selected-session Context Pack workspace. */
+export const CONTEXT_PACK_HINT = "↑↓/Tab actions  Enter choose  PageUp/PageDown details  Esc close"
+
 /** The hint printed inside the selector's inline mid-conversation confirm step. */
 export const MODEL_SELECT_CONFIRM_HINT = "Enter switch anyway  Esc keep current"
 
@@ -977,6 +1031,9 @@ export const matchSettingsCommand = makeMatcher(SETTINGS_KEYMAP)
 
 /** The `/statusline` modal command a keypress names. */
 export const matchStatuslineCommand = makeMatcher(STATUSLINE_KEYMAP)
+
+/** The selected-session Context Pack command a keypress names. */
+export const matchContextPackCommand = makeMatcher(CONTEXT_PACK_KEYMAP)
 
 /**
  * The zero-based option a digit key names, or `null` for any other key.

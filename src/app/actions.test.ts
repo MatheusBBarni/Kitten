@@ -105,3 +105,209 @@ describe("ControllerActions steering boundary", () => {
     expect(test.store.getState().sessions.alpha!.steering.recovery).toBeNull()
   })
 })
+
+describe("ControllerActions Cursor recheck boundary", () => {
+  it("contains a rejected controller seam and reports it only through onError", async () => {
+    const store = createAppStore()
+    const failure = new Error("recheck seam failed")
+    const errors: Array<{ sessionId: string; error: unknown }> = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      recheckCursor: async () => {
+        throw failure
+      },
+      onError: (sessionId, error) => errors.push({ sessionId, error }),
+    })
+
+    expect(() => actions.recheckCursor("cursor-target")).not.toThrow()
+    await Bun.sleep(0)
+
+    expect(errors).toEqual([{ sessionId: "cursor-target", error: failure }])
+  })
+})
+
+describe("ControllerActions Context Build boundary", () => {
+  const input = {
+    parentId: "alpha",
+    draft: { kind: "start_fresh", original: "Curate the controller lifecycle" },
+  } as const
+
+  it("fails closed when no controller-owned explore-v2 seam is installed", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }],
+    })
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+    })
+
+    expect(actions.contextBuildAvailability(input)).toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+    await expect(actions.startContextBuild(input)).resolves.toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+  })
+
+  it("contains a rejected launch and reports it without rejecting into the caller", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }],
+    })
+    const failure = new Error("launch seam failed")
+    const errors: unknown[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      contextBuildAvailability: () => ({ kind: "available" }),
+      startContextBuild: async () => { throw failure },
+      onError: (_sessionId, error) => errors.push(error),
+    })
+
+    expect(actions.contextBuildAvailability(input)).toEqual({ kind: "available" })
+    await expect(actions.startContextBuild(input)).resolves.toEqual({
+      kind: "denied",
+      reason: "startup_failed",
+    })
+    expect(errors).toEqual([failure])
+  })
+})
+
+describe("ControllerActions Context Pack custody boundary", () => {
+  it("forwards every typed review, seal, fit, and Send Here result to the addressed session", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }],
+    })
+    const calls: unknown[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      reviewContextPack: async (sessionId) => {
+        calls.push(["review", sessionId])
+        return { kind: "blocked", reason: "over_budget" }
+      },
+      mutateContextPackFileMembership: async (input) => {
+        calls.push(["membership", input])
+        return { kind: "stale", readRevision: input.readRevision, currentRevision: input.readRevision + 1 }
+      },
+      sealContextPack: async (sessionId, revision) => {
+        calls.push(["seal", sessionId, revision])
+        return { kind: "blocked", reason: "candidate_revision_mismatch" }
+      },
+      assessContextPackRecipientFit: (sessionId) => {
+        calls.push(["fit", sessionId])
+        return { kind: "insufficient", exactCount: 900, remaining: -10 }
+      },
+      sendContextPackHere: async (sessionId) => {
+        calls.push(["send", sessionId])
+        return {
+          kind: "blocked",
+          reason: "recipient_fit",
+          fit: { kind: "unavailable", reason: "stale_evidence" },
+        }
+      },
+      exportContextPack: async (input) => {
+        calls.push(["export", input])
+        return { kind: "blocked", reason: "overwrite_confirmation_required" }
+      },
+    })
+
+    expect(await actions.reviewContextPack("alpha")).toEqual({ kind: "blocked", reason: "over_budget" })
+    const membershipInput = {
+      sessionId: "alpha",
+      path: "src/a.ts",
+      readRevision: 7,
+      operation: "add",
+    } as const
+    expect(await actions.mutateContextPackFileMembership(membershipInput)).toEqual({
+      kind: "stale",
+      readRevision: 7,
+      currentRevision: 8,
+    })
+    expect(await actions.sealContextPack("alpha", 7)).toEqual({
+      kind: "blocked",
+      reason: "candidate_revision_mismatch",
+    })
+    expect(actions.assessContextPackRecipientFit("alpha")).toEqual({
+      kind: "insufficient",
+      exactCount: 900,
+      remaining: -10,
+    })
+    expect(await actions.sendContextPackHere("alpha")).toEqual({
+      kind: "blocked",
+      reason: "recipient_fit",
+      fit: { kind: "unavailable", reason: "stale_evidence" },
+    })
+    const exportInput = {
+      sessionId: "alpha",
+      destination: "/operator/context.md",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    } as const
+    expect(await actions.exportContextPack(exportInput)).toEqual({
+      kind: "blocked",
+      reason: "overwrite_confirmation_required",
+    })
+    expect(calls).toEqual([
+      ["review", "alpha"],
+      ["membership", membershipInput],
+      ["seal", "alpha", 7],
+      ["fit", "alpha"],
+      ["send", "alpha"],
+      ["export", exportInput],
+    ])
+  })
+
+  it("contains rejected custody seams and fails closed without rejecting into the UI", async () => {
+    const store = createAppStore()
+    const errors: unknown[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      reviewContextPack: async () => { throw new Error("review failed") },
+      mutateContextPackFileMembership: async () => { throw new Error("membership failed") },
+      sealContextPack: async () => { throw new Error("seal failed") },
+      assessContextPackRecipientFit: () => { throw new Error("fit failed") },
+      sendContextPackHere: async () => { throw new Error("send failed") },
+      exportContextPack: async () => { throw new Error("EACCES /private/operator/path") },
+      onError: (_sessionId, error) => errors.push(error),
+    })
+
+    expect(await actions.reviewContextPack("alpha")).toEqual({
+      kind: "blocked",
+      reason: "draft_unavailable",
+    })
+    expect(await actions.mutateContextPackFileMembership({
+      sessionId: "alpha",
+      path: "src/a.ts",
+      readRevision: 1,
+      operation: "remove",
+    })).toEqual({ kind: "denied", reason: "mutation_failed" })
+    expect(await actions.sealContextPack("alpha", 0)).toEqual({
+      kind: "blocked",
+      reason: "review_unavailable",
+    })
+    expect(actions.assessContextPackRecipientFit("alpha")).toEqual({
+      kind: "unavailable",
+      reason: "missing_evidence",
+    })
+    expect(await actions.sendContextPackHere("alpha")).toEqual({
+      kind: "blocked",
+      reason: "dispatch_failed",
+    })
+    expect(await actions.exportContextPack({
+      sessionId: "alpha",
+      destination: "/private/operator/path",
+      writeConfirmed: true,
+      overwriteConfirmed: false,
+    })).toEqual({ kind: "blocked", reason: "filesystem_failure" })
+    expect(errors).toHaveLength(4)
+  })
+})

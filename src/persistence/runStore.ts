@@ -14,6 +14,7 @@ import { createSecretRedactor } from "../core/secretRedactor.ts"
 import { resolveTelemetryPath } from "../telemetry/recorder.ts"
 import {
   HARNESS_DELIVERY_CHECKPOINT_SCHEMA,
+  PERSISTED_CONTEXT_PACK_SCHEMA,
   PERSISTED_RUN_RECORD_SCHEMA,
   migratePersistedRunV1,
   type PersistedAgent,
@@ -22,17 +23,20 @@ import {
   type PersistedRunRecordV1,
   type PersistedRunRecordV2,
   type PersistedRunRecordV3,
+  type PersistedRunRecordV4,
   type PersistedRunSummary,
   type PersistedWorkspaceConversationV2,
 } from "./runRecord.ts"
 
 export {
   migratePersistedRunV1,
+  migratePersistedRunToV4,
   type PersistedAgent,
   type PersistedRunRecord,
   type PersistedRunRecordV1,
   type PersistedRunRecordV2,
   type PersistedRunRecordV3,
+  type PersistedRunRecordV4,
   type PersistedRunSummary,
 } from "./runRecord.ts"
 
@@ -52,7 +56,15 @@ export interface RunStoreOptions {
   enabled: boolean
   /** Kitten state base. Run files live beneath its `sessions/` child. */
   path?: string
+  /** Content-free load diagnostics. At most a bounded number are emitted per record. */
+  onDiagnostic?: (diagnostic: RunStoreDiagnostic) => void
 }
+
+export interface RunStoreDiagnostic {
+  readonly code: "invalid_context_pack_projection"
+}
+
+const MAX_LOAD_DIAGNOSTICS_PER_RECORD = 8
 
 const NOOP_RUN_STORE: RunStore = {
   save() {},
@@ -82,14 +94,16 @@ export function encodeProjectDirectory(cwd: string): string {
 /** Build a synchronous one-file-per-run store, or a true no-op when disabled. */
 export function createRunStore(options: RunStoreOptions): RunStore {
   if (!options.enabled) return NOOP_RUN_STORE
-  return new FileRunStore(options.path ?? resolveSessionsBasePath())
+  return new FileRunStore(options.path ?? resolveSessionsBasePath(), options.onDiagnostic ?? (() => {}))
 }
 
 class FileRunStore implements RunStore {
   private readonly sessionsRoot: string
+  private readonly onDiagnostic: (diagnostic: RunStoreDiagnostic) => void
 
-  constructor(basePath: string) {
+  constructor(basePath: string, onDiagnostic: (diagnostic: RunStoreDiagnostic) => void) {
     this.sessionsRoot = join(basePath, "sessions")
+    this.onDiagnostic = onDiagnostic
   }
 
   save(record: PersistedRunRecord): void {
@@ -161,7 +175,9 @@ class FileRunStore implements RunStore {
   private readRecord(path: string): PersistedRunRecord | null {
     try {
       const value: unknown = JSON.parse(readFileSync(path, "utf8"))
-      const result = PERSISTED_RUN_RECORD_SCHEMA.safeParse(value)
+      const result = PERSISTED_RUN_RECORD_SCHEMA.safeParse(
+        dropInvalidLoadedContextPacks(value, this.onDiagnostic),
+      )
       return result.success ? result.data : null
     } catch (error) {
       if (error instanceof SyntaxError || isMissing(error)) return null
@@ -245,7 +261,41 @@ function sanitizeRecord(record: PersistedRunRecord): PersistedRunRecord {
     }
     harnessDeliveries[sessionId] = decoded.data
   }
-  return { version: 3, ...common, harnessDeliveries }
+  if (record.version === 3) return { version: 3, ...common, harnessDeliveries }
+
+  const contextPacks: PersistedRunRecordV4["contextPacks"] = {}
+  for (const [sessionId, projection] of Object.entries(record.contextPacks)) {
+    const decoded = PERSISTED_CONTEXT_PACK_SCHEMA.safeParse(projection)
+    if (!decoded.success) throw new Error("Invalid persisted Context Pack projection")
+    contextPacks[sessionId] = decoded.data
+  }
+  return { version: 4, ...common, harnessDeliveries, contextPacks }
+}
+
+function dropInvalidLoadedContextPacks(
+  value: unknown,
+  onDiagnostic: (diagnostic: RunStoreDiagnostic) => void,
+): unknown {
+  if (!isObject(value) || value.version !== 4 || !isObject(value.contextPacks)) return value
+
+  const conversations = isObject(value.conversations) ? value.conversations : {}
+  const contextPacks: PersistedRunRecordV4["contextPacks"] = {}
+  let diagnostics = 0
+  for (const [sessionId, projection] of Object.entries(value.contextPacks)) {
+    const decoded = PERSISTED_CONTEXT_PACK_SCHEMA.safeParse(projection)
+    if (decoded.success && sessionId in conversations) {
+      contextPacks[sessionId] = decoded.data
+      continue
+    }
+    if (diagnostics >= MAX_LOAD_DIAGNOSTICS_PER_RECORD) continue
+    diagnostics += 1
+    try {
+      onDiagnostic({ code: "invalid_context_pack_projection" })
+    } catch {
+      // Diagnostics cannot make an otherwise recoverable run unreadable.
+    }
+  }
+  return { ...value, contextPacks }
 }
 
 function toSummary(record: PersistedRunRecord): PersistedRunSummary | null {

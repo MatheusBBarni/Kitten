@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Core Context Pack lifecycle and deterministic assembly
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Create the pure, protocol-free Context Pack domain model. It must be the single 
 
 ## Subtasks
 
-- [ ] 1.1 Define protocol-free Context Pack, selection, candidate, sealed, and Recipient Fit contracts.
-- [ ] 1.2 Implement draft creation, sealed-pack refinement, validation, and revision-fenced mutations.
-- [ ] 1.3 Assemble deterministic candidates from supplied bounded artifacts and source fences.
-- [ ] 1.4 Implement immutable sealing, manifest restoration, and shared Recipient Fit evaluation.
-- [ ] 1.5 Add exhaustive pure-domain coverage for success, stale, and blocked transitions.
+- [x] 1.1 Define protocol-free Context Pack, selection, candidate, sealed, and Recipient Fit contracts.
+- [x] 1.2 Implement draft creation, sealed-pack refinement, validation, and revision-fenced mutations.
+- [x] 1.3 Assemble deterministic candidates from supplied bounded artifacts and source fences.
+- [x] 1.4 Implement immutable sealing, manifest restoration, and shared Recipient Fit evaluation.
+- [x] 1.5 Add exhaustive pure-domain coverage for success, stale, and blocked transitions.
 
 ## Implementation Details
 
@@ -70,14 +70,14 @@ Follow the TechSpec Core Interfaces, Data Models, and Testing Approach. Export t
 ## Tests
 
 - Unit tests:
-  - [ ] A new draft has the 80k budget and all five required brief sections.
-  - [ ] Full-file, slice, and diff selections reject malformed metadata and preserve only metadata in a draft.
-  - [ ] An operator mutation invalidates a stale builder mutation without overwriting the operator result.
-  - [ ] Candidate ordering, byte accounting, redaction count, source fence, and sealed bytes are deterministic.
-  - [ ] A sealed pack is immutable, and refinement creates a distinct draft.
-  - [ ] Missing, stale, and insufficient recipient evidence returns only the typed closed fit union.
+  - [x] A new draft has the 80k budget and all five required brief sections.
+  - [x] Full-file, slice, and diff selections reject malformed metadata and preserve only metadata in a draft.
+  - [x] An operator mutation invalidates a stale builder mutation without overwriting the operator result.
+  - [x] Candidate ordering, byte accounting, redaction count, source fence, and sealed bytes are deterministic.
+  - [x] A sealed pack is immutable, and refinement creates a distinct draft.
+  - [x] Missing, stale, and insufficient recipient evidence returns only the typed closed fit union.
 - Integration tests:
-  - [ ] Equivalent materialized artifact inputs create byte-identical reviewed and sealed payloads across runs.
+  - [x] Equivalent materialized artifact inputs create byte-identical reviewed and sealed payloads across runs.
 - Test coverage target: >=80%
 - All tests must pass
 

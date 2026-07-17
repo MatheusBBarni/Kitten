@@ -9,6 +9,10 @@ import {
   type CertifiedExploreProfile,
   type ExploreRuntimeEvidence,
 } from "./exploreCapability.ts"
+import {
+  CERTIFIED_CONTEXT_BUILD_PROFILES,
+  CONTEXT_BUILD_CAPABILITY_VERSION,
+} from "./contextPackCapability.ts"
 
 const CONFIG: ResolvedAgentConfig = {
   id: "claude-code",
@@ -46,6 +50,13 @@ const PROFILE: CertifiedExploreProfile = {
 }
 
 describe("explore capability attestation", () => {
+  it("keeps report-only explore-v1 isolated from the closed explore-v2 registry", () => {
+    expect(EXPLORE_ATTESTATION_VERSION).toBe("explore-v1")
+    expect(CONTEXT_BUILD_CAPABILITY_VERSION).toBe("explore-v2")
+    expect(CERTIFIED_CONTEXT_BUILD_PROFILES).toEqual([])
+    expect(resolveExploreCapability(CONFIG, EVIDENCE, [PROFILE]).status).toBe("supported")
+  })
+
   it("keeps the production eligible-provider allowlist empty", () => {
     expect(CERTIFIED_EXPLORE_PROFILES).toEqual([])
     expect(resolveExploreCapability(CONFIG, EVIDENCE)).toEqual({

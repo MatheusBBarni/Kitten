@@ -15,6 +15,8 @@ import {
   clarificationOptionIndex,
   COCKPIT_COMMANDS,
   COCKPIT_KEYMAP,
+  CONTEXT_PACK_HINT,
+  CONTEXT_PACK_KEYMAP,
   DELEGATION_HINT,
   DELEGATION_KEYMAP,
   EDITOR_KEYMAP,
@@ -31,6 +33,7 @@ import {
   MANAGED_WORKTREE_REVIEW_KEYMAP,
   matchApprovalCommand,
   matchClarificationCommand,
+  matchContextPackCommand,
   matchDelegationCommand,
   matchClipboardCommand,
   matchCommand,
@@ -203,6 +206,7 @@ describe("COCKPIT_COMMANDS", () => {
       ["clear-run", "clear"],
       ["model-select", "model"],
       ["statusline", "statusline"],
+      ["context-pack", "context"],
       ["reveal-history", "history"],
       ["return-to-live", "latest"],
       ["open-settings", "settings"],
@@ -222,6 +226,35 @@ describe("COCKPIT_COMMANDS", () => {
     expect(COCKPIT_KEYMAP.some(({ command }) =>
       command === "reveal-history" || command === "return-to-live"
     )).toBeFalse()
+  })
+
+  it("registers /context without adding any global shortcut", () => {
+    expect(COCKPIT_COMMANDS).toContainEqual({
+      command: "context-pack",
+      name: "context",
+      description: "Inspect and act on this session's Context Pack",
+    })
+    expect(COCKPIT_KEYMAP.some(({ command }) => command === "context-pack")).toBeFalse()
+  })
+})
+
+describe("CONTEXT_PACK_KEYMAP", () => {
+  it("keeps action focus, scrolling, activation, and close keyboard-operable", () => {
+    expect(matchContextPackCommand(key("up"))).toBe("prev-action")
+    expect(matchContextPackCommand(key("tab"))).toBe("next-action")
+    expect(matchContextPackCommand(key("tab", { shift: true }))).toBe("prev-action")
+    expect(matchContextPackCommand(key("return"))).toBe("activate")
+    expect(matchContextPackCommand(key("pageup"))).toBe("scroll-up")
+    expect(matchContextPackCommand(key("pagedown"))).toBe("scroll-down")
+    expect(matchContextPackCommand(key("escape"))).toBe("cancel")
+    expect(matchContextPackCommand(key("return", { shift: true }))).toBeNull()
+  })
+
+  it("documents every local binding in a non-color-only hint", () => {
+    expect(new Set(CONTEXT_PACK_KEYMAP.map(({ command }) => command)).size).toBe(CONTEXT_PACK_KEYMAP.length)
+    for (const keys of ["↑↓", "Tab", "Enter", "PageUp", "PageDown", "Esc"]) {
+      expect(CONTEXT_PACK_HINT).toContain(keys)
+    }
   })
 })
 

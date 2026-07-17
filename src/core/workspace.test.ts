@@ -301,6 +301,59 @@ describe("availability, teardown, and structural sharing", () => {
       workspaceReducer(before, { kind: "set_teardown_state", sessionId: "a", teardownState: "open" }),
     ).toBe(before)
   })
+
+  it("publishes recovery-only changes while sharing equal values and sibling identities", () => {
+    const before = workspace()
+    const unavailable = workspaceReducer(before, {
+      kind: "set_availability",
+      sessionId: "b",
+      availability: {
+        kind: "unavailable",
+        reasonCode: "connection-failed",
+        retryable: true,
+        cursorRecovery: {
+          reason: "uncertified_recipe",
+          action: "await_maintainer_review",
+          recheckable: false,
+        },
+      },
+    })
+    const changed = workspaceReducer(unavailable, {
+      kind: "set_availability",
+      sessionId: "b",
+      availability: {
+        kind: "unavailable",
+        reasonCode: "connection-failed",
+        retryable: true,
+        cursorRecovery: {
+          reason: "version_mismatch",
+          action: "restore_reviewed_profile",
+          recheckable: true,
+        },
+      },
+    })
+    const equal = workspaceReducer(changed, {
+      kind: "set_availability",
+      sessionId: "b",
+      availability: {
+        kind: "unavailable",
+        reasonCode: "connection-failed",
+        retryable: true,
+        cursorRecovery: {
+          reason: "version_mismatch",
+          action: "restore_reviewed_profile",
+          recheckable: true,
+        },
+      },
+    })
+
+    expect(changed).not.toBe(unavailable)
+    expect(changed.conversations.b).not.toBe(unavailable.conversations.b)
+    expect(changed.conversations.a).toBe(before.conversations.a)
+    expect(changed.conversations.c).toBe(before.conversations.c)
+    expect(changed.order).toBe(before.order)
+    expect(equal).toBe(changed)
+  })
 })
 
 describe("attention epochs and ordering", () => {

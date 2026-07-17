@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: /context workspace and review UI
 type: frontend
 complexity: high
@@ -29,11 +29,11 @@ Add the session-addressed /context surface that lets an operator inspect a draft
 
 ## Subtasks
 
-- [ ] 11.1 Add the Context Pack panel and selector-driven phase presentation.
-- [ ] 11.2 Register /context in central slash-command, help, and focused-session routing.
-- [ ] 11.3 Render review and sealed information with exact candidate/freshness/fit explanations.
-- [ ] 11.4 Wire only the explicit ControllerActions and blocked states.
-- [ ] 11.5 Add keyboard, overlay, session-switch, and action-dispatch coverage.
+- [x] 11.1 Add the Context Pack panel and selector-driven phase presentation.
+- [x] 11.2 Register /context in central slash-command, help, and focused-session routing.
+- [x] 11.3 Render review and sealed information with exact candidate/freshness/fit explanations.
+- [x] 11.4 Wire only the explicit ControllerActions and blocked states.
+- [x] 11.5 Add keyboard, overlay, session-switch, and action-dispatch coverage.
 
 ## Implementation Details
 
@@ -75,14 +75,14 @@ Follow the TechSpec UI command and overlay integration. This task creates the Co
 ## Tests
 
 - Unit tests:
-  - [ ] The panel renders each draft, review, sealed, unavailable, stale, and blocked state with textual labels.
-  - [ ] The fixed brief, selections, rationales, relationships, omissions, candidate bytes, and redaction count display from selector output.
-  - [ ] Buttons dispatch only the addressed ControllerActions and expose typed denials without changing local state.
-  - [ ] Keyboard navigation provides visible focus and does not depend on color alone.
+  - [x] The panel renders each draft, review, sealed, unavailable, stale, and blocked state with textual labels.
+  - [x] The fixed brief, selections, rationales, relationships, omissions, candidate bytes, and redaction count display from selector output.
+  - [x] Buttons dispatch only the addressed ControllerActions and expose typed denials without changing local state.
+  - [x] Keyboard navigation provides visible focus and does not depend on color alone.
 - Integration tests:
-  - [ ] /context opens for the current session, session switching changes its projection, and no global chord opens it.
-  - [ ] Existing Approval and Clarification overlays remain above it and retain their preemption behavior.
-  - [ ] Opening the panel never starts review, sealing, sending, export, or a Context Build.
+  - [x] /context opens for the current session, session switching changes its projection, and no global chord opens it.
+  - [x] Existing Approval and Clarification overlays remain above it and retain their preemption behavior.
+  - [x] Opening the panel never starts review, sealing, sending, export, or a Context Build.
 - Test coverage target: >=80%
 - All tests must pass
 

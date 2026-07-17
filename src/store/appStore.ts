@@ -23,6 +23,12 @@
  */
 
 import type { PermissionRequest } from "../agent/agentConnection.ts"
+import {
+  applyBuilderMutation as applyBuilderContextPackMutation,
+  applyOperatorMutation as applyOperatorContextPackMutation,
+  createDraft,
+  startFreshFromSealed,
+} from "../core/contextPack.ts"
 import { createSessionState, sessionReducer } from "../core/sessionReducer.ts"
 import { createShellState, shellReducer } from "../core/shellReducer.ts"
 import {
@@ -58,6 +64,15 @@ import {
   type ShellState,
   type ThemePreference,
   type ConversationAvailability,
+  type ContextBuildBinding,
+  type ContextPackDraftResult,
+  type ContextPackInstructions,
+  type ContextPackMutation,
+  type ContextPackMutationResult,
+  type ContextPackReviewCandidate,
+  type ContextPackState,
+  type RevisionFencedContextPackMutation,
+  type SealedContextPack,
   type TeardownState,
   type WorkspaceState,
   type WorkspaceEvent,
@@ -173,6 +188,55 @@ export interface TranscriptWindowState {
   readonly scrollTop: number | null
 }
 
+/** One renderable workspace entry retained in a lazy directory snapshot. */
+export interface ExplorerEntrySnapshot {
+  readonly relativePath: string
+  readonly name: string
+  readonly kind: "directory" | "file" | "contained_link"
+}
+
+/** Closed failure vocabulary for a directory result; raw filesystem errors never enter the store. */
+export type ExplorerUnavailableReason =
+  | "workspace-unavailable"
+  | "outside-workspace"
+  | "not-found"
+  | "not-directory"
+  | "permission-denied"
+  | "unsupported-entry"
+  | "io-error"
+
+/** Current result for one explicitly requested directory. */
+export type ExplorerDirectorySnapshot =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly entries: readonly ExplorerEntrySnapshot[] }
+  | { readonly kind: "unavailable"; readonly reason: ExplorerUnavailableReason }
+
+/** Fixed, content-free feedback retained independently for each live session. */
+export type ExplorerNotice =
+  | { readonly code: "refresh-complete" }
+  | { readonly code: "directory-unavailable" }
+  | { readonly code: "system-default-dispatched" }
+  | { readonly code: "custom-dispatched" }
+  | { readonly code: "fallback-dispatched" }
+  | { readonly code: "launch-failed" }
+
+/** Current-run explorer position for one session workspace. Never persisted. */
+export interface ExplorerPosition {
+  readonly workspaceRoot: string
+  readonly expandedPaths: readonly string[]
+  readonly selectedPath: string | null
+  readonly scrollTop: number
+  readonly directories: Readonly<Record<string, ExplorerDirectorySnapshot>>
+  readonly notice: ExplorerNotice | null
+  readonly generation: number
+}
+
+/** Global reveal state plus structurally shared, session-addressed positions. */
+export interface ExplorerState {
+  readonly visible: boolean
+  readonly positions: Partial<Record<SessionId, ExplorerPosition>>
+}
+
 /** Whether a restored session is promptable or only its saved context remains. */
 export type RestorationMode = "live" | "unavailable"
 
@@ -182,6 +246,7 @@ export type KeyboardCapability = "unknown" | "kittyConfirmed"
 /** The pane that currently owns keyboard input (ADR-005). */
 export type FocusedPane =
   | { kind: "agent"; sessionId: SessionId }
+  | { kind: "explorer"; sessionId: SessionId }
   | { kind: "shell" }
   | { kind: "workspace" }
 
@@ -236,8 +301,12 @@ export interface OverlayState {
  */
 export interface AppState {
   sessions: Record<SessionId, SessionState>
+  /** Session-owned Context Pack custody. Review candidates and build bindings are live-only. */
+  contextPacks: Readonly<Record<SessionId, ContextPackState>>
   /** Per-session live transcript presentation state; intentionally absent from run records. */
   transcriptWindows: Record<SessionId, TranscriptWindowState>
+  /** Current-run explorer visibility and lazy per-session positions. */
+  explorer: ExplorerState
   /** Protocol-free live delegation ownership; intentionally empty after restore. */
   delegation: DelegationState
   /** User-owned conversation metadata, order, lifecycle, selection, and attention acknowledgement. */
@@ -311,6 +380,39 @@ export type DelegatedChildStatePublication = DelegatedChildIdentity &
     | { readonly status: "cancelled"; readonly sessionStatus: "idle"; readonly at: number }
   )
 
+/** One explicit draft choice admitted together with its live Context Build binding. */
+export type ContextBuildDraftPreparation =
+  | {
+      readonly kind: "start_fresh"
+      readonly original: string
+      readonly mode?: ContextPackInstructions["mode"]
+      readonly discovered?: string
+      readonly budgetLimit?: number
+    }
+  /** Bind the exact draft the operator already created and inspected. */
+  | { readonly kind: "use_current" }
+  | { readonly kind: "refine" }
+
+/** Generation identity supplied by the controller before any child I/O starts. */
+export interface ContextBuildBindingIdentity {
+  readonly parentId: SessionId
+  readonly childId: SessionId
+  readonly parentGeneration: number
+  readonly childGeneration: number
+}
+
+/** Atomic prepare result; expected denials never escape as exceptions. */
+export type ContextBuildPreparationResult =
+  | {
+      readonly kind: "prepared"
+      readonly draft: NonNullable<ContextPackState["draft"]>
+      readonly binding: ContextBuildBinding
+    }
+  | {
+      readonly kind: "denied"
+      readonly reason: "unknown_session" | "build_active" | "draft_unavailable" | "invalid_draft"
+    }
+
 /** A function projecting a narrow slice out of the state, for `subscribeSelector`. */
 export type Selector<T> = (state: AppState) => T
 
@@ -341,8 +443,81 @@ export interface AppStore {
   captureTranscriptScrollTop(sessionId: SessionId, scrollTop: number | null): void
   /** Reattach one session to its live tail and clear its captured anchor. */
   returnTranscriptToLive(sessionId: SessionId): void
+  /** Reveal and focus the selected session's explorer, or hide it and return to its composer. */
+  toggleExplorer(sessionId: SessionId): void
+  /** Replace one session's selected explorer row. */
+  setExplorerSelection(sessionId: SessionId, relativePath: string | null): void
+  /** Expand or collapse one session-owned directory without touching another session. */
+  setExplorerExpanded(sessionId: SessionId, relativePath: string, expanded: boolean): void
+  /** Capture one session's render-owned explorer scroll position. */
+  setExplorerScrollTop(sessionId: SessionId, scrollTop: number): void
+  /** Replace one session's fixed explorer feedback. */
+  setExplorerNotice(sessionId: SessionId, notice: ExplorerNotice | null): void
+  /**
+   * Mark one directory request loading and return its captured generation. Refreshes
+   * invalidate every prior request for the session and clear its lazy snapshots.
+   */
+  beginExplorerDirectoryRequest(
+    sessionId: SessionId,
+    workspaceRoot: string,
+    relativePath: string,
+    options?: { readonly refresh?: boolean },
+  ): number | null
+  /** Commit a ready/unavailable directory result only while its request fence is current. */
+  commitExplorerDirectory(
+    sessionId: SessionId,
+    workspaceRoot: string,
+    generation: number,
+    relativePath: string,
+    snapshot: Exclude<ExplorerDirectorySnapshot, { readonly kind: "loading" }>,
+  ): boolean
   /** Clear one reducer-owned recovery payload after the composer has copied it. */
   acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void
+  /** Create and own a new addressed draft while retaining any current sealed pack. */
+  createContextPackDraft(
+    sessionId: SessionId,
+    original: string,
+    options?: {
+      readonly mode?: ContextPackInstructions["mode"]
+      readonly discovered?: string
+      readonly budgetLimit?: number
+    },
+  ): ContextPackDraftResult | null
+  /** Start a distinct addressed draft from the current immutable sealed value. */
+  refineContextPackDraft(sessionId: SessionId): ContextPackDraftResult | null
+  /** Apply one operator-authorized mutation to the addressed current draft. */
+  applyContextPackOperatorMutation(
+    sessionId: SessionId,
+    mutation: ContextPackMutation,
+  ): ContextPackMutationResult | null
+  /** Apply one bridge-authorized, revision-fenced builder mutation. */
+  applyContextPackBuilderMutation(
+    sessionId: SessionId,
+    mutation: RevisionFencedContextPackMutation,
+  ): ContextPackMutationResult | null
+  /** Publish one already-materialized exact review candidate for the current draft revision. */
+  publishContextPackReview(
+    sessionId: SessionId,
+    candidate: ContextPackReviewCandidate,
+  ): boolean
+  /** Publish one core-validated sealed value for the exact current review candidate. */
+  sealContextPack(sessionId: SessionId, sealed: SealedContextPack): boolean
+  /** Bind one live Context Build to the addressed current draft. */
+  bindContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
+  /** Atomically create/refine the addressed draft and bind its exact revision before launch. */
+  prepareContextBuild(
+    sessionId: SessionId,
+    preparation: ContextBuildDraftPreparation,
+    identity: ContextBuildBindingIdentity,
+  ): ContextBuildPreparationResult
+  /** Release only the matching live Context Build generation. */
+  releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
+  /** Release one matching build and publish only a pack-owned ready cue on success. */
+  settleContextBuild(
+    sessionId: SessionId,
+    binding: ContextBuildBinding,
+    outcome: "ready_for_review" | "failed",
+  ): boolean
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
@@ -365,7 +540,11 @@ export interface AppStore {
   removeDelegationChild(identity: DelegatedChildIdentity): void
   /** Atomically replace execution/workspace membership from validated restore descriptors. */
   replaceSessions(
-    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    entries: readonly {
+      seed: SessionSeed
+      workspace: WorkspaceConversationSeed
+      contextPack?: ContextPackState
+    }[],
     selectedVisibleId: SessionId | null,
   ): void
   /** Atomically remove an execution slice after successful teardown and close its workspace entry. */
@@ -472,11 +651,13 @@ class AppStoreImpl implements AppStore {
   constructor(options: AppStoreOptions) {
     const seeds = options.seeds ?? defaultSessionSeeds()
     const sessions = {} as Record<SessionId, SessionState>
+    const contextPacks = {} as Record<SessionId, ContextPackState>
     const transcriptWindows = {} as Record<SessionId, TranscriptWindowState>
     const restoration = {} as Record<SessionId, RestorationMode | null>
     const clarificationCapabilities = {} as Record<SessionId, ClarificationCapability>
     for (const seed of seeds) {
       sessions[seed.id] = createSessionState(seed)
+      contextPacks[seed.id] = createContextPackState()
       transcriptWindows[seed.id] = createTranscriptWindowState()
       restoration[seed.id] = null
       clarificationCapabilities[seed.id] = unknownClarificationCapability()
@@ -491,7 +672,9 @@ class AppStoreImpl implements AppStore {
     })
     this.state = {
       sessions,
+      contextPacks,
       transcriptWindows,
+      explorer: { visible: false, positions: {} },
       delegation: createDelegationState(),
       workspace,
       workspaceNotice: null,
@@ -567,10 +750,21 @@ class AppStoreImpl implements AppStore {
             sessionId,
             status: next.status,
           })
+    const position = this.state.explorer.positions[sessionId]
+    const explorer = next.cwd !== session.cwd && position
+      ? {
+          ...this.state.explorer,
+          positions: {
+            ...this.state.explorer.positions,
+            [sessionId]: createExplorerPosition(next.cwd, position.generation + 1),
+          },
+        }
+      : this.state.explorer
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [sessionId]: next },
       workspace,
+      explorer,
     })
   }
 
@@ -615,6 +809,136 @@ class AppStoreImpl implements AppStore {
     })
   }
 
+  toggleExplorer(sessionId: SessionId): void {
+    if (
+      hasOpenOverlay(this.state.overlays) ||
+      !this.state.sessions[sessionId] ||
+      this.state.workspace.selectedVisibleId !== sessionId
+    ) {
+      return
+    }
+    const visible = !this.state.explorer.visible
+    const current = this.state.explorer.positions[sessionId]
+    const position = current?.workspaceRoot === this.state.sessions[sessionId].cwd
+      ? current
+      : createExplorerPosition(
+          this.state.sessions[sessionId].cwd,
+          current ? current.generation + 1 : 0,
+        )
+    this.commit({
+      ...this.state,
+      explorer: {
+        visible,
+        positions: current === position
+          ? this.state.explorer.positions
+          : { ...this.state.explorer.positions, [sessionId]: position },
+      },
+      focusedPane: visible
+        ? { kind: "explorer", sessionId }
+        : { kind: "agent", sessionId },
+    })
+  }
+
+  setExplorerSelection(sessionId: SessionId, relativePath: string | null): void {
+    this.updateExplorerPosition(sessionId, (current) =>
+      current.selectedPath === relativePath ? current : { ...current, selectedPath: relativePath },
+    )
+  }
+
+  setExplorerExpanded(sessionId: SessionId, relativePath: string, expanded: boolean): void {
+    this.updateExplorerPosition(sessionId, (current) => {
+      const contains = current.expandedPaths.includes(relativePath)
+      if (contains === expanded) return current
+      return {
+        ...current,
+        expandedPaths: expanded
+          ? [...current.expandedPaths, relativePath]
+          : current.expandedPaths.filter((path) => path !== relativePath),
+      }
+    })
+  }
+
+  setExplorerScrollTop(sessionId: SessionId, scrollTop: number): void {
+    if (!Number.isFinite(scrollTop) || scrollTop < 0) return
+    this.updateExplorerPosition(sessionId, (current) =>
+      current.scrollTop === scrollTop ? current : { ...current, scrollTop },
+    )
+  }
+
+  setExplorerNotice(sessionId: SessionId, notice: ExplorerNotice | null): void {
+    this.updateExplorerPosition(sessionId, (current) =>
+      current.notice?.code === notice?.code ? current : { ...current, notice },
+    )
+  }
+
+  beginExplorerDirectoryRequest(
+    sessionId: SessionId,
+    workspaceRoot: string,
+    relativePath: string,
+    options: { readonly refresh?: boolean } = {},
+  ): number | null {
+    const session = this.state.sessions[sessionId]
+    if (!session || session.cwd !== workspaceRoot) return null
+
+    const previous = this.state.explorer.positions[sessionId]
+    const workspaceChanged = previous !== undefined && previous.workspaceRoot !== workspaceRoot
+    let current = previous?.workspaceRoot === workspaceRoot
+      ? previous
+      : createExplorerPosition(workspaceRoot, previous ? previous.generation + 1 : 0)
+    if (options.refresh && !workspaceChanged) {
+      current = { ...current, directories: {}, generation: current.generation + 1 }
+    }
+    if (
+      !options.refresh &&
+      previous === current &&
+      current.directories[relativePath]?.kind === "loading"
+    ) {
+      return current.generation
+    }
+
+    const position: ExplorerPosition = {
+      ...current,
+      directories: {
+        ...current.directories,
+        [relativePath]: { kind: "loading" },
+      },
+    }
+    this.commit({
+      ...this.state,
+      explorer: {
+        ...this.state.explorer,
+        positions: { ...this.state.explorer.positions, [sessionId]: position },
+      },
+    })
+    return position.generation
+  }
+
+  commitExplorerDirectory(
+    sessionId: SessionId,
+    workspaceRoot: string,
+    generation: number,
+    relativePath: string,
+    snapshot: Exclude<ExplorerDirectorySnapshot, { readonly kind: "loading" }>,
+  ): boolean {
+    const session = this.state.sessions[sessionId]
+    const current = this.state.explorer.positions[sessionId]
+    if (
+      !session ||
+      session.cwd !== workspaceRoot ||
+      !current ||
+      current.workspaceRoot !== workspaceRoot ||
+      current.generation !== generation ||
+      current.directories[relativePath]?.kind !== "loading"
+    ) {
+      return false
+    }
+    this.updateExplorerPosition(sessionId, (position) => ({
+      ...position,
+      directories: { ...position.directories, [relativePath]: snapshot },
+    }))
+    return true
+  }
+
   acknowledgeSteeringRecovery(sessionId: SessionId, requestId: string): void {
     const steering = this.state.sessions[sessionId]?.steering
     const current = steering?.queue[0]
@@ -624,6 +948,220 @@ class AppStoreImpl implements AppStore {
       requestId,
       generation: current.generation,
     })
+  }
+
+  createContextPackDraft(
+    sessionId: SessionId,
+    original: string,
+    options: {
+      readonly mode?: ContextPackInstructions["mode"]
+      readonly discovered?: string
+      readonly budgetLimit?: number
+    } = {},
+  ): ContextPackDraftResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current || current.build) return null
+    const result = createDraft(original, options)
+    if (result.kind !== "created") return result
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      draft: result.draft,
+      review: null,
+    })
+    return result
+  }
+
+  refineContextPackDraft(sessionId: SessionId): ContextPackDraftResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.sealed || !isLiveSealedContextPack(current.sealed) || current.build) return null
+    const result = startFreshFromSealed(current.sealed)
+    if (result.kind !== "created") return result
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      draft: result.draft,
+      review: null,
+    })
+    return result
+  }
+
+  applyContextPackOperatorMutation(
+    sessionId: SessionId,
+    mutation: ContextPackMutation,
+  ): ContextPackMutationResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.draft) return null
+    const result = applyOperatorContextPackMutation(current.draft, mutation)
+    if (result.kind !== "applied") return result
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      draft: result.draft,
+      review: null,
+      build: current.build?.state === "ready_for_review"
+        ? { ...current.build, state: "building" }
+        : current.build,
+    })
+    return result
+  }
+
+  applyContextPackBuilderMutation(
+    sessionId: SessionId,
+    mutation: RevisionFencedContextPackMutation,
+  ): ContextPackMutationResult | null {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.draft) return null
+    const result = applyBuilderContextPackMutation(current.draft, mutation)
+    if (result.kind !== "applied") return result
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      draft: result.draft,
+      review: null,
+      build: current.build?.state === "ready_for_review"
+        ? { ...current.build, state: "building" }
+        : current.build,
+    })
+    return result
+  }
+
+  publishContextPackReview(
+    sessionId: SessionId,
+    candidate: ContextPackReviewCandidate,
+  ): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (
+      !current?.draft ||
+      candidate.revision !== current.draft.revision ||
+      candidate.manifest.revision !== current.draft.revision
+    ) {
+      return false
+    }
+    if (current.review === candidate) return true
+    const build = current.build
+      ? { ...current.build, state: "ready_for_review" as const }
+      : null
+    this.commitContextPack(sessionId, { ...current, review: candidate, build })
+    return true
+  }
+
+  sealContextPack(sessionId: SessionId, sealed: SealedContextPack): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (
+      !current?.draft ||
+      !current.review ||
+      current.review.verdict.kind !== "ready" ||
+      sealed.revision !== current.draft.revision ||
+      sealed.revision !== current.review.revision ||
+      sealed.manifest.revision !== current.review.manifest.revision ||
+      sealed.payload !== current.review.payload ||
+      sealed.bytes !== current.review.bytes ||
+      sealed.packEstimate !== current.review.packEstimate ||
+      sealed.redactionCount !== current.review.redactionCount ||
+      JSON.stringify(sealed.manifest) !== JSON.stringify(current.review.manifest) ||
+      JSON.stringify(sealed.sourceFences) !== JSON.stringify(current.review.sourceFences)
+    ) {
+      return false
+    }
+    if (current.sealed === sealed) return true
+    this.commitContextPack(sessionId, { ...current, sealed })
+    return true
+  }
+
+  bindContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (
+      !current?.draft ||
+      current.build ||
+      binding.parentId !== sessionId ||
+      binding.draftRevision !== current.draft.revision ||
+      binding.state !== "building"
+    ) {
+      return false
+    }
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      build: binding,
+    })
+    return true
+  }
+
+  prepareContextBuild(
+    sessionId: SessionId,
+    preparation: ContextBuildDraftPreparation,
+    identity: ContextBuildBindingIdentity,
+  ): ContextBuildPreparationResult {
+    const current = this.state.contextPacks[sessionId]
+    if (!current || identity.parentId !== sessionId) {
+      return { kind: "denied", reason: "unknown_session" }
+    }
+    if (current.build) return { kind: "denied", reason: "build_active" }
+
+    if (preparation.kind === "use_current") {
+      const draft = current.draft
+      if (!draft) return { kind: "denied", reason: "draft_unavailable" }
+      const binding: ContextBuildBinding = {
+        ...identity,
+        draftRevision: draft.revision,
+        state: "building",
+      }
+      this.commitContextPack(sessionId, {
+        ...clearContextPackAttention(current),
+        draft,
+        review: null,
+        build: binding,
+      })
+      return { kind: "prepared", draft, binding }
+    }
+
+    const result = preparation.kind === "start_fresh"
+      ? createDraft(preparation.original, {
+          ...(preparation.mode === undefined ? {} : { mode: preparation.mode }),
+          ...(preparation.discovered === undefined ? {} : { discovered: preparation.discovered }),
+          ...(preparation.budgetLimit === undefined ? {} : { budgetLimit: preparation.budgetLimit }),
+        })
+      : current.sealed && isLiveSealedContextPack(current.sealed)
+        ? startFreshFromSealed(current.sealed)
+        : null
+    if (result === null) return { kind: "denied", reason: "draft_unavailable" }
+    if (result.kind !== "created") return { kind: "denied", reason: "invalid_draft" }
+
+    const binding: ContextBuildBinding = {
+      ...identity,
+      draftRevision: result.draft.revision,
+      state: "building",
+    }
+    this.commitContextPack(sessionId, {
+      ...clearContextPackAttention(current),
+      draft: result.draft,
+      review: null,
+      build: binding,
+    })
+    return { kind: "prepared", draft: result.draft, binding }
+  }
+
+  releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.build || !sameContextBuildIdentity(current.build, binding)) return false
+    this.commitContextPack(sessionId, { ...current, build: null })
+    return true
+  }
+
+  settleContextBuild(
+    sessionId: SessionId,
+    binding: ContextBuildBinding,
+    outcome: "ready_for_review" | "failed",
+  ): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.build || !sameContextBuildIdentity(current.build, binding)) return false
+    const settled = clearContextPackAttention({ ...current, build: null })
+    this.commit({
+      ...this.state,
+      contextPacks: {
+        ...this.state.contextPacks,
+        [sessionId]: outcome === "ready_for_review"
+          ? { ...settled, attention: "ready_for_review" }
+          : settled,
+      },
+    })
+    return true
   }
 
   applyShellEvent(event: ShellEvent): void {
@@ -684,6 +1222,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      contextPacks: { ...this.state.contextPacks, [seed.id]: createContextPackState() },
       transcriptWindows: {
         ...this.state.transcriptWindows,
         [seed.id]: createTranscriptWindowState(),
@@ -761,6 +1300,7 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions: { ...this.state.sessions, [seed.id]: createSessionState(seed) },
+      contextPacks: { ...this.state.contextPacks, [seed.id]: createContextPackState() },
       transcriptWindows: {
         ...this.state.transcriptWindows,
         [seed.id]: createTranscriptWindowState(),
@@ -842,13 +1382,17 @@ class AppStoreImpl implements AppStore {
       sessionId: identity.childId,
     })
     const sessions = { ...this.state.sessions }
+    const contextPacks = { ...this.state.contextPacks }
     const transcriptWindows = { ...this.state.transcriptWindows }
+    const explorerPositions = { ...this.state.explorer.positions }
     const restoration = { ...this.state.restoration }
     const clarificationCapabilities = { ...this.state.clarificationCapabilities }
     const harnessDeliveries = { ...this.state.harnessDeliveries }
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[identity.childId]
+    delete contextPacks[identity.childId]
     delete transcriptWindows[identity.childId]
+    delete explorerPositions[identity.childId]
     delete restoration[identity.childId]
     delete clarificationCapabilities[identity.childId]
     delete harnessDeliveries[identity.childId]
@@ -857,7 +1401,9 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      contextPacks,
       transcriptWindows,
+      explorer: { ...this.state.explorer, positions: explorerPositions },
       delegation,
       workspace,
       overlays: clearSessionOverlays(this.state.overlays, identity.childId),
@@ -870,15 +1416,28 @@ class AppStoreImpl implements AppStore {
   }
 
   replaceSessions(
-    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    entries: readonly {
+      seed: SessionSeed
+      workspace: WorkspaceConversationSeed
+      contextPack?: ContextPackState
+    }[],
     selectedVisibleId: SessionId | null,
   ): void {
     const sessions: Record<SessionId, SessionState> = {}
+    const contextPacks: Record<SessionId, ContextPackState> = {}
     const transcriptWindows: Record<SessionId, TranscriptWindowState> = {}
     const restoration: Record<SessionId, RestorationMode | null> = {}
     const clarificationCapabilities: Record<SessionId, ClarificationCapability> = {}
     for (const entry of entries) {
       sessions[entry.seed.id] = createSessionState(entry.seed)
+      contextPacks[entry.seed.id] = entry.contextPack
+        ? {
+            draft: entry.contextPack.draft,
+            sealed: entry.contextPack.sealed,
+            review: null,
+            build: null,
+          }
+        : createContextPackState()
       transcriptWindows[entry.seed.id] = createTranscriptWindowState()
       restoration[entry.seed.id] = null
       clarificationCapabilities[entry.seed.id] = unknownClarificationCapability()
@@ -890,7 +1449,9 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      contextPacks,
       transcriptWindows,
+      explorer: { ...this.state.explorer, positions: {} },
       delegation: createDelegationState(),
       workspace,
       workspaceNotice: null,
@@ -907,13 +1468,17 @@ class AppStoreImpl implements AppStore {
     if (!this.state.sessions[sessionId] || !this.state.workspace.conversations[sessionId]) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "close_succeeded", sessionId })
     const sessions = { ...this.state.sessions }
+    const contextPacks = { ...this.state.contextPacks }
     const transcriptWindows = { ...this.state.transcriptWindows }
+    const explorerPositions = { ...this.state.explorer.positions }
     const restoration = { ...this.state.restoration }
     const clarificationCapabilities = { ...this.state.clarificationCapabilities }
     const harnessDeliveries = { ...this.state.harnessDeliveries }
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
     delete sessions[sessionId]
+    delete contextPacks[sessionId]
     delete transcriptWindows[sessionId]
+    delete explorerPositions[sessionId]
     delete restoration[sessionId]
     delete clarificationCapabilities[sessionId]
     delete harnessDeliveries[sessionId]
@@ -921,7 +1486,9 @@ class AppStoreImpl implements AppStore {
     this.commit({
       ...this.state,
       sessions,
+      contextPacks,
       transcriptWindows,
+      explorer: { ...this.state.explorer, positions: explorerPositions },
       workspace,
       overlays: clearSessionOverlays(this.state.overlays, sessionId),
       restoration,
@@ -939,17 +1506,32 @@ class AppStoreImpl implements AppStore {
   selectConversation(sessionId: SessionId): void {
     if (hasOpenOverlay(this.state.overlays)) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "select", sessionId })
-    if (workspace === this.state.workspace) return
-    this.commit({ ...this.state, workspace, focusedPane: { kind: "agent", sessionId } })
+    const current = this.state.contextPacks[sessionId]
+    const contextPack = current ? clearContextPackAttention(current) : current
+    if (workspace === this.state.workspace && contextPack === current) return
+    this.commit({
+      ...this.state,
+      workspace,
+      contextPacks: contextPack === current
+        ? this.state.contextPacks
+        : { ...this.state.contextPacks, [sessionId]: contextPack! },
+      focusedPane: { kind: "agent", sessionId },
+    })
   }
 
   selectAdjacentConversation(direction: "previous" | "next"): void {
     if (hasOpenOverlay(this.state.overlays)) return
     const workspace = workspaceReducer(this.state.workspace, { kind: "select_adjacent", direction })
     if (workspace === this.state.workspace) return
+    const sessionId = workspace.selectedVisibleId
+    const current = sessionId ? this.state.contextPacks[sessionId] : undefined
+    const contextPack = current ? clearContextPackAttention(current) : current
     this.commit({
       ...this.state,
       workspace,
+      contextPacks: !sessionId || contextPack === current
+        ? this.state.contextPacks
+        : { ...this.state.contextPacks, [sessionId]: contextPack! },
       focusedPane: workspace.selectedVisibleId
         ? { kind: "agent", sessionId: workspace.selectedVisibleId }
         : { kind: "workspace" },
@@ -968,9 +1550,14 @@ class AppStoreImpl implements AppStore {
   reopenConversation(sessionId: SessionId): void {
     const workspace = workspaceReducer(this.state.workspace, { kind: "reopen", sessionId })
     if (workspace === this.state.workspace) return
+    const current = this.state.contextPacks[sessionId]
+    const contextPack = current ? clearContextPackAttention(current) : current
     this.commit({
       ...this.state,
       workspace,
+      contextPacks: contextPack === current
+        ? this.state.contextPacks
+        : { ...this.state.contextPacks, [sessionId]: contextPack! },
       focusedPane: { kind: "agent", sessionId },
     })
   }
@@ -997,7 +1584,8 @@ class AppStoreImpl implements AppStore {
 
   setFocusedPane(pane: FocusedPane): void {
     if (hasOpenOverlay(this.state.overlays)) return
-    if (pane.kind === "agent") {
+    if (pane.kind === "agent" || pane.kind === "explorer") {
+      if (pane.kind === "explorer" && !this.state.explorer.visible) return
       const conversation = this.state.workspace.conversations[pane.sessionId]
       if (!conversation || conversation.lifecycle !== "visible") return
       const workspace = workspaceReducer(this.state.workspace, {
@@ -1006,7 +1594,7 @@ class AppStoreImpl implements AppStore {
       })
       if (
         workspace === this.state.workspace &&
-        this.state.focusedPane.kind === "agent" &&
+        this.state.focusedPane.kind === pane.kind &&
         this.state.focusedPane.sessionId === pane.sessionId
       ) {
         return
@@ -1244,6 +1832,13 @@ class AppStoreImpl implements AppStore {
     })
   }
 
+  private commitContextPack(sessionId: SessionId, contextPack: ContextPackState): void {
+    this.commit({
+      ...this.state,
+      contextPacks: { ...this.state.contextPacks, [sessionId]: contextPack },
+    })
+  }
+
   private updateTranscriptWindow(
     sessionId: SessionId,
     transcriptWindow: TranscriptWindowState,
@@ -1253,6 +1848,27 @@ class AppStoreImpl implements AppStore {
       transcriptWindows: {
         ...this.state.transcriptWindows,
         [sessionId]: transcriptWindow,
+      },
+    })
+  }
+
+  private updateExplorerPosition(
+    sessionId: SessionId,
+    update: (current: ExplorerPosition) => ExplorerPosition,
+  ): void {
+    const session = this.state.sessions[sessionId]
+    if (!session) return
+    const previous = this.state.explorer.positions[sessionId]
+    const current = previous?.workspaceRoot === session.cwd
+      ? previous
+      : createExplorerPosition(session.cwd, previous ? previous.generation + 1 : 0)
+    const next = update(current)
+    if (previous === next) return
+    this.commit({
+      ...this.state,
+      explorer: {
+        ...this.state.explorer,
+        positions: { ...this.state.explorer.positions, [sessionId]: next },
       },
     })
   }
@@ -1272,15 +1888,60 @@ class AppStoreImpl implements AppStore {
   }
 }
 
+function createContextPackState(): ContextPackState {
+  return { draft: null, sealed: null, review: null, build: null }
+}
+
+function clearContextPackAttention(contextPack: ContextPackState): ContextPackState {
+  if (contextPack.attention === undefined) return contextPack
+  const { attention: _attention, ...rest } = contextPack
+  return rest
+}
+
 function createTranscriptWindowState(): TranscriptWindowState {
   return { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null }
 }
 
+function isLiveSealedContextPack(
+  value: NonNullable<ContextPackState["sealed"]>,
+): value is SealedContextPack {
+  return "manifest" in value &&
+    "packEstimate" in value &&
+    "redactionCount" in value &&
+    "sourceFences" in value
+}
+
+function sameContextBuildIdentity(
+  left: ContextBuildBinding,
+  right: ContextBuildBinding,
+): boolean {
+  return (
+    left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision
+  )
+}
+
+function createExplorerPosition(workspaceRoot: string, generation = 0): ExplorerPosition {
+  return {
+    workspaceRoot,
+    expandedPaths: [],
+    selectedPath: null,
+    scrollTop: 0,
+    directories: {},
+    notice: null,
+    generation,
+  }
+}
+
 function reconcilePane(pane: FocusedPane, workspace: WorkspaceState): FocusedPane {
   if (pane.kind === "shell") return pane
-  return workspace.selectedVisibleId
-    ? { kind: "agent", sessionId: workspace.selectedVisibleId }
-    : { kind: "workspace" }
+  if (!workspace.selectedVisibleId) return { kind: "workspace" }
+  return pane.kind === "explorer"
+    ? { kind: "explorer", sessionId: workspace.selectedVisibleId }
+    : { kind: "agent", sessionId: workspace.selectedVisibleId }
 }
 
 function reduceDelegatedChildPublication(

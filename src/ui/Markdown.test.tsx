@@ -130,14 +130,9 @@ describe("Markdown", () => {
       "```",
     ].join("\n")
     await actAsync(() => updateContent(content))
-    await settleMarkdownHighlights(setup)
-    const frame = await setup.waitForFrame(
-      (candidate) =>
-        candidate.includes("DIRECT_HEADING") &&
-        candidate.includes("DIRECT_PROSE") &&
-        candidate.includes("fn direct_rust() {}"),
-    )
+    const frame = await waitForHighlightedSource(setup, "fn direct_rust() {}")
 
+    expect(frame).toContain("DIRECT_HEADING")
     expect(frame).toContain("DIRECT_PROSE")
     expect(collectCodeRenderables(setup.renderer.root).some((code) => code.content.includes("direct_rust"))).toBeTrue()
 

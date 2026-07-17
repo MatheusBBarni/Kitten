@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Closed explore-v2 capability and Recipient Profile evidence
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Add a separate closed capability and evidence boundary for Context Build and rec
 
 ## Subtasks
 
-- [ ] 4.1 Define closed explore-v2 evidence and exact recipe resolution contracts.
-- [ ] 4.2 Define closed Recipient Profile and freshness/capacity evidence contracts.
-- [ ] 4.3 Keep production registries fail-closed and separate from explore-v1.
-- [ ] 4.4 Add typed deny results for unsupported, stale, and malformed evidence.
-- [ ] 4.5 Cover complete evidence, partial evidence, and bypass attempts.
+- [x] 4.1 Define closed explore-v2 evidence and exact recipe resolution contracts.
+- [x] 4.2 Define closed Recipient Profile and freshness/capacity evidence contracts.
+- [x] 4.3 Keep production registries fail-closed and separate from explore-v1.
+- [x] 4.4 Add typed deny results for unsupported, stale, and malformed evidence.
+- [x] 4.5 Cover complete evidence, partial evidence, and bypass attempts.
 
 ## Implementation Details
 
@@ -73,13 +73,13 @@ Follow the TechSpec capability and Recipient Profile boundaries. This task estab
 ## Tests
 
 - Unit tests:
-  - [ ] A fully matching reviewed recipe resolves only when command, argument order, environment, adapter, runtime, and model all match.
-  - [ ] Partial, stale, unknown, or reordered evidence is unavailable with a closed reason.
-  - [ ] Recipient capacity without a fresh exact counter/reserve evidence is unavailable.
-  - [ ] Environment variables and generic estimates cannot create an eligible recipe or profile.
-  - [ ] Existing explore-v1 resolution remains report-only and unchanged.
+  - [x] A fully matching reviewed recipe resolves only when command, argument order, environment, adapter, runtime, and model all match.
+  - [x] Partial, stale, unknown, or reordered evidence is unavailable with a closed reason.
+  - [x] Recipient capacity without a fresh exact counter/reserve evidence is unavailable.
+  - [x] Environment variables and generic estimates cannot create an eligible recipe or profile.
+  - [x] Existing explore-v1 resolution remains report-only and unchanged.
 - Integration tests:
-  - [ ] Capability composition exposes no Context Build authority while the production registry is empty.
+  - [x] Capability composition exposes no Context Build authority while the production registry is empty.
 - Test coverage target: >=80%
 - All tests must pass
 

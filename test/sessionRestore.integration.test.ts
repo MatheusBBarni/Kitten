@@ -218,7 +218,7 @@ describe("writer-produced run restore", () => {
     await controller.dispose()
   })
 
-  it("restores an unresolved V3 checkpoint without replay and leaves its loaded sibling promptable", async () => {
+  it("restores an unresolved V3 checkpoint from V4 without replay and leaves its loaded sibling promptable", async () => {
     const cwd = process.cwd()
     const source = createAppStore()
     source.startSession("claude-code", "claude-persisted")
@@ -238,7 +238,7 @@ describe("writer-produced run restore", () => {
     })
     writer.watch(source)
     writer.dispose()
-    expect(runStore.record?.version).toBe(3)
+    expect(runStore.record?.version).toBe(4)
 
     const prompts: Array<{ id: ProviderKind; input: AgentPromptInput }> = []
     const controller = await createSessionController({
