@@ -27,6 +27,13 @@ export const ASK_USER_MCP_TOOL_NAME = "ask_user"
 export const ASK_USER_MCP_INSTRUCTIONS =
   "Use the ask_user tool whenever you need input from the supervising user to continue. Do not present questions or answer choices as plain assistant text; call ask_user with the structured question, then wait for its outcome before continuing. This includes workflows and skills that require an interactive question tool."
 
+/**
+ * Adapter-only guidance prepended to a prompt when this server is attached. It never
+ * enters Kitten's transcript, history, persistence, telemetry, or diagnostics.
+ */
+export const ASK_USER_MCP_HOST_GUIDANCE =
+  "<kitten-runtime-instruction>When you need input from the supervising user to continue, you MUST call the ask_user MCP tool. Do not write a question or answer choices in assistant text. Call ask_user with one structured question and wait for its submitted, skipped, timed-out, or cancelled outcome before continuing. This applies when a workflow or skill requires an interactive question tool too.</kitten-runtime-instruction>"
+
 export const MAX_ASK_USER_FRAME_BYTES = 64 * 1024
 export const MAX_ASK_USER_TEXT_BYTES = 4 * 1024
 export const MAX_ASK_USER_FIELDS = 10

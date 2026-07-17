@@ -42,7 +42,10 @@ import type {
   ToolCallUpdate,
 } from "../core/types.ts"
 import { KITTEN_VERSION } from "../version.ts"
-import { ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
+import {
+  ASK_USER_MCP_HOST_GUIDANCE,
+  ASK_USER_MCP_SERVER_NAME,
+} from "./askUserMcp.ts"
 import {
   CERTIFIED_HARNESS_PROFILES,
   matchCertifiedHarnessProfile,
@@ -258,6 +261,8 @@ class AgentConnectionImpl implements AgentConnection {
   private permissionHandler: ((req: PermissionRequest) => Promise<PermissionOutcome>) | null = null
   private clarificationHandler: ClarificationHandler | null = null
   private activeSessionId: string | null = null
+  /** Whether the active ACP session received Kitten's generated question bridge. */
+  private askUserMcpAttached = false
   /** Bundled MCP calls whose later ACP updates may omit the identifying title. */
   private readonly bundledMcpToolCallIds = new Set<string>()
   /**
@@ -359,6 +364,7 @@ class AgentConnectionImpl implements AgentConnection {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
     this.activeSessionId = result.sessionId
+    this.askUserMcpAttached = hasAskUserMcp(mcpServers)
     return result.sessionId
   }
 
@@ -372,6 +378,7 @@ class AgentConnectionImpl implements AgentConnection {
       this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
     }
     this.activeSessionId = sessionId
+    this.askUserMcpAttached = hasAskUserMcp(mcpServers)
   }
 
   async prompt(sessionId: string, input: AgentPromptInput): Promise<PromptResult> {
@@ -407,7 +414,10 @@ class AgentConnectionImpl implements AgentConnection {
   private toPromptRequest(sessionId: string, input: AgentPromptInput): PromptRequest {
     const envelope = Array.isArray(input) ? undefined : input
     const userBlocks = envelope?.userBlocks ?? input as PromptBlock[]
-    const prompt = userBlocks.map((block) => ({ type: "text" as const, text: block.text }))
+    const prompt = [
+      ...(this.askUserMcpAttached ? [{ type: "text" as const, text: ASK_USER_MCP_HOST_GUIDANCE }] : []),
+      ...userBlocks.map((block) => ({ type: "text" as const, text: block.text })),
+    ]
     if (!envelope?.harness) return { sessionId, prompt }
     if (!envelope.profileId) throw new UnsupportedHarnessProfileError()
 
@@ -668,6 +678,11 @@ class AgentConnectionImpl implements AgentConnection {
     if (!this.connection || !this.ready) throw new Error(`Agent "${this.id}" is not connected; call connect() first`)
     return this.connection
   }
+}
+
+/** Keep host-only question guidance scoped to sessions that received Kitten's bridge. */
+function hasAskUserMcp(mcpServers: readonly McpServerConfig[]): boolean {
+  return mcpServers.some((server) => server.name === ASK_USER_MCP_SERVER_NAME)
 }
 
 /** Only a complete `mcp.<server>.<function>` title grants bundled-call eligibility. */

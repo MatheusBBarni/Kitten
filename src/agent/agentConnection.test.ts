@@ -14,7 +14,7 @@ import {
   type PermissionRequest,
 } from "./agentConnection.ts"
 import { createInMemoryTransportPair } from "./transport.ts"
-import { ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
+import { ASK_USER_MCP_HOST_GUIDANCE, ASK_USER_MCP_SERVER_NAME } from "./askUserMcp.ts"
 import { KITTEN_VERSION } from "../version.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile } from "../config/harnessCapability.ts"
 
@@ -367,7 +367,7 @@ describe("connect / session lifecycle", () => {
     await conn.dispose()
   })
 
-  it("sends only caller-supplied blocks for a fresh session with Kitten's bridge", async () => {
+  it("adds hidden ask_user guidance only to prompts from a session with Kitten's bridge", async () => {
     let receivedPrompt: unknown = []
     const { conn, mock } = await connected({
       onPrompt: (request) => {
@@ -380,11 +380,14 @@ describe("connect / session lifecycle", () => {
     await conn.prompt(sessionId, [{ type: "text", text: "Refine the feature idea." }])
 
     expect(mock.newSessionRequests[0]?.mcpServers[0]?.name).toBe(ASK_USER_MCP_SERVER_NAME)
-    expect(receivedPrompt).toEqual([{ type: "text", text: "Refine the feature idea." }])
+    expect(receivedPrompt).toEqual([
+      { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
+      { type: "text", text: "Refine the feature idea." },
+    ])
     await conn.dispose()
   })
 
-  it("sends only caller-supplied blocks after restoring a session with Kitten's bridge", async () => {
+  it("adds hidden ask_user guidance after restoring a session with Kitten's bridge", async () => {
     let receivedPrompt: unknown = []
     const { conn, mock } = await connected({
       canLoadSession: true,
@@ -398,7 +401,10 @@ describe("connect / session lifecycle", () => {
     await conn.prompt("sess-7", [{ type: "text", text: "Continue the feature idea." }])
 
     expect(mock.loadSessionRequests[0]?.mcpServers[0]?.name).toBe(ASK_USER_MCP_SERVER_NAME)
-    expect(receivedPrompt).toEqual([{ type: "text", text: "Continue the feature idea." }])
+    expect(receivedPrompt).toEqual([
+      { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
+      { type: "text", text: "Continue the feature idea." },
+    ])
     await conn.dispose()
   })
 
@@ -500,7 +506,10 @@ describe("harness prompt envelope", () => {
     expect(mock.prompts).toEqual([
       {
         sessionId,
-        prompt: [{ type: "text", text: "SYNTHETIC_USER_BLOCK" }],
+        prompt: [
+          { type: "text", text: ASK_USER_MCP_HOST_GUIDANCE },
+          { type: "text", text: "SYNTHETIC_USER_BLOCK" },
+        ],
         _meta: { [metaKey]: { kittenHarness: { version: "v1", text: "SYNTHETIC_HARNESS_BLOCK" } } },
       },
     ])
