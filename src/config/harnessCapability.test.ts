@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test"
 
+import type { ResolvedAgentConfig } from "../core/types.ts"
 import {
   CERTIFIED_HARNESS_PROFILES,
   HARNESS_CONTRACT_SDK_VERSION,
   certifiedProfilesFromContractResults,
   resolveHarnessCapability,
+  resolveHarnessCapabilityComposition,
   type CertifiedHarnessProfile,
   type ExactHarnessRecipeIdentity,
   type HarnessContractResult,
   type HarnessEncoderKind,
 } from "./harnessCapability.ts"
+import {
+  CONTEXT_BUILD_CAPABILITY_VERSION,
+  CONTEXT_BUILD_OPERATIONS,
+  RECIPIENT_PROFILE_VERSION,
+} from "./contextPackCapability.ts"
 
 interface Fixture {
   profileId: string
@@ -150,6 +157,60 @@ describe("exact harness capability resolution", () => {
       status: "supported",
       profileId: future.profileId,
       encoder: future.encoder,
+    })
+  })
+})
+
+describe("harness and Context Pack capability composition", () => {
+  test("a supported ordinary harness exposes no Context Build authority with empty production registries", () => {
+    const runtime = toRuntimeRecipe(CLAUDE_FIXTURE.recipe)
+    const resolved = {
+      ...runtime,
+      displayName: "Claude Code",
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
+      runtimeProfile: { kind: "standard" },
+    } as ResolvedAgentConfig
+    const now = 1_000
+
+    expect(resolveHarnessCapabilityComposition(
+      resolved,
+      evidence(CLAUDE_FIXTURE.recipe),
+      {
+        contextBuild: {
+          capabilityVersion: CONTEXT_BUILD_CAPABILITY_VERSION,
+          evidenceVersion: "context-build-evidence-v1",
+          adapterPackage: CLAUDE_FIXTURE.recipe.adapterPackage,
+          adapterVersion: CLAUDE_FIXTURE.recipe.adapterVersion,
+          runtimeVersion: "1.0.0",
+          model: "reviewed-model",
+          operations: CONTEXT_BUILD_OPERATIONS,
+          observedAt: now,
+          validUntil: now + 10,
+        },
+        recipientProfile: {
+          profileVersion: RECIPIENT_PROFILE_VERSION,
+          evidenceVersion: "recipient-evidence-v1",
+          adapterPackage: CLAUDE_FIXTURE.recipe.adapterPackage,
+          adapterVersion: CLAUDE_FIXTURE.recipe.adapterVersion,
+          runtimeVersion: "1.0.0",
+          model: "reviewed-model",
+          freshSessionCapacity: 200_000,
+          reserve: 16_000,
+          counterVersion: "exact-counter-v1",
+          observedAt: now,
+          validUntil: now + 10,
+        },
+      },
+      now,
+    )).toEqual({
+      harness: {
+        status: "supported",
+        profileId: CLAUDE_FIXTURE.profileId,
+        encoder: CLAUDE_FIXTURE.encoder,
+      },
+      contextBuild: { status: "unavailable", reason: "unsupported_recipe" },
+      recipientProfile: { status: "unavailable", reason: "unsupported_recipe" },
     })
   })
 })

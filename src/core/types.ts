@@ -1239,3 +1239,44 @@ export type RecipientFit =
   | { readonly kind: "fit"; readonly exactCount: number; readonly remaining: number }
   | { readonly kind: "unavailable"; readonly reason: RecipientFitUnavailableReason }
   | { readonly kind: "insufficient"; readonly exactCount: number; readonly remaining: number }
+
+/** Closed evidence failures shared by Context Build and Recipient Profile preflights. */
+export type ContextPackEvidenceDenialReason =
+  | "missing_evidence"
+  | "malformed_evidence"
+  | "unsupported_recipe"
+  | "stale_evidence"
+  | "recipe_mismatch"
+
+/** The complete authority an explore-v2 Context Build may receive. */
+export type ContextBuildOperation =
+  | "ask_user:scoped"
+  | "draft:read-bounded"
+  | "workspace:read-bounded"
+  | "draft:mutate-revision-fenced"
+
+export type ContextBuildAvailability =
+  | {
+      readonly status: "available"
+      readonly capabilityVersion: "explore-v2"
+      readonly evidenceVersion: string
+      readonly operations: readonly ContextBuildOperation[]
+      readonly recipe: ResolvedAgentConfig
+      readonly model: string
+    }
+  | { readonly status: "unavailable"; readonly reason: ContextPackEvidenceDenialReason }
+
+export interface ResolvedRecipientProfile {
+  readonly profileVersion: string
+  readonly evidenceVersion: string
+  readonly recipe: ResolvedAgentConfig
+  readonly model: string
+  readonly freshSessionCapacity: number
+  readonly reserve: number
+  readonly counterVersion: string
+  readonly validUntil: number
+}
+
+export type RecipientProfileAvailability =
+  | { readonly status: "available"; readonly profile: ResolvedRecipientProfile }
+  | { readonly status: "unavailable"; readonly reason: ContextPackEvidenceDenialReason }
