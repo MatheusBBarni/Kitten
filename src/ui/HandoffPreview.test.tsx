@@ -8,6 +8,7 @@ import { createFakeController, readyRuntimes, type FakeController } from "../../
 import { actAsync, destroyMounted, testRender } from "../../test/reactTui.ts"
 import { startMockAgent, type MockPromptScript } from "../../test/mockAgent.ts"
 import { createAgentConnection, type AgentConnection, type PromptBlock } from "../agent/agentConnection.ts"
+import { ASK_USER_MCP_HOST_GUIDANCE } from "../agent/askUserMcp.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import { createSessionController } from "../app/controller.ts"
 import { FILES_HEADING as BLOCK_FILES_HEADING, HANDOFF_INSTRUCTION, pendingDiffHeading } from "../app/handoff.ts"
@@ -1203,9 +1204,10 @@ describe("integration - hand-off across two mock agents", () => {
     expect(codex.agent.prompts).toHaveLength(1)
     const prompt = codex.agent.prompts[0]!.prompt
     const delivered = prompt.map((block) => (block.type === "text" ? block.text : "")).join("\n")
-    expect(prompt[0]).toEqual({ type: "text", text: HANDOFF_INSTRUCTION })
+    expect(prompt[0]).toEqual({ type: "text", text: ASK_USER_MCP_HOST_GUIDANCE })
+    expect(prompt[1]).toEqual({ type: "text", text: HANDOFF_INSTRUCTION })
     expect(delivered).toContain(HANDOFF_INSTRUCTION)
-    expect(prompt[1]).toEqual({ type: "text", text: `${editedPrefix}${originalSummary}` })
+    expect(prompt[2]).toEqual({ type: "text", text: `${editedPrefix}${originalSummary}` })
     expect(delivered).toContain("I got stuck.")
     expect(delivered).toContain(REDACTION_PLACEHOLDER)
     expect(delivered).not.toContain(SECRET)
