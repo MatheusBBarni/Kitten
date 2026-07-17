@@ -62,6 +62,11 @@ export interface RecordedCalls {
   createConversation: number
   startDelegatedChild: StartDelegatedChildInput[]
   startExploreChild: ExploreLaunchRequest[]
+  startContextBuild: StartContextBuildInput[]
+  reviewContextPack: SessionId[]
+  sealContextPack: { sessionId: SessionId; candidateRevision: number }[]
+  assessContextPackRecipientFit: SessionId[]
+  sendContextPackHere: SessionId[]
   steerDelegatedChild: { childId: SessionId; text: string }[]
   cancelDelegatedChild: SessionId[]
   cleanupManagedWorktree: SessionId[]
@@ -153,6 +158,30 @@ export interface FakeControllerOptions {
     parentId: SessionId,
     store: AppStore,
   ) => ExploreAvailabilityResult
+  /** Typed Context Build launch and advisory seams for Context Pack panel tests. */
+  startContextBuild?: (
+    input: StartContextBuildInput,
+    store: AppStore,
+  ) => ContextBuildStartResult | Promise<ContextBuildStartResult>
+  contextBuildAvailability?: (
+    input: StartContextBuildInput,
+    store: AppStore,
+  ) => ContextBuildAvailabilityResult
+  /** Typed Context Pack custody seams used by the presentation-only panel. */
+  reviewContextPack?: (
+    sessionId: SessionId,
+    store: AppStore,
+  ) => ContextPackReviewResult | Promise<ContextPackReviewResult>
+  sealContextPack?: (
+    sessionId: SessionId,
+    candidateRevision: number,
+    store: AppStore,
+  ) => ContextPackSealActionResult | Promise<ContextPackSealActionResult>
+  assessContextPackRecipientFit?: (sessionId: SessionId, store: AppStore) => RecipientFit
+  sendContextPackHere?: (
+    sessionId: SessionId,
+    store: AppStore,
+  ) => ContextPackSendHereResult | Promise<ContextPackSendHereResult>
   /** Deterministic normal-prompt boundary for transcript-driven statusline tests. */
   sendPrompt?: (
     input: PromptInput,
@@ -222,6 +251,11 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     createConversation: 0,
     startDelegatedChild: [],
     startExploreChild: [],
+    startContextBuild: [],
+    reviewContextPack: [],
+    sealContextPack: [],
+    assessContextPackRecipientFit: [],
+    sendContextPackHere: [],
     steerDelegatedChild: [],
     cancelDelegatedChild: [],
     cleanupManagedWorktree: [],
@@ -382,26 +416,39 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
             ? { kind: "available" as const }
             : { kind: "denied" as const, reason: "missing-attestation" as const })
       },
-      async startContextBuild(_input: StartContextBuildInput): Promise<ContextBuildStartResult> {
-        return { kind: "denied", reason: "missing_evidence" }
+      async startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult> {
+        calls.startContextBuild.push(input)
+        return await (options.startContextBuild?.(input, store)
+          ?? { kind: "denied" as const, reason: "missing_evidence" as const })
       },
-      contextBuildAvailability(_input: StartContextBuildInput): ContextBuildAvailabilityResult {
-        return { kind: "denied", reason: "missing_evidence" }
+      contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult {
+        return options.contextBuildAvailability?.(input, store)
+          ?? (options.startContextBuild
+            ? { kind: "available" as const }
+            : { kind: "denied" as const, reason: "missing_evidence" as const })
       },
-      async reviewContextPack(_sessionId: SessionId): Promise<ContextPackReviewResult> {
-        return { kind: "blocked", reason: "draft_unavailable" }
+      async reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult> {
+        calls.reviewContextPack.push(sessionId)
+        return await (options.reviewContextPack?.(sessionId, store)
+          ?? { kind: "blocked" as const, reason: "draft_unavailable" as const })
       },
       async sealContextPack(
-        _sessionId: SessionId,
-        _candidateRevision: number,
+        sessionId: SessionId,
+        candidateRevision: number,
       ): Promise<ContextPackSealActionResult> {
-        return { kind: "blocked", reason: "review_unavailable" }
+        calls.sealContextPack.push({ sessionId, candidateRevision })
+        return await (options.sealContextPack?.(sessionId, candidateRevision, store)
+          ?? { kind: "blocked" as const, reason: "review_unavailable" as const })
       },
-      assessContextPackRecipientFit(_sessionId: SessionId): RecipientFit {
-        return { kind: "unavailable", reason: "missing_evidence" }
+      assessContextPackRecipientFit(sessionId: SessionId): RecipientFit {
+        calls.assessContextPackRecipientFit.push(sessionId)
+        return options.assessContextPackRecipientFit?.(sessionId, store)
+          ?? { kind: "unavailable", reason: "missing_evidence" }
       },
-      async sendContextPackHere(_sessionId: SessionId): Promise<ContextPackSendHereResult> {
-        return { kind: "blocked", reason: "sealed_unavailable" }
+      async sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult> {
+        calls.sendContextPackHere.push(sessionId)
+        return await (options.sendContextPackHere?.(sessionId, store)
+          ?? { kind: "blocked" as const, reason: "sealed_unavailable" as const })
       },
       async exportContextPack(input): Promise<ContextPackExportActionResult> {
         calls.exportContextPack.push(input)

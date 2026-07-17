@@ -52,6 +52,7 @@ import type {
   SessionId,
   SessionState,
   SessionStatus,
+  SessionUsage,
   SteeringPhase,
   SteeringState,
   ShellState,
@@ -694,6 +695,12 @@ export const selectSessionHeadroom =
     if (!usage || usage.size <= 0) return null
     return Math.round(((usage.size - usage.used) / usage.size) * 100)
   }
+
+/** Exact immutable usage object that invalidates a displayed Context Pack fit assessment. */
+export const selectSessionUsage =
+  (sessionId: SessionId): Selector<SessionUsage | null> =>
+  (state) =>
+    state.sessions[sessionId]?.usage ?? null
 
 /** One session's live-restore outcome, or `null` during a normal non-restored run. */
 export const selectRestoration =
