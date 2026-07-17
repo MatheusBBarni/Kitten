@@ -113,6 +113,7 @@ function setup(
   scheduler?: FrameScheduler,
   config: AgentConfig | ResolvedAgentConfig = CONFIG,
   harnessProfiles?: readonly CertifiedHarnessProfile[],
+  fileSystemAccess?: "read-write" | "none",
 ) {
   const pair = createInMemoryTransportPair()
   const mock = startMockAgent(pair.agent, mockOptions)
@@ -122,6 +123,7 @@ function setup(
     transport: () => ({ stream: pair.client, onClose: () => {}, dispose: async () => {} }),
     scheduler,
     harnessProfiles,
+    fileSystemAccess,
   })
   conn.onUpdate((event) => events.push(event))
   return { conn, mock, events }
@@ -1404,3 +1406,30 @@ describe("filesystem callbacks", () => {
 
 // Ensure adapters expose the interface type without unused-import noise.
 export type _AgentConnection = AgentConnection
+  it("omits ACP filesystem capability and handlers for a bridge-only child", async () => {
+    let callbackRejected = false
+    const { conn } = setup({
+      onInitialize(request) {
+        expect(request.clientCapabilities?.fs).toEqual({
+          readTextFile: false,
+          writeTextFile: false,
+        })
+        return { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: "mock-agent", version: "0.0.0" } }
+      },
+      onPrompt: async (request, ctx) => {
+        try {
+          await ctx.readTextFile(`${request.sessionId}.txt`)
+        } catch {
+          callbackRejected = true
+        }
+        return "end_turn" as const
+      },
+    }, undefined, UNSUPPORTED_CONFIG, undefined, "none")
+
+    const readiness = await conn.connect()
+    expect(readiness).toEqual({ ready: true, protocolVersion: 1, canLoadSession: false })
+    const sessionId = await conn.newSession("/tmp")
+    await conn.prompt(sessionId, [{ type: "text", text: "bounded bridge only" }])
+    expect(callbackRejected).toBe(true)
+    await conn.dispose()
+  })

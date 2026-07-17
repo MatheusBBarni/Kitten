@@ -16,6 +16,8 @@ import {
   previousSessionId,
   type CloseChoice,
   type CloseConversationResult,
+  type ContextBuildAvailabilityResult,
+  type ContextBuildStartResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type ExploreAvailabilityResult,
@@ -23,6 +25,7 @@ import {
   type ExploreLaunchResult,
   type PromptInput,
   type StartDelegatedChildInput,
+  type StartContextBuildInput,
   type StatuslineWriteResult,
   type SteeringResult,
   type SwitchFocusOptions,
@@ -347,6 +350,12 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
             : { kind: "denied" as const, reason: "missing-attestation" as const })
       },
       async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
+      async startContextBuild(_input: StartContextBuildInput): Promise<ContextBuildStartResult> {
+        return { kind: "denied", reason: "missing_evidence" }
+      },
+      contextBuildAvailability(_input: StartContextBuildInput): ContextBuildAvailabilityResult {
+        return { kind: "denied", reason: "missing_evidence" }
+      },
         calls.steerDelegatedChild.push({ childId, text })
         const child = store.getState().delegation.children[childId]
         if (!child || child.terminal || text.trim().length === 0) return null

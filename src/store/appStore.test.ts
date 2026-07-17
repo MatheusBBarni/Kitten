@@ -2698,6 +2698,71 @@ describe("Context Pack store integration", () => {
     expect(store.getState().contextPacks.a?.sealed).toBe(sealed)
   })
 
+  it("atomically prepares and binds one exact draft revision, then settles only matching ownership", () => {
+    const store = createAppStore({
+      seeds: [
+        { id: "a", providerKind: "claude-code", title: "A", cwd: "/work/a" },
+        { id: "b", providerKind: "codex", title: "B", cwd: "/work/b" },
+      ],
+      selectedVisibleId: "a",
+    })
+    store.openSettings()
+    const focus = store.getState().focusedPane
+    const overlays = store.getState().overlays
+    const selected = store.getState().workspace.selectedVisibleId
+    const commits: Array<{ draftRevision: number | null; boundRevision: number | null }> = []
+    store.subscribe((state, previous) => {
+      if (state.contextPacks.b !== previous.contextPacks.b) {
+        commits.push({
+          draftRevision: state.contextPacks.b?.draft?.revision ?? null,
+          boundRevision: state.contextPacks.b?.build?.draftRevision ?? null,
+        })
+      }
+    })
+
+    const prepared = store.prepareContextBuild("b", {
+      kind: "start_fresh",
+      original: "Curate B",
+    }, {
+      parentId: "b",
+      childId: "builder-1",
+      parentGeneration: 3,
+      childGeneration: 7,
+    })
+
+    expect(prepared.kind).toBe("prepared")
+    if (prepared.kind !== "prepared") throw new Error("expected prepared build")
+    expect(prepared.binding.draftRevision).toBe(prepared.draft.revision)
+    expect(commits).toEqual([{
+      draftRevision: prepared.draft.revision,
+      boundRevision: prepared.draft.revision,
+    }])
+    expect(store.prepareContextBuild("b", {
+      kind: "start_fresh",
+      original: "Concurrent",
+    }, {
+      parentId: "b",
+      childId: "builder-2",
+      parentGeneration: 3,
+      childGeneration: 8,
+    })).toEqual({ kind: "denied", reason: "build_active" })
+
+    expect(store.settleContextBuild("b", {
+      ...prepared.binding,
+      childGeneration: 99,
+    }, "ready_for_review")).toBe(false)
+    expect(store.getState().contextPacks.b?.build).toEqual(prepared.binding)
+    expect(store.settleContextBuild("b", prepared.binding, "ready_for_review")).toBe(true)
+    expect(store.getState().contextPacks.b?.build).toBeNull()
+    expect(store.getState().workspace.conversations.b?.attention).toMatchObject({
+      status: "finished",
+      seen: false,
+    })
+    expect(store.getState().workspace.selectedVisibleId).toBe(selected)
+    expect(store.getState().focusedPane).toBe(focus)
+    expect(store.getState().overlays).toBe(overlays)
+  })
+
   it("cleans up only removed sessions and drops all live state on replacement", () => {
     const store = createAppStore({
       seeds: [

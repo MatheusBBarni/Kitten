@@ -380,6 +380,37 @@ export type DelegatedChildStatePublication = DelegatedChildIdentity &
     | { readonly status: "cancelled"; readonly sessionStatus: "idle"; readonly at: number }
   )
 
+/** One explicit draft choice admitted together with its live Context Build binding. */
+export type ContextBuildDraftPreparation =
+  | {
+      readonly kind: "start_fresh"
+      readonly original: string
+      readonly mode?: ContextPackInstructions["mode"]
+      readonly discovered?: string
+      readonly budgetLimit?: number
+    }
+  | { readonly kind: "refine" }
+
+/** Generation identity supplied by the controller before any child I/O starts. */
+export interface ContextBuildBindingIdentity {
+  readonly parentId: SessionId
+  readonly childId: SessionId
+  readonly parentGeneration: number
+  readonly childGeneration: number
+}
+
+/** Atomic prepare result; expected denials never escape as exceptions. */
+export type ContextBuildPreparationResult =
+  | {
+      readonly kind: "prepared"
+      readonly draft: NonNullable<ContextPackState["draft"]>
+      readonly binding: ContextBuildBinding
+    }
+  | {
+      readonly kind: "denied"
+      readonly reason: "unknown_session" | "build_active" | "draft_unavailable" | "invalid_draft"
+    }
+
 /** A function projecting a narrow slice out of the state, for `subscribeSelector`. */
 export type Selector<T> = (state: AppState) => T
 
@@ -471,8 +502,20 @@ export interface AppStore {
   sealContextPack(sessionId: SessionId, sealed: SealedContextPack): boolean
   /** Bind one live Context Build to the addressed current draft. */
   bindContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
+  /** Atomically create/refine the addressed draft and bind its exact revision before launch. */
+  prepareContextBuild(
+    sessionId: SessionId,
+    preparation: ContextBuildDraftPreparation,
+    identity: ContextBuildBindingIdentity,
+  ): ContextBuildPreparationResult
   /** Release only the matching live Context Build generation. */
   releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean
+  /** Release one matching build and publish only background attention for its terminal outcome. */
+  settleContextBuild(
+    sessionId: SessionId,
+    binding: ContextBuildBinding,
+    outcome: "ready_for_review" | "failed",
+  ): boolean
   /** Apply one semantic shell event through the pure shell reducer. */
   applyShellEvent(event: ShellEvent): void
   /** Bind a session to a (new) ACP session id, resetting its transcript and status. */
@@ -1032,10 +1075,70 @@ class AppStoreImpl implements AppStore {
     return true
   }
 
+  prepareContextBuild(
+    sessionId: SessionId,
+    preparation: ContextBuildDraftPreparation,
+    identity: ContextBuildBindingIdentity,
+  ): ContextBuildPreparationResult {
+    const current = this.state.contextPacks[sessionId]
+    if (!current || identity.parentId !== sessionId) {
+      return { kind: "denied", reason: "unknown_session" }
+    }
+    if (current.build) return { kind: "denied", reason: "build_active" }
+
+    const result = preparation.kind === "start_fresh"
+      ? createDraft(preparation.original, {
+          ...(preparation.mode === undefined ? {} : { mode: preparation.mode }),
+          ...(preparation.discovered === undefined ? {} : { discovered: preparation.discovered }),
+          ...(preparation.budgetLimit === undefined ? {} : { budgetLimit: preparation.budgetLimit }),
+        })
+      : current.sealed && isLiveSealedContextPack(current.sealed)
+        ? startFreshFromSealed(current.sealed)
+        : null
+    if (result === null) return { kind: "denied", reason: "draft_unavailable" }
+    if (result.kind !== "created") return { kind: "denied", reason: "invalid_draft" }
+
+    const binding: ContextBuildBinding = {
+      ...identity,
+      draftRevision: result.draft.revision,
+      state: "building",
+    }
+    this.commitContextPack(sessionId, {
+      ...current,
+      draft: result.draft,
+      review: null,
+      build: binding,
+    })
+    return { kind: "prepared", draft: result.draft, binding }
+  }
+
   releaseContextBuild(sessionId: SessionId, binding: ContextBuildBinding): boolean {
     const current = this.state.contextPacks[sessionId]
     if (!current?.build || !sameContextBuildIdentity(current.build, binding)) return false
     this.commitContextPack(sessionId, { ...current, build: null })
+    return true
+  }
+
+  settleContextBuild(
+    sessionId: SessionId,
+    binding: ContextBuildBinding,
+    outcome: "ready_for_review" | "failed",
+  ): boolean {
+    const current = this.state.contextPacks[sessionId]
+    if (!current?.build || !sameContextBuildIdentity(current.build, binding)) return false
+    const workspace = workspaceReducer(this.state.workspace, {
+      kind: "execution_status",
+      sessionId,
+      status: outcome === "ready_for_review" ? "finished" : "error",
+    })
+    this.commit({
+      ...this.state,
+      contextPacks: {
+        ...this.state.contextPacks,
+        [sessionId]: { ...current, build: null },
+      },
+      workspace,
+    })
     return true
   }
 

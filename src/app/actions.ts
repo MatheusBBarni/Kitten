@@ -25,6 +25,7 @@ import {
   type ClarificationOutcome,
   type ConfigOption,
   type DefaultApplyResult,
+  type ContextPackEvidenceDenialReason,
   type ProviderKind,
   type ProviderModelDefault,
   type SessionId,
@@ -33,7 +34,7 @@ import {
 import type { StatuslineLayout } from "../core/statusline.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { visibleConversationIds } from "../core/workspace.ts"
-import type { AppStore } from "../store/appStore.ts"
+import type { AppStore, ContextBuildDraftPreparation } from "../store/appStore.ts"
 import { selectNextNeedy } from "../store/selectors.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
 import type { CleanupManagedWorktreeResult } from "./managedWorktree.ts"
@@ -71,6 +72,38 @@ export type ExploreLaunchResult =
 export type ExploreAvailabilityResult =
   | { readonly kind: "available" }
   | { readonly kind: "denied"; readonly reason: ExploreDenialReason }
+
+/** Explicit choice of the draft revision the controller must prepare before launch. */
+export type ContextBuildDraftChoice = ContextBuildDraftPreparation
+
+export interface StartContextBuildInput {
+  readonly parentId: SessionId
+  readonly draft: ContextBuildDraftChoice
+}
+
+/** Closed Context Build denials keep UI callbacks fail-soft and fallback-free. */
+export type ContextBuildDenialReason =
+  | ContextPackEvidenceDenialReason
+  | "unknown_parent"
+  | "parent_unavailable"
+  | "parent_generation_mismatch"
+  | "workspace_mismatch"
+  | "session_mismatch"
+  | "build_active"
+  | "draft_unavailable"
+  | "invalid_draft"
+  | "binding_changed"
+  | "bridge_unavailable"
+  | "startup_failed"
+  | "controller_disposed"
+
+export type ContextBuildAvailabilityResult =
+  | { readonly kind: "available" }
+  | { readonly kind: "denied"; readonly reason: ContextBuildDenialReason }
+
+export type ContextBuildStartResult =
+  | { readonly kind: "started"; readonly childId: SessionId; readonly draftRevision: number }
+  | { readonly kind: "denied"; readonly reason: ContextBuildDenialReason }
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
@@ -270,6 +303,10 @@ export interface ControllerActions {
   /** Explicitly clean one managed terminal non-live child workspace. */
   cleanupManagedWorktree(childId: SessionId): Promise<CleanupManagedWorktreeResult>
   /** Start only an exactly attested explore child, with a typed closed outcome. */
+  /** Authoritative fail-closed Context Build launch. */
+  startContextBuild?: (input: StartContextBuildInput) => Promise<ContextBuildStartResult>
+  /** Advisory only; Context Build launch always re-attests exact explore-v2 evidence. */
+  contextBuildAvailability?: (input: StartContextBuildInput) => ContextBuildAvailabilityResult
   startExploreChild(input: ExploreLaunchRequest): Promise<ExploreLaunchResult>
   /** Read current advisory eligibility without reserving or starting anything. */
   exploreAvailability(parentId: SessionId): ExploreAvailabilityResult
@@ -296,6 +333,10 @@ export interface ControllerActions {
     sessionId: SessionId,
     outcome: FileSelectorDiscoveryOutcome,
     durationMs: number,
+  /** Start one exact explore-v2 Context Build bound to the addressed draft. */
+  startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult>
+  /** Read advisory Context Build eligibility without preparing a draft or binding. */
+  contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult
   ): void
   /** Record one fixed warm-query render state and caller-owned duration. */
   fileSelectorQueryRendered(
@@ -422,6 +463,14 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const focused = (): SessionId | undefined =>
     store.getState().workspace.selectedVisibleId ?? undefined
 
+  const startContextBuild = deps.startContextBuild ?? (async () => ({
+    kind: "denied" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const contextBuildAvailability = deps.contextBuildAvailability ?? (() => ({
+    kind: "denied" as const,
+    reason: "missing_evidence" as const,
+  }))
   async function sendPrompt(
     input: PromptInput,
     requestedSessionId?: SessionId,
@@ -733,6 +782,23 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       ) {
         recorder.tabBackgrounded?.()
       }
+    async startContextBuild(input): Promise<ContextBuildStartResult> {
+      try {
+        return await startContextBuild(input)
+      } catch (error) {
+        onError(input.parentId, error)
+        return { kind: "denied", reason: "startup_failed" }
+      }
+    },
+
+    contextBuildAvailability(input): ContextBuildAvailabilityResult {
+      try {
+        return contextBuildAvailability(input)
+      } catch {
+        return { kind: "denied", reason: "missing_evidence" }
+      }
+    },
+
     },
 
     reopenConversation,

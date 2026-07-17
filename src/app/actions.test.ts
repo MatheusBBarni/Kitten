@@ -105,3 +105,52 @@ describe("ControllerActions steering boundary", () => {
     expect(test.store.getState().sessions.alpha!.steering.recovery).toBeNull()
   })
 })
+describe("ControllerActions Context Build boundary", () => {
+  const input = {
+    parentId: "alpha",
+    draft: { kind: "start_fresh", original: "Curate the controller lifecycle" },
+  } as const
+
+  it("fails closed when no controller-owned explore-v2 seam is installed", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }],
+    })
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+    })
+
+    expect(actions.contextBuildAvailability(input)).toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+    await expect(actions.startContextBuild(input)).resolves.toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+  })
+
+  it("contains a rejected launch and reports it without rejecting into the caller", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }],
+    })
+    const failure = new Error("launch seam failed")
+    const errors: unknown[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      contextBuildAvailability: () => ({ kind: "available" }),
+      startContextBuild: async () => { throw failure },
+      onError: (_sessionId, error) => errors.push(error),
+    })
+
+    expect(actions.contextBuildAvailability(input)).toEqual({ kind: "available" })
+    await expect(actions.startContextBuild(input)).resolves.toEqual({
+      kind: "denied",
+      reason: "startup_failed",
+    })
+    expect(errors).toEqual([failure])
+  })
+})

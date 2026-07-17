@@ -209,6 +209,8 @@ export interface AgentConnectionOptions {
   transport?: TransportFactory
   /** Frame scheduler for coalescing; defaults to a real timer-based scheduler. */
   scheduler?: FrameScheduler
+  /** ACP filesystem authority. Context Build children set this to `none` and use only their bounded bridge. */
+  fileSystemAccess?: "read-write" | "none"
   /** Reviewed profiles; injectable only so deterministic adapter tests stay credential-free. */
   harnessProfiles?: readonly CertifiedHarnessProfile[]
 }
@@ -240,6 +242,7 @@ class AgentConnectionImpl implements AgentConnection {
   private readonly runtimeProfile: ProviderRuntimeProfile
   private readonly clarificationSupported: boolean
   private readonly transportFactory: TransportFactory
+  private readonly fileSystemAccess: "read-write" | "none"
   private readonly scheduler: FrameScheduler
   private readonly harnessProfiles: readonly CertifiedHarnessProfile[]
 
@@ -276,6 +279,7 @@ class AgentConnectionImpl implements AgentConnection {
     this.clarificationSupported =
       "clarificationCapability" in options.config && options.config.clarificationCapability.status === "supported"
     this.transportFactory = options.transport ?? spawnAgentTransport
+    this.fileSystemAccess = options.fileSystemAccess ?? "read-write"
     this.scheduler = options.scheduler ?? createFrameScheduler()
     this.harnessProfiles = options.harnessProfiles ?? CERTIFIED_HARNESS_PROFILES
   }
@@ -299,7 +303,9 @@ class AgentConnectionImpl implements AgentConnection {
       const result = await this.connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {
-          fs: { readTextFile: true, writeTextFile: true },
+          ...(this.fileSystemAccess === "read-write"
+            ? { fs: { readTextFile: true, writeTextFile: true } }
+            : {}),
           // Select config options are part of Kitten's confirmed session state. Advertise
           // that surface so ACP agents can safely return model and reasoning controls.
           // Boolean options remain intentionally unsupported by the V1 UI.
@@ -476,8 +482,12 @@ class AgentConnectionImpl implements AgentConnection {
     const client: Client = {
       sessionUpdate: (params: SessionNotification) => this.onSessionUpdate(params),
       requestPermission: (params: RequestPermissionRequest) => this.onRequestPermission(params),
-      readTextFile: (params: ReadTextFileRequest) => readTextFile(params),
-      writeTextFile: (params: WriteTextFileRequest) => writeTextFile(params),
+      ...(this.fileSystemAccess === "read-write"
+        ? {
+            readTextFile: (params: ReadTextFileRequest) => readTextFile(params),
+            writeTextFile: (params: WriteTextFileRequest) => writeTextFile(params),
+          }
+        : {}),
     }
     if (this.clarificationSupported) {
       client.unstable_createElicitation = (params: CreateElicitationRequest) => this.onCreateElicitation(params)

@@ -20,7 +20,13 @@
 
 import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRequest, PromptBlock } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
+import { CONTEXT_PACK_MCP_INSTRUCTIONS, type ContextPackMcpOperation } from "../agent/contextPackMcp.ts"
+import { isAbsolute } from "node:path"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
+import {
+  CONTEXT_BUILD_OPERATIONS,
+  resolveContextBuildCapability,
+} from "../config/contextPackCapability.ts"
 import {
   EXPLORE_ATTESTATION_VERSION,
   resolveExploreCapability,
@@ -41,7 +47,7 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextPackState, type DomainSessionEvent, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackState, type DomainSessionEvent, type DraftContextPack, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
@@ -61,7 +67,7 @@ import {
   type ShellRuntime,
   type ShellRuntimeFactory,
 } from "../shell/shellRuntime.ts"
-import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type DelegatedChildIdentity, type DelegatedChildStatePublication, type Unsubscribe } from "../store/appStore.ts"
+import { createAppStore, type AppStore, type ApprovalOverlay, type ClarificationOverlay, type ContextBuildDraftPreparation, type DelegatedChildIdentity, type DelegatedChildStatePublication, type Unsubscribe } from "../store/appStore.ts"
 import {
   bucketAgentRunBatchSize,
   bucketAgentRunDuration,
@@ -95,9 +101,13 @@ import {
   type ControllerActions,
   type ExploreAvailabilityResult,
   type ExploreLaunchResult,
+  type ContextBuildAvailabilityResult,
+  type ContextBuildDenialReason,
+  type ContextBuildStartResult,
   type StartDelegatedChildInput,
   type SteeringResult,
 } from "./actions.ts"
+  type StartContextBuildInput,
 import { createSteeringCoordinator, type SteeringCoordinator } from "./steeringCoordinator.ts"
 import {
   beginDispatch,
@@ -125,6 +135,19 @@ import {
 } from "./kittenMcpBridge.ts"
 import {
   createManagedWorktreeProvisioner,
+import {
+  createContextPackBridge as createRealContextPackBridge,
+  type ContextPackBridge,
+  type ContextPackBridgeAuthorization,
+  type ContextPackBridgeDisposalReason,
+  type ContextPackBridgeFacade,
+  type ContextPackBridgeRoute,
+  type CreateContextPackBridgeOptions,
+} from "./contextPackBridge.ts"
+import {
+  createContextPackMaterializer,
+  type ContextPackMaterializer,
+} from "./contextPackMaterializer.ts"
   type CleanupManagedWorktreeResult,
   type ManagedWorktreeProvisioner,
 } from "./managedWorktree.ts"
@@ -284,6 +307,8 @@ export interface SessionControllerOptions {
   resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
   /** Closed explore attestation decision; injectable with reviewed fake evidence in tests. */
   resolveExploreCapability?: (config: ResolvedAgentConfig) => ExploreCapability
+  /** How to build the restricted Context Build child connection. Defaults to ACP filesystem disabled. */
+  createContextBuildConnection?: (config: ResolvedAgentConfig) => AgentConnection
   /** Schedule one accepted clarification timeout and return its cancellation hook. */
   scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Schedule one bounded steering settlement wait and return its cancellation hook. */
@@ -321,12 +346,18 @@ export interface SessionController {
 }
 
 /** The resolver-free projection consumers may render for the currently active request. */
+  /** Closed explore-v2 decision; called again for every Context Build launch. */
+  resolveContextBuildCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
 export type ActiveAgentInteraction =
   | {
       readonly kind: "permission"
       readonly requestId: string
       readonly sessionId: SessionId
       readonly generation: number
+  /** Dedicated Context Pack bridge factory; never shares the mixed child action surface. */
+  createContextPackBridge?: (options: CreateContextPackBridgeOptions) => ContextPackBridge
+  /** Bounded workspace reader used only through the dedicated Context Pack bridge. */
+  contextPackMaterializer?: ContextPackMaterializer
       readonly request: PermissionRequest
     }
   | {
@@ -723,6 +754,25 @@ export async function createSessionController(options: SessionControllerOptions)
     askUser: "loading" | "attached" | "unavailable",
   ): McpRuntimeReadout => runtime.mcpScope === "explore"
     ? { loaded: [], skipped: [], askUser }
+/** Controller-owned I/O handles for one store-bound, non-conversation Context Build child. */
+interface ContextBuildChildRuntime {
+  readonly binding: ContextBuildBinding
+  readonly route: ContextPackBridgeRoute
+  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
+  readonly clarificationHandles: Set<ClarificationRequestHandle>
+  connection: AgentConnection | null
+  acpSessionId: string | null
+  unsubscribe: Unsubscribe | null
+  settled: boolean
+}
+
+interface ContextBuildPreflight {
+  readonly parentRuntime: AgentRuntime & { readonly config: ResolvedAgentConfig }
+  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
+  readonly parentGeneration: number
+  readonly workspaceRoot: string
+}
+
     : mcpReadout(askUser)
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
@@ -743,9 +793,12 @@ export async function createSessionController(options: SessionControllerOptions)
   // provider in the launch directory when the config declares none, else each
   // declared session with its own `cwd`/`title`/`task` and a distinct session id.
   const initialPlan: { seed: SessionSeed; config: ResolvedAgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
+  const createContextBuildConnection = options.createContextBuildConnection ?? defaultCreateContextBuildConnection
     (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
   )
 
+  const attestContextBuild = options.resolveContextBuildCapability ?? ((config: ResolvedAgentConfig) =>
+    resolveContextBuildCapability(config, undefined, options.now?.() ?? Date.now()))
   const store = options.store ?? createAppStore({ seeds: initialPlan.map((entry) => entry.seed) })
 
   const runtimes = new Map<SessionId, AgentRuntime>()
@@ -793,6 +846,7 @@ export async function createSessionController(options: SessionControllerOptions)
     },
     onPreempted(interaction) {
       options.recorder?.clarificationPreempted?.(interaction.sessionId, interaction.kind)
+  const contextBuildChildren = new Map<SessionId, ContextBuildChildRuntime>()
     },
     onResumed(interaction) {
       options.recorder?.clarificationResumed?.(interaction.sessionId, interaction.kind)
@@ -845,6 +899,11 @@ export async function createSessionController(options: SessionControllerOptions)
         scrollback: options.config.shell.scrollback,
       })
       unsubscribeShell = ownedShell.onEvent((event) => store.applyShellEvent(event))
+  const contextPackMaterializer = options.contextPackMaterializer ?? createContextPackMaterializer()
+  const contextPackBridge = (options.createContextPackBridge ?? createRealContextPackBridge)({
+    executablePath: kittenMcpExecutable.command,
+    executableArgs: kittenMcpExecutable.args,
+  })
       shell = { ready: true, runtime: ownedShell }
     } catch (error) {
       unsubscribeShell?.()
@@ -1177,6 +1236,7 @@ export async function createSessionController(options: SessionControllerOptions)
       sessionId: interaction.sessionId,
       title: seed?.title ?? interaction.sessionId,
       cwd: seed?.cwd ?? "",
+    terminateContextBuildForParent(runtime.seed.id, generation)
       payload: interaction.payload,
     }
   }
@@ -2363,6 +2423,341 @@ export async function createSessionController(options: SessionControllerOptions)
       })
       telemetryOutcome = "accepted"
       return snapshots
+  function contextBuildPreflight(
+    input: StartContextBuildInput,
+  ): ContextBuildPreflight | Extract<ContextBuildAvailabilityResult, { readonly kind: "denied" }> {
+    if (disposed) return { kind: "denied", reason: "controller_disposed" }
+    const state = store.getState()
+    const runtime = runtimes.get(input.parentId)
+    const session = state.sessions[input.parentId]
+    const conversation = state.workspace.conversations[input.parentId]
+    if (!runtime || !session || !conversation) {
+      return { kind: "denied", reason: "unknown_parent" }
+    }
+    if (
+      runtime.seed.id !== input.parentId ||
+      session.id !== input.parentId ||
+      conversation.sessionId !== input.parentId ||
+      session.providerKind !== runtime.seed.providerKind ||
+      runtime.config?.id !== runtime.seed.providerKind
+    ) {
+      return { kind: "denied", reason: "session_mismatch" }
+    }
+    if (
+      !runtime.config ||
+      !runtime.state.ready ||
+      !runtime.connection ||
+      runtime.acpSessionId === null ||
+      conversation.teardownState !== "open"
+    ) {
+      return { kind: "denied", reason: "parent_unavailable" }
+    }
+    if (
+      runtime.generation <= 0 ||
+      connectionGenerations.get(input.parentId) !== runtime.generation
+    ) {
+      return { kind: "denied", reason: "parent_generation_mismatch" }
+    }
+    if (
+      !isAbsolute(session.cwd) ||
+      session.cwd !== runtime.seed.cwd ||
+      session.cwd.trim().length === 0
+    ) {
+      return { kind: "denied", reason: "workspace_mismatch" }
+    }
+
+    const pack = state.contextPacks[input.parentId]
+    if (!pack) return { kind: "denied", reason: "unknown_parent" }
+    if (pack.build) return { kind: "denied", reason: "build_active" }
+    if (input.draft.kind === "refine") {
+      if (!pack.sealed || !("manifest" in pack.sealed)) {
+        return { kind: "denied", reason: "draft_unavailable" }
+      }
+    } else if (createDraft(input.draft.original, {
+      ...(input.draft.mode === undefined ? {} : { mode: input.draft.mode }),
+      ...(input.draft.discovered === undefined ? {} : { discovered: input.draft.discovered }),
+      ...(input.draft.budgetLimit === undefined ? {} : { budgetLimit: input.draft.budgetLimit }),
+    }).kind !== "created") {
+      return { kind: "denied", reason: "invalid_draft" }
+    }
+
+    let capability: ContextBuildAvailability
+    try {
+      capability = attestContextBuild(runtime.config)
+    } catch {
+      return { kind: "denied", reason: "malformed_evidence" }
+    }
+    if (capability.status === "unavailable") {
+      return { kind: "denied", reason: capability.reason }
+    }
+    if (!validContextBuildCapability(capability, runtime.config)) {
+      return { kind: "denied", reason: "recipe_mismatch" }
+    }
+    return {
+      parentRuntime: runtime as AgentRuntime & { config: ResolvedAgentConfig },
+      capability,
+      parentGeneration: runtime.generation,
+      workspaceRoot: session.cwd,
+    }
+  }
+
+  function contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult {
+    const result = contextBuildPreflight(input)
+    return "kind" in result ? result : { kind: "available" }
+  }
+
+  function ownsContextBuild(child: ContextBuildChildRuntime): boolean {
+    if (child.settled || contextBuildChildren.get(child.binding.childId) !== child) return false
+    const current = store.getState().contextPacks[child.binding.parentId]?.build
+    const parent = runtimes.get(child.binding.parentId)
+    const session = store.getState().sessions[child.binding.parentId]
+    return current !== null && current !== undefined &&
+      sameContextBuildBinding(current, child.binding) &&
+      parent?.generation === child.binding.parentGeneration &&
+      parent.seed.cwd === child.route.workspaceRoot &&
+      session?.cwd === child.route.workspaceRoot
+  }
+
+  function cancelContextBuildClarifications(child: ContextBuildChildRuntime): void {
+    for (const handle of [...child.clarificationHandles]) {
+      child.clarificationHandles.delete(handle)
+      handle.cancel("connection_error")
+    }
+  }
+
+  function releaseContextBuildChild(
+    child: ContextBuildChildRuntime,
+    options: {
+      readonly bridgeReason?: "child_settled" | "parent_generation_changed" | "launch_denied"
+      readonly outcome?: "ready_for_review" | "failed"
+    } = {},
+  ): void {
+    if (child.settled) return
+    child.settled = true
+    if (options.bridgeReason) {
+      try {
+        contextPackBridge.revoke(child.route, options.bridgeReason)
+      } catch (error) {
+        onError(child.binding.parentId, error)
+      }
+    }
+    cancelContextBuildClarifications(child)
+    child.unsubscribe?.()
+    child.unsubscribe = null
+    if (contextBuildChildren.get(child.binding.childId) === child) {
+      contextBuildChildren.delete(child.binding.childId)
+    }
+    if (options.outcome) {
+      store.settleContextBuild(child.binding.parentId, child.binding, options.outcome)
+    } else {
+      store.releaseContextBuild(child.binding.parentId, child.binding)
+    }
+    const connection = child.connection
+    child.connection = null
+    child.acpSessionId = null
+    if (connection) void disposeQuietly(connection).catch((error) => onError(child.binding.parentId, error))
+  }
+
+  function terminateContextBuildForParent(
+    parentId: SessionId,
+    parentGeneration: number,
+  ): void {
+    for (const child of [...contextBuildChildren.values()]) {
+      if (
+        child.binding.parentId === parentId &&
+        child.binding.parentGeneration === parentGeneration
+      ) {
+        releaseContextBuildChild(child, { bridgeReason: "parent_generation_changed" })
+      }
+    }
+  }
+
+  function createContextBuildFacade(child: ContextBuildChildRuntime): ContextPackBridgeFacade {
+    const authorized = (input: ContextPackBridgeAuthorization): boolean => {
+      if (!ownsContextBuild(child) || !sameContextBuildRoute(input.route, child.route)) return false
+      if (input.workspaceRoot !== child.route.workspaceRoot) return false
+      return child.capability.operations.includes(contextBuildOperationFor(input.operation))
+    }
+    return {
+      authorize: authorized,
+      readDraft(route): DraftContextPack | null {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) return null
+        return store.getState().contextPacks[route.parentId]?.draft ?? null
+      },
+      async readWorkspace(route, workspaceRoot, request, limits) {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) {
+          return { kind: "blocked", reason: "invalid_workspace", path: request.path }
+        }
+        return await contextPackMaterializer.read(workspaceRoot, request, limits)
+      },
+      mutateDraft(route, input): ContextPackMutationResult | null {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) return null
+        return store.applyContextPackBuilderMutation(route.parentId, input)
+      },
+      async askUser(route, form): Promise<ClarificationOutcome> {
+        if (!sameContextBuildRoute(route, child.route) || !ownsContextBuild(child)) {
+          return { kind: "cancelled" }
+        }
+        const parent = runtimes.get(route.parentId)
+        if (!parent || parent.generation !== route.parentGeneration || !acceptsRuntimeEvents(parent)) {
+          return { kind: "cancelled" }
+        }
+        const handle = enqueueClarificationHandle(parent, form)
+        child.clarificationHandles.add(handle)
+        try {
+          return await handle.outcome
+        } finally {
+          child.clarificationHandles.delete(handle)
+        }
+      },
+      dispose(_route, reason: ContextPackBridgeDisposalReason): void {
+        cancelContextBuildClarifications(child)
+        if (
+          !child.settled &&
+          (reason === "authorization_denied" || reason === "route_replaced" || reason === "bridge_disposed")
+        ) {
+          if (reason === "bridge_disposed") releaseContextBuildChild(child)
+          else releaseContextBuildChild(child, { outcome: "failed" })
+        }
+      },
+    }
+  }
+
+  function launchInvalidationReason(child: ContextBuildChildRuntime): ContextBuildDenialReason {
+    const parent = runtimes.get(child.binding.parentId)
+    const session = store.getState().sessions[child.binding.parentId]
+    if (!parent || parent.generation !== child.binding.parentGeneration) return "parent_generation_mismatch"
+    if (parent.seed.cwd !== child.route.workspaceRoot || session?.cwd !== child.route.workspaceRoot) {
+      return "workspace_mismatch"
+    }
+    return "binding_changed"
+  }
+
+  async function startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult> {
+    const preflight = contextBuildPreflight(input)
+    if ("kind" in preflight) return preflight
+
+    const childId = newSessionId()
+    if (
+      childId.trim().length === 0 ||
+      runtimes.has(childId) ||
+      contextBuildChildren.has(childId) ||
+      store.getState().sessions[childId]
+    ) {
+      return { kind: "denied", reason: "startup_failed" }
+    }
+    const childGeneration = nextConnectionGeneration(childId, connectionGenerations)
+    const prepared = store.prepareContextBuild(input.parentId, input.draft as ContextBuildDraftPreparation, {
+      parentId: input.parentId,
+      childId,
+      parentGeneration: preflight.parentGeneration,
+      childGeneration,
+    })
+    if (prepared.kind === "denied") {
+      return {
+        kind: "denied",
+        reason: prepared.reason === "unknown_session" ? "unknown_parent" : prepared.reason,
+      }
+    }
+
+    const route: ContextPackBridgeRoute = {
+      parentId: prepared.binding.parentId,
+      childId: prepared.binding.childId,
+      parentGeneration: prepared.binding.parentGeneration,
+      childGeneration: prepared.binding.childGeneration,
+      draftRevision: prepared.binding.draftRevision,
+      workspaceRoot: preflight.workspaceRoot,
+    }
+    const child: ContextBuildChildRuntime = {
+      binding: prepared.binding,
+      route,
+      capability: preflight.capability,
+      clarificationHandles: new Set(),
+      connection: null,
+      acpSessionId: null,
+      unsubscribe: null,
+      settled: false,
+    }
+    contextBuildChildren.set(childId, child)
+    if (!ownsContextBuild(child)) {
+      const reason = launchInvalidationReason(child)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return { kind: "denied", reason }
+    }
+
+    let bridgeServer: import("../core/types.ts").McpServerConfig
+    try {
+      bridgeServer = contextPackBridge.register({
+        route,
+        facade: createContextBuildFacade(child),
+      })
+    } catch (error) {
+      onError(input.parentId, error)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return { kind: "denied", reason: "bridge_unavailable" }
+    }
+    if (!ownsContextBuild(child)) {
+      const reason = launchInvalidationReason(child)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return { kind: "denied", reason }
+    }
+
+    let connection: AgentConnection
+    try {
+      connection = createContextBuildConnection(preflight.capability.recipe)
+      if (connection === preflight.parentRuntime.connection) {
+        throw new Error("Context Build must own a distinct child connection")
+      }
+      child.connection = connection
+      child.unsubscribe = connection.onUpdate(() => {})
+      connection.onPermission(async () => ({ outcome: "cancelled" }))
+      connection.onClarification(async () => ({ kind: "cancelled" }))
+      const ready = await connection.connect()
+      if (!ready.ready) throw new Error("Context Build child is not ready")
+      if (!ownsContextBuild(child)) {
+        const reason = launchInvalidationReason(child)
+        releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+        return { kind: "denied", reason }
+      }
+      child.acpSessionId = await connection.newSession(preflight.workspaceRoot, [bridgeServer])
+      if (!ownsContextBuild(child)) {
+        const reason = launchInvalidationReason(child)
+        releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+        return { kind: "denied", reason }
+      }
+    } catch (error) {
+      onError(input.parentId, error)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return { kind: "denied", reason: "startup_failed" }
+    }
+
+    let settlement: Promise<unknown>
+    try {
+      settlement = connection.prompt(child.acpSessionId!, [{
+        type: "text",
+        text: `${CONTEXT_PACK_MCP_INSTRUCTIONS}\n\nPrepare the bound draft for operator review, then stop.`,
+      }])
+    } catch (error) {
+      onError(input.parentId, error)
+      releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
+      return { kind: "denied", reason: "startup_failed" }
+    }
+    void settlement.then(
+      () => releaseContextBuildChild(child, {
+        bridgeReason: "child_settled",
+        outcome: "ready_for_review",
+      }),
+      (error) => {
+        onError(input.parentId, error)
+        releaseContextBuildChild(child, {
+          bridgeReason: "child_settled",
+          outcome: "failed",
+        })
+      },
+    )
+    return { kind: "started", childId, draftRevision: prepared.draft.revision }
+  }
+
     } finally {
       options.recorder?.agentRunControl?.({
         operation: "poll",
@@ -2890,6 +3285,8 @@ export async function createSessionController(options: SessionControllerOptions)
       let backgroundCount = 0
       let unavailableCount = 0
       for (const sessionId of workspace.order) {
+    startContextBuild,
+    contextBuildAvailability,
         const conversation = workspace.conversations[sessionId]
         if (!conversation) continue
         if (conversation.lifecycle === "visible") visibleCount += 1
@@ -3036,6 +3433,9 @@ function mcpBridgeFailureCategory(reason: KittenMcpBridgeFailureReason): McpBrid
  * development, preserve the source entrypoint before appending the reserved mode flag.
  */
 function defaultKittenMcpExecutable(): { command: string; args: readonly string[] } {
+      for (const child of [...contextBuildChildren.values()]) {
+        releaseContextBuildChild(child, { bridgeReason: "parent_generation_changed" })
+      }
   const entrypoint = process.argv[1]
   return {
     command: process.execPath,
@@ -3125,6 +3525,66 @@ function restorePersistedContextPack(projection: PersistedContextPack | undefine
   if (!projection) return { draft: null, sealed: null, review: null, build: null }
   const restoredDraft = projection.draft ? restoreManifest(projection.draft) : null
   if (restoredDraft?.kind === "invalid") {
+function validContextBuildCapability(
+  capability: Extract<ContextBuildAvailability, { readonly status: "available" }>,
+  config: ResolvedAgentConfig,
+): boolean {
+  return capability.capabilityVersion === "explore-v2" &&
+    capability.evidenceVersion.trim().length > 0 &&
+    capability.model.trim().length > 0 &&
+    sameContextBuildOperations(capability.operations, CONTEXT_BUILD_OPERATIONS) &&
+    capability.recipe.id === config.id &&
+    capability.recipe.command === config.command &&
+    sameStringArray(capability.recipe.args, config.args) &&
+    sameStringRecord(capability.recipe.env, config.env)
+}
+
+function sameContextBuildOperations(
+  left: readonly ContextBuildOperation[],
+  right: readonly ContextBuildOperation[],
+): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameStringRecord(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return sameStringArray(leftKeys, rightKeys) && leftKeys.every((key) => left[key] === right[key])
+}
+
+function sameContextBuildBinding(left: ContextBuildBinding, right: ContextBuildBinding): boolean {
+  return left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision
+}
+
+function sameContextBuildRoute(left: ContextPackBridgeRoute, right: ContextPackBridgeRoute): boolean {
+  return left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision &&
+    left.workspaceRoot === right.workspaceRoot
+}
+
+function contextBuildOperationFor(operation: ContextPackMcpOperation): ContextBuildOperation {
+  switch (operation) {
+    case "ask_user": return "ask_user:scoped"
+    case "read_draft": return "draft:read-bounded"
+    case "read_workspace": return "workspace:read-bounded"
+    case "mutate_draft": return "draft:mutate-revision-fenced"
+  }
+}
+
     return { draft: null, sealed: null, review: null, build: null }
   }
   return {
@@ -3189,4 +3649,7 @@ function errorDetails(error: unknown): string | null {
   if (typeof data !== "object" || data === null || !("details" in data)) return null
   const details = (data as { details: unknown }).details
   return typeof details === "string" && details.length > 0 ? details : null
+}
+function defaultCreateContextBuildConnection(config: ResolvedAgentConfig): AgentConnection {
+  return createAgentConnection({ config, fileSystemAccess: "none" })
 }

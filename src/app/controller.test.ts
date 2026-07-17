@@ -19,6 +19,7 @@ import {
 import { defaultAppConfig } from "../config/configLoader.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
 import type { ExploreCapability } from "../config/exploreCapability.ts"
+import { CONTEXT_BUILD_OPERATIONS } from "../config/contextPackCapability.ts"
 import { evaluateExplorePolicy } from "../core/explorePolicy.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
@@ -27,6 +28,7 @@ import type {
   ClarificationOutcome,
   ClarificationPayload,
   ConfigOption,
+  ContextBuildAvailability,
   DomainSessionEvent,
   ManagedWorktreeBinding,
   McpServerConfig,
@@ -86,6 +88,12 @@ import {
   type BridgeRegistration,
 } from "./kittenMcpBridge.ts"
 
+import type {
+  ContextPackBridge,
+  ContextPackBridgeRegistration,
+  ContextPackBridgeRoute,
+  CreateContextPackBridgeOptions,
+} from "./contextPackBridge.ts"
 /**
  * The controller is verified two ways.
  *
@@ -204,6 +212,24 @@ function testExploreCapability(config: ResolvedAgentConfig, limits = { perParent
 }
 
 function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
+function testContextBuildCapability(config: ResolvedAgentConfig): ContextBuildAvailability {
+  return {
+    status: "available",
+    capabilityVersion: "explore-v2",
+    evidenceVersion: "controller-test-v1",
+    operations: [...CONTEXT_BUILD_OPERATIONS],
+    recipe: {
+      ...config,
+      args: [...config.args],
+      env: { ...config.env },
+      clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      steeringCapability: { status: "unavailable" },
+      runtimeProfile: { kind: "standard" },
+    },
+    model: "test-context-model",
+  }
+}
+
   return {
     profileId: TEST_HARNESS_CAPABILITY.status === "supported"
       ? TEST_HARNESS_CAPABILITY.profileId
@@ -468,6 +494,280 @@ describe("interaction coordinator", () => {
 })
 
 /** A `model`-category config option with the given confirmed value, for seeding/switch tests. */
+describe("createSessionController - Context Build lifecycle", () => {
+  async function setupContextBuild(overrides: {
+    readonly buildOptions?: readonly StubOptions[]
+    readonly resolveCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
+    readonly newChildIds?: readonly SessionId[]
+    readonly store?: AppStore
+  } = {}) {
+    const created: StubConnection[] = []
+    const configs: ResolvedAgentConfig[] = []
+    const childIds = [...(overrides.newChildIds ?? ["context-builder-1", "context-builder-2"])]
+    const contextBridge = createRecordingContextPackBridge()
+    const ordinaryBridge = createRecordingBridge()
+    const createTrackedConnection = (config: ResolvedAgentConfig): StubConnection => {
+      configs.push(config)
+      const buildIndex = Math.max(0, created.length - 2)
+      const connection = createStubConnection(
+        config.id,
+        created.length < 2 ? {} : overrides.buildOptions?.[buildIndex] ?? {},
+      )
+      created.push(connection)
+      return connection
+    }
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      store: overrides.store,
+      createConnection: createTrackedConnection,
+      createContextBuildConnection: createTrackedConnection,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      sendInitialTasks: false,
+      newSessionId: () => childIds.shift() ?? "unexpected-context-builder",
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveContextBuildCapability: overrides.resolveCapability ?? testContextBuildCapability,
+      createKittenMcpBridge: ordinaryBridge.factory,
+      createContextPackBridge: contextBridge.factory,
+    })
+    return { controller, created, configs, contextBridge }
+  }
+
+  const freshDraft = (parentId: SessionId, original = "Curate the controller lifecycle") => ({
+    parentId,
+    draft: { kind: "start_fresh" as const, original },
+  })
+
+  it("re-attests explore-v2 and denies missing or newly stale evidence before creating a child", async () => {
+    const missing = await setupContextBuild({
+      resolveCapability: () => ({ status: "unavailable", reason: "missing_evidence" }),
+    })
+    const missingParent = missing.controller.store.getState().workspace.selectedVisibleId!
+    expect(missing.controller.actions.contextBuildAvailability(freshDraft(missingParent))).toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+    expect(await missing.controller.actions.startContextBuild(freshDraft(missingParent))).toEqual({
+      kind: "denied",
+      reason: "missing_evidence",
+    })
+    expect(missing.created).toHaveLength(2)
+    expect(missing.contextBridge.registrations).toHaveLength(0)
+    await missing.controller.dispose()
+
+    let attestations = 0
+    const stale = await setupContextBuild({
+      resolveCapability: (config) => {
+        attestations += 1
+        return attestations === 1
+          ? testContextBuildCapability(config)
+          : { status: "unavailable", reason: "stale_evidence" }
+      },
+    })
+    const staleParent = stale.controller.store.getState().workspace.selectedVisibleId!
+    expect(stale.controller.actions.contextBuildAvailability(freshDraft(staleParent))).toEqual({ kind: "available" })
+    expect(await stale.controller.actions.startContextBuild(freshDraft(staleParent))).toEqual({
+      kind: "denied",
+      reason: "stale_evidence",
+    })
+    expect(attestations).toBe(2)
+    expect(stale.created).toHaveLength(2)
+    expect(stale.contextBridge.registrations).toHaveLength(0)
+    await stale.controller.dispose()
+  })
+
+  it("denies session and workspace mismatches before dedicated bridge registration", async () => {
+    const workspace = await setupContextBuild()
+    workspace.controller.store.replaceSessions([
+      {
+        seed: { id: "claude-code", providerKind: "claude-code", title: "Claude", cwd: "/different/workspace" },
+        workspace: { sessionId: "claude-code", displayName: "Claude" },
+      },
+      {
+        seed: { id: "codex", providerKind: "codex", title: "Codex", cwd: CWD },
+        workspace: { sessionId: "codex", displayName: "Codex" },
+      },
+    ], "claude-code")
+    expect(workspace.controller.runtime("claude-code")?.cwd).toBe(CWD)
+    expect(workspace.controller.store.getState().sessions["claude-code"]?.cwd).toBe("/different/workspace")
+    expect(await workspace.controller.actions.startContextBuild(freshDraft("claude-code"))).toEqual({
+      kind: "denied",
+      reason: "workspace_mismatch",
+    })
+    expect(workspace.contextBridge.registrations).toHaveLength(0)
+    await workspace.controller.dispose()
+
+    const session = await setupContextBuild()
+    session.controller.store.replaceSessions([
+      {
+        seed: { id: "claude-code", providerKind: "codex", title: "Wrong provider", cwd: CWD },
+        workspace: { sessionId: "claude-code", displayName: "Wrong provider" },
+      },
+      {
+        seed: { id: "codex", providerKind: "codex", title: "Codex", cwd: CWD },
+        workspace: { sessionId: "codex", displayName: "Codex" },
+      },
+    ], "claude-code")
+    expect(await session.controller.actions.startContextBuild(freshDraft("claude-code"))).toEqual({
+      kind: "denied",
+      reason: "session_mismatch",
+    })
+    expect(session.contextBridge.registrations).toHaveLength(0)
+    await session.controller.dispose()
+  })
+
+  it("binds the exact draft before child launch and denies a concurrent second build", async () => {
+    const newSessionWait = deferred()
+    const promptWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [{ newSessionWait: newSessionWait.promise, promptWait: promptWait.promise }],
+    })
+    const parentId = test.controller.store.getState().workspace.selectedVisibleId!
+    const first = test.controller.actions.startContextBuild(freshDraft(parentId))
+    await waitFor(
+      () => test.created.length === 3 && test.created[2]!.newSessionCwds.length === 1,
+      "Context Build child to reach session creation",
+    )
+
+    const binding = test.controller.store.getState().contextPacks[parentId]!.build!
+    expect(binding).toMatchObject({
+      parentId,
+      childId: "context-builder-1",
+      parentGeneration: 1,
+      childGeneration: 1,
+      state: "building",
+    })
+    expect(binding.draftRevision).toBe(test.controller.store.getState().contextPacks[parentId]!.draft!.revision)
+    expect(test.contextBridge.registrations).toHaveLength(1)
+    expect(await test.controller.actions.startContextBuild(freshDraft(parentId, "Concurrent"))).toEqual({
+      kind: "denied",
+      reason: "build_active",
+    })
+    expect(test.created).toHaveLength(3)
+
+    newSessionWait.resolve()
+    expect(await first).toEqual({
+      kind: "started",
+      childId: "context-builder-1",
+      draftRevision: binding.draftRevision,
+    })
+    expect(test.created[2]!.newSessionCwds).toEqual([CWD])
+    expect(test.created[2]!.newSessionMcpServers).toEqual([[
+      expect.objectContaining({ name: "kitten-context-pack" }),
+    ]])
+    const overlays = test.controller.store.getState().overlays
+    expect(await test.created[2]!.ask(PERMISSION_REQUEST)).toEqual({ outcome: "cancelled" })
+    expect(await test.created[2]!.clarify(CLARIFICATION_PAYLOAD)).toEqual({ kind: "cancelled" })
+    expect(test.controller.store.getState().overlays).toBe(overlays)
+    expect(test.configs[2]).toMatchObject({
+      id: test.configs[0]!.id,
+      command: test.configs[0]!.command,
+      args: test.configs[0]!.args,
+      env: test.configs[0]!.env,
+    })
+
+    promptWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks[parentId]?.build === null,
+      "Context Build settlement",
+    )
+    await test.controller.dispose()
+  })
+
+  it("releases matching failure and parent-close bindings without leaving child authority", async () => {
+    const failureWait = deferred()
+    const failure = await setupContextBuild({
+      buildOptions: [{ promptWait: failureWait.promise, promptThrows: new Error("child failed") }],
+    })
+    const failureParent = failure.controller.store.getState().workspace.selectedVisibleId!
+    expect((await failure.controller.actions.startContextBuild(freshDraft(failureParent))).kind).toBe("started")
+    failureWait.resolve()
+    await waitFor(
+      () => failure.controller.store.getState().contextPacks[failureParent]?.build === null,
+      "failed Context Build cleanup",
+    )
+    expect(failure.contextBridge.revocations.at(-1)?.reason).toBe("child_settled")
+    expect(failure.controller.store.getState().workspace.conversations[failureParent]?.attention.status).toBe("error")
+    await failure.controller.dispose()
+
+    const closeWait = deferred()
+    const closing = await setupContextBuild({
+      buildOptions: [{ promptWait: closeWait.promise }],
+    })
+    const closingParent = closing.controller.store.getState().workspace.selectedVisibleId!
+    expect((await closing.controller.actions.startContextBuild(freshDraft(closingParent))).kind).toBe("started")
+    const close = closing.controller.closeConversation(closingParent, "close")
+    expect(closing.controller.store.getState().contextPacks[closingParent]?.build).toBeNull()
+    expect(closing.contextBridge.revocations.at(-1)?.reason).toBe("parent_generation_changed")
+    closeWait.resolve()
+    await close
+    await closing.controller.dispose()
+  })
+
+  it("completes a background build as attention only without changing another session's focus or overlays", async () => {
+    const promptWait = deferred()
+    const test = await setupContextBuild({ buildOptions: [{ promptWait: promptWait.promise }] })
+    test.controller.store.selectConversation("claude-code")
+    test.controller.store.setFocus("claude-code")
+    test.controller.store.openSettings()
+    const before = test.controller.store.getState()
+    const selected = before.workspace.selectedVisibleId
+    const focusedPane = before.focusedPane
+    const overlays = before.overlays
+
+    expect((await test.controller.actions.startContextBuild(freshDraft("codex"))).kind).toBe("started")
+    promptWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks.codex?.build === null,
+      "background Context Build attention",
+    )
+
+    const after = test.controller.store.getState()
+    expect(after.workspace.selectedVisibleId).toBe(selected)
+    expect(after.focusedPane).toBe(focusedPane)
+    expect(after.overlays).toBe(overlays)
+    expect(after.contextPacks.codex).toMatchObject({ review: null, sealed: null, build: null })
+    expect(after.workspace.conversations.codex?.attention).toMatchObject({
+      status: "finished",
+      seen: false,
+    })
+    await test.controller.dispose()
+  })
+
+  it("ignores stale async cleanup after a newer binding owns the same parent draft slot", async () => {
+    const firstWait = deferred()
+    const secondWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [
+        { promptWait: firstWait.promise },
+        { promptWait: secondWait.promise },
+      ],
+      newChildIds: ["context-builder-1", "context-builder-2"],
+    })
+    const parentId = test.controller.store.getState().workspace.selectedVisibleId!
+    expect((await test.controller.actions.startContextBuild(freshDraft(parentId, "First"))).kind).toBe("started")
+    const firstBinding = test.controller.store.getState().contextPacks[parentId]!.build!
+    expect(test.controller.store.releaseContextBuild(parentId, firstBinding)).toBe(true)
+
+    expect((await test.controller.actions.startContextBuild(freshDraft(parentId, "Second"))).kind).toBe("started")
+    const secondBinding = test.controller.store.getState().contextPacks[parentId]!.build!
+    expect(secondBinding.childId).toBe("context-builder-2")
+
+    firstWait.resolve()
+    await Bun.sleep(0)
+    expect(test.controller.store.getState().contextPacks[parentId]!.build).toEqual(secondBinding)
+    expect(test.controller.store.getState().workspace.conversations[parentId]?.attention.status).toBe("idle")
+
+    secondWait.resolve()
+    await waitFor(
+      () => test.controller.store.getState().contextPacks[parentId]?.build === null,
+      "newer Context Build cleanup",
+    )
+    await test.controller.dispose()
+  })
+})
+
 function modelOption(currentValue: string): ConfigOption {
   return {
     id: "model",
@@ -786,6 +1086,43 @@ function createRecordingBridge(): RecordingBridge {
 }
 
 function recordedAgentRunRoute(bridge: RecordingBridge, parentId: SessionId): AgentRunRoute {
+interface RecordingContextPackBridge {
+  readonly factory: (options: CreateContextPackBridgeOptions) => ContextPackBridge
+  readonly registrations: ContextPackBridgeRegistration[]
+  readonly revocations: Array<{ route: ContextPackBridgeRoute; reason: string }>
+  disposeCalls(): number
+}
+
+function createRecordingContextPackBridge(): RecordingContextPackBridge {
+  const registrations: ContextPackBridgeRegistration[] = []
+  const revocations: Array<{ route: ContextPackBridgeRoute; reason: string }> = []
+  let disposals = 0
+  return {
+    registrations,
+    revocations,
+    factory() {
+      return {
+        register(input) {
+          registrations.push(input)
+          return {
+            name: "kitten-context-pack",
+            command: "/bridge/context-pack",
+            args: [input.route.childId],
+            env: { KITTEN_CONTEXT_PACK_TEST: input.route.childId },
+          }
+        },
+        revoke(route, reason) {
+          revocations.push({ route, reason })
+        },
+        async dispose() {
+          disposals += 1
+        },
+      }
+    },
+    disposeCalls: () => disposals,
+  }
+}
+
   const registration = bridge.registrations.findLast((entry) => entry.sessionId === parentId)
   if (!registration) throw new Error(`No recorded route for ${parentId}`)
   return { parentId, parentGeneration: registration.generation }
