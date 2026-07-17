@@ -41,18 +41,20 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type DomainSessionEvent, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextPackState, type DomainSessionEvent, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
+import { restoreManifest } from "../core/contextPack.ts"
 import {
   type HarnessDeliveryCheckpoint,
   migratePersistedRunV1,
+  migratePersistedRunToV4,
   type PersistedAgent,
+  type PersistedContextPack,
   type PersistedConversationV2,
   type PersistedRunRecord,
-  type PersistedRunRecordV2,
-  type PersistedRunRecordV3,
+  type PersistedRunRecordV4,
 } from "../persistence/runRecord.ts"
 import {
   createShellRuntime as createRealShellRuntime,
@@ -2825,9 +2827,11 @@ export async function createSessionController(options: SessionControllerOptions)
       if (disposed) return
       options.recorder?.resumeLoadStarted?.()
       store.setRestorationBundle(record.handoffBundle)
-      const restoredRecord = record.version === 1
-        ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
-        : record
+      const restoredRecord = migratePersistedRunToV4(
+        record.version === 1
+          ? migratePersistedRunV1(record, resolveSessions(options.config, { launchCwd: cwd }))
+          : record,
+      )
       interactionCoordinator.cancelAll()
       const steeringRecoveries = new Map<SessionId, SteeringRecoveryTransfer>()
       for (const runtime of runtimes.values()) {
@@ -2845,7 +2849,11 @@ export async function createSessionController(options: SessionControllerOptions)
 
       const entries = restoreEntries(restoredRecord)
       store.replaceSessions(
-        entries.map((entry) => ({ seed: entry.seed, workspace: entry.workspace })),
+        entries.map((entry) => ({
+          seed: entry.seed,
+          workspace: entry.workspace,
+          contextPack: entry.contextPack,
+        })),
         restoredRecord.workspace.selectedVisibleId,
       )
       for (const entry of entries) {
@@ -3070,9 +3078,10 @@ interface RestoreEntry {
   workspace: WorkspaceConversationSeed
   stored: PersistedAgent
   checkpoint: HarnessDeliveryCheckpoint | undefined
+  contextPack: ContextPackState
 }
 
-function restoreEntries(record: PersistedRunRecordV2 | PersistedRunRecordV3): RestoreEntry[] {
+function restoreEntries(record: PersistedRunRecordV4): RestoreEntry[] {
   const entries: RestoreEntry[] = []
   for (const sessionId of record.workspace.order) {
     const descriptor: PersistedConversationV2 | undefined = record.conversations[sessionId]
@@ -3105,10 +3114,25 @@ function restoreEntries(record: PersistedRunRecordV2 | PersistedRunRecordV3): Re
         messageCount: descriptor.messageCount,
         status: descriptor.status,
       },
-      checkpoint: record.version === 3 ? record.harnessDeliveries[sessionId] : undefined,
+      checkpoint: record.harnessDeliveries[sessionId],
+      contextPack: restorePersistedContextPack(record.contextPacks[sessionId]),
     })
   }
   return entries
+}
+
+function restorePersistedContextPack(projection: PersistedContextPack | undefined): ContextPackState {
+  if (!projection) return { draft: null, sealed: null, review: null, build: null }
+  const restoredDraft = projection.draft ? restoreManifest(projection.draft) : null
+  if (restoredDraft?.kind === "invalid") {
+    return { draft: null, sealed: null, review: null, build: null }
+  }
+  return {
+    draft: restoredDraft?.kind === "restored" ? restoredDraft.draft : null,
+    sealed: projection.sealed ? { ...projection.sealed, restored: true } : null,
+    review: null,
+    build: null,
+  }
 }
 
 function orderedRuntimes(store: AppStore, runtimes: Map<SessionId, AgentRuntime>): AgentRuntime[] {

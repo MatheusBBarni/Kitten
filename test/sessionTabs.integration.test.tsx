@@ -94,8 +94,8 @@ describe("Session Tabs integrated lifecycle", () => {
       writer.dispose()
 
       const record = runStore.load(cwd, "integrated-flow")
-      expect(record?.version).toBe(3)
-      if (!record || record.version !== 3) throw new Error("expected a V3 run record")
+      expect(record?.version).toBe(4)
+      if (!record || record.version !== 4) throw new Error("expected a V4 run record")
       expect(record.workspace.order).toEqual([primary, background!])
       expect(record.workspace.conversations[background]!.lifecycle).toBe("background")
       expect(record.workspace.conversations[closed]).toBeUndefined()

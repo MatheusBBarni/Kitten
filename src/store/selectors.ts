@@ -67,7 +67,7 @@ import type {
   ContextPackReviewCandidate,
   ContextPackState,
   DraftContextPack,
-  SealedContextPack,
+  ContextPackSealedState,
   TeardownState,
   WorkspaceConversation,
   WorkspaceState,
@@ -366,7 +366,7 @@ export const selectContextPackDraft =
 
 /** The addressed current immutable sealed pack only. */
 export const selectContextPackSealed =
-  (sessionId: SessionId | null): Selector<SealedContextPack | null> =>
+  (sessionId: SessionId | null): Selector<ContextPackSealedState | null> =>
   (state) =>
     (sessionId ? state.contextPacks[sessionId]?.sealed : null) ?? null
 

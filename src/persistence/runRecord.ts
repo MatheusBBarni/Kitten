@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { restoreManifest } from "../core/contextPack.ts"
 import type { ResolvedSession } from "../core/types.ts"
 
 const SESSION_STATUS_SCHEMA = z.enum([
@@ -11,6 +12,8 @@ const SESSION_STATUS_SCHEMA = z.enum([
   "error",
 ])
 const PROVIDER_KIND_SCHEMA = z.enum(["claude-code", "codex", "cursor"])
+const NONNEGATIVE_INTEGER_SCHEMA = z.number().int().nonnegative()
+const SHA256_DIGEST_SCHEMA = z.string().regex(/^[a-f0-9]{64}$/)
 
 const HANDOFF_FILE_SCHEMA = z.strictObject({
   path: z.string(),
@@ -142,12 +145,108 @@ export const PERSISTED_RUN_RECORD_V3_SCHEMA = PERSISTED_RUN_RECORD_V2_SCHEMA.ext
   harnessDeliveries: z.record(z.string(), HARNESS_DELIVERY_CHECKPOINT_SCHEMA),
 })
 
-/** The complete decoded on-disk contract, including cross-collection V2/V3 invariants. */
+const PERSISTED_CONTEXT_PACK_INSTRUCTIONS_SCHEMA = z.strictObject({
+  original: z.string(),
+  mode: z.enum(["preserve", "augment", "rewrite"]),
+  discovered: z.string(),
+})
+
+const PERSISTED_CONTEXT_PACK_BUDGET_SCHEMA = z.strictObject({
+  unit: z.literal("estimated_tokens"),
+  limit: z.number().int().positive(),
+})
+
+const PERSISTED_CONTEXT_PACK_BRIEF_SCHEMA = z.strictObject({
+  architecture: z.string(),
+  selectedContext: z.string(),
+  relationships: z.string(),
+  ambiguities: z.string(),
+  budgetOmissions: z.string(),
+})
+
+const PERSISTED_CONTEXT_PACK_SOURCE_SCHEMA = z.strictObject({
+  identity: z.string().min(1),
+  digest: SHA256_DIGEST_SCHEMA,
+  bytes: NONNEGATIVE_INTEGER_SCHEMA,
+})
+
+const PERSISTED_CONTEXT_PACK_SELECTION_BASE = {
+  path: z.string().min(1),
+  source: PERSISTED_CONTEXT_PACK_SOURCE_SCHEMA,
+  rationale: z.string().min(1),
+  relationship: z.string().min(1),
+}
+
+export const PERSISTED_CONTEXT_PACK_SELECTION_SCHEMA = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("full_file"),
+    ...PERSISTED_CONTEXT_PACK_SELECTION_BASE,
+  }),
+  z.strictObject({
+    kind: z.literal("file_slice"),
+    ...PERSISTED_CONTEXT_PACK_SELECTION_BASE,
+    range: z.strictObject({
+      startLine: z.number().int().positive(),
+      endLine: z.number().int().positive(),
+    }).refine((range) => range.endLine >= range.startLine, {
+      message: "Slice end line must not precede its start line",
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal("diff"),
+    ...PERSISTED_CONTEXT_PACK_SELECTION_BASE,
+    scope: z.enum(["staged", "unstaged", "pending"]),
+  }),
+])
+
+export const PERSISTED_DRAFT_CONTEXT_PACK_MANIFEST_SCHEMA = z.strictObject({
+  version: z.literal(1),
+  revision: NONNEGATIVE_INTEGER_SCHEMA,
+  instructions: PERSISTED_CONTEXT_PACK_INSTRUCTIONS_SCHEMA,
+  budget: PERSISTED_CONTEXT_PACK_BUDGET_SCHEMA,
+  brief: PERSISTED_CONTEXT_PACK_BRIEF_SCHEMA,
+  selections: z.array(PERSISTED_CONTEXT_PACK_SELECTION_SCHEMA),
+}).superRefine((manifest, context) => {
+  if (restoreManifest(manifest).kind === "invalid") {
+    context.addIssue({
+      code: "custom",
+      message: "Draft Context Pack manifest is invalid",
+    })
+  }
+})
+
+export const PERSISTED_SEALED_CONTEXT_PACK_SCHEMA = z.strictObject({
+  payload: z.string(),
+  bytes: NONNEGATIVE_INTEGER_SCHEMA,
+  sealedAt: z.number().finite().nonnegative(),
+  revision: NONNEGATIVE_INTEGER_SCHEMA,
+}).superRefine((sealed, context) => {
+  if (new TextEncoder().encode(sealed.payload).byteLength !== sealed.bytes) {
+    context.addIssue({
+      code: "custom",
+      message: "Sealed payload byte count does not match the exact payload",
+      path: ["bytes"],
+    })
+  }
+})
+
+export const PERSISTED_CONTEXT_PACK_SCHEMA = z.strictObject({
+  draft: PERSISTED_DRAFT_CONTEXT_PACK_MANIFEST_SCHEMA.optional(),
+  sealed: PERSISTED_SEALED_CONTEXT_PACK_SCHEMA.optional(),
+})
+
+export const PERSISTED_RUN_RECORD_V4_SCHEMA = PERSISTED_RUN_RECORD_V3_SCHEMA.extend({
+  version: z.literal(4),
+  contextPacks: z.record(z.string(), PERSISTED_CONTEXT_PACK_SCHEMA),
+})
+
+/** The complete decoded on-disk contract, including cross-collection V2-V4 invariants. */
 export const PERSISTED_RUN_RECORD_SCHEMA = z
   .discriminatedUnion("version", [
     PERSISTED_RUN_RECORD_V1_SCHEMA,
     PERSISTED_RUN_RECORD_V2_SCHEMA,
     PERSISTED_RUN_RECORD_V3_SCHEMA,
+    PERSISTED_RUN_RECORD_V4_SCHEMA,
   ])
   .superRefine((record, context) => {
     if (record.version === 1) return
@@ -205,13 +304,25 @@ export const PERSISTED_RUN_RECORD_SCHEMA = z
       }
     }
 
-    if (record.version === 3) {
+    if (record.version === 3 || record.version === 4) {
       for (const sessionId of Object.keys(record.harnessDeliveries)) {
         if (!orderIds.has(sessionId) || !(sessionId in record.conversations)) {
           context.addIssue({
             code: "custom",
             message: `Harness delivery checkpoint is absent from execution membership: ${sessionId}`,
             path: ["harnessDeliveries", sessionId],
+          })
+        }
+      }
+    }
+
+    if (record.version === 4) {
+      for (const sessionId of Object.keys(record.contextPacks)) {
+        if (!orderIds.has(sessionId) || !(sessionId in record.conversations)) {
+          context.addIssue({
+            code: "custom",
+            message: `Context Pack projection is absent from execution membership: ${sessionId}`,
+            path: ["contextPacks", sessionId],
           })
         }
       }
@@ -259,7 +370,27 @@ export type PersistedWorkspaceV2 = z.infer<typeof PERSISTED_WORKSPACE_V2_SCHEMA>
 export type PersistedRunRecordV2 = z.infer<typeof PERSISTED_RUN_RECORD_V2_SCHEMA>
 export type HarnessDeliveryCheckpoint = z.infer<typeof HARNESS_DELIVERY_CHECKPOINT_SCHEMA>
 export type PersistedRunRecordV3 = z.infer<typeof PERSISTED_RUN_RECORD_V3_SCHEMA>
+export type PersistedDraftContextPackManifest = z.infer<
+  typeof PERSISTED_DRAFT_CONTEXT_PACK_MANIFEST_SCHEMA
+>
+export type PersistedSealedContextPack = z.infer<typeof PERSISTED_SEALED_CONTEXT_PACK_SCHEMA>
+export type PersistedContextPack = z.infer<typeof PERSISTED_CONTEXT_PACK_SCHEMA>
+export type PersistedRunRecordV4 = z.infer<typeof PERSISTED_RUN_RECORD_V4_SCHEMA>
 export type PersistedRunRecord = z.infer<typeof PERSISTED_RUN_RECORD_SCHEMA>
+
+/** Lift an accepted V2/V3 record into the V4 envelope without inventing pack custody. */
+export function migratePersistedRunToV4(
+  record: PersistedRunRecordV2 | PersistedRunRecordV3 | PersistedRunRecordV4,
+): PersistedRunRecordV4 {
+  if (record.version === 4) return record
+  const { version: _version, ...common } = record
+  return {
+    version: 4,
+    ...common,
+    harnessDeliveries: record.version === 3 ? record.harnessDeliveries : {},
+    contextPacks: {},
+  }
+}
 
 /** The project-picker projection of either persisted record version. */
 export interface PersistedRunSummary {

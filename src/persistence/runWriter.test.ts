@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test"
 
 import type { HandoffBundle } from "../core/types.ts"
+import { assembleCandidate, sealCandidate } from "../core/contextPack.ts"
 import { evaluateExplorePolicy, EXPLORE_RESTRICTIONS } from "../core/explorePolicy.ts"
+import { createSecretRedactor } from "../core/secretRedactor.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
-import type { PersistedRunRecordV3 } from "./runRecord.ts"
+import type { PersistedRunRecordV4 } from "./runRecord.ts"
 import { createRunWriter } from "./runWriter.ts"
 import type { RunStore } from "./runStore.ts"
 
@@ -39,15 +41,15 @@ function controlledTimer(): {
 }
 
 function recordingRunStore(): RunStore & {
-  records: PersistedRunRecordV3[]
+  records: PersistedRunRecordV4[]
   flushCalls: number
 } {
-  const records: PersistedRunRecordV3[] = []
+  const records: PersistedRunRecordV4[] = []
   return {
     records,
     flushCalls: 0,
     save(record) {
-      if (record.version !== 3) throw new Error("RunWriter must write V3 records")
+      if (record.version !== 4) throw new Error("RunWriter must write V4 records")
       records.push(record)
     },
     list() {
@@ -152,7 +154,7 @@ describe("createRunWriter", () => {
 
     expect(runStore.records).toHaveLength(1)
     expect(runStore.records[0]).toEqual({
-      version: 3,
+      version: 4,
       runId: "run-03",
       cwd: "/work/kitten",
       gitBranch: "feat/parser",
@@ -202,6 +204,7 @@ describe("createRunWriter", () => {
       },
       handoffBundle: null,
       harnessDeliveries: {},
+      contextPacks: {},
     })
     expect(JSON.stringify(runStore.records[0])).not.toContain('"turns"')
     writer.dispose()
@@ -250,7 +253,49 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
-  it("keeps queued and recovered steering state entirely outside the V3 snapshot", () => {
+  it("projects only a draft manifest and exact sealed bytes from live Context Pack state", () => {
+    const { store, runStore, timer, writer } = writerHarness()
+    const created = store.createContextPackDraft("claude", "Keep CRLF\r\nand café e\u0301 exact")
+    expect(created?.kind).toBe("created")
+    const draft = store.getState().contextPacks.claude!.draft!
+    const assembled = assembleCandidate(draft, [], createSecretRedactor())
+    expect(assembled.kind).toBe("assembled")
+    if (assembled.kind !== "assembled") throw new Error("expected assembled candidate")
+    expect(store.publishContextPackReview("claude", assembled.candidate)).toBe(true)
+    expect(store.bindContextBuild("claude", {
+      parentId: "claude",
+      childId: "builder",
+      parentGeneration: 1,
+      childGeneration: 2,
+      draftRevision: draft.revision,
+      state: "building",
+    })).toBe(true)
+    const sealed = sealCandidate({
+      draft,
+      candidate: assembled.candidate,
+      currentSourceFences: [],
+      sealedAt: 1234,
+    })
+    expect(sealed.kind).toBe("sealed")
+    if (sealed.kind !== "sealed") throw new Error("expected sealed candidate")
+    expect(store.sealContextPack("claude", sealed.sealed)).toBe(true)
+
+    timer.flush()
+
+    const projection = runStore.records.at(-1)!.contextPacks.claude!
+    expect(projection.draft?.revision).toBe(draft.revision)
+    expect(projection.sealed).toEqual({
+      payload: sealed.sealed.payload,
+      bytes: sealed.sealed.bytes,
+      sealedAt: 1234,
+      revision: sealed.sealed.revision,
+    })
+    expect(Object.keys(projection.sealed!).sort()).toEqual(["bytes", "payload", "revision", "sealedAt"])
+    expect(JSON.stringify(projection)).not.toMatch(/review|build|sourceFences|packEstimate|redactionCount/)
+    writer.dispose()
+  })
+
+  it("keeps queued and recovered steering state entirely outside the V4 snapshot", () => {
     const { store, runStore, timer, writer } = writerHarness()
     const sentinels = [
       "PROMPT_BLOCK_SENTINEL",
@@ -284,7 +329,7 @@ describe("createRunWriter", () => {
 
     const record = runStore.records.at(-1)!
     const serialized = JSON.stringify(record)
-    expect(record.version).toBe(3)
+    expect(record.version).toBe(4)
     expect(record.conversations.claude).not.toHaveProperty("steering")
     expect(serialized).not.toContain("steering")
     for (const sentinel of sentinels) expect(serialized).not.toContain(sentinel)
@@ -458,7 +503,7 @@ describe("createRunWriter", () => {
     writer.dispose()
   })
 
-  it("writes a valid empty V3 workspace with null selection and branch and omits closed state", () => {
+  it("writes a valid empty V4 workspace with null selection and branch and omits closed state", () => {
     const { store, runStore, timer, writer } = writerHarness()
     store.removeSession("claude")
     store.removeSession("codex")
@@ -466,7 +511,7 @@ describe("createRunWriter", () => {
     timer.flush()
 
     expect(runStore.records.at(-1)).toEqual({
-      version: 3,
+      version: 4,
       runId: "run-03",
       cwd: "/work/kitten",
       gitBranch: null,
@@ -476,6 +521,7 @@ describe("createRunWriter", () => {
       workspace: { conversations: {}, order: [], selectedVisibleId: null },
       handoffBundle: null,
       harnessDeliveries: {},
+      contextPacks: {},
     })
     writer.dispose()
   })

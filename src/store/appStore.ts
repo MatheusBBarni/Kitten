@@ -495,7 +495,11 @@ export interface AppStore {
   removeDelegationChild(identity: DelegatedChildIdentity): void
   /** Atomically replace execution/workspace membership from validated restore descriptors. */
   replaceSessions(
-    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    entries: readonly {
+      seed: SessionSeed
+      workspace: WorkspaceConversationSeed
+      contextPack?: ContextPackState
+    }[],
     selectedVisibleId: SessionId | null,
   ): void
   /** Atomically remove an execution slice after successful teardown and close its workspace entry. */
@@ -924,7 +928,7 @@ class AppStoreImpl implements AppStore {
 
   refineContextPackDraft(sessionId: SessionId): ContextPackDraftResult | null {
     const current = this.state.contextPacks[sessionId]
-    if (!current?.sealed || current.build) return null
+    if (!current?.sealed || !isLiveSealedContextPack(current.sealed) || current.build) return null
     const result = startFreshFromSealed(current.sealed)
     if (result.kind !== "created") return result
     this.commitContextPack(sessionId, {
@@ -1287,7 +1291,11 @@ class AppStoreImpl implements AppStore {
   }
 
   replaceSessions(
-    entries: readonly { seed: SessionSeed; workspace: WorkspaceConversationSeed }[],
+    entries: readonly {
+      seed: SessionSeed
+      workspace: WorkspaceConversationSeed
+      contextPack?: ContextPackState
+    }[],
     selectedVisibleId: SessionId | null,
   ): void {
     const sessions: Record<SessionId, SessionState> = {}
@@ -1297,7 +1305,14 @@ class AppStoreImpl implements AppStore {
     const clarificationCapabilities: Record<SessionId, ClarificationCapability> = {}
     for (const entry of entries) {
       sessions[entry.seed.id] = createSessionState(entry.seed)
-      contextPacks[entry.seed.id] = createContextPackState()
+      contextPacks[entry.seed.id] = entry.contextPack
+        ? {
+            draft: entry.contextPack.draft,
+            sealed: entry.contextPack.sealed,
+            review: null,
+            build: null,
+          }
+        : createContextPackState()
       transcriptWindows[entry.seed.id] = createTranscriptWindowState()
       restoration[entry.seed.id] = null
       clarificationCapabilities[entry.seed.id] = unknownClarificationCapability()
@@ -1734,6 +1749,15 @@ function createContextPackState(): ContextPackState {
 
 function createTranscriptWindowState(): TranscriptWindowState {
   return { revealedTurnCount: 0, detachedFromLive: false, scrollTop: null }
+}
+
+function isLiveSealedContextPack(
+  value: NonNullable<ContextPackState["sealed"]>,
+): value is SealedContextPack {
+  return "manifest" in value &&
+    "packEstimate" in value &&
+    "redactionCount" in value &&
+    "sourceFences" in value
 }
 
 function sameContextBuildIdentity(

@@ -28,6 +28,7 @@ import {
   type ContextSelection,
   type DraftContextPack,
   type DraftContextPackManifest,
+  type DurableSealedContextPack,
   type MaterializedContextArtifact,
   type RecipientFit,
   type RecipientFitEvidence,
@@ -372,7 +373,7 @@ export function sealCandidate(input: {
 
 /** Shared fail-closed recipient decision; it never changes or partially accepts a pack. */
 export function assessRecipientFit(
-  sealed: SealedContextPack,
+  sealed: DurableSealedContextPack,
   evidence: RecipientFitEvidence,
 ): RecipientFit {
   if (evidence.kind === "missing") {

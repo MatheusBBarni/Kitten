@@ -1081,17 +1081,28 @@ export interface ContextPackReviewCandidate {
   readonly verdict: ContextPackReviewVerdict
 }
 
-/** Immutable, recipient-neutral exact payload approved by the operator. */
-export interface SealedContextPack {
+/** Durable subset of an approved payload. Persistence restores only these exact fields. */
+export interface DurableSealedContextPack {
   readonly revision: number
-  readonly manifest: DraftContextPackManifest
   readonly payload: string
   readonly bytes: number
+  readonly sealedAt: number
+}
+
+/** Immutable, recipient-neutral exact payload approved by the operator. */
+export interface SealedContextPack extends DurableSealedContextPack {
+  readonly manifest: DraftContextPackManifest
   readonly packEstimate: number
   readonly redactionCount: number
   readonly sourceFences: readonly ContextPackSourceFence[]
-  readonly sealedAt: number
 }
+
+/** Restart-safe sealed custody without reconstructed review or source authority. */
+export interface RestoredSealedContextPack extends DurableSealedContextPack {
+  readonly restored: true
+}
+
+export type ContextPackSealedState = SealedContextPack | RestoredSealedContextPack
 
 export type ContextBuildState = "building" | "ready_for_review"
 
@@ -1107,7 +1118,7 @@ export interface ContextBuildBinding {
 
 export interface ContextPackState {
   readonly draft: DraftContextPack | null
-  readonly sealed: SealedContextPack | null
+  readonly sealed: ContextPackSealedState | null
   readonly review: ContextPackReviewCandidate | null
   readonly build: ContextBuildBinding | null
 }

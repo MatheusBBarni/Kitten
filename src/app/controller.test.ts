@@ -41,6 +41,7 @@ import type {
   PersistedRunRecordV1,
   PersistedRunRecordV2,
   PersistedRunRecordV3,
+  PersistedRunRecordV4,
 } from "../persistence/runRecord.ts"
 import {
   createInMemoryShellRuntimeFactory,
@@ -996,6 +997,40 @@ function persistedRunV3(
   }
 }
 
+function persistedRunV4(): PersistedRunRecordV4 {
+  const { version: _version, ...v3 } = persistedRunV3({})
+  const payload = "exact restored\r\npayload e\u0301 [REDACTED]"
+  return {
+    version: 4,
+    ...v3,
+    runId: "run-v4",
+    contextPacks: {
+      codex: {
+        draft: {
+          version: 1,
+          revision: 4,
+          instructions: { original: "Restore safely", mode: "augment", discovered: "" },
+          budget: { unit: "estimated_tokens", limit: 80_000 },
+          brief: {
+            architecture: "Persistence boundary",
+            selectedContext: "Run record",
+            relationships: "Controller commits store state",
+            ambiguities: "None",
+            budgetOmissions: "None",
+          },
+          selections: [],
+        },
+        sealed: {
+          payload,
+          bytes: new TextEncoder().encode(payload).byteLength,
+          revision: 4,
+          sealedAt: 1234,
+        },
+      },
+    },
+  }
+}
+
 function dynamicPersistedRun(): PersistedRunRecordV2 {
   return {
     version: 2,
@@ -1906,6 +1941,31 @@ describe("createSessionController - harness delivery lifecycle", () => {
 })
 
 describe("createSessionController - persisted restore", () => {
+  it("restores V4 custody without recreating review or build authority", async () => {
+    const readyToLoad: ReadyState = { ready: true, protocolVersion: 1, canLoadSession: true }
+    const { controller } = await controllerForRestore({
+      "claude-code": { ready: readyToLoad },
+      codex: { ready: readyToLoad },
+    })
+    const record = persistedRunV4()
+
+    await controller.restore(record)
+
+    const restored = controller.store.getState().contextPacks.codex!
+    expect(restored.draft?.stale).toEqual({ kind: "needs_revalidation" })
+    expect(restored.sealed).toEqual({ ...record.contextPacks.codex!.sealed!, restored: true })
+    expect(restored.review).toBeNull()
+    expect(restored.build).toBeNull()
+    expect("manifest" in restored.sealed!).toBe(false)
+    expect(controller.store.getState().contextPacks["claude-code"]).toEqual({
+      draft: null,
+      sealed: null,
+      review: null,
+      build: null,
+    })
+    await controller.dispose()
+  })
+
   it("appends a fresh per-generation bridge after ordered user servers on session/load", async () => {
     const userServers: McpServerConfig[] = [
       { name: "alpha-user", command: process.execPath, args: ["alpha"], env: {} },
