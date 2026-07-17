@@ -20,6 +20,7 @@ import { defaultAppConfig } from "../config/configLoader.ts"
 import { HARNESS_CONTRACT_SDK_VERSION, type CertifiedHarnessProfile, type HarnessCapability } from "../config/harnessCapability.ts"
 import type { ExploreCapability } from "../config/exploreCapability.ts"
 import { CONTEXT_BUILD_OPERATIONS } from "../config/contextPackCapability.ts"
+import type { SecretRedactor } from "../core/secretRedactor.ts"
 import { evaluateExplorePolicy } from "../core/explorePolicy.ts"
 import { createInMemoryTransportPair } from "../agent/transport.ts"
 import type {
@@ -29,11 +30,14 @@ import type {
   ClarificationPayload,
   ConfigOption,
   ContextBuildAvailability,
+  ContextPackMaterializationResult,
   DomainSessionEvent,
   ManagedWorktreeBinding,
   McpServerConfig,
   ProviderKind,
   ResolvedAgentConfig,
+  RecipientProfileAvailability,
+  ResolvedRecipientProfile,
   SessionId,
   ShellEvent,
 } from "../core/types.ts"
@@ -87,13 +91,14 @@ import {
   type KittenMcpBridgeOptions,
   type BridgeRegistration,
 } from "./kittenMcpBridge.ts"
-
 import type {
   ContextPackBridge,
   ContextPackBridgeRegistration,
   ContextPackBridgeRoute,
   CreateContextPackBridgeOptions,
 } from "./contextPackBridge.ts"
+import type { ContextPackMaterializer } from "./contextPackMaterializer.ts"
+
 /**
  * The controller is verified two ways.
  *
@@ -211,7 +216,6 @@ function testExploreCapability(config: ResolvedAgentConfig, limits = { perParent
   }
 }
 
-function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
 function testContextBuildCapability(config: ResolvedAgentConfig): ContextBuildAvailability {
   return {
     status: "available",
@@ -230,6 +234,7 @@ function testContextBuildCapability(config: ResolvedAgentConfig): ContextBuildAv
   }
 }
 
+function testHarnessProfile(config: AgentConfig): CertifiedHarnessProfile {
   return {
     profileId: TEST_HARNESS_CAPABILITY.status === "supported"
       ? TEST_HARNESS_CAPABILITY.profileId
@@ -493,11 +498,15 @@ describe("interaction coordinator", () => {
   })
 })
 
-/** A `model`-category config option with the given confirmed value, for seeding/switch tests. */
 describe("createSessionController - Context Build lifecycle", () => {
   async function setupContextBuild(overrides: {
     readonly buildOptions?: readonly StubOptions[]
     readonly resolveCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
+    readonly resolveRecipientProfile?: (config: ResolvedAgentConfig) => RecipientProfileAvailability
+    readonly countContextPackPayload?: (payload: string, profile: ResolvedRecipientProfile) => number | null
+    readonly materializer?: ContextPackMaterializer
+    readonly redactor?: SecretRedactor
+    readonly now?: () => number
     readonly newChildIds?: readonly SessionId[]
     readonly store?: AppStore
   } = {}) {
@@ -528,6 +537,11 @@ describe("createSessionController - Context Build lifecycle", () => {
       newSessionId: () => childIds.shift() ?? "unexpected-context-builder",
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
       resolveContextBuildCapability: overrides.resolveCapability ?? testContextBuildCapability,
+      resolveRecipientProfile: overrides.resolveRecipientProfile,
+      countContextPackPayload: overrides.countContextPackPayload,
+      contextPackMaterializer: overrides.materializer,
+      contextPackRedactor: overrides.redactor,
+      now: overrides.now,
       createKittenMcpBridge: ordinaryBridge.factory,
       createContextPackBridge: contextBridge.factory,
     })
@@ -538,6 +552,52 @@ describe("createSessionController - Context Build lifecycle", () => {
     parentId,
     draft: { kind: "start_fresh" as const, original },
   })
+
+  const reviewMaterializer = (
+    materialize: () => ContextPackMaterializationResult = () => ({
+      kind: "materialized",
+      artifacts: [],
+      totalBytes: 0,
+    }),
+  ): ContextPackMaterializer => ({
+    async read(_workspaceRoot, request) {
+      return { kind: "blocked", reason: "source_missing", path: request.path }
+    },
+    async materialize() {
+      return materialize()
+    },
+  })
+
+  const recipientProfile = (
+    config: ResolvedAgentConfig,
+    capacity = 2_000,
+  ): RecipientProfileAvailability => ({
+    status: "available",
+    profile: {
+      profileVersion: "recipient-profile-v1",
+      evidenceVersion: "recipient-evidence-v1",
+      recipe: config,
+      model: "test-model",
+      freshSessionCapacity: capacity,
+      reserve: 100,
+      counterVersion: "counter-v1",
+      validUntil: 1_000,
+    },
+  })
+
+  async function reviewedAndSealed(
+    test: Awaited<ReturnType<typeof setupContextBuild>>,
+    sessionId: SessionId,
+    original = "Curate exact context",
+  ) {
+    const draft = test.controller.store.createContextPackDraft(sessionId, original)
+    if (draft?.kind !== "created") throw new Error("expected draft")
+    const reviewed = await test.controller.actions.reviewContextPack(sessionId)
+    if (reviewed.kind !== "reviewed") throw new Error(`expected review: ${reviewed.reason}`)
+    const sealed = await test.controller.actions.sealContextPack(sessionId, reviewed.candidate.revision)
+    if (sealed.kind !== "sealed") throw new Error(`expected seal: ${sealed.reason}`)
+    return { draft: draft.draft, candidate: reviewed.candidate, sealed: sealed.sealed }
+  }
 
   it("re-attests explore-v2 and denies missing or newly stale evidence before creating a child", async () => {
     const missing = await setupContextBuild({
@@ -766,8 +826,193 @@ describe("createSessionController - Context Build lifecycle", () => {
     )
     await test.controller.dispose()
   })
+
+  it("integration: reviews, seals, and sends the exact redacted bytes through final confirmation", async () => {
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 250,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const secret = "sk-ant-abcdefghijklmnopqrstuv"
+    const beforeFocus = test.controller.store.getState().workspace.selectedVisibleId
+    const custody = await reviewedAndSealed(test, sessionId, `Use ${secret} only for the test`)
+
+    expect(custody.candidate.payload).toContain("[REDACTED]")
+    expect(custody.candidate.payload).not.toContain(secret)
+    expect(custody.sealed.payload).toBe(custody.candidate.payload)
+    expect(custody.sealed.bytes).toBe(new TextEncoder().encode(custody.sealed.payload).byteLength)
+
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 400, size: 2_000 })
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "fit",
+      exactCount: 250,
+      remaining: 1_250,
+    })
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "sent",
+      result: { stopReason: "end_turn" },
+    })
+    expect(test.created[0]!.prompts.at(-1)?.blocks).toEqual([
+      { type: "text", text: custody.sealed.payload },
+    ])
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(beforeFocus)
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed?.payload).toBe(custody.sealed.payload)
+
+    const mutation = test.controller.store.applyContextPackOperatorMutation(sessionId, {
+      kind: "set_brief_section",
+      section: "ambiguities",
+      text: "Fresh review required",
+    })
+    expect(mutation?.kind).toBe("applied")
+    const newerReview = await test.controller.actions.reviewContextPack(sessionId)
+    expect(newerReview.kind).toBe("reviewed")
+    expect(await test.controller.actions.sealContextPack(sessionId, custody.candidate.revision)).toEqual({
+      kind: "blocked",
+      reason: "candidate_revision_mismatch",
+    })
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    await test.controller.dispose()
+  })
+
+  it("integration: changed evidence blocks Send Here without focus, byte, or dispatch changes", async () => {
+    let profileAvailable = false
+    let exactCount = 700
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => profileAvailable
+        ? recipientProfile(config, 1_000)
+        : { status: "unavailable", reason: "missing_evidence" },
+      countContextPackPayload: () => exactCount,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const custody = await reviewedAndSealed(test, sessionId)
+    const beforeFocus = test.controller.store.getState().workspace.selectedVisibleId
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 300, size: 1_000 })
+
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "unavailable",
+      reason: "missing_evidence",
+    })
+    profileAvailable = true
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "insufficient",
+      exactCount: 700,
+      remaining: -100,
+    })
+    exactCount = 100
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "fit",
+      exactCount: 100,
+      remaining: 500,
+    })
+    profileAvailable = false
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "recipient_fit",
+      fit: { kind: "unavailable", reason: "missing_evidence" },
+    })
+    expect(test.created[0]!.prompts).toEqual([])
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBe(custody.sealed)
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(beforeFocus)
+    await test.controller.dispose()
+  })
+
+  it("blocks changed source, redaction, budget, revision, and final evidence without mutating custody or focus", async () => {
+    let materializations = 0
+    let evidenceCurrent = true
+    const test = await setupContextBuild({
+      materializer: reviewMaterializer(() => {
+        materializations += 1
+        return materializations === 1
+          ? { kind: "materialized", artifacts: [], totalBytes: 0 }
+          : { kind: "stale", reason: "source_digest_changed", selectionKey: "selection", path: "src/a.ts" }
+      }),
+      resolveRecipientProfile: (config) => evidenceCurrent
+        ? recipientProfile(config)
+        : { status: "unavailable", reason: "stale_evidence" },
+      countContextPackPayload: () => 100,
+      now: () => 100,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    const draft = test.controller.store.createContextPackDraft(sessionId, "Review once")
+    if (draft?.kind !== "created") throw new Error("expected draft")
+    const reviewed = await test.controller.actions.reviewContextPack(sessionId)
+    if (reviewed.kind !== "reviewed") throw new Error("expected review")
+    const beforeFocus = test.controller.store.getState().workspace.selectedVisibleId
+
+    expect(await test.controller.actions.sealContextPack(sessionId, reviewed.candidate.revision)).toEqual({
+      kind: "blocked",
+      reason: "source_digest_changed",
+    })
+    expect(test.controller.store.getState().contextPacks[sessionId]?.review).toBe(reviewed.candidate)
+    expect(test.controller.store.getState().contextPacks[sessionId]?.sealed).toBeNull()
+
+    const overBudget = await setupContextBuild({ materializer: reviewMaterializer() })
+    const overBudgetId = overBudget.controller.store.getState().workspace.selectedVisibleId!
+    overBudget.controller.store.createContextPackDraft(overBudgetId, "Too large", { budgetLimit: 1 })
+    expect(await overBudget.controller.actions.reviewContextPack(overBudgetId)).toEqual({
+      kind: "blocked",
+      reason: "over_budget",
+    })
+    expect(overBudget.controller.store.getState().contextPacks[overBudgetId]?.review).toBeNull()
+
+    const redaction = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      redactor: { redact: () => { throw new Error("redaction unavailable") } },
+    })
+    const redactionId = redaction.controller.store.getState().workspace.selectedVisibleId!
+    redaction.controller.store.createContextPackDraft(redactionId, "Redact me")
+    expect(await redaction.controller.actions.reviewContextPack(redactionId)).toEqual({
+      kind: "blocked",
+      reason: "redaction_failed",
+    })
+    expect(redaction.controller.store.getState().contextPacks[redactionId]?.review).toBeNull()
+
+    let sealRedactions = 0
+    const sealRedaction = await setupContextBuild({
+      materializer: reviewMaterializer(),
+      redactor: {
+        redact: (text) => {
+          sealRedactions += 1
+          if (sealRedactions > 1) throw new Error("redaction changed")
+          return { text, count: 0 }
+        },
+      },
+    })
+    const sealRedactionId = sealRedaction.controller.store.getState().workspace.selectedVisibleId!
+    sealRedaction.controller.store.createContextPackDraft(sealRedactionId, "Recheck redaction")
+    const sealReview = await sealRedaction.controller.actions.reviewContextPack(sealRedactionId)
+    if (sealReview.kind !== "reviewed") throw new Error("expected seal review")
+    expect(await sealRedaction.controller.actions.sealContextPack(
+      sealRedactionId,
+      sealReview.candidate.revision,
+    )).toEqual({ kind: "blocked", reason: "redaction_failed" })
+    expect(sealRedaction.controller.store.getState().contextPacks[sealRedactionId]?.review)
+      .toBe(sealReview.candidate)
+    expect(sealRedaction.controller.store.getState().contextPacks[sealRedactionId]?.sealed).toBeNull()
+
+    evidenceCurrent = false
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 100, size: 2_000 })
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "sealed_unavailable",
+    })
+    expect(test.created[0]!.prompts).toEqual([])
+    expect(test.controller.store.getState().workspace.selectedVisibleId).toBe(beforeFocus)
+
+    await Promise.all([
+      test.controller.dispose(),
+      overBudget.controller.dispose(),
+      redaction.controller.dispose(),
+      sealRedaction.controller.dispose(),
+    ])
+  })
 })
 
+/** A `model`-category config option with the given confirmed value, for seeding/switch tests. */
 function modelOption(currentValue: string): ConfigOption {
   return {
     id: "model",
@@ -1085,7 +1330,6 @@ function createRecordingBridge(): RecordingBridge {
   }
 }
 
-function recordedAgentRunRoute(bridge: RecordingBridge, parentId: SessionId): AgentRunRoute {
 interface RecordingContextPackBridge {
   readonly factory: (options: CreateContextPackBridgeOptions) => ContextPackBridge
   readonly registrations: ContextPackBridgeRegistration[]
@@ -1123,6 +1367,7 @@ function createRecordingContextPackBridge(): RecordingContextPackBridge {
   }
 }
 
+function recordedAgentRunRoute(bridge: RecordingBridge, parentId: SessionId): AgentRunRoute {
   const registration = bridge.registrations.findLast((entry) => entry.sessionId === parentId)
   if (!registration) throw new Error(`No recorded route for ${parentId}`)
   return { parentId, parentGeneration: registration.generation }

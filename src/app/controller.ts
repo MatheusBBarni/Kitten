@@ -26,6 +26,7 @@ import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import {
   CONTEXT_BUILD_OPERATIONS,
   resolveContextBuildCapability,
+  resolveRecipientProfile,
 } from "../config/contextPackCapability.ts"
 import {
   EXPLORE_ATTESTATION_VERSION,
@@ -47,11 +48,12 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackState, type DomainSessionEvent, type DraftContextPack, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type ResolvedAgentConfig, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type DomainSessionEvent, type DraftContextPack, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
-import { restoreManifest } from "../core/contextPack.ts"
+import { assembleCandidate, assessRecipientFit, createDraft, restoreManifest, sealCandidate } from "../core/contextPack.ts"
+import { createSecretRedactor, type SecretRedactor } from "../core/secretRedactor.ts"
 import {
   type HarnessDeliveryCheckpoint,
   migratePersistedRunV1,
@@ -99,15 +101,18 @@ import {
   type CloseChoice,
   type CloseConversationResult,
   type ControllerActions,
-  type ExploreAvailabilityResult,
-  type ExploreLaunchResult,
   type ContextBuildAvailabilityResult,
   type ContextBuildDenialReason,
   type ContextBuildStartResult,
+  type ContextPackReviewResult,
+  type ContextPackSealActionResult,
+  type ContextPackSendHereResult,
+  type ExploreAvailabilityResult,
+  type ExploreLaunchResult,
   type StartDelegatedChildInput,
+  type StartContextBuildInput,
   type SteeringResult,
 } from "./actions.ts"
-  type StartContextBuildInput,
 import { createSteeringCoordinator, type SteeringCoordinator } from "./steeringCoordinator.ts"
 import {
   beginDispatch,
@@ -134,8 +139,6 @@ import {
   type KittenMcpBridgeOptions,
 } from "./kittenMcpBridge.ts"
 import {
-  createManagedWorktreeProvisioner,
-import {
   createContextPackBridge as createRealContextPackBridge,
   type ContextPackBridge,
   type ContextPackBridgeAuthorization,
@@ -148,6 +151,8 @@ import {
   createContextPackMaterializer,
   type ContextPackMaterializer,
 } from "./contextPackMaterializer.ts"
+import {
+  createManagedWorktreeProvisioner,
   type CleanupManagedWorktreeResult,
   type ManagedWorktreeProvisioner,
 } from "./managedWorktree.ts"
@@ -270,6 +275,8 @@ export interface SessionControllerOptions {
   store?: AppStore
   /** How to build a connection for a provider. Defaults to a real spawning connection. */
   createConnection?: (config: ResolvedAgentConfig) => AgentConnection
+  /** How to build the restricted Context Build child connection. Defaults to ACP filesystem disabled. */
+  createContextBuildConnection?: (config: ResolvedAgentConfig) => AgentConnection
   /** Lightweight recipe/binary/version check used before every Cursor connection. */
   preflightAgentReadiness?: (
     config: ResolvedAgentConfig,
@@ -307,14 +314,27 @@ export interface SessionControllerOptions {
   resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
   /** Closed explore attestation decision; injectable with reviewed fake evidence in tests. */
   resolveExploreCapability?: (config: ResolvedAgentConfig) => ExploreCapability
-  /** How to build the restricted Context Build child connection. Defaults to ACP filesystem disabled. */
-  createContextBuildConnection?: (config: ResolvedAgentConfig) => AgentConnection
+  /** Closed explore-v2 decision; called again for every Context Build launch. */
+  resolveContextBuildCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
+  /** Closed Recipient Profile decision; called again for every fit or delivery decision. */
+  resolveRecipientProfile?: (config: ResolvedAgentConfig) => RecipientProfileAvailability
+  /** Exact payload counter for the version named by the current Recipient Profile. */
+  countContextPackPayload?: (
+    payload: string,
+    profile: ResolvedRecipientProfile,
+  ) => number | null
+  /** Deterministic review redactor; injectable only for failure and race coverage. */
+  contextPackRedactor?: SecretRedactor
   /** Schedule one accepted clarification timeout and return its cancellation hook. */
   scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Schedule one bounded steering settlement wait and return its cancellation hook. */
   scheduleSteeringSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Controller-owned bridge factory; injectable for lifecycle and composition tests. */
   createKittenMcpBridge?: (options: KittenMcpBridgeOptions) => KittenMcpBridge
+  /** Dedicated Context Pack bridge factory; never shares the mixed child action surface. */
+  createContextPackBridge?: (options: CreateContextPackBridgeOptions) => ContextPackBridge
+  /** Bounded workspace reader used only through the dedicated Context Pack bridge. */
+  contextPackMaterializer?: ContextPackMaterializer
   /** Executable and optional entrypoint arguments used by generated bridge declarations. */
   kittenMcpExecutable?: { readonly command: string; readonly args?: readonly string[] }
 }
@@ -346,18 +366,12 @@ export interface SessionController {
 }
 
 /** The resolver-free projection consumers may render for the currently active request. */
-  /** Closed explore-v2 decision; called again for every Context Build launch. */
-  resolveContextBuildCapability?: (config: ResolvedAgentConfig) => ContextBuildAvailability
 export type ActiveAgentInteraction =
   | {
       readonly kind: "permission"
       readonly requestId: string
       readonly sessionId: SessionId
       readonly generation: number
-  /** Dedicated Context Pack bridge factory; never shares the mixed child action surface. */
-  createContextPackBridge?: (options: CreateContextPackBridgeOptions) => ContextPackBridge
-  /** Bounded workspace reader used only through the dedicated Context Pack bridge. */
-  contextPackMaterializer?: ContextPackMaterializer
       readonly request: PermissionRequest
     }
   | {
@@ -717,6 +731,25 @@ interface AgentRuntime {
   mcpScope: "ordinary" | "explore"
 }
 
+/** Controller-owned I/O handles for one store-bound, non-conversation Context Build child. */
+interface ContextBuildChildRuntime {
+  readonly binding: ContextBuildBinding
+  readonly route: ContextPackBridgeRoute
+  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
+  readonly clarificationHandles: Set<ClarificationRequestHandle>
+  connection: AgentConnection | null
+  acpSessionId: string | null
+  unsubscribe: Unsubscribe | null
+  settled: boolean
+}
+
+interface ContextBuildPreflight {
+  readonly parentRuntime: AgentRuntime & { readonly config: ResolvedAgentConfig }
+  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
+  readonly parentGeneration: number
+  readonly workspaceRoot: string
+}
+
 interface ActivePromptLifecycle {
   readonly turnId: string
   readonly generation: number
@@ -737,9 +770,12 @@ interface SteeringRecoveryTransfer {
 export async function createSessionController(options: SessionControllerOptions): Promise<SessionController> {
   const cwd = options.cwd ?? process.cwd()
   const create = options.createConnection ?? defaultCreateConnection
+  const createContextBuildConnection = options.createContextBuildConnection ?? defaultCreateContextBuildConnection
   const preflight = options.preflightAgentReadiness ?? preflightAgentReadiness
   const attestExplore = options.resolveExploreCapability ?? ((config: ResolvedAgentConfig) =>
     resolveExploreCapability(config, undefined))
+  const attestContextBuild = options.resolveContextBuildCapability ?? ((config: ResolvedAgentConfig) =>
+    resolveContextBuildCapability(config, undefined, options.now?.() ?? Date.now()))
   // Resolve once per cockpit boot so every fresh, restored, and dynamically added
   // session receives the same validated stdio server list.
   const mcpResolution = resolveMcpServers(options.config.mcpServers)
@@ -754,25 +790,6 @@ export async function createSessionController(options: SessionControllerOptions)
     askUser: "loading" | "attached" | "unavailable",
   ): McpRuntimeReadout => runtime.mcpScope === "explore"
     ? { loaded: [], skipped: [], askUser }
-/** Controller-owned I/O handles for one store-bound, non-conversation Context Build child. */
-interface ContextBuildChildRuntime {
-  readonly binding: ContextBuildBinding
-  readonly route: ContextPackBridgeRoute
-  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
-  readonly clarificationHandles: Set<ClarificationRequestHandle>
-  connection: AgentConnection | null
-  acpSessionId: string | null
-  unsubscribe: Unsubscribe | null
-  settled: boolean
-}
-
-interface ContextBuildPreflight {
-  readonly parentRuntime: AgentRuntime & { readonly config: ResolvedAgentConfig }
-  readonly capability: Extract<ContextBuildAvailability, { readonly status: "available" }>
-  readonly parentGeneration: number
-  readonly workspaceRoot: string
-}
-
     : mcpReadout(askUser)
   const createShell = options.createShellRuntime ?? createRealShellRuntime
   const onError = options.onError ?? (() => {})
@@ -793,12 +810,9 @@ interface ContextBuildPreflight {
   // provider in the launch directory when the config declares none, else each
   // declared session with its own `cwd`/`title`/`task` and a distinct session id.
   const initialPlan: { seed: SessionSeed; config: ResolvedAgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
-  const createContextBuildConnection = options.createContextBuildConnection ?? defaultCreateContextBuildConnection
     (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
   )
 
-  const attestContextBuild = options.resolveContextBuildCapability ?? ((config: ResolvedAgentConfig) =>
-    resolveContextBuildCapability(config, undefined, options.now?.() ?? Date.now()))
   const store = options.store ?? createAppStore({ seeds: initialPlan.map((entry) => entry.seed) })
 
   const runtimes = new Map<SessionId, AgentRuntime>()
@@ -809,6 +823,7 @@ interface ContextBuildPreflight {
   const steeringCoordinators = new Map<SessionId, SteeringCoordinator>()
   const activeAgentRunStarts = new Set<string>()
   const pendingClarificationCounts = new Map<string, number>()
+  const contextBuildChildren = new Map<SessionId, ContextBuildChildRuntime>()
   let activeInteraction: ActiveAgentInteraction | null = null
   const interactionCoordinator = createInteractionCoordinator({
     newRequestId: options.newInteractionId,
@@ -846,7 +861,6 @@ interface ContextBuildPreflight {
     },
     onPreempted(interaction) {
       options.recorder?.clarificationPreempted?.(interaction.sessionId, interaction.kind)
-  const contextBuildChildren = new Map<SessionId, ContextBuildChildRuntime>()
     },
     onResumed(interaction) {
       options.recorder?.clarificationResumed?.(interaction.sessionId, interaction.kind)
@@ -862,6 +876,15 @@ interface ContextBuildPreflight {
     },
   })
   const kittenMcpExecutable = options.kittenMcpExecutable ?? defaultKittenMcpExecutable()
+  const contextPackMaterializer = options.contextPackMaterializer ?? createContextPackMaterializer()
+  const contextPackRedactor = options.contextPackRedactor ?? createSecretRedactor()
+  const attestRecipientProfile = options.resolveRecipientProfile ?? ((config: ResolvedAgentConfig) =>
+    resolveRecipientProfile(config, undefined, now()))
+  const countContextPackPayload = options.countContextPackPayload ?? (() => null)
+  const contextPackBridge = (options.createContextPackBridge ?? createRealContextPackBridge)({
+    executablePath: kittenMcpExecutable.command,
+    executableArgs: kittenMcpExecutable.args,
+  })
   const agentRunControl: AgentRunControl = {
     start: startAgentRunBatch,
     poll: pollAgentRun,
@@ -899,11 +922,6 @@ interface ContextBuildPreflight {
         scrollback: options.config.shell.scrollback,
       })
       unsubscribeShell = ownedShell.onEvent((event) => store.applyShellEvent(event))
-  const contextPackMaterializer = options.contextPackMaterializer ?? createContextPackMaterializer()
-  const contextPackBridge = (options.createContextPackBridge ?? createRealContextPackBridge)({
-    executablePath: kittenMcpExecutable.command,
-    executableArgs: kittenMcpExecutable.args,
-  })
       shell = { ready: true, runtime: ownedShell }
     } catch (error) {
       unsubscribeShell?.()
@@ -1187,6 +1205,7 @@ interface ContextBuildPreflight {
     generation: number,
     reason: ClarificationSessionLossReason,
   ): void {
+    terminateContextBuildForParent(runtime.seed.id, generation)
     try {
       kittenMcpBridge.cancelSession(runtime.seed.id, generation, reason)
     } catch (error) {
@@ -1236,7 +1255,6 @@ interface ContextBuildPreflight {
       sessionId: interaction.sessionId,
       title: seed?.title ?? interaction.sessionId,
       cwd: seed?.cwd ?? "",
-    terminateContextBuildForParent(runtime.seed.id, generation)
       payload: interaction.payload,
     }
   }
@@ -2345,84 +2363,6 @@ interface ContextBuildPreflight {
     return { kind: "started", childId: child.snapshot.childId }
   }
 
-  async function startAgentRunBatch(
-    route: AgentRunRoute,
-    tasks: readonly AgentRunTask[],
-  ): Promise<readonly AgentRunSnapshot[]> {
-    const startedAt = now()
-    let telemetryOutcome: AgentRunTelemetryInput["outcome"] = "rejected"
-    const routeKey = `${route.parentId}\u0000${route.parentGeneration}`
-    let ownsStartGuard = false
-    try {
-      if (activeAgentRunStarts.has(routeKey)) throw new KittenMcpBridgeError("busy")
-      if (!agentRunRouteAvailable(route)) {
-        telemetryOutcome = "unavailable"
-        throw new KittenMcpBridgeError("unavailable")
-      }
-      activeAgentRunStarts.add(routeKey)
-      ownsStartGuard = true
-      if (tasks.length < 1 || tasks.length > 4) throw new Error("Invalid agent-run batch")
-      const preflight = preflightDelegatedBatch(route, tasks, false)
-      if ("kind" in preflight) throw new Error(`Agent-run start rejected: ${preflight.reason}`)
-      const result = await launchDelegatedBatch(preflight)
-      if (isDelegatedBatchDenial(result)) throw new Error(`Agent-run start rejected: ${result.reason}`)
-      const snapshots = result.map((child) => {
-        if (!child.snapshot) throw new Error("Agent-run child ownership was invalidated")
-        return child.snapshot
-      })
-      telemetryOutcome = "accepted"
-      return snapshots
-    } catch (error) {
-      if (telemetryOutcome !== "unavailable" && !agentRunRouteAvailable(route)) {
-        telemetryOutcome = "unavailable"
-        throw new KittenMcpBridgeError("unavailable")
-      }
-      throw error
-    } finally {
-      if (ownsStartGuard) activeAgentRunStarts.delete(routeKey)
-      options.recorder?.agentRunControl?.({
-        operation: "start",
-        outcome: telemetryOutcome,
-        batchSizeBucket: bucketAgentRunBatchSize(tasks.length),
-        durationBucket: bucketAgentRunDuration(now() - startedAt),
-      })
-    }
-  }
-
-  function pollAgentRun(
-    route: AgentRunRoute,
-    childIds: readonly SessionId[],
-  ): readonly AgentRunSnapshot[] {
-    const startedAt = now()
-    let telemetryOutcome: AgentRunTelemetryInput["outcome"] = "rejected"
-    try {
-      if (childIds.length === 0 || new Set(childIds).size !== childIds.length) {
-        throw new Error("Invalid agent-run poll")
-      }
-      if (!agentRunRouteAvailable(route)) {
-        telemetryOutcome = "unavailable"
-        throw new Error("Agent-run route is unavailable")
-      }
-      const state = store.getState()
-      const snapshots = childIds.map((childId) => {
-        const child = state.delegation.children[childId]
-        const runtime = runtimes.get(childId)
-        if (
-          !child ||
-          child.parentId !== route.parentId ||
-          child.parentGeneration !== route.parentGeneration ||
-          runtime?.generation !== child.childGeneration
-        ) {
-          throw new Error("Agent-run child is unavailable")
-        }
-        return {
-          childId,
-          status: child.status,
-          ...(child.terminal ? { terminalAt: child.terminal.at } : {}),
-        }
-      })
-      telemetryOutcome = "accepted"
-      return snapshots
   function contextBuildPreflight(
     input: StartContextBuildInput,
   ): ContextBuildPreflight | Extract<ContextBuildAvailabilityResult, { readonly kind: "denied" }> {
@@ -2758,6 +2698,264 @@ interface ContextBuildPreflight {
     return { kind: "started", childId, draftRevision: prepared.draft.revision }
   }
 
+  function contextPackWorkspace(
+    sessionId: SessionId,
+  ): { readonly workspaceRoot: string; readonly draft: DraftContextPack } |
+    Extract<ContextPackReviewResult, { readonly kind: "blocked" }> {
+    const state = store.getState()
+    const session = state.sessions[sessionId]
+    const runtime = runtimes.get(sessionId)
+    if (!session || !runtime || !state.contextPacks[sessionId]) {
+      return { kind: "blocked", reason: "unknown_session" }
+    }
+    const draft = state.contextPacks[sessionId]?.draft
+    if (!draft) return { kind: "blocked", reason: "draft_unavailable" }
+    if (
+      !isAbsolute(session.cwd) ||
+      session.cwd.trim().length === 0 ||
+      session.cwd !== runtime.seed.cwd
+    ) {
+      return { kind: "blocked", reason: "workspace_mismatch" }
+    }
+    return { workspaceRoot: session.cwd, draft }
+  }
+
+  async function reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult> {
+    const workspace = contextPackWorkspace(sessionId)
+    if ("kind" in workspace) return workspace
+    const materialized = await contextPackMaterializer.materialize(
+      workspace.workspaceRoot,
+      workspace.draft.selections,
+    )
+    if (materialized.kind !== "materialized") {
+      return { kind: "blocked", reason: materialized.reason }
+    }
+    if (store.getState().contextPacks[sessionId]?.draft !== workspace.draft) {
+      return { kind: "blocked", reason: "draft_changed" }
+    }
+
+    const assembled = assembleCandidate(workspace.draft, materialized.artifacts, contextPackRedactor)
+    if (assembled.kind === "blocked") {
+      return { kind: "blocked", reason: assembled.reason }
+    }
+    if (assembled.candidate.verdict.kind === "blocked") {
+      return { kind: "blocked", reason: assembled.candidate.verdict.reason }
+    }
+    if (!store.publishContextPackReview(sessionId, assembled.candidate)) {
+      return { kind: "blocked", reason: "draft_changed" }
+    }
+    return { kind: "reviewed", candidate: assembled.candidate }
+  }
+
+  async function sealContextPack(
+    sessionId: SessionId,
+    candidateRevision: number,
+  ): Promise<ContextPackSealActionResult> {
+    const workspace = contextPackWorkspace(sessionId)
+    if ("kind" in workspace) return workspace
+    const reviewed = store.getState().contextPacks[sessionId]?.review
+    if (!reviewed) return { kind: "blocked", reason: "review_unavailable" }
+    if (reviewed.revision !== candidateRevision || workspace.draft.revision !== candidateRevision) {
+      return { kind: "blocked", reason: "candidate_revision_mismatch" }
+    }
+
+    const materialized = await contextPackMaterializer.materialize(
+      workspace.workspaceRoot,
+      workspace.draft.selections,
+    )
+    if (materialized.kind !== "materialized") {
+      return { kind: "blocked", reason: materialized.reason }
+    }
+    const current = store.getState().contextPacks[sessionId]
+    if (current?.draft !== workspace.draft || current.review !== reviewed) {
+      return { kind: "blocked", reason: "candidate_changed" }
+    }
+
+    const reassembled = assembleCandidate(workspace.draft, materialized.artifacts, contextPackRedactor)
+    if (reassembled.kind === "blocked") {
+      return { kind: "blocked", reason: reassembled.reason }
+    }
+    if (reassembled.candidate.verdict.kind === "blocked") {
+      return { kind: "blocked", reason: "candidate_blocked" }
+    }
+    if (!sameContextPackReviewCandidate(reviewed, reassembled.candidate)) {
+      return { kind: "blocked", reason: "candidate_changed" }
+    }
+
+    const result = sealCandidate({
+      draft: workspace.draft,
+      candidate: reviewed,
+      currentSourceFences: reassembled.candidate.sourceFences,
+      sealedAt: now(),
+    })
+    if (result.kind === "blocked") return result
+    if (!store.sealContextPack(sessionId, result.sealed)) {
+      return { kind: "blocked", reason: "candidate_changed" }
+    }
+    return result
+  }
+
+  function recipientFitEvidence(
+    sessionId: SessionId,
+    sealed: ContextPackSealedState,
+  ): RecipientFitEvidence {
+    const runtime = runtimes.get(sessionId)
+    const session = store.getState().sessions[sessionId]
+    if (
+      disposed ||
+      !runtime?.config ||
+      !runtime.state.ready ||
+      !runtime.connection ||
+      runtime.acpSessionId === null ||
+      !session?.usage
+    ) {
+      return { kind: "missing" }
+    }
+
+    let availability: RecipientProfileAvailability
+    try {
+      availability = attestRecipientProfile(runtime.config)
+    } catch {
+      return invalidRecipientFitEvidence(sealed)
+    }
+    if (availability.status === "unavailable") {
+      if (availability.reason === "stale_evidence") return { kind: "stale" }
+      if (availability.reason === "malformed_evidence") return invalidRecipientFitEvidence(sealed)
+      return { kind: "missing" }
+    }
+
+    const profile = availability.profile
+    const currentModel = session.configOptions.find((option) => option.category === MODEL_CATEGORY)?.currentValue
+    if (
+      profile.validUntil < now() ||
+      profile.recipe.id !== runtime.config.id ||
+      session.usage.size !== profile.freshSessionCapacity ||
+      (currentModel !== undefined && currentModel !== profile.model)
+    ) {
+      return { kind: "stale" }
+    }
+
+    let exactCount: number | null
+    try {
+      exactCount = countContextPackPayload(sealed.payload, profile)
+    } catch {
+      return invalidRecipientFitEvidence(sealed)
+    }
+    if (exactCount === null) return { kind: "missing" }
+    return {
+      kind: "current",
+      sealedRevision: sealed.revision,
+      payloadBytes: sealed.bytes,
+      exactCount,
+      capacity: session.usage.size,
+      used: session.usage.used,
+      reserve: profile.reserve,
+      counterVersion: profile.counterVersion,
+      evidenceVersion: profile.evidenceVersion,
+    }
+  }
+
+  function assessContextPackRecipientFit(sessionId: SessionId): RecipientFit {
+    const sealed = store.getState().contextPacks[sessionId]?.sealed
+    if (!sealed) return { kind: "unavailable", reason: "missing_evidence" }
+    return assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed))
+  }
+
+  async function sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult> {
+    const sealed = store.getState().contextPacks[sessionId]?.sealed
+    if (!sealed) return { kind: "blocked", reason: "sealed_unavailable" }
+
+    const fit = assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed))
+    if (fit.kind !== "fit") return { kind: "blocked", reason: "recipient_fit", fit }
+
+    const current = store.getState().contextPacks[sessionId]?.sealed
+    if (!current || !sameSealedCustody(sealed, current)) {
+      return { kind: "blocked", reason: "sealed_changed" }
+    }
+    const result = await actions.sendPrompt([{ type: "text", text: sealed.payload }], sessionId)
+    return result
+      ? { kind: "sent", result }
+      : { kind: "blocked", reason: "dispatch_failed" }
+  }
+
+  async function startAgentRunBatch(
+    route: AgentRunRoute,
+    tasks: readonly AgentRunTask[],
+  ): Promise<readonly AgentRunSnapshot[]> {
+    const startedAt = now()
+    let telemetryOutcome: AgentRunTelemetryInput["outcome"] = "rejected"
+    const routeKey = `${route.parentId}\u0000${route.parentGeneration}`
+    let ownsStartGuard = false
+    try {
+      if (activeAgentRunStarts.has(routeKey)) throw new KittenMcpBridgeError("busy")
+      if (!agentRunRouteAvailable(route)) {
+        telemetryOutcome = "unavailable"
+        throw new KittenMcpBridgeError("unavailable")
+      }
+      activeAgentRunStarts.add(routeKey)
+      ownsStartGuard = true
+      if (tasks.length < 1 || tasks.length > 4) throw new Error("Invalid agent-run batch")
+      const preflight = preflightDelegatedBatch(route, tasks, false)
+      if ("kind" in preflight) throw new Error(`Agent-run start rejected: ${preflight.reason}`)
+      const result = await launchDelegatedBatch(preflight)
+      if (isDelegatedBatchDenial(result)) throw new Error(`Agent-run start rejected: ${result.reason}`)
+      const snapshots = result.map((child) => {
+        if (!child.snapshot) throw new Error("Agent-run child ownership was invalidated")
+        return child.snapshot
+      })
+      telemetryOutcome = "accepted"
+      return snapshots
+    } catch (error) {
+      if (telemetryOutcome !== "unavailable" && !agentRunRouteAvailable(route)) {
+        telemetryOutcome = "unavailable"
+        throw new KittenMcpBridgeError("unavailable")
+      }
+      throw error
+    } finally {
+      if (ownsStartGuard) activeAgentRunStarts.delete(routeKey)
+      options.recorder?.agentRunControl?.({
+        operation: "start",
+        outcome: telemetryOutcome,
+        batchSizeBucket: bucketAgentRunBatchSize(tasks.length),
+        durationBucket: bucketAgentRunDuration(now() - startedAt),
+      })
+    }
+  }
+
+  function pollAgentRun(
+    route: AgentRunRoute,
+    childIds: readonly SessionId[],
+  ): readonly AgentRunSnapshot[] {
+    const startedAt = now()
+    let telemetryOutcome: AgentRunTelemetryInput["outcome"] = "rejected"
+    try {
+      if (childIds.length === 0 || new Set(childIds).size !== childIds.length) {
+        throw new Error("Invalid agent-run poll")
+      }
+      if (!agentRunRouteAvailable(route)) {
+        telemetryOutcome = "unavailable"
+        throw new Error("Agent-run route is unavailable")
+      }
+      const state = store.getState()
+      const snapshots = childIds.map((childId) => {
+        const child = state.delegation.children[childId]
+        const runtime = runtimes.get(childId)
+        if (
+          !child ||
+          child.parentId !== route.parentId ||
+          child.parentGeneration !== route.parentGeneration ||
+          runtime?.generation !== child.childGeneration
+        ) {
+          throw new Error("Agent-run child is unavailable")
+        }
+        return {
+          childId,
+          status: child.status,
+          ...(child.terminal ? { terminalAt: child.terminal.at } : {}),
+        }
+      })
+      telemetryOutcome = "accepted"
+      return snapshots
     } finally {
       options.recorder?.agentRunControl?.({
         operation: "poll",
@@ -3154,6 +3352,12 @@ interface ContextBuildPreflight {
     cleanupManagedWorktree,
     startExploreChild,
     exploreAvailability,
+    startContextBuild,
+    contextBuildAvailability,
+    reviewContextPack,
+    sealContextPack,
+    assessContextPackRecipientFit,
+    sendContextPackHere,
     steerDelegatedChild,
     cancelDelegatedChild,
     closeConversation,
@@ -3285,8 +3489,6 @@ interface ContextBuildPreflight {
       let backgroundCount = 0
       let unavailableCount = 0
       for (const sessionId of workspace.order) {
-    startContextBuild,
-    contextBuildAvailability,
         const conversation = workspace.conversations[sessionId]
         if (!conversation) continue
         if (conversation.lifecycle === "visible") visibleCount += 1
@@ -3301,8 +3503,11 @@ interface ContextBuildPreflight {
         abandonPromptLifecycle(runtime.seed.id)
         terminalizeHarnessDelivery(runtime)
       }
+      for (const child of [...contextBuildChildren.values()]) {
+        releaseContextBuildChild(child, { bridgeReason: "parent_generation_changed" })
+      }
       disposed = true
-      await kittenMcpBridge.dispose()
+      await Promise.all([kittenMcpBridge.dispose(), contextPackBridge.dispose()])
       interactionCoordinator.dispose()
       steeringCoordinators.clear()
       activePrompts.clear()
@@ -3390,6 +3595,102 @@ function nextConnectionGeneration(
   return generation
 }
 
+function validContextBuildCapability(
+  capability: Extract<ContextBuildAvailability, { readonly status: "available" }>,
+  config: ResolvedAgentConfig,
+): boolean {
+  return capability.capabilityVersion === "explore-v2" &&
+    capability.evidenceVersion.trim().length > 0 &&
+    capability.model.trim().length > 0 &&
+    sameContextBuildOperations(capability.operations, CONTEXT_BUILD_OPERATIONS) &&
+    capability.recipe.id === config.id &&
+    capability.recipe.command === config.command &&
+    sameStringArray(capability.recipe.args, config.args) &&
+    sameStringRecord(capability.recipe.env, config.env)
+}
+
+function sameContextBuildOperations(
+  left: readonly ContextBuildOperation[],
+  right: readonly ContextBuildOperation[],
+): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameStringRecord(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return sameStringArray(leftKeys, rightKeys) && leftKeys.every((key) => left[key] === right[key])
+}
+
+function sameContextBuildBinding(left: ContextBuildBinding, right: ContextBuildBinding): boolean {
+  return left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision
+}
+
+function sameContextBuildRoute(left: ContextPackBridgeRoute, right: ContextPackBridgeRoute): boolean {
+  return left.parentId === right.parentId &&
+    left.childId === right.childId &&
+    left.parentGeneration === right.parentGeneration &&
+    left.childGeneration === right.childGeneration &&
+    left.draftRevision === right.draftRevision &&
+    left.workspaceRoot === right.workspaceRoot
+}
+
+function invalidRecipientFitEvidence(sealed: ContextPackSealedState): RecipientFitEvidence {
+  return {
+    kind: "current",
+    sealedRevision: sealed.revision,
+    payloadBytes: sealed.bytes,
+    exactCount: Number.NaN,
+    capacity: Number.NaN,
+    used: Number.NaN,
+    reserve: Number.NaN,
+    counterVersion: "",
+    evidenceVersion: "",
+  }
+}
+
+function sameContextPackReviewCandidate(
+  left: ContextPackReviewCandidate,
+  right: ContextPackReviewCandidate,
+): boolean {
+  return left.revision === right.revision &&
+    left.payload === right.payload &&
+    left.bytes === right.bytes &&
+    left.packEstimate === right.packEstimate &&
+    left.redactionCount === right.redactionCount &&
+    JSON.stringify(left.manifest) === JSON.stringify(right.manifest) &&
+    JSON.stringify(left.sourceFences) === JSON.stringify(right.sourceFences) &&
+    JSON.stringify(left.verdict) === JSON.stringify(right.verdict)
+}
+
+function sameSealedCustody(left: ContextPackSealedState, right: ContextPackSealedState): boolean {
+  return left === right &&
+    left.revision === right.revision &&
+    left.payload === right.payload &&
+    left.bytes === right.bytes &&
+    left.sealedAt === right.sealedAt
+}
+
+function contextBuildOperationFor(operation: ContextPackMcpOperation): ContextBuildOperation {
+  switch (operation) {
+    case "ask_user": return "ask_user:scoped"
+    case "read_draft": return "draft:read-bounded"
+    case "read_workspace": return "workspace:read-bounded"
+    case "mutate_draft": return "draft:mutate-revision-fenced"
+  }
+}
+
 function clarificationCountKey(sessionId: SessionId, generation: number): string {
   return `${sessionId}\u0000${generation}`
 }
@@ -3433,9 +3734,6 @@ function mcpBridgeFailureCategory(reason: KittenMcpBridgeFailureReason): McpBrid
  * development, preserve the source entrypoint before appending the reserved mode flag.
  */
 function defaultKittenMcpExecutable(): { command: string; args: readonly string[] } {
-      for (const child of [...contextBuildChildren.values()]) {
-        releaseContextBuildChild(child, { bridgeReason: "parent_generation_changed" })
-      }
   const entrypoint = process.argv[1]
   return {
     command: process.execPath,
@@ -3525,66 +3823,6 @@ function restorePersistedContextPack(projection: PersistedContextPack | undefine
   if (!projection) return { draft: null, sealed: null, review: null, build: null }
   const restoredDraft = projection.draft ? restoreManifest(projection.draft) : null
   if (restoredDraft?.kind === "invalid") {
-function validContextBuildCapability(
-  capability: Extract<ContextBuildAvailability, { readonly status: "available" }>,
-  config: ResolvedAgentConfig,
-): boolean {
-  return capability.capabilityVersion === "explore-v2" &&
-    capability.evidenceVersion.trim().length > 0 &&
-    capability.model.trim().length > 0 &&
-    sameContextBuildOperations(capability.operations, CONTEXT_BUILD_OPERATIONS) &&
-    capability.recipe.id === config.id &&
-    capability.recipe.command === config.command &&
-    sameStringArray(capability.recipe.args, config.args) &&
-    sameStringRecord(capability.recipe.env, config.env)
-}
-
-function sameContextBuildOperations(
-  left: readonly ContextBuildOperation[],
-  right: readonly ContextBuildOperation[],
-): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index])
-}
-
-function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index])
-}
-
-function sameStringRecord(
-  left: Readonly<Record<string, string>>,
-  right: Readonly<Record<string, string>>,
-): boolean {
-  const leftKeys = Object.keys(left).sort()
-  const rightKeys = Object.keys(right).sort()
-  return sameStringArray(leftKeys, rightKeys) && leftKeys.every((key) => left[key] === right[key])
-}
-
-function sameContextBuildBinding(left: ContextBuildBinding, right: ContextBuildBinding): boolean {
-  return left.parentId === right.parentId &&
-    left.childId === right.childId &&
-    left.parentGeneration === right.parentGeneration &&
-    left.childGeneration === right.childGeneration &&
-    left.draftRevision === right.draftRevision
-}
-
-function sameContextBuildRoute(left: ContextPackBridgeRoute, right: ContextPackBridgeRoute): boolean {
-  return left.parentId === right.parentId &&
-    left.childId === right.childId &&
-    left.parentGeneration === right.parentGeneration &&
-    left.childGeneration === right.childGeneration &&
-    left.draftRevision === right.draftRevision &&
-    left.workspaceRoot === right.workspaceRoot
-}
-
-function contextBuildOperationFor(operation: ContextPackMcpOperation): ContextBuildOperation {
-  switch (operation) {
-    case "ask_user": return "ask_user:scoped"
-    case "read_draft": return "draft:read-bounded"
-    case "read_workspace": return "workspace:read-bounded"
-    case "mutate_draft": return "draft:mutate-revision-fenced"
-  }
-}
-
     return { draft: null, sealed: null, review: null, build: null }
   }
   return {
@@ -3621,6 +3859,10 @@ function defaultCreateConnection(config: ResolvedAgentConfig): AgentConnection {
   return createAgentConnection({ config })
 }
 
+function defaultCreateContextBuildConnection(config: ResolvedAgentConfig): AgentConnection {
+  return createAgentConnection({ config, fileSystemAccess: "none" })
+}
+
 /** Tear an owned runtime down; a noisy teardown must not mask the shutdown path. */
 async function disposeQuietly(runtime: { dispose(): Promise<void> } | undefined): Promise<void> {
   if (!runtime) return
@@ -3649,7 +3891,4 @@ function errorDetails(error: unknown): string | null {
   if (typeof data !== "object" || data === null || !("details" in data)) return null
   const details = (data as { details: unknown }).details
   return typeof details === "string" && details.length > 0 ? details : null
-}
-function defaultCreateContextBuildConnection(config: ResolvedAgentConfig): AgentConnection {
-  return createAgentConnection({ config, fileSystemAccess: "none" })
 }

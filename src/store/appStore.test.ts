@@ -2868,4 +2868,38 @@ describe("Context Pack store integration", () => {
     expect(store.getState().contextPacks.sibling).toBe(sibling)
     expect(store.getState().contextPacks.owner?.sealed?.payload).toBe(candidate.payload)
   })
+
+  it("rejects a sealed replacement whose manifest or source fences differ from the exact review", () => {
+    const store = createAppStore({
+      seeds: [{ id: "owner", providerKind: "codex", title: "Owner", cwd: "/work/owner" }],
+    })
+    const draft = requireDraft(store, "owner", "Keep exact custody")
+    const candidate = reviewCandidate(draft)
+    expect(store.publishContextPackReview("owner", candidate)).toBe(true)
+    const accepted = sealedCandidate(draft, candidate, 10)
+    expect(store.sealContextPack("owner", accepted)).toBe(true)
+
+    const forgedManifest = {
+      ...accepted,
+      sealedAt: 20,
+      manifest: {
+        ...accepted.manifest,
+        instructions: { ...accepted.manifest.instructions, original: "substituted" },
+      },
+    }
+    const forgedFences = {
+      ...accepted,
+      sealedAt: 30,
+      sourceFences: [{
+        selectionKey: "forged",
+        identity: "file:forged",
+        digest: "f".repeat(64),
+        bytes: 0,
+      }],
+    }
+
+    expect(store.sealContextPack("owner", forgedManifest)).toBe(false)
+    expect(store.sealContextPack("owner", forgedFences)).toBe(false)
+    expect(store.getState().contextPacks.owner?.sealed).toBe(accepted)
+  })
 })

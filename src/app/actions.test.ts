@@ -154,3 +154,92 @@ describe("ControllerActions Context Build boundary", () => {
     expect(errors).toEqual([failure])
   })
 })
+
+describe("ControllerActions Context Pack custody boundary", () => {
+  it("forwards every typed review, seal, fit, and Send Here result to the addressed session", async () => {
+    const store = createAppStore({
+      seeds: [{ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }],
+    })
+    const calls: unknown[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      reviewContextPack: async (sessionId) => {
+        calls.push(["review", sessionId])
+        return { kind: "blocked", reason: "over_budget" }
+      },
+      sealContextPack: async (sessionId, revision) => {
+        calls.push(["seal", sessionId, revision])
+        return { kind: "blocked", reason: "candidate_revision_mismatch" }
+      },
+      assessContextPackRecipientFit: (sessionId) => {
+        calls.push(["fit", sessionId])
+        return { kind: "insufficient", exactCount: 900, remaining: -10 }
+      },
+      sendContextPackHere: async (sessionId) => {
+        calls.push(["send", sessionId])
+        return {
+          kind: "blocked",
+          reason: "recipient_fit",
+          fit: { kind: "unavailable", reason: "stale_evidence" },
+        }
+      },
+    })
+
+    expect(await actions.reviewContextPack("alpha")).toEqual({ kind: "blocked", reason: "over_budget" })
+    expect(await actions.sealContextPack("alpha", 7)).toEqual({
+      kind: "blocked",
+      reason: "candidate_revision_mismatch",
+    })
+    expect(actions.assessContextPackRecipientFit("alpha")).toEqual({
+      kind: "insufficient",
+      exactCount: 900,
+      remaining: -10,
+    })
+    expect(await actions.sendContextPackHere("alpha")).toEqual({
+      kind: "blocked",
+      reason: "recipient_fit",
+      fit: { kind: "unavailable", reason: "stale_evidence" },
+    })
+    expect(calls).toEqual([
+      ["review", "alpha"],
+      ["seal", "alpha", 7],
+      ["fit", "alpha"],
+      ["send", "alpha"],
+    ])
+  })
+
+  it("contains rejected custody seams and fails closed without rejecting into the UI", async () => {
+    const store = createAppStore()
+    const errors: unknown[] = []
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+      reviewContextPack: async () => { throw new Error("review failed") },
+      sealContextPack: async () => { throw new Error("seal failed") },
+      assessContextPackRecipientFit: () => { throw new Error("fit failed") },
+      sendContextPackHere: async () => { throw new Error("send failed") },
+      onError: (_sessionId, error) => errors.push(error),
+    })
+
+    expect(await actions.reviewContextPack("alpha")).toEqual({
+      kind: "blocked",
+      reason: "draft_unavailable",
+    })
+    expect(await actions.sealContextPack("alpha", 0)).toEqual({
+      kind: "blocked",
+      reason: "review_unavailable",
+    })
+    expect(actions.assessContextPackRecipientFit("alpha")).toEqual({
+      kind: "unavailable",
+      reason: "missing_evidence",
+    })
+    expect(await actions.sendContextPackHere("alpha")).toEqual({
+      kind: "blocked",
+      reason: "dispatch_failed",
+    })
+    expect(errors).toHaveLength(3)
+  })
+})

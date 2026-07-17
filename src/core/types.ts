@@ -1065,6 +1065,84 @@ export interface MaterializedContextArtifact {
   readonly content: string
 }
 
+/** Workspace-relative selector accepted by the controller-owned bounded materializer. */
+export type BoundedArtifactRead =
+  | { readonly kind: "full_file"; readonly path: string }
+  | {
+      readonly kind: "file_slice"
+      readonly path: string
+      readonly range: { readonly startLine: number; readonly endLine: number }
+    }
+  | {
+      readonly kind: "diff"
+      readonly path: string
+      readonly scope: "staged" | "unstaged"
+    }
+
+/** Ephemeral exact bytes returned by a bounded workspace read; never persisted or telemetered. */
+export interface BoundedArtifact {
+  readonly source: ContextPackSourceReference
+  readonly content: string
+}
+
+export interface ContextPackMaterializationLimits {
+  readonly maxArtifactBytes: number
+  readonly maxTotalBytes: number
+}
+
+export type ContextPackMaterializationBlockedReason =
+  | "invalid_workspace"
+  | "invalid_limits"
+  | "invalid_path"
+  | "source_missing"
+  | "outside_workspace"
+  | "ineligible_source"
+  | "binary_source"
+  | "malformed_source"
+  | "invalid_range"
+  | "unsupported_diff_scope"
+  | "oversized_artifact"
+  | "total_bytes_exceeded"
+  | "diff_failed"
+
+export type ContextPackMaterializationStaleReason =
+  | "source_changed_during_read"
+  | "source_identity_changed"
+  | "source_digest_changed"
+  | "source_bytes_changed"
+
+export type BoundedArtifactReadResult =
+  | { readonly kind: "ready"; readonly artifact: BoundedArtifact }
+  | {
+      readonly kind: "blocked"
+      readonly reason: ContextPackMaterializationBlockedReason
+      readonly path: string
+    }
+  | {
+      readonly kind: "stale"
+      readonly reason: ContextPackMaterializationStaleReason
+      readonly path: string
+    }
+
+export type ContextPackMaterializationResult =
+  | {
+      readonly kind: "materialized"
+      readonly artifacts: readonly MaterializedContextArtifact[]
+      readonly totalBytes: number
+    }
+  | {
+      readonly kind: "blocked"
+      readonly reason: ContextPackMaterializationBlockedReason
+      readonly selectionKey?: string
+      readonly path?: string
+    }
+  | {
+      readonly kind: "stale"
+      readonly reason: ContextPackMaterializationStaleReason
+      readonly selectionKey: string
+      readonly path: string
+    }
+
 export type ContextPackReviewVerdict =
   | { readonly kind: "ready" }
   | { readonly kind: "blocked"; readonly reason: "over_budget" }

@@ -25,7 +25,14 @@ import {
   type ClarificationOutcome,
   type ConfigOption,
   type DefaultApplyResult,
+  type ContextPackAssemblyFailureReason,
   type ContextPackEvidenceDenialReason,
+  type ContextPackMaterializationBlockedReason,
+  type ContextPackMaterializationStaleReason,
+  type ContextPackReviewCandidate,
+  type ContextPackSealFailureReason,
+  type RecipientFit,
+  type SealedContextPack,
   type ProviderKind,
   type ProviderModelDefault,
   type SessionId,
@@ -104,6 +111,38 @@ export type ContextBuildAvailabilityResult =
 export type ContextBuildStartResult =
   | { readonly kind: "started"; readonly childId: SessionId; readonly draftRevision: number }
   | { readonly kind: "denied"; readonly reason: ContextBuildDenialReason }
+
+export type ContextPackReviewBlockingReason =
+  | ContextPackMaterializationBlockedReason
+  | ContextPackMaterializationStaleReason
+  | ContextPackAssemblyFailureReason
+  | "over_budget"
+  | "unknown_session"
+  | "draft_unavailable"
+  | "workspace_mismatch"
+  | "draft_changed"
+
+export type ContextPackReviewResult =
+  | { readonly kind: "reviewed"; readonly candidate: ContextPackReviewCandidate }
+  | { readonly kind: "blocked"; readonly reason: ContextPackReviewBlockingReason }
+
+export type ContextPackSealBlockingReason =
+  | ContextPackReviewBlockingReason
+  | ContextPackSealFailureReason
+  | "review_unavailable"
+  | "candidate_changed"
+
+export type ContextPackSealActionResult =
+  | { readonly kind: "sealed"; readonly sealed: SealedContextPack }
+  | { readonly kind: "blocked"; readonly reason: ContextPackSealBlockingReason }
+
+export type ContextPackSendHereResult =
+  | { readonly kind: "sent"; readonly result: PromptResult }
+  | {
+      readonly kind: "blocked"
+      readonly reason: "sealed_unavailable" | "sealed_changed" | "dispatch_failed" | "recipient_fit"
+      readonly fit?: Exclude<RecipientFit, { readonly kind: "fit" }>
+    }
 
 /** One session's live ACP connection: the connection to drive and the ACP id to drive it on. */
 export interface AgentSession {
@@ -282,6 +321,18 @@ export interface ActionDeps {
   startExploreChild?: (input: ExploreLaunchRequest) => Promise<ExploreLaunchResult>
   /** Advisory only; launch always re-attests. */
   exploreAvailability?: (parentId: SessionId) => ExploreAvailabilityResult
+  /** Authoritative fail-closed Context Build launch. */
+  startContextBuild?: (input: StartContextBuildInput) => Promise<ContextBuildStartResult>
+  /** Advisory only; Context Build launch always re-attests exact explore-v2 evidence. */
+  contextBuildAvailability?: (input: StartContextBuildInput) => ContextBuildAvailabilityResult
+  /** Materialize and publish only one exact redacted review candidate. */
+  reviewContextPack?: (sessionId: SessionId) => Promise<ContextPackReviewResult>
+  /** Recheck and atomically seal only the addressed current candidate revision. */
+  sealContextPack?: (sessionId: SessionId, candidateRevision: number) => Promise<ContextPackSealActionResult>
+  /** Recompute recipient fit from current live evidence. */
+  assessContextPackRecipientFit?: (sessionId: SessionId) => RecipientFit
+  /** Explicitly deliver the exact sealed payload through the existing send boundary. */
+  sendContextPackHere?: (sessionId: SessionId) => Promise<ContextPackSendHereResult>
   /** Send additional direction to one live, owned delegated child. */
   steerDelegatedChild?: (childId: SessionId, text: string) => Promise<PromptResult | null>
   /** Cancel one live, owned delegated child without exposing its runtime. */
@@ -303,13 +354,21 @@ export interface ControllerActions {
   /** Explicitly clean one managed terminal non-live child workspace. */
   cleanupManagedWorktree(childId: SessionId): Promise<CleanupManagedWorktreeResult>
   /** Start only an exactly attested explore child, with a typed closed outcome. */
-  /** Authoritative fail-closed Context Build launch. */
-  startContextBuild?: (input: StartContextBuildInput) => Promise<ContextBuildStartResult>
-  /** Advisory only; Context Build launch always re-attests exact explore-v2 evidence. */
-  contextBuildAvailability?: (input: StartContextBuildInput) => ContextBuildAvailabilityResult
   startExploreChild(input: ExploreLaunchRequest): Promise<ExploreLaunchResult>
   /** Read current advisory eligibility without reserving or starting anything. */
   exploreAvailability(parentId: SessionId): ExploreAvailabilityResult
+  /** Start one exact explore-v2 Context Build bound to the addressed draft. */
+  startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult>
+  /** Read advisory Context Build eligibility without preparing a draft or binding. */
+  contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult
+  /** Materialize and publish one exact redacted candidate for the addressed draft. */
+  reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult>
+  /** Recheck and seal the exact addressed candidate revision. */
+  sealContextPack(sessionId: SessionId, candidateRevision: number): Promise<ContextPackSealActionResult>
+  /** Recompute current fail-closed fit for the addressed sealed pack and session. */
+  assessContextPackRecipientFit(sessionId: SessionId): RecipientFit
+  /** Explicitly send the exact sealed pack here after a new final fit check. */
+  sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult>
   /** Send non-empty additional direction to one current, non-terminal owned child. */
   steerDelegatedChild(childId: SessionId, text: string): Promise<PromptResult | null>
   /** Idempotently cancel one current, non-terminal owned child. */
@@ -333,10 +392,6 @@ export interface ControllerActions {
     sessionId: SessionId,
     outcome: FileSelectorDiscoveryOutcome,
     durationMs: number,
-  /** Start one exact explore-v2 Context Build bound to the addressed draft. */
-  startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult>
-  /** Read advisory Context Build eligibility without preparing a draft or binding. */
-  contextBuildAvailability(input: StartContextBuildInput): ContextBuildAvailabilityResult
   ): void
   /** Record one fixed warm-query render state and caller-owned duration. */
   fileSelectorQueryRendered(
@@ -439,6 +494,30 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   }))
   const startExploreChild = deps.startExploreChild ?? (async () => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
   const exploreAvailability = deps.exploreAvailability ?? (() => ({ kind: "denied" as const, reason: "missing-attestation" as const }))
+  const startContextBuild = deps.startContextBuild ?? (async () => ({
+    kind: "denied" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const contextBuildAvailability = deps.contextBuildAvailability ?? (() => ({
+    kind: "denied" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const reviewContextPack = deps.reviewContextPack ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "draft_unavailable" as const,
+  }))
+  const sealContextPack = deps.sealContextPack ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "review_unavailable" as const,
+  }))
+  const assessContextPackRecipientFit = deps.assessContextPackRecipientFit ?? (() => ({
+    kind: "unavailable" as const,
+    reason: "missing_evidence" as const,
+  }))
+  const sendContextPackHere = deps.sendContextPackHere ?? (async () => ({
+    kind: "blocked" as const,
+    reason: "sealed_unavailable" as const,
+  }))
   const steerDelegatedChild = deps.steerDelegatedChild ?? (async () => null)
   const cancelDelegatedChild = deps.cancelDelegatedChild ?? (async () => {})
   const closeConversation = deps.closeConversation ?? (async () => ({ outcome: "ignored" as const }))
@@ -463,14 +542,6 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
   const focused = (): SessionId | undefined =>
     store.getState().workspace.selectedVisibleId ?? undefined
 
-  const startContextBuild = deps.startContextBuild ?? (async () => ({
-    kind: "denied" as const,
-    reason: "missing_evidence" as const,
-  }))
-  const contextBuildAvailability = deps.contextBuildAvailability ?? (() => ({
-    kind: "denied" as const,
-    reason: "missing_evidence" as const,
-  }))
   async function sendPrompt(
     input: PromptInput,
     requestedSessionId?: SessionId,
@@ -750,6 +821,58 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
+    async startContextBuild(input): Promise<ContextBuildStartResult> {
+      try {
+        return await startContextBuild(input)
+      } catch (error) {
+        onError(input.parentId, error)
+        return { kind: "denied", reason: "startup_failed" }
+      }
+    },
+
+    contextBuildAvailability(input): ContextBuildAvailabilityResult {
+      try {
+        return contextBuildAvailability(input)
+      } catch {
+        return { kind: "denied", reason: "missing_evidence" }
+      }
+    },
+
+    async reviewContextPack(sessionId): Promise<ContextPackReviewResult> {
+      try {
+        return await reviewContextPack(sessionId)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "draft_unavailable" }
+      }
+    },
+
+    async sealContextPack(sessionId, candidateRevision): Promise<ContextPackSealActionResult> {
+      try {
+        return await sealContextPack(sessionId, candidateRevision)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "review_unavailable" }
+      }
+    },
+
+    assessContextPackRecipientFit(sessionId): RecipientFit {
+      try {
+        return assessContextPackRecipientFit(sessionId)
+      } catch {
+        return { kind: "unavailable", reason: "missing_evidence" }
+      }
+    },
+
+    async sendContextPackHere(sessionId): Promise<ContextPackSendHereResult> {
+      try {
+        return await sendContextPackHere(sessionId)
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "blocked", reason: "dispatch_failed" }
+      }
+    },
+
     async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
       try {
         return await steerDelegatedChild(childId, text)
@@ -782,23 +905,6 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       ) {
         recorder.tabBackgrounded?.()
       }
-    async startContextBuild(input): Promise<ContextBuildStartResult> {
-      try {
-        return await startContextBuild(input)
-      } catch (error) {
-        onError(input.parentId, error)
-        return { kind: "denied", reason: "startup_failed" }
-      }
-    },
-
-    contextBuildAvailability(input): ContextBuildAvailabilityResult {
-      try {
-        return contextBuildAvailability(input)
-      } catch {
-        return { kind: "denied", reason: "missing_evidence" }
-      }
-    },
-
     },
 
     reopenConversation,

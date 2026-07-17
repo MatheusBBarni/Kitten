@@ -1045,13 +1045,16 @@ class AppStoreImpl implements AppStore {
     if (
       !current?.draft ||
       !current.review ||
+      current.review.verdict.kind !== "ready" ||
       sealed.revision !== current.draft.revision ||
       sealed.revision !== current.review.revision ||
       sealed.manifest.revision !== current.review.manifest.revision ||
       sealed.payload !== current.review.payload ||
       sealed.bytes !== current.review.bytes ||
       sealed.packEstimate !== current.review.packEstimate ||
-      sealed.redactionCount !== current.review.redactionCount
+      sealed.redactionCount !== current.review.redactionCount ||
+      JSON.stringify(sealed.manifest) !== JSON.stringify(current.review.manifest) ||
+      JSON.stringify(sealed.sourceFences) !== JSON.stringify(current.review.sourceFences)
     ) {
       return false
     }

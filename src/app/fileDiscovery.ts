@@ -97,7 +97,7 @@ export function createRepositoryFileSource(
         if (listed.exitCode !== 0) return discoveryFailed()
 
         const candidates = [...new Set(parseNulList(listed.stdout))].filter((path) =>
-          isSafeRelativePath(root, path),
+          isSafeRepositoryRelativePath(root, path),
         )
         if (candidates.length === 0) return { kind: "ready", paths: [] }
 
@@ -146,10 +146,10 @@ export function createRepositoryFileSource(
           if (!stat.isFile()) return false
 
           const realPath = await fileSystem.realpath(absolutePath)
-          if (!isContainedBy(realRoot, realPath)) return false
+          if (!isPathContainedBy(realRoot, realPath)) return false
 
           const prefix = await fileSystem.readPrefix(realPath, REPOSITORY_FILE_PREFIX_BYTES)
-          return !prefix.includes(0)
+          return !isBinaryRepositoryFilePrefix(prefix)
         })
 
         return { kind: "ready", paths: eligible.sort(compareLexically) }
@@ -211,21 +211,29 @@ function encodeNulList(paths: readonly string[]): Uint8Array {
   return encoder.encode(`${paths.join("\0")}\0`)
 }
 
-function isSafeRelativePath(root: string, path: string): boolean {
+/** Shared lexical path policy for every workspace-relative repository read. */
+export function isSafeRepositoryRelativePath(root: string, path: string): boolean {
   if (!path || CONTROL_CHARACTER.test(path) || isAbsolute(path) || posix.normalize(path) !== path) {
     return false
   }
+  if (path.split("/").includes(".git")) return false
 
   const absolutePath = resolve(root, path)
-  return isContainedBy(root, absolutePath)
+  return isPathContainedBy(root, absolutePath)
 }
 
-function isContainedBy(root: string, path: string): boolean {
+/** Shared canonical containment check used after resolving real paths. */
+export function isPathContainedBy(root: string, path: string): boolean {
   const fromRoot = relative(root, path)
   return (
     fromRoot === "" ||
     (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))
   )
+}
+
+/** Existing discovery binary policy, exported so materialization cannot drift from it. */
+export function isBinaryRepositoryFilePrefix(bytes: Uint8Array): boolean {
+  return bytes.includes(0)
 }
 
 type AttributeName = "linguist-generated" | "text"

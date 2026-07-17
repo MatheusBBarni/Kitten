@@ -18,6 +18,9 @@ import {
   type CloseConversationResult,
   type ContextBuildAvailabilityResult,
   type ContextBuildStartResult,
+  type ContextPackReviewResult,
+  type ContextPackSealActionResult,
+  type ContextPackSendHereResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
   type ExploreAvailabilityResult,
@@ -34,7 +37,7 @@ import type { RepositoryFileList } from "../src/app/fileDiscovery.ts"
 import type { CleanupManagedWorktreeResult } from "../src/app/managedWorktree.ts"
 import { selectPromptHistory, type PromptHistoryDirection, type PromptHistorySelection } from "../src/core/promptHistory.ts"
 import type { AgentRuntimeState, SessionController, ShellRuntimeState } from "../src/app/controller.ts"
-import type { ClarificationOutcome, DefaultApplyResult, SessionId } from "../src/core/types.ts"
+import type { ClarificationOutcome, DefaultApplyResult, RecipientFit, SessionId } from "../src/core/types.ts"
 import type { StatuslineLayout } from "../src/core/statusline.ts"
 import {
   persistedSelectedConversationId,
@@ -349,13 +352,28 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
             ? { kind: "available" as const }
             : { kind: "denied" as const, reason: "missing-attestation" as const })
       },
-      async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
       async startContextBuild(_input: StartContextBuildInput): Promise<ContextBuildStartResult> {
         return { kind: "denied", reason: "missing_evidence" }
       },
       contextBuildAvailability(_input: StartContextBuildInput): ContextBuildAvailabilityResult {
         return { kind: "denied", reason: "missing_evidence" }
       },
+      async reviewContextPack(_sessionId: SessionId): Promise<ContextPackReviewResult> {
+        return { kind: "blocked", reason: "draft_unavailable" }
+      },
+      async sealContextPack(
+        _sessionId: SessionId,
+        _candidateRevision: number,
+      ): Promise<ContextPackSealActionResult> {
+        return { kind: "blocked", reason: "review_unavailable" }
+      },
+      assessContextPackRecipientFit(_sessionId: SessionId): RecipientFit {
+        return { kind: "unavailable", reason: "missing_evidence" }
+      },
+      async sendContextPackHere(_sessionId: SessionId): Promise<ContextPackSendHereResult> {
+        return { kind: "blocked", reason: "sealed_unavailable" }
+      },
+      async steerDelegatedChild(childId, text): Promise<PromptResult | null> {
         calls.steerDelegatedChild.push({ childId, text })
         const child = store.getState().delegation.children[childId]
         if (!child || child.terminal || text.trim().length === 0) return null
