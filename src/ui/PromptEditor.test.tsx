@@ -536,11 +536,14 @@ describe("PromptEditor slash commands", () => {
 
     await type(setup, "/")
     await frameWith(setup, "Commands", "Cockpit", "▸ /handoff")
-    await actAsync(() => {
-      for (let index = 0; index < COCKPIT_COMMANDS.length; index++) {
+    // Native key events arrive one at a time. Flush each one so the next menu
+    // selection observes the preceding state transition instead of every
+    // handler closing over the same index in one React batch.
+    for (let index = 0; index < COCKPIT_COMMANDS.length; index++) {
+      await actAsync(() => {
         setup.mockInput.pressArrow("down")
-      }
-    })
+      })
+    }
     await setup.renderer.idle()
 
     const scrolled = await frameWith(setup, "Agent commands", "▸ /review")
