@@ -1121,3 +1121,111 @@ describe("shell telemetry over the local JSONL sink", () => {
     }
   })
 })
+
+describe("Context Pack telemetry over the local JSONL sink", () => {
+  const allowedKeys = new Set([
+    "type",
+    "at",
+    "sessionRef",
+    "contextPackReason",
+    "contextPackOutcome",
+    "selectionCountBucket",
+    "redactionCountBucket",
+    "byteBucket",
+    "contextPackDurationBucket",
+  ])
+
+  it("writes the permitted lifecycle in settled order without content or identities", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-context-pack-telemetry-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      let currentTime = 1_000
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => currentTime,
+        sessionRef: "anonymous-run",
+      })
+
+      recorder.contextPackDraftCreated({ selectionCountBucket: "zero" })
+      recorder.contextPackBuildStarted("PRIVATE-BUILDER-IDENTITY", { selectionCountBucket: "two_to_four" })
+      currentTime += 6_000
+      recorder.contextPackBuildSettled("PRIVATE-BUILDER-IDENTITY", { outcome: "ready_for_review" })
+      recorder.contextPackReviewReady({
+        selectionCountBucket: "two_to_four",
+        redactionCountBucket: "one",
+        byteBucket: "8_to_31kb",
+      })
+      recorder.contextPackSealed({
+        selectionCountBucket: "two_to_four",
+        redactionCountBucket: "one",
+        byteBucket: "8_to_31kb",
+      })
+      recorder.contextPackFitAvailable({ byteBucket: "8_to_31kb" })
+      recorder.contextPackDeliveryConfirmed({ byteBucket: "8_to_31kb" })
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw.trimEnd().split("\n").map((line) => JSON.parse(line) as TelemetryRecord)
+      expect(records.map(({ type }) => type)).toEqual([
+        "context_pack_draft_created",
+        "build_started",
+        "build_settled",
+        "review_ready",
+        "sealed",
+        "fit_available",
+        "delivery_confirmed",
+      ])
+      expect(records.every((record) => Object.keys(record).every((key) => allowedKeys.has(key)))).toBeTrue()
+      expect(raw).not.toContain("PRIVATE-BUILDER-IDENTITY")
+      expect(raw).not.toContain("src/private.ts")
+      expect(raw).not.toContain(SECRET)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("writes denied and stale flows with only fixed reason categories", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kitten-context-pack-denied-int-"))
+    try {
+      const path = join(dir, "telemetry.jsonl")
+      const recorder = createTelemetryRecorder({
+        enabled: true,
+        sink: createJsonlFileSink(path),
+        now: () => 1_000,
+        sessionRef: "anonymous-run",
+      })
+
+      recorder.contextPackBuildDenied({ reason: "capability_unavailable" })
+      recorder.contextPackReviewBlocked({ reason: "source_stale" })
+      recorder.contextPackSealDenied({ reason: "candidate_stale" })
+      recorder.contextPackFitUnavailable({ reason: "stale_evidence" })
+      recorder.contextPackFitInsufficient({ byteBucket: "128kb_or_more" })
+      recorder.contextPackDeliveryDenied({ reason: "fit_insufficient" })
+
+      const raw = readFileSync(path, "utf8")
+      const records = raw.trimEnd().split("\n").map((line) => JSON.parse(line) as TelemetryRecord)
+      expect(records.map(({ type, contextPackReason }) => ({ type, contextPackReason }))).toEqual([
+        { type: "build_denied", contextPackReason: "capability_unavailable" },
+        { type: "review_blocked", contextPackReason: "source_stale" },
+        { type: "seal_denied", contextPackReason: "candidate_stale" },
+        { type: "fit_unavailable", contextPackReason: "stale_evidence" },
+        { type: "fit_insufficient", contextPackReason: undefined },
+        { type: "delivery_denied", contextPackReason: "fit_insufficient" },
+      ])
+      expect(records.every((record) => Object.keys(record).every((key) => allowedKeys.has(key)))).toBeTrue()
+      for (const sentinel of [
+        "operator instructions",
+        "src/private.ts",
+        "source-digest",
+        "selection rationale",
+        "sealed payload",
+        "recipient-id",
+        "export destination",
+        "provider recipe",
+        "raw stack trace",
+      ]) expect(raw).not.toContain(sentinel)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

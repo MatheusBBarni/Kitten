@@ -514,6 +514,7 @@ describe("createSessionController - Context Build lifecycle", () => {
     readonly now?: () => number
     readonly newChildIds?: readonly SessionId[]
     readonly store?: AppStore
+    readonly recorder?: TelemetryRecorder
   } = {}) {
     const created: StubConnection[] = []
     const configs: ResolvedAgentConfig[] = []
@@ -550,6 +551,7 @@ describe("createSessionController - Context Build lifecycle", () => {
       now: overrides.now,
       createKittenMcpBridge: ordinaryBridge.factory,
       createContextPackBridge: contextBridge.factory,
+      recorder: overrides.recorder,
     })
     return { controller, created, configs, contextBridge }
   }
@@ -587,7 +589,7 @@ describe("createSessionController - Context Build lifecycle", () => {
       freshSessionCapacity: capacity,
       reserve: 100,
       counterVersion: "counter-v1",
-      validUntil: 1_000,
+      validUntil: 10_000,
     },
   })
 
@@ -738,6 +740,145 @@ describe("createSessionController - Context Build lifecycle", () => {
       () => test.controller.store.getState().contextPacks[parentId]?.build === null,
       "Context Build settlement",
     )
+    await test.controller.dispose()
+  })
+
+  it("records Context Pack outcomes only after each controller result settles", async () => {
+    const records: TelemetryRecord[] = []
+    let currentTime = 100
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      sessionRef: "context-pack-run",
+      now: () => currentTime,
+    })
+    const promptWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [{ promptWait: promptWait.promise }],
+      materializer: reviewMaterializer(),
+      resolveRecipientProfile: (config) => recipientProfile(config),
+      countContextPackPayload: () => 100,
+      recorder,
+      now: () => currentTime,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    records.length = 0
+
+    const started = await test.controller.actions.startContextBuild(freshDraft(sessionId))
+    expect(started.kind).toBe("started")
+    expect(records.map(({ type }) => type)).toEqual([
+      "context_pack_draft_created",
+      "build_started",
+    ])
+
+    currentTime += 6_000
+    promptWait.resolve()
+    await waitFor(
+      () => records.some(({ type }) => type === "build_settled"),
+      "settled Context Build telemetry",
+    )
+    expect(records.find(({ type }) => type === "build_settled")).toMatchObject({
+      contextPackOutcome: "ready_for_review",
+      contextPackDurationBucket: "5_to_29s",
+    })
+
+    const reviewed = await test.controller.actions.reviewContextPack(sessionId)
+    if (reviewed.kind !== "reviewed") throw new Error("expected review")
+    expect(records.at(-1)?.type).toBe("review_ready")
+    const sealed = await test.controller.actions.sealContextPack(sessionId, reviewed.candidate.revision)
+    if (sealed.kind !== "sealed") throw new Error("expected seal")
+    expect(records.at(-1)?.type).toBe("sealed")
+
+    test.controller.store.applyEvent(sessionId, { kind: "usage", used: 100, size: 2_000 })
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId).kind).toBe("fit")
+    expect(records.at(-1)?.type).toBe("fit_available")
+    expect((await test.controller.actions.sendContextPackHere(sessionId)).kind).toBe("sent")
+    expect(records.slice(-2).map(({ type }) => type)).toEqual([
+      "fit_available",
+      "delivery_confirmed",
+    ])
+
+    const serialized = JSON.stringify(records)
+    expect(serialized).not.toContain(sessionId)
+    expect(serialized).not.toContain("context-builder-1")
+    expect(serialized).not.toContain(sealed.sealed.payload)
+    await test.controller.dispose()
+  })
+
+  it("does not record a private build callback after the store rejects its stale binding", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      sessionRef: "context-pack-stale-build",
+    })
+    const promptWait = deferred()
+    const test = await setupContextBuild({
+      buildOptions: [{ promptWait: promptWait.promise }],
+      recorder,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    records.length = 0
+
+    expect((await test.controller.actions.startContextBuild(freshDraft(sessionId))).kind).toBe("started")
+    const binding = test.controller.store.getState().contextPacks[sessionId]?.build
+    if (!binding) throw new Error("expected live Context Build binding")
+    expect(test.controller.store.releaseContextBuild(sessionId, binding)).toBe(true)
+
+    promptWait.resolve()
+    await waitFor(
+      () => test.contextBridge.revocations.length === 1,
+      "stale Context Build callback cleanup",
+    )
+    expect(records.map(({ type }) => type)).toEqual([
+      "context_pack_draft_created",
+      "build_started",
+    ])
+    await test.controller.dispose()
+  })
+
+  it("records only closed denial categories after denied controller results", async () => {
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      sessionRef: "context-pack-denied",
+    })
+    const test = await setupContextBuild({
+      resolveCapability: () => ({ status: "unavailable", reason: "stale_evidence" }),
+      recorder,
+    })
+    const sessionId = test.controller.store.getState().workspace.selectedVisibleId!
+    records.length = 0
+
+    expect(await test.controller.actions.startContextBuild(freshDraft(sessionId))).toEqual({
+      kind: "denied",
+      reason: "stale_evidence",
+    })
+    expect(await test.controller.actions.reviewContextPack(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "draft_unavailable",
+    })
+    expect(await test.controller.actions.sealContextPack(sessionId, 1)).toEqual({
+      kind: "blocked",
+      reason: "draft_unavailable",
+    })
+    expect(test.controller.actions.assessContextPackRecipientFit(sessionId)).toEqual({
+      kind: "unavailable",
+      reason: "missing_evidence",
+    })
+    expect(await test.controller.actions.sendContextPackHere(sessionId)).toEqual({
+      kind: "blocked",
+      reason: "sealed_unavailable",
+    })
+
+    expect(records.map(({ type, contextPackReason }) => ({ type, contextPackReason }))).toEqual([
+      { type: "build_denied", contextPackReason: "capability_unavailable" },
+      { type: "review_blocked", contextPackReason: "draft_unavailable" },
+      { type: "seal_denied", contextPackReason: "review_unavailable" },
+      { type: "fit_unavailable", contextPackReason: "missing_evidence" },
+      { type: "delivery_denied", contextPackReason: "sealed_unavailable" },
+    ])
     await test.controller.dispose()
   })
 

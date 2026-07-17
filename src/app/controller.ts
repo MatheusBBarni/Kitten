@@ -74,6 +74,9 @@ import { createAppStore, type AppStore, type ApprovalOverlay, type Clarification
 import {
   bucketAgentRunBatchSize,
   bucketAgentRunDuration,
+  bucketContextPackBytes,
+  bucketContextPackRedactionCount,
+  bucketContextPackSelectionCount,
   createUsageSeenJsonlFileSink,
   logUsageSeen,
   resolveTelemetryPath,
@@ -94,6 +97,19 @@ import {
   type McpBridgeFailureCategory,
   type SteeringCapabilityClass,
   type SteeringTelemetryOutcome,
+  type ContextPackBuildDeniedInput,
+  type ContextPackBuildSettledInput,
+  type ContextPackBuildStartedInput,
+  type ContextPackDeliveryConfirmedInput,
+  type ContextPackDeliveryDeniedInput,
+  type ContextPackDraftCreatedInput,
+  type ContextPackFitAvailableInput,
+  type ContextPackFitInsufficientInput,
+  type ContextPackFitUnavailableInput,
+  type ContextPackReviewBlockedInput,
+  type ContextPackReviewReadyInput,
+  type ContextPackSealDeniedInput,
+  type ContextPackSealedInput,
 } from "../telemetry/recorder.ts"
 import {
   createControllerActions,
@@ -228,6 +244,19 @@ export interface ControllerTelemetry extends ActionTelemetry {
     outcome: SteeringTelemetryOutcome,
     capabilityClass: SteeringCapabilityClass,
   ): void
+  contextPackDraftCreated?(input: ContextPackDraftCreatedInput): void
+  contextPackBuildStarted?(lifecycleKey: string, input: ContextPackBuildStartedInput): void
+  contextPackBuildDenied?(input: ContextPackBuildDeniedInput): void
+  contextPackBuildSettled?(lifecycleKey: string, input: ContextPackBuildSettledInput): void
+  contextPackReviewReady?(input: ContextPackReviewReadyInput): void
+  contextPackReviewBlocked?(input: ContextPackReviewBlockedInput): void
+  contextPackSealed?(input: ContextPackSealedInput): void
+  contextPackSealDenied?(input: ContextPackSealDeniedInput): void
+  contextPackFitAvailable?(input: ContextPackFitAvailableInput): void
+  contextPackFitUnavailable?(input: ContextPackFitUnavailableInput): void
+  contextPackFitInsufficient?(input: ContextPackFitInsufficientInput): void
+  contextPackDeliveryConfirmed?(input: ContextPackDeliveryConfirmedInput): void
+  contextPackDeliveryDenied?(input: ContextPackDeliveryDeniedInput): void
 }
 
 /**
@@ -2462,6 +2491,11 @@ export async function createSessionController(options: SessionControllerOptions)
     return "kind" in result ? result : { kind: "available" }
   }
 
+  function deniedContextBuild(reason: ContextBuildDenialReason): ContextBuildStartResult {
+    options.recorder?.contextPackBuildDenied?.({ reason: contextPackBuildDenialReason(reason) })
+    return { kind: "denied", reason }
+  }
+
   function ownsContextBuild(child: ContextBuildChildRuntime): boolean {
     if (child.settled || contextBuildChildren.get(child.binding.childId) !== child) return false
     const current = store.getState().contextPacks[child.binding.parentId]?.build
@@ -2483,16 +2517,16 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function releaseContextBuildChild(
     child: ContextBuildChildRuntime,
-    options: {
+    releaseOptions: {
       readonly bridgeReason?: "child_settled" | "parent_generation_changed" | "launch_denied"
       readonly outcome?: "ready_for_review" | "failed"
     } = {},
   ): void {
     if (child.settled) return
     child.settled = true
-    if (options.bridgeReason) {
+    if (releaseOptions.bridgeReason) {
       try {
-        contextPackBridge.revoke(child.route, options.bridgeReason)
+        contextPackBridge.revoke(child.route, releaseOptions.bridgeReason)
       } catch (error) {
         onError(child.binding.parentId, error)
       }
@@ -2503,8 +2537,17 @@ export async function createSessionController(options: SessionControllerOptions)
     if (contextBuildChildren.get(child.binding.childId) === child) {
       contextBuildChildren.delete(child.binding.childId)
     }
-    if (options.outcome) {
-      store.settleContextBuild(child.binding.parentId, child.binding, options.outcome)
+    if (releaseOptions.outcome) {
+      const settled = store.settleContextBuild(
+        child.binding.parentId,
+        child.binding,
+        releaseOptions.outcome,
+      )
+      if (settled) {
+        options.recorder?.contextPackBuildSettled?.(child.binding.childId, {
+          outcome: releaseOptions.outcome,
+        })
+      }
     } else {
       store.releaseContextBuild(child.binding.parentId, child.binding)
     }
@@ -2591,7 +2634,7 @@ export async function createSessionController(options: SessionControllerOptions)
 
   async function startContextBuild(input: StartContextBuildInput): Promise<ContextBuildStartResult> {
     const preflight = contextBuildPreflight(input)
-    if ("kind" in preflight) return preflight
+    if ("kind" in preflight) return deniedContextBuild(preflight.reason)
 
     const childId = newSessionId()
     if (
@@ -2600,7 +2643,7 @@ export async function createSessionController(options: SessionControllerOptions)
       contextBuildChildren.has(childId) ||
       store.getState().sessions[childId]
     ) {
-      return { kind: "denied", reason: "startup_failed" }
+      return deniedContextBuild("startup_failed")
     }
     const childGeneration = nextConnectionGeneration(childId, connectionGenerations)
     const prepared = store.prepareContextBuild(input.parentId, input.draft as ContextBuildDraftPreparation, {
@@ -2610,11 +2653,13 @@ export async function createSessionController(options: SessionControllerOptions)
       childGeneration,
     })
     if (prepared.kind === "denied") {
-      return {
-        kind: "denied",
-        reason: prepared.reason === "unknown_session" ? "unknown_parent" : prepared.reason,
-      }
+      return deniedContextBuild(
+        prepared.reason === "unknown_session" ? "unknown_parent" : prepared.reason,
+      )
     }
+    options.recorder?.contextPackDraftCreated?.({
+      selectionCountBucket: bucketContextPackSelectionCount(prepared.draft.selections.length),
+    })
 
     const route: ContextPackBridgeRoute = {
       parentId: prepared.binding.parentId,
@@ -2638,7 +2683,7 @@ export async function createSessionController(options: SessionControllerOptions)
     if (!ownsContextBuild(child)) {
       const reason = launchInvalidationReason(child)
       releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-      return { kind: "denied", reason }
+      return deniedContextBuild(reason)
     }
 
     let bridgeServer: import("../core/types.ts").McpServerConfig
@@ -2650,12 +2695,12 @@ export async function createSessionController(options: SessionControllerOptions)
     } catch (error) {
       onError(input.parentId, error)
       releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-      return { kind: "denied", reason: "bridge_unavailable" }
+      return deniedContextBuild("bridge_unavailable")
     }
     if (!ownsContextBuild(child)) {
       const reason = launchInvalidationReason(child)
       releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-      return { kind: "denied", reason }
+      return deniedContextBuild(reason)
     }
 
     let connection: AgentConnection
@@ -2673,18 +2718,18 @@ export async function createSessionController(options: SessionControllerOptions)
       if (!ownsContextBuild(child)) {
         const reason = launchInvalidationReason(child)
         releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-        return { kind: "denied", reason }
+        return deniedContextBuild(reason)
       }
       child.acpSessionId = await connection.newSession(preflight.workspaceRoot, [bridgeServer])
       if (!ownsContextBuild(child)) {
         const reason = launchInvalidationReason(child)
         releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-        return { kind: "denied", reason }
+        return deniedContextBuild(reason)
       }
     } catch (error) {
       onError(input.parentId, error)
       releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-      return { kind: "denied", reason: "startup_failed" }
+      return deniedContextBuild("startup_failed")
     }
 
     let settlement: Promise<unknown>
@@ -2696,7 +2741,7 @@ export async function createSessionController(options: SessionControllerOptions)
     } catch (error) {
       onError(input.parentId, error)
       releaseContextBuildChild(child, { bridgeReason: "launch_denied" })
-      return { kind: "denied", reason: "startup_failed" }
+      return deniedContextBuild("startup_failed")
     }
     void settlement.then(
       () => releaseContextBuildChild(child, {
@@ -2711,6 +2756,9 @@ export async function createSessionController(options: SessionControllerOptions)
         })
       },
     )
+    options.recorder?.contextPackBuildStarted?.(childId, {
+      selectionCountBucket: bucketContextPackSelectionCount(prepared.draft.selections.length),
+    })
     return { kind: "started", childId, draftRevision: prepared.draft.revision }
   }
 
@@ -2736,31 +2784,56 @@ export async function createSessionController(options: SessionControllerOptions)
     return { workspaceRoot: session.cwd, draft }
   }
 
+  function settledContextPackReview(result: ContextPackReviewResult): ContextPackReviewResult {
+    if (result.kind === "reviewed") {
+      options.recorder?.contextPackReviewReady?.(contextPackAggregateBuckets(result.candidate))
+    } else {
+      options.recorder?.contextPackReviewBlocked?.({
+        reason: contextPackReviewBlockingReason(result.reason),
+      })
+    }
+    return result
+  }
+
   async function reviewContextPack(sessionId: SessionId): Promise<ContextPackReviewResult> {
     const workspace = contextPackWorkspace(sessionId)
-    if ("kind" in workspace) return workspace
+    if ("kind" in workspace) return settledContextPackReview(workspace)
     const materialized = await contextPackMaterializer.materialize(
       workspace.workspaceRoot,
       workspace.draft.selections,
     )
     if (materialized.kind !== "materialized") {
-      return { kind: "blocked", reason: materialized.reason }
+      return settledContextPackReview({ kind: "blocked", reason: materialized.reason })
     }
     if (store.getState().contextPacks[sessionId]?.draft !== workspace.draft) {
-      return { kind: "blocked", reason: "draft_changed" }
+      return settledContextPackReview({ kind: "blocked", reason: "draft_changed" })
     }
 
     const assembled = assembleCandidate(workspace.draft, materialized.artifacts, contextPackRedactor)
     if (assembled.kind === "blocked") {
-      return { kind: "blocked", reason: assembled.reason }
+      return settledContextPackReview({ kind: "blocked", reason: assembled.reason })
     }
     if (assembled.candidate.verdict.kind === "blocked") {
-      return { kind: "blocked", reason: assembled.candidate.verdict.reason }
+      return settledContextPackReview({
+        kind: "blocked",
+        reason: assembled.candidate.verdict.reason,
+      })
     }
     if (!store.publishContextPackReview(sessionId, assembled.candidate)) {
-      return { kind: "blocked", reason: "draft_changed" }
+      return settledContextPackReview({ kind: "blocked", reason: "draft_changed" })
     }
-    return { kind: "reviewed", candidate: assembled.candidate }
+    return settledContextPackReview({ kind: "reviewed", candidate: assembled.candidate })
+  }
+
+  function settledContextPackSeal(result: ContextPackSealActionResult): ContextPackSealActionResult {
+    if (result.kind === "sealed") {
+      options.recorder?.contextPackSealed?.(contextPackAggregateBuckets(result.sealed))
+    } else {
+      options.recorder?.contextPackSealDenied?.({
+        reason: contextPackSealDenialReason(result.reason),
+      })
+    }
+    return result
   }
 
   async function sealContextPack(
@@ -2768,11 +2841,13 @@ export async function createSessionController(options: SessionControllerOptions)
     candidateRevision: number,
   ): Promise<ContextPackSealActionResult> {
     const workspace = contextPackWorkspace(sessionId)
-    if ("kind" in workspace) return workspace
+    if ("kind" in workspace) return settledContextPackSeal(workspace)
     const reviewed = store.getState().contextPacks[sessionId]?.review
-    if (!reviewed) return { kind: "blocked", reason: "review_unavailable" }
+    if (!reviewed) {
+      return settledContextPackSeal({ kind: "blocked", reason: "review_unavailable" })
+    }
     if (reviewed.revision !== candidateRevision || workspace.draft.revision !== candidateRevision) {
-      return { kind: "blocked", reason: "candidate_revision_mismatch" }
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_revision_mismatch" })
     }
 
     const materialized = await contextPackMaterializer.materialize(
@@ -2780,22 +2855,22 @@ export async function createSessionController(options: SessionControllerOptions)
       workspace.draft.selections,
     )
     if (materialized.kind !== "materialized") {
-      return { kind: "blocked", reason: materialized.reason }
+      return settledContextPackSeal({ kind: "blocked", reason: materialized.reason })
     }
     const current = store.getState().contextPacks[sessionId]
     if (current?.draft !== workspace.draft || current.review !== reviewed) {
-      return { kind: "blocked", reason: "candidate_changed" }
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_changed" })
     }
 
     const reassembled = assembleCandidate(workspace.draft, materialized.artifacts, contextPackRedactor)
     if (reassembled.kind === "blocked") {
-      return { kind: "blocked", reason: reassembled.reason }
+      return settledContextPackSeal({ kind: "blocked", reason: reassembled.reason })
     }
     if (reassembled.candidate.verdict.kind === "blocked") {
-      return { kind: "blocked", reason: "candidate_blocked" }
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_blocked" })
     }
     if (!sameContextPackReviewCandidate(reviewed, reassembled.candidate)) {
-      return { kind: "blocked", reason: "candidate_changed" }
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_changed" })
     }
 
     const result = sealCandidate({
@@ -2804,11 +2879,11 @@ export async function createSessionController(options: SessionControllerOptions)
       currentSourceFences: reassembled.candidate.sourceFences,
       sealedAt: now(),
     })
-    if (result.kind === "blocked") return result
+    if (result.kind === "blocked") return settledContextPackSeal(result)
     if (!store.sealContextPack(sessionId, result.sealed)) {
-      return { kind: "blocked", reason: "candidate_changed" }
+      return settledContextPackSeal({ kind: "blocked", reason: "candidate_changed" })
     }
-    return result
+    return settledContextPackSeal(result)
   }
 
   function recipientFitEvidence(
@@ -2873,8 +2948,29 @@ export async function createSessionController(options: SessionControllerOptions)
 
   function assessContextPackRecipientFit(sessionId: SessionId): RecipientFit {
     const sealed = store.getState().contextPacks[sessionId]?.sealed
-    if (!sealed) return { kind: "unavailable", reason: "missing_evidence" }
-    return assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed))
+    if (!sealed) {
+      const fit = { kind: "unavailable", reason: "missing_evidence" } as const
+      options.recorder?.contextPackFitUnavailable?.({ reason: fit.reason })
+      return fit
+    }
+    return settledContextPackFit(
+      sealed,
+      assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed)),
+    )
+  }
+
+  function settledContextPackFit(
+    sealed: DurableSealedContextPack,
+    fit: RecipientFit,
+  ): RecipientFit {
+    if (fit.kind === "fit") {
+      options.recorder?.contextPackFitAvailable?.({ byteBucket: bucketContextPackBytes(sealed.bytes) })
+    } else if (fit.kind === "unavailable") {
+      options.recorder?.contextPackFitUnavailable?.({ reason: fit.reason })
+    } else {
+      options.recorder?.contextPackFitInsufficient?.({ byteBucket: bucketContextPackBytes(sealed.bytes) })
+    }
+    return fit
   }
 
   function assessHandoffRecipientFit(
@@ -2933,19 +3029,36 @@ export async function createSessionController(options: SessionControllerOptions)
 
   async function sendContextPackHere(sessionId: SessionId): Promise<ContextPackSendHereResult> {
     const sealed = store.getState().contextPacks[sessionId]?.sealed
-    if (!sealed) return { kind: "blocked", reason: "sealed_unavailable" }
+    if (!sealed) {
+      options.recorder?.contextPackDeliveryDenied?.({ reason: "sealed_unavailable" })
+      return { kind: "blocked", reason: "sealed_unavailable" }
+    }
 
-    const fit = assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed))
-    if (fit.kind !== "fit") return { kind: "blocked", reason: "recipient_fit", fit }
+    const fit = settledContextPackFit(
+      sealed,
+      assessRecipientFit(sealed, recipientFitEvidence(sessionId, sealed)),
+    )
+    if (fit.kind !== "fit") {
+      options.recorder?.contextPackDeliveryDenied?.({
+        reason: fit.kind === "unavailable" ? "fit_unavailable" : "fit_insufficient",
+      })
+      return { kind: "blocked", reason: "recipient_fit", fit }
+    }
 
     const current = store.getState().contextPacks[sessionId]?.sealed
     if (!current || !sameSealedCustody(sealed, current)) {
+      options.recorder?.contextPackDeliveryDenied?.({ reason: "sealed_changed" })
       return { kind: "blocked", reason: "sealed_changed" }
     }
     const result = await actions.sendPrompt([{ type: "text", text: sealed.payload }], sessionId)
-    return result
-      ? { kind: "sent", result }
-      : { kind: "blocked", reason: "dispatch_failed" }
+    if (result) {
+      options.recorder?.contextPackDeliveryConfirmed?.({
+        byteBucket: bucketContextPackBytes(sealed.bytes),
+      })
+      return { kind: "sent", result }
+    }
+    options.recorder?.contextPackDeliveryDenied?.({ reason: "dispatch_failed" })
+    return { kind: "blocked", reason: "dispatch_failed" }
   }
 
   async function exportContextPack(
@@ -3726,6 +3839,138 @@ function sameContextBuildBinding(left: ContextBuildBinding, right: ContextBuildB
     left.parentGeneration === right.parentGeneration &&
     left.childGeneration === right.childGeneration &&
     left.draftRevision === right.draftRevision
+}
+
+function contextPackAggregateBuckets(input: {
+  readonly manifest: { readonly selections: readonly unknown[] }
+  readonly redactionCount: number
+  readonly bytes: number
+}): ContextPackReviewReadyInput {
+  return {
+    selectionCountBucket: bucketContextPackSelectionCount(input.manifest.selections.length),
+    redactionCountBucket: bucketContextPackRedactionCount(input.redactionCount),
+    byteBucket: bucketContextPackBytes(input.bytes),
+  }
+}
+
+function contextPackBuildDenialReason(
+  reason: ContextBuildDenialReason,
+): ContextPackBuildDeniedInput["reason"] {
+  switch (reason) {
+    case "missing_evidence":
+    case "malformed_evidence":
+    case "unsupported_recipe":
+    case "stale_evidence":
+    case "recipe_mismatch":
+      return "capability_unavailable"
+    case "draft_unavailable":
+    case "invalid_draft":
+      return "draft_unavailable"
+    case "build_active":
+      return "build_active"
+    case "workspace_mismatch":
+      return "workspace_unavailable"
+    case "bridge_unavailable":
+    case "startup_failed":
+      return "startup_failed"
+    case "unknown_parent":
+    case "parent_unavailable":
+    case "parent_generation_mismatch":
+    case "session_mismatch":
+    case "binding_changed":
+    case "controller_disposed":
+      return "controller_unavailable"
+  }
+}
+
+function contextPackReviewBlockingReason(
+  reason: Extract<ContextPackReviewResult, { readonly kind: "blocked" }>["reason"],
+): ContextPackReviewBlockedInput["reason"] {
+  switch (reason) {
+    case "over_budget":
+      return "over_budget"
+    case "unknown_session":
+    case "draft_unavailable":
+    case "workspace_mismatch":
+      return "draft_unavailable"
+    case "source_changed_during_read":
+    case "source_identity_changed":
+    case "source_digest_changed":
+    case "source_bytes_changed":
+    case "stale_draft":
+    case "source_fence_mismatch":
+    case "draft_changed":
+      return "source_stale"
+    case "invalid_draft":
+      return "invalid_draft"
+    case "invalid_workspace":
+    case "invalid_limits":
+    case "invalid_path":
+    case "source_missing":
+    case "outside_workspace":
+    case "ineligible_source":
+    case "binary_source":
+    case "malformed_source":
+    case "invalid_range":
+    case "unsupported_diff_scope":
+    case "oversized_artifact":
+    case "total_bytes_exceeded":
+    case "diff_failed":
+    case "missing_artifact":
+    case "unexpected_artifact":
+    case "duplicate_artifact":
+    case "artifact_size_mismatch":
+    case "redaction_failed":
+      return "source_unavailable"
+  }
+}
+
+function contextPackSealDenialReason(
+  reason: Extract<ContextPackSealActionResult, { readonly kind: "blocked" }>["reason"],
+): ContextPackSealDeniedInput["reason"] {
+  switch (reason) {
+    case "review_unavailable":
+    case "unknown_session":
+    case "draft_unavailable":
+    case "workspace_mismatch":
+      return "review_unavailable"
+    case "over_budget":
+    case "candidate_blocked":
+      return "over_budget"
+    case "source_changed_during_read":
+    case "source_identity_changed":
+    case "source_digest_changed":
+    case "source_bytes_changed":
+    case "source_fence_mismatch":
+      return "source_stale"
+    case "draft_changed":
+    case "candidate_changed":
+    case "candidate_revision_mismatch":
+    case "stale_draft":
+      return "candidate_stale"
+    case "invalid_workspace":
+    case "invalid_limits":
+    case "invalid_path":
+    case "source_missing":
+    case "outside_workspace":
+    case "ineligible_source":
+    case "binary_source":
+    case "malformed_source":
+    case "invalid_range":
+    case "unsupported_diff_scope":
+    case "oversized_artifact":
+    case "total_bytes_exceeded":
+    case "diff_failed":
+    case "invalid_draft":
+    case "missing_artifact":
+    case "unexpected_artifact":
+    case "duplicate_artifact":
+    case "artifact_size_mismatch":
+    case "redaction_failed":
+    case "candidate_payload_mismatch":
+    case "invalid_sealed_at":
+      return "invalid_candidate"
+  }
 }
 
 function sameContextBuildRoute(left: ContextPackBridgeRoute, right: ContextPackBridgeRoute): boolean {

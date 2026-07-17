@@ -1874,6 +1874,158 @@ describe("attention counters are opt-in (task_09)", () => {
   })
 })
 
+describe("Context Pack lifecycle telemetry", () => {
+  it("emits every fixed lifecycle event with only its allowlisted keys", () => {
+    const sink = memorySink()
+    const clock = fakeClock(1_000)
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: clock.now,
+      sessionRef: "run",
+    })
+
+    recorder.contextPackDraftCreated({ selectionCountBucket: "zero" })
+    recorder.contextPackBuildStarted("private-child", { selectionCountBucket: "two_to_four" })
+    recorder.contextPackBuildDenied({ reason: "capability_unavailable" })
+    clock.advance(5_000)
+    recorder.contextPackBuildSettled("private-child", { outcome: "ready_for_review" })
+    recorder.contextPackReviewReady({
+      selectionCountBucket: "two_to_four",
+      redactionCountBucket: "one",
+      byteBucket: "8_to_31kb",
+    })
+    recorder.contextPackReviewBlocked({ reason: "source_stale" })
+    recorder.contextPackSealed({
+      selectionCountBucket: "two_to_four",
+      redactionCountBucket: "one",
+      byteBucket: "8_to_31kb",
+    })
+    recorder.contextPackSealDenied({ reason: "candidate_stale" })
+    recorder.contextPackFitAvailable({ byteBucket: "8_to_31kb" })
+    recorder.contextPackFitUnavailable({ reason: "stale_evidence" })
+    recorder.contextPackFitInsufficient({ byteBucket: "128kb_or_more" })
+    recorder.contextPackDeliveryConfirmed({ byteBucket: "8_to_31kb" })
+    recorder.contextPackDeliveryDenied({ reason: "fit_insufficient" })
+
+    expect(types(sink.records)).toEqual([
+      "context_pack_draft_created",
+      "build_started",
+      "build_denied",
+      "build_settled",
+      "review_ready",
+      "review_blocked",
+      "sealed",
+      "seal_denied",
+      "fit_available",
+      "fit_unavailable",
+      "fit_insufficient",
+      "delivery_confirmed",
+      "delivery_denied",
+    ])
+    expect(sink.records.map((record) => Object.keys(record).sort())).toEqual([
+      ["at", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "contextPackDurationBucket", "contextPackOutcome", "sessionRef", "type"],
+      ["at", "byteBucket", "redactionCountBucket", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "byteBucket", "redactionCountBucket", "selectionCountBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "byteBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+      ["at", "byteBucket", "sessionRef", "type"],
+      ["at", "byteBucket", "sessionRef", "type"],
+      ["at", "contextPackReason", "sessionRef", "type"],
+    ].map((keys) => [...keys].sort()))
+    expect(sink.records[3]).toMatchObject({
+      contextPackOutcome: "ready_for_review",
+      contextPackDurationBucket: "5_to_29s",
+    })
+  })
+
+  it("rejects forged enums, extra fields, exact counters, and content-bearing sentinels", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink })
+    const prohibited = [
+      "instructions", "path", "sourceIdentity", "sourceDigest", "rationale",
+      "materializedBytes", "payload", "recipe", "model", "recipient",
+      "exportDestination", "providerIdentity", "childIdentity", "error",
+    ]
+
+    recorder.contextPackDraftCreated({ selectionCountBucket: "exactly_3" } as never)
+    recorder.contextPackBuildDenied({ reason: "raw provider failure" } as never)
+    recorder.contextPackFitAvailable({ byteBucket: "12345" } as never)
+    recorder.contextPackReviewReady({
+      selectionCountBucket: "one",
+      redactionCountBucket: "zero",
+      byteBucket: "under_8kb",
+      selectionCount: 1,
+      redactionCount: 0,
+      bytes: 12,
+      durationMs: 7,
+    } as never)
+    for (const field of prohibited) {
+      recorder.contextPackReviewReady({
+        selectionCountBucket: "one",
+        redactionCountBucket: "zero",
+        byteBucket: "under_8kb",
+        [field]: `SENTINEL-${field}`,
+      } as never)
+    }
+
+    expect(sink.records).toHaveLength(0)
+    expect(JSON.stringify(sink.records)).not.toContain("SENTINEL")
+  })
+
+  it("deduplicates private build callbacks without suppressing distinct public outcomes", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 1 })
+
+    recorder.contextPackBuildStarted("build-1", { selectionCountBucket: "one" })
+    recorder.contextPackBuildStarted("build-1", { selectionCountBucket: "one" })
+    recorder.contextPackBuildSettled("build-1", { outcome: "failed" })
+    recorder.contextPackBuildSettled("build-1", { outcome: "ready_for_review" })
+    recorder.contextPackBuildSettled("unknown", { outcome: "failed" })
+    recorder.contextPackBuildDenied({ reason: "startup_failed" })
+    recorder.contextPackBuildDenied({ reason: "startup_failed" })
+
+    expect(types(sink.records)).toEqual([
+      "build_started",
+      "build_settled",
+      "build_denied",
+      "build_denied",
+    ])
+  })
+
+  it("never constructs or accesses a sink and performs no lifecycle bookkeeping when disabled", () => {
+    const options = {
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled telemetry accessed its sink")
+      },
+    }
+    const recorder = createTelemetryRecorder(options)
+
+    recorder.contextPackDraftCreated({ selectionCountBucket: "zero" })
+    recorder.contextPackBuildStarted("private", { selectionCountBucket: "zero" })
+    recorder.contextPackBuildDenied({ reason: "startup_failed" })
+    recorder.contextPackBuildSettled("private", { outcome: "failed" })
+    recorder.contextPackReviewReady({ selectionCountBucket: "zero", redactionCountBucket: "zero", byteBucket: "under_8kb" })
+    recorder.contextPackReviewBlocked({ reason: "draft_unavailable" })
+    recorder.contextPackSealed({ selectionCountBucket: "zero", redactionCountBucket: "zero", byteBucket: "under_8kb" })
+    recorder.contextPackSealDenied({ reason: "review_unavailable" })
+    recorder.contextPackFitAvailable({ byteBucket: "under_8kb" })
+    recorder.contextPackFitUnavailable({ reason: "missing_evidence" })
+    recorder.contextPackFitInsufficient({ byteBucket: "under_8kb" })
+    recorder.contextPackDeliveryConfirmed({ byteBucket: "under_8kb" })
+    recorder.contextPackDeliveryDenied({ reason: "sealed_unavailable" })
+
+    expect(recorder.enabled).toBeFalse()
+    expect(recorder).toBe(createTelemetryRecorder({ enabled: false }))
+  })
+})
+
 describe("local JSONL sink", () => {
   it("appends one JSON object per line and creates the parent directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "kitten-telemetry-"))
