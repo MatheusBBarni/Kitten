@@ -5,12 +5,13 @@
 
 import { describe, expect, it, spyOn } from "bun:test"
 
-import type { TextareaRenderable } from "@opentui/core"
+import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import { THEME_PRESET_IDS, THEME_PRESETS } from "../core/themeCatalog.ts"
 import type { ThemePreference } from "../core/types.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
@@ -18,11 +19,18 @@ import { CockpitProvider } from "./cockpitContext.tsx"
 import { SETTINGS_HINT } from "./keymap.ts"
 import {
   SETTINGS_TITLE,
+  SELECTABLE_THEME_PICKER_ROWS,
   SettingsView,
   THEME_APPLY_LABEL,
+  THEME_CATALOG_DOCUMENTATION,
   THEME_OPTION_MARKER,
   THEME_OPTIONS,
+  THEME_PICKER_ROWS,
+  THEME_PICKER_SCROLLBOX_ID,
   THEME_TAB_LABEL,
+  themePickerFamilyRowId,
+  themePickerRowId,
+  themePickerRows,
   themePreferenceLabel,
 } from "./SettingsView.tsx"
 import { usePalette } from "./theme.ts"
@@ -35,6 +43,7 @@ interface RenderSettingsOptions {
   clarificationOpen?: boolean
   clarificationPrompt?: boolean
   editor?: boolean
+  height?: number
   open?: boolean
   preference?: ThemePreference
   probePalette?: boolean
@@ -105,7 +114,7 @@ async function renderSettings(options: RenderSettingsOptions = {}): Promise<Sett
         {options.clarificationPrompt ? <ClarificationPrompt /> : null}
       </box>
     </CockpitProvider>,
-    { width: WIDTH, height: HEIGHT, kittyKeyboard: true },
+    { width: WIDTH, height: options.height ?? HEIGHT, kittyKeyboard: true },
   )
   await setup.waitForFrame((frame) => frame.includes("Live cockpit"))
 
@@ -149,14 +158,43 @@ describe("SettingsView visibility", () => {
 })
 
 describe("SettingsView theme tab", () => {
-  it("lists all five options and marks only the current preference", async () => {
+  it("projects every canonical preset into deterministic family groups", () => {
+    const presetRows = THEME_PICKER_ROWS.filter((row) => row.kind === "preset")
+    const familyRows = THEME_PICKER_ROWS.filter((row) => row.kind === "family")
+    const expectedFamilies = [...new Set(THEME_PRESETS.map((preset) => preset.family))]
+
+    expect(THEME_OPTIONS.slice(0, 3)).toEqual(["auto", "light", "dark"])
+    expect(presetRows.map((row) => row.preference)).toEqual([...THEME_PRESET_IDS])
+    expect(presetRows.map((row) => row.label)).toEqual(THEME_PRESETS.map((preset) => preset.displayName))
+    expect(familyRows.map((row) => row.family)).toEqual(expectedFamilies)
+    expect(SELECTABLE_THEME_PICKER_ROWS).toHaveLength(3 + THEME_PRESET_IDS.length)
+  })
+
+  it("assigns stable unique IDs without collisions between headings and options", () => {
+    const projectedAgain = themePickerRows()
+    const allIds = THEME_PICKER_ROWS.map((row) => row.id)
+    const familyIds = new Set(
+      THEME_PICKER_ROWS.filter((row) => row.kind === "family").map((row) => row.id),
+    )
+    const selectableIds = SELECTABLE_THEME_PICKER_ROWS.map((row) => row.id)
+
+    expect(projectedAgain.map((row) => row.id)).toEqual(allIds)
+    expect(new Set(allIds)).toHaveLength(allIds.length)
+    expect(selectableIds).toEqual(THEME_OPTIONS.map(themePickerRowId))
+    expect(selectableIds.some((id) => familyIds.has(id))).toBe(false)
+    expect(themePickerFamilyRowId("Rosé Pine")).not.toBe(themePickerRowId("rose-pine-main"))
+  })
+
+  it("renders grouped rows and marks only the current preference", async () => {
     const { setup } = await renderSettings({ preference: "dark" })
     const frame = await setup.waitForFrame((value) => value.includes(SETTINGS_HINT))
 
-    expect(THEME_OPTIONS).toEqual(["auto", "light", "dark", "catppuccin-mocha", "catppuccin-latte"])
-    for (const option of THEME_OPTIONS) expect(frame).toContain(themePreferenceLabel(option))
+    expect(frame).toContain("Catppuccin")
+    expect(frame).toContain(themePreferenceLabel("catppuccin-frappe"))
     expect(frame).toContain(`${THEME_OPTION_MARKER} Dark`)
     expect(frame.match(new RegExp(THEME_OPTION_MARKER, "gu"))).toHaveLength(1)
+    expect(setup.renderer.root.findDescendantById(themePickerRowId("dark"))).toBeDefined()
+    expect(setup.renderer.root.findDescendantById(themePickerFamilyRowId("Catppuccin"))).toBeDefined()
 
     await destroyMounted(setup.renderer)
   })
@@ -172,17 +210,13 @@ describe("SettingsView theme tab", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("matches the open Theme tab snapshot", async () => {
-    const { setup } = await renderSettings({ preference: "dark" })
-    await setup.waitForFrame((value) => value.includes(SETTINGS_HINT))
+  it("points to public provenance documentation without embedding source metadata", async () => {
+    const { setup } = await renderSettings()
+    const frame = await setup.waitForFrame((value) => value.includes(THEME_CATALOG_DOCUMENTATION))
 
-    const frame = setup
-      .captureCharFrame()
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .join("\n")
-      .trimEnd()
-    expect(frame).toMatchSnapshot("open-theme-tab")
+    expect(frame).toContain(THEME_CATALOG_DOCUMENTATION)
+    for (const preset of THEME_PRESETS) expect(frame).not.toContain(preset.sourceUrl)
+    expect(frame).not.toContain(THEME_PRESETS[0]?.licenseAttribution ?? "MIT")
 
     await destroyMounted(setup.renderer)
   })
@@ -200,6 +234,59 @@ describe("SettingsView interaction", () => {
     expect(setThemePreference).toHaveBeenCalledWith("light")
     expect(store.getState().preferences.theme).toBe("light")
     setThemePreference.mockRestore()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps an off-screen keyboard selection visible in the bounded scrollbox", async () => {
+    const { setup, store } = await renderSettings({ height: 12 })
+    const scrollbox = setup.renderer.root.findDescendantById(THEME_PICKER_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await setup.waitFor(() => scrollbox!.scrollHeight > scrollbox!.viewport.height)
+    const autoRow = setup.renderer.root.findDescendantById(themePickerRowId("auto"))
+    const lightRow = setup.renderer.root.findDescendantById(themePickerRowId("light"))
+    expect(autoRow).toBeDefined()
+    expect(lightRow).toBeDefined()
+    expect(lightRow!.y).toBeGreaterThan(autoRow!.y)
+    const scrollChildIntoView = spyOn(scrollbox!, "scrollChildIntoView")
+
+    for (let index = 1; index < THEME_OPTIONS.length; index += 1) {
+      await actAsync(() => setup.mockInput.pressArrow("down"))
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      const preference = THEME_OPTIONS[index]!
+      const indentation = index < 3 ? " " : "   "
+      expect(store.getState().preferences.theme).toBe(preference)
+      expect(scrollChildIntoView).toHaveBeenCalledWith(themePickerRowId(preference))
+      await setup.waitForFrame((frame) =>
+        frame.includes(`${THEME_OPTION_MARKER}${indentation}${themePreferenceLabel(preference)}`),
+      )
+    }
+
+    const finalPreference = THEME_OPTIONS[THEME_OPTIONS.length - 1]!
+    expect(finalPreference).toBe("tokyo-night-storm")
+    expect(store.getState().preferences.theme).toBe(finalPreference)
+    const frame = await setup.waitForFrame((value) => value.includes(`${THEME_OPTION_MARKER}   Tokyo Night Storm`))
+    expect(scrollChildIntoView).toHaveBeenCalledWith(themePickerRowId("tokyo-night-storm"))
+    expect(frame).toContain("Tokyo Night Storm")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
+    scrollChildIntoView.mockRestore()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("reveals an already-selected off-screen preset when Settings mounts", async () => {
+    const { setup } = await renderSettings({ height: 12, preference: "tokyo-night-storm" })
+    const scrollbox = setup.renderer.root.findDescendantById(THEME_PICKER_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await setup.waitFor(() => scrollbox!.scrollHeight > scrollbox!.viewport.height)
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    const frame = await setup.waitForFrame((value) =>
+      value.includes(`${THEME_OPTION_MARKER}   Tokyo Night Storm`),
+    )
+    expect(frame).toContain("Tokyo Night Storm")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
 
     await destroyMounted(setup.renderer)
   })

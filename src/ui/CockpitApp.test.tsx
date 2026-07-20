@@ -43,7 +43,12 @@ import { CONTEXT_PACK_TITLE } from "./ContextPackPanel.tsx"
 import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
-import { SETTINGS_TITLE } from "./SettingsView.tsx"
+import {
+  SETTINGS_TITLE,
+  THEME_OPTION_MARKER,
+  THEME_OPTIONS,
+  themePreferenceLabel,
+} from "./SettingsView.tsx"
 import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.tsx"
 import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
@@ -1183,16 +1188,24 @@ describe("CockpitApp keymap", () => {
     await destroyMounted(setup.renderer)
   })
 
-  it("routes shell Escape to clarification and resumes unchanged settings", async () => {
+  it("preserves off-screen Settings selection and editor focus across clarification precedence", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
+    const editorBeforeSettings = setup.renderer.currentFocusedEditor
 
     await runSlashCommand(setup, "settings")
     await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
-    await actAsync(() => {
-      setup.mockInput.pressArrow("down")
-      openClarification(controller)
-    })
+    for (let index = 1; index < THEME_OPTIONS.length; index += 1) {
+      await actAsync(() => setup.mockInput.pressArrow("down"))
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      const preference = THEME_OPTIONS[index]!
+      const indentation = index < 3 ? " " : "   "
+      await setup.waitForFrame((frame) =>
+        frame.includes(`${THEME_OPTION_MARKER}${indentation}${themePreferenceLabel(preference)}`),
+      )
+    }
+
+    await actAsync(() => openClarification(controller))
     await setup.waitForFrame((frame) => frame.includes(CLARIFICATION_TITLE))
 
     await actAsync(() => {
@@ -1205,8 +1218,15 @@ describe("CockpitApp keymap", () => {
       outcome: { kind: "cancelled" },
     }])
     expect(controller.store.getState().overlays.settings).toEqual({ tab: "theme" })
-    expect(controller.store.getState().preferences.theme).toBe("light")
-    expect(await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain("Light")
+    expect(controller.store.getState().preferences.theme).toBe("tokyo-night-storm")
+    expect(await setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))).toContain(SETTINGS_TITLE)
+
+    await actAsync(async () => {
+      setup.mockInput.pressEscape()
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+    })
+    expect(controller.store.getState().overlays.settings).toBeNull()
+    expect(setup.renderer.currentFocusedEditor).toBe(editorBeforeSettings)
 
     await destroyMounted(setup.renderer)
   })
