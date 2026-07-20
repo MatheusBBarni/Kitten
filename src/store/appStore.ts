@@ -2010,9 +2010,10 @@ function sameStatuslinePreference(left: StatuslinePreference, right: StatuslineP
   }
   return left.layout.line.every((item, index) => {
     const other = rightLayout.line[index]!
-    return typeof item === "string"
-      ? item === other
-      : typeof other !== "string" && item.kind === other.kind && item.maxChars === other.maxChars
+    if (typeof item === "string" || typeof other === "string") return item === other
+    if (item.kind !== other.kind || item.color !== other.color) return false
+    if (item.kind !== "ELLIPSIS_BRANCH") return true
+    return other.kind === "ELLIPSIS_BRANCH" && item.maxChars === other.maxChars
   })
 }
 

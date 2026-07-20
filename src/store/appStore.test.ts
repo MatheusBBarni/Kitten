@@ -1248,6 +1248,45 @@ describe("preferences", () => {
     expect(notifications).toEqual([SAVED_STATUSLINE])
   })
 
+  it("compares canonical colors when deciding whether a resolved statusline write is a no-op", () => {
+    const colored: StatuslinePreference = {
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#800080" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" },
+        ],
+      },
+    }
+    const store = createAppStore({ preferences: { statusline: colored } })
+    const before = store.getState()
+
+    store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#800080" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" },
+        ],
+      },
+    })
+    expect(store.getState()).toBe(before)
+
+    store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" },
+        ],
+      },
+    })
+    expect(store.getState()).not.toBe(before)
+  })
+
   it("does not notify the saved preference for session, shell, or unrelated overlay updates", () => {
     const store = createAppStore({ preferences: { statusline: SAVED_STATUSLINE } })
     const notifications = trackSelector(store, selectStatuslinePreference)

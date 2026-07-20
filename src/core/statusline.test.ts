@@ -43,6 +43,27 @@ describe("normalizeStatuslineLayout", () => {
     expect(normalizeStatuslineLayout(input)).toEqual({ kind: "valid", layout: input })
   })
 
+  it("canonicalizes CSS names and exact opaque RGB hex on every structured item form", () => {
+    expect(normalizeStatuslineLayout({
+      separator: " · ",
+      line: [
+        { kind: "FOLDER", color: "purple" },
+        { kind: "MODEL", color: "RebeccaPurple" },
+        { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#0a8bcf" },
+      ],
+    })).toEqual({
+      kind: "valid",
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#800080" },
+          { kind: "MODEL", color: "#663399" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#0A8BCF" },
+        ],
+      },
+    })
+  })
+
   it.each([
     [{ separator: " · ", line: ["COMMAND"] }, "supported field"],
     [{ separator: " · ", line: [""] }, "supported field"],
@@ -60,6 +81,22 @@ describe("normalizeStatuslineLayout", () => {
     [{ separator: " · ", line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 81 }] }, "integer from 4 to 80"],
     [{ separator: " · ", line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 4.5 }] }, "integer from 4 to 80"],
     [{ separator: " · ", line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 12, command: "pwd" }] }, "unsupported fields"],
+    [{ separator: " · ", line: [{ kind: "MODEL" }] }, "unsupported fields"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "red", command: "pwd" }] }, "unsupported fields"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "not-a-color" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "transparent" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "currentcolor" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "#FFF" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "#FFFFFFF" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "#FFFFFFFF" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "#FFFFFF00" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "red\u001b[31m" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: "red\n" }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: ["red"] }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "MODEL", color: null }] }, "unsupported color"],
+    [{ separator: " · ", line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 12, color: "#12345G" }] }, "unsupported color"],
+    [{ separator: " · ", line: [42] }, "malformed"],
+    [{ separator: " · ", line: [["MODEL"]] }, "malformed"],
     [{ separator: " · ", line: ["MODEL"], command: "pwd" }, "unsupported fields"],
   ] as const)("rejects invalid or executable layout %#", (input, reason) => {
     const result = normalizeStatuslineLayout(input)
@@ -73,6 +110,20 @@ describe("normalizeStatuslineLayout", () => {
       kind: "invalid",
       reason: expect.stringContaining("16 graphemes"),
     })
+  })
+
+  it("detects duplicate kinds across legacy and structured item forms", () => {
+    expect(normalizeStatuslineLayout({
+      separator: " · ",
+      line: ["MODEL", { kind: "MODEL", color: "red" }],
+    })).toMatchObject({ kind: "invalid", reason: expect.stringContaining("duplicate field MODEL") })
+    expect(normalizeStatuslineLayout({
+      separator: " · ",
+      line: [
+        { kind: "ELLIPSIS_BRANCH", maxChars: 12 },
+        { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "blue" },
+      ],
+    })).toMatchObject({ kind: "invalid", reason: expect.stringContaining("duplicate field ELLIPSIS_BRANCH") })
   })
 })
 
@@ -123,6 +174,43 @@ describe("renderStatusline", () => {
 
     expect(segments).toEqual([{ kind: "HELP_TEXT", text: "Ctrl+? help", separatorBefore: "" }])
     expect(statuslineText(segments)).toBe("Ctrl+? help")
+  })
+
+  it("retains canonical field colors through normalization and constrained rendering", () => {
+    const normalized = normalizeStatuslineLayout({
+      separator: " · ",
+      line: [
+        { kind: "FOLDER", color: "purple" },
+        { kind: "BRANCH", color: "red" },
+        { kind: "MODEL", color: "#12abef" },
+      ],
+    })
+    expect(normalized.kind).toBe("valid")
+    if (normalized.kind !== "valid") throw new Error(normalized.reason)
+
+    const context = { cwd: "/work/kitten", branch: null, model: "gpt-5.4" }
+    const segments = renderStatusline(normalized.layout, context, 80)
+    expect(segments).toEqual([
+      { kind: "FOLDER", text: "kitten", color: "#800080", separatorBefore: "" },
+      { kind: "MODEL", text: "gpt-5.4", color: "#12ABEF", separatorBefore: " · " },
+    ])
+    expect(statuslineText(segments)).toBe("kitten · gpt-5.4")
+    expect(renderStatusline(normalized.layout, context, 15)).toEqual([
+      { kind: "FOLDER", text: "kitten", color: "#800080", separatorBefore: "" },
+    ])
+  })
+
+  it("carries a structured ellipsis color without changing grapheme shortening", () => {
+    const normalized = normalizeStatuslineLayout({
+      separator: " · ",
+      line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 4, color: "teal" }],
+    })
+    expect(normalized.kind).toBe("valid")
+    if (normalized.kind !== "valid") throw new Error(normalized.reason)
+
+    expect(renderStatusline(normalized.layout, { branch: "a👨‍👩‍👧‍👦bcdef" }, 80)).toEqual([
+      { kind: "ELLIPSIS_BRANCH", text: "a👨‍👩‍👧‍👦b…", color: "#008080", separatorBefore: "" },
+    ])
   })
 
   it("omits control-bearing session values rather than emitting terminal instructions", () => {
