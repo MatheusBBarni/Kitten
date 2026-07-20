@@ -87,7 +87,25 @@ describe("statusline proposal prompt", () => {
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("FOLDER")
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("ELLIPSIS_BRANCH")
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("HELP_TEXT")
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("CONTEXT")
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("Do not emit scripts, commands, templates")
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(/\b\d+%/u)
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(/\b(?:used|size)\b/u)
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(
+      /\b(?:state|config|persistence|ACP|telemetry|UI)\b/iu,
+    )
+    for (const forbiddenDetail of [
+      "contextHeadroom",
+      "usage.used",
+      "usage.size",
+      "SessionState",
+      "config persistence",
+      "ACP",
+      "telemetry",
+      "UI ownership",
+    ]) {
+      expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toContain(forbiddenDetail)
+    }
     for (const value of forbiddenValues) expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toContain(value)
   })
 })
@@ -106,6 +124,15 @@ describe("statusline transcript boundary", () => {
     await expect(f.flow.request("Show branch and effort.", SESSION_ID)).resolves.toEqual({
       kind: "proposal",
       layout: { separator: " · ", line: ["BRANCH", "EFFORT"] },
+    })
+  })
+
+  it("parses a literal CONTEXT proposal through the strict flow", async () => {
+    const f = fixture({ onSend: (store) => agent(store, "new", validReply(["FOLDER", "CONTEXT"])) })
+
+    await expect(f.flow.request("Show folder and context.", SESSION_ID)).resolves.toEqual({
+      kind: "proposal",
+      layout: { separator: " · ", line: ["FOLDER", "CONTEXT"] },
     })
   })
 

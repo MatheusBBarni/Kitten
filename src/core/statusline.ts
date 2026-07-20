@@ -13,6 +13,7 @@ export const STATUSLINE_SIMPLE_KINDS = [
   "MODEL",
   "EFFORT",
   "HELP_TEXT",
+  "CONTEXT",
 ] as const
 
 export type StatuslineSimpleKind = (typeof STATUSLINE_SIMPLE_KINDS)[number]
@@ -40,6 +41,7 @@ export interface StatuslineContext {
   readonly model?: string | null
   readonly effort?: string | null
   readonly helpText?: string | null
+  readonly contextHeadroom?: number | null
 }
 
 /** A consumer-ready field. Separators are explicit so consumers cannot reinterpret layout spacing. */
@@ -231,7 +233,19 @@ function valueForItem(item: StatuslineItem, context: StatuslineContext): string 
       return availableValue(context.effort)
     case "HELP_TEXT":
       return availableValue(context.helpText)
+    case "CONTEXT":
+      return contextValue(context.contextHeadroom)
   }
+}
+
+function contextValue(value: number | null | undefined): string | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 100
+    ? `ctx ${value}%`
+    : null
 }
 
 function availableValue(value: string | null | undefined): string | null {

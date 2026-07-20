@@ -17,7 +17,7 @@ export const STATUSLINE_PROPOSAL_INSTRUCTION = `Propose one safe Kitten statusli
 
 Your entire reply must be exactly one lowercase-json fenced block with no prose before or after it:
 \`\`\`json
-{"statusline":{"separator":" · ","line":["FOLDER","FULL_PATH","BRANCH",{"kind":"ELLIPSIS_BRANCH","maxChars":24},"PROVIDER","MODEL","EFFORT","HELP_TEXT"]}}
+{"statusline":{"separator":" · ","line":["FOLDER","FULL_PATH","BRANCH",{"kind":"ELLIPSIS_BRANCH","maxChars":24},"PROVIDER","MODEL","EFFORT","HELP_TEXT","CONTEXT"]}}
 \`\`\`
 
 The example lists the complete permitted schema. Select and order only the fields the request needs. Each field may appear at most once. ELLIPSIS_BRANCH maxChars must be an integer from 4 to 80. The separator must be printable single-line text no longer than 16 grapheme clusters.

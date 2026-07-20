@@ -36,6 +36,7 @@ describe("normalizeStatuslineLayout", () => {
         "MODEL",
         "EFFORT",
         "HELP_TEXT",
+        "CONTEXT",
       ],
     } as const satisfies StatuslineLayout
 
@@ -46,6 +47,7 @@ describe("normalizeStatuslineLayout", () => {
     [{ separator: " · ", line: ["COMMAND"] }, "supported field"],
     [{ separator: " · ", line: [""] }, "supported field"],
     [{ separator: " · ", line: ["MODEL", "MODEL"] }, "duplicate field MODEL"],
+    [{ separator: " · ", line: ["CONTEXT", "CONTEXT"] }, "duplicate field CONTEXT"],
     [{ separator: " · ", line: [{ kind: "ELLIPSIS_BRANCH", maxChars: 24 }, { kind: "ELLIPSIS_BRANCH", maxChars: 12 }] }, "duplicate field ELLIPSIS_BRANCH"],
     [{ separator: " · ", line: [] }, "at least one item"],
     [{ separator: "", line: ["MODEL"] }, "must not be empty"],
@@ -76,9 +78,9 @@ describe("normalizeStatuslineLayout", () => {
 
 describe("parseStatuslineProposalReply", () => {
   it("accepts exactly one complete fenced json proposal", () => {
-    expect(parseStatuslineProposalReply(validReply({ separator: " · ", line: ["FOLDER", "MODEL"] }))).toEqual({
+    expect(parseStatuslineProposalReply(validReply({ separator: " · ", line: ["FOLDER", "MODEL", "CONTEXT"] }))).toEqual({
       kind: "proposal",
-      layout: { separator: " · ", line: ["FOLDER", "MODEL"] },
+      layout: { separator: " · ", line: ["FOLDER", "MODEL", "CONTEXT"] },
     })
   })
 
@@ -137,6 +139,40 @@ describe("renderStatusline", () => {
     const segments = renderStatusline(layout(["FOLDER", "FULL_PATH"]), { cwd: "/work/kitten/" }, 80)
 
     expect(statuslineText(segments)).toBe("kitten · /work/kitten/")
+  })
+
+  it.each([38, 0, 100])("renders valid context headroom %d as a compact percentage", (contextHeadroom) => {
+    const segments = renderStatusline(layout(["CONTEXT"]), { contextHeadroom }, 80)
+
+    expect(segments).toEqual([{ kind: "CONTEXT", text: `ctx ${contextHeadroom}%`, separatorBefore: "" }])
+  })
+
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["NaN", Number.NaN],
+    ["positive infinity", Number.POSITIVE_INFINITY],
+    ["negative infinity", Number.NEGATIVE_INFINITY],
+    ["fractional", 38.5],
+    ["below range", -1],
+    ["above range", 101],
+  ] as const)("omits %s context headroom and its adjacent separator", (_case, contextHeadroom) => {
+    const segments = renderStatusline(
+      layout(["FOLDER", "CONTEXT", "MODEL"]),
+      { cwd: "/work/kitten", contextHeadroom, model: "gpt-5.4" },
+      80,
+    )
+
+    expect(statuslineText(segments)).toBe("kitten · gpt-5.4")
+    expect(segments.map(({ kind }) => kind)).toEqual(["FOLDER", "MODEL"])
+  })
+
+  it("drops trailing context while retaining the folder when the grapheme budget is narrow", () => {
+    const chosen = layout(["FOLDER", "CONTEXT"])
+    const context = { cwd: "/work/kitten", contextHeadroom: 38 }
+
+    expect(statuslineText(renderStatusline(chosen, context, 16))).toBe("kitten · ctx 38%")
+    expect(statuslineText(renderStatusline(chosen, context, 15))).toBe("kitten")
   })
 
   it("preserves order and removes trailing fields rather than shortening ordinary values", () => {
