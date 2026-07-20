@@ -50,7 +50,9 @@ export async function persistUserConfig(
   assertCanonicalThemePatch(patch.theme)
   const path = options.path ?? resolveConfigPath(options.env)
   const current = await readUserConfig(path)
-  const serialized = `${JSON.stringify(mergeUserConfig(current, patch), null, 2)}\n`
+  const merged = mergeUserConfig(current, patch)
+  const canonical = validateUserConfig(JSON.stringify(merged), path)
+  const serialized = `${JSON.stringify(canonical, null, 2)}\n`
 
   // Validate the serialized representation itself: these are the exact bytes that
   // will become the next boot's input, not merely the pre-serialization object.

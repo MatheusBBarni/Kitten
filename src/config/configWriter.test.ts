@@ -16,6 +16,17 @@ import { persistUserConfig, type UserConfigPatch } from "./configWriter.ts"
 // Boundary OUT: watcher/store persistence wiring, owned by task_09 integration tests.
 
 const tempDirs: string[] = []
+const COLORED_STATUSLINE_PATCH = {
+  statusline: {
+    llmDisclosureAcknowledged: true,
+    separator: " · ",
+    line: [
+      { kind: "FOLDER", color: "red" },
+      { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12abef" },
+      "MODEL",
+    ],
+  },
+} as unknown as UserConfigPatch
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "kitten-config-writer-"))
@@ -131,6 +142,25 @@ describe("persistUserConfig", () => {
     expect(await readdir(dir)).toEqual(["config.json"])
   })
 
+  it("rejects an invalid colored statusline patch without changing the original bytes", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    const original = Buffer.from('{\n  "theme": "light",\n  "telemetryEnabled": false\n}\n')
+    await writeFile(path, original)
+    const invalidPatch = {
+      statusline: {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "BRANCH", color: "#1234" }],
+      },
+    } as unknown as UserConfigPatch
+
+    await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/statusline/)
+
+    expect(await readFile(path)).toEqual(original)
+    expect(await readdir(dir)).toEqual(["config.json"])
+  })
+
   it("rejects invalid serialized editor data before creating a target or parent directory", async () => {
     const dir = await makeTempDir()
     const parent = join(dir, "nested")
@@ -165,7 +195,7 @@ describe("persistUserConfig", () => {
     const original = Buffer.from('{ "theme": "light"')
     await writeFile(path, original)
 
-    await expect(persistUserConfig({ theme: "dark" }, { path })).rejects.toThrow(/not valid JSON/)
+    await expect(persistUserConfig(COLORED_STATUSLINE_PATCH, { path })).rejects.toThrow(/not valid JSON/)
 
     expect(await readFile(path)).toEqual(original)
     expect(await readdir(dir)).toEqual(["config.json"])
@@ -214,7 +244,7 @@ describe("persistUserConfig", () => {
     await writeFile(referent, original)
     await symlink(referent, path)
 
-    await expect(persistUserConfig({ theme: "dark" }, { path })).rejects.toThrow(/symbolic link/)
+    await expect(persistUserConfig(COLORED_STATUSLINE_PATCH, { path })).rejects.toThrow(/symbolic link/)
 
     expect(await readFile(referent)).toEqual(original)
     expect((await lstat(path)).isSymbolicLink()).toBe(true)
@@ -268,7 +298,7 @@ describe("writer-loader integration", () => {
     expect(loaded.theme).toBe("dracula")
   })
 
-  it("preserves unrelated settings across acknowledgement-only and complete statusline writes", async () => {
+  it("canonicalizes colored statusline writes while preserving unrelated settings", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
     const existing = {
@@ -289,13 +319,7 @@ describe("writer-loader integration", () => {
       statusline: { llmDisclosureAcknowledged: true, layout: null },
     })
 
-    await persistUserConfig({
-      statusline: {
-        llmDisclosureAcknowledged: true,
-        separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
-      },
-    }, { path })
+    await persistUserConfig(COLORED_STATUSLINE_PATCH, { path })
 
     const written = JSON.parse(await readFile(path, "utf8"))
     expect(written).toEqual({
@@ -303,7 +327,11 @@ describe("writer-loader integration", () => {
       statusline: {
         llmDisclosureAcknowledged: true,
         separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12ABEF" },
+          "MODEL",
+        ],
       },
     })
     const loaded = await loadAppConfig({ path })
@@ -311,7 +339,11 @@ describe("writer-loader integration", () => {
       llmDisclosureAcknowledged: true,
       layout: {
         separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12ABEF" },
+          "MODEL",
+        ],
       },
     })
     expect(loaded).toMatchObject({

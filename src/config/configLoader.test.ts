@@ -218,14 +218,22 @@ describe("statusline config", () => {
         statusline: {
           llmDisclosureAcknowledged: true,
           separator: " · ",
-          line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+          line: [
+            { kind: "FOLDER", color: "red" },
+            { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12abef" },
+            "MODEL",
+          ],
         },
       })).statusline,
     ).toEqual({
       llmDisclosureAcknowledged: true,
       layout: {
         separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12ABEF" },
+          "MODEL",
+        ],
       },
     })
   })
@@ -236,6 +244,22 @@ describe("statusline config", () => {
     ["line without separator", { llmDisclosureAcknowledged: true, line: ["FOLDER"] }],
     ["unknown nested key", { llmDisclosureAcknowledged: true, request: "show my branch" }],
     ["invalid item", { llmDisclosureAcknowledged: true, separator: " | ", line: ["COST"] }],
+    [
+      "invalid item color",
+      {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "FOLDER", color: "transparent" }],
+      },
+    ],
+    [
+      "unknown colored item key",
+      {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "MODEL", color: "red", background: "#000000" }],
+      },
+    ],
     [
       "unknown item key",
       {
