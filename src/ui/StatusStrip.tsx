@@ -187,10 +187,15 @@ function CustomStatusline({
     [selectors.effort, sessionId],
   )
   const configOptionsSelector = useMemo(() => selectAgentConfigOptions(sessionId), [sessionId])
+  const headroomSelector = useMemo(
+    () => sessionId === null ? (() => null) : selectSessionHeadroom(sessionId),
+    [sessionId],
+  )
   const branch = useAppSelector(branchSelector)
   const model = useAppSelector(modelSelector)
   const effort = useAppSelector(effortSelector)
   const configOptions = useAppSelector(configOptionsSelector)
+  const contextHeadroom = useAppSelector(headroomSelector)
   const context = useMemo<StatuslineContext>(() => ({
     cwd: runtime?.cwd,
     branch,
@@ -198,7 +203,8 @@ function CustomStatusline({
     model: displayModelName(configOptions, model),
     effort: displayEffortName(configOptions, effort),
     helpText,
-  }), [branch, configOptions, effort, helpText, model, runtime])
+    contextHeadroom,
+  }), [branch, configOptions, contextHeadroom, effort, helpText, model, runtime])
   const text = statuslineText(renderStatusline(layout, context, columnBudget))
 
   return (

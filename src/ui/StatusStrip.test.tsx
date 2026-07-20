@@ -19,6 +19,7 @@ import {
   BACKGROUND_STATUS_LABEL,
   CONTEXT_HEADROOM_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
+  FOCUS_MARKER,
   MCP_STATUS_LABEL,
   StatusStrip,
   type StatusSlotSelectors,
@@ -315,6 +316,90 @@ describe("StatusStrip", () => {
     expect(frame).not.toContain("Claude:Opus")
     expect(frame).toContain(KEYMAP_HINT)
     expectNoOverflow(frame, 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders saved CONTEXT from the focused session's validated headroom", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, { separator: " · ", line: ["CONTEXT"] })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("ctx 38%")
+    expect(frame).not.toContain("█")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("moves saved CONTEXT with real-store conversation focus without retaining the previous value", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, { separator: " · ", line: ["CONTEXT"] })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.applyEvent("codex", { kind: "usage", used: 50_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain("ctx 38%")
+    expect(setup.captureCharFrame()).not.toContain("ctx 75%")
+
+    await actAsync(() => controller.actions.selectConversation("codex"))
+    const codex = await setup.waitForFrame((frame) => frame.includes("ctx 75%"))
+    expect(codex).not.toContain("ctx 38%")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it.each([
+    ["unavailable", null],
+    ["selector-invalid", { used: -10_000, size: 200_000 }],
+  ] as const)("canonically omits %s saved CONTEXT without separator artifacts", async (_case, usage) => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: ["PROVIDER", "CONTEXT", "FOLDER"],
+    })
+    if (usage !== null) {
+      controller.store.applyEvent("claude-code", { kind: "usage", ...usage })
+    }
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`Claude · ${PROJECT_FOLDER}`)
+    expect(frame).not.toContain(CONTEXT_HEADROOM_LABEL)
+    expect(frame).not.toContain("0%")
+    expect(frame).not.toContain(" ·  · ")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("drops trailing saved CONTEXT at a narrow width while retaining FULL_PATH", async () => {
+    const statuslineCwd = "/work/kitten"
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd })),
+    })
+    saveCustomLayout(controller, { separator: " · ", line: ["FULL_PATH", "CONTEXT"] })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller, 40)
+
+    expect(setup.captureCharFrame()).toContain(`${statuslineCwd} · ctx 38%`)
+
+    await actAsync(() => setup.resize(20, HEIGHT))
+    const narrow = await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
+    expect(narrow).not.toContain(CONTEXT_HEADROOM_LABEL)
+    expect(narrow).toContain(KEYMAP_HINT)
+    expectNoOverflow(narrow, 20)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps the layout-null legacy AgentStatusChip path with valid usage", async () => {
+    const controller = createFakeController()
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain(`${FOCUS_MARKER} Claude:— ctx 38% █░░`)
 
     await destroyMounted(setup.renderer)
   })
