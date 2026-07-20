@@ -15,6 +15,7 @@ import {
   ClientSideConnection,
   PROTOCOL_VERSION,
   type Client,
+  type SessionConfigOption,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type ReadTextFileRequest,
@@ -202,6 +203,12 @@ export const CODEX_COMPACTION_IDLE_RECOVERY_GRACE_MS = 1_000
 
 const CODEX_COMPACTION_MARKER = "*Context compacted to fit the model's context window.*"
 
+/** Claude ACP's fixed config option for its SDK-owned permission mode. */
+const CLAUDE_PERMISSION_MODE_CONFIG_ID = "mode"
+/** Kitten owns the human approval boundary, so Claude must start in its manual mode. */
+const CLAUDE_APPROVAL_MODE = "default"
+const CLAUDE_BYPASS_MODE = "bypassPermissions"
+
 /** Construction options for an {@link AgentConnection}. Seams are injectable for tests. */
 export interface AgentConnectionOptions {
   /** A resolved config carries the verified capability; a bare config fails closed. */
@@ -360,8 +367,9 @@ class AgentConnectionImpl implements AgentConnection {
     // an absent `configOptions` means the agent has no config surface (the reducer's
     // `[]` default already covers it), while an explicit empty list is emitted as an
     // empty set - never fabricate options the agent did not advertise (ADR-003/ADR-004).
-    if (result.configOptions != null) {
-      this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
+    const configOptions = await this.enforceClaudeApprovalBoundary(result.sessionId, result.configOptions)
+    if (configOptions != null) {
+      this.emit({ kind: "config_options", options: translateConfigOptions(configOptions) })
     }
     this.activeSessionId = result.sessionId
     this.askUserMcpAttached = hasAskUserMcp(mcpServers)
@@ -374,8 +382,9 @@ class AgentConnectionImpl implements AgentConnection {
     const result = await connection.loadSession({ sessionId, cwd, mcpServers: toAcpMcpServers(mcpServers) })
     // A resumed session returns the same initial config snapshot as a fresh one.
     // Preserve it so model and reasoning selectors retain their confirmed state.
-    if (result.configOptions != null) {
-      this.emit({ kind: "config_options", options: translateConfigOptions(result.configOptions) })
+    const configOptions = await this.enforceClaudeApprovalBoundary(sessionId, result.configOptions)
+    if (configOptions != null) {
+      this.emit({ kind: "config_options", options: translateConfigOptions(configOptions) })
     }
     this.activeSessionId = sessionId
     this.askUserMcpAttached = hasAskUserMcp(mcpServers)
@@ -432,6 +441,51 @@ class AgentConnectionImpl implements AgentConnection {
         return { sessionId, prompt, _meta: { codex: { kittenHarness: harness } } }
       case "cursor-prompt-meta-v1":
         return { sessionId, prompt, _meta: { cursor: { kittenHarness: harness } } }
+    }
+  }
+
+  /**
+   * Claude ACP deliberately inherits `permissions.defaultMode` from the user's
+   * Claude settings. `bypassPermissions` makes the SDK auto-approve tools before
+   * its `canUseTool` callback reaches our ACP approval overlay, contradicting
+   * Kitten's human-in-the-loop contract. Restore Claude's manual/default mode
+   * during session setup, before this connection is returned to the controller
+   * and therefore before it can dispatch a prompt. If the adapter cannot restore
+   * that boundary, fail this agent closed rather than running an unreviewable one.
+   */
+  private async enforceClaudeApprovalBoundary(
+    sessionId: string,
+    configOptions: SessionConfigOption[] | null | undefined,
+  ): Promise<SessionConfigOption[] | null | undefined> {
+    if (this.id !== "claude-code" || configOptions == null) return configOptions
+
+    const mode = configOptions.find(
+      (option) => option.type === "select" && option.id === CLAUDE_PERMISSION_MODE_CONFIG_ID,
+    )
+    if (mode?.currentValue !== CLAUDE_BYPASS_MODE) return configOptions
+
+    if (!mode.options.some((option) =>
+      "value" in option
+        ? option.value === CLAUDE_APPROVAL_MODE
+        : option.options.some((groupedOption) => groupedOption.value === CLAUDE_APPROVAL_MODE),
+    )) {
+      throw new Error(
+        "Claude Code started in bypass permissions mode, but its adapter cannot restore Kitten's approval boundary.",
+      )
+    }
+
+    try {
+      const result = await this.requireConnection().setSessionConfigOption({
+        sessionId,
+        configId: CLAUDE_PERMISSION_MODE_CONFIG_ID,
+        value: CLAUDE_APPROVAL_MODE,
+      })
+      return result.configOptions
+    } catch (error) {
+      throw new Error(
+        "Claude Code started in bypass permissions mode, and Kitten could not restore its approval boundary.",
+        { cause: error },
+      )
     }
   }
 

@@ -31,17 +31,20 @@ export type TransportFactory = (config: AgentConfig) => AgentTransport
  * Spawn the configured agent command and frame its stdio as an ACP stream.
  *
  * The child's `stdout` is the incoming message stream; a `WritableStream` adapter
- * over the child's `stdin` `FileSink` carries outgoing messages. `stderr` is left
- * inherited so agent diagnostics reach the operator during a failed handshake.
+ * over the child's `stdin` `FileSink` carries outgoing messages. Diagnostics are
+ * forwarded to stderr, apart from one known Claude SDK warning that Kitten
+ * neutralizes before the session becomes available.
  */
 export function spawnAgentTransport(config: AgentConfig): AgentTransport {
   const proc = Bun.spawn({
     cmd: [config.command, ...config.args],
     stdin: "pipe",
     stdout: "pipe",
-    stderr: "inherit",
+    stderr: "pipe",
     env: { ...process.env, ...config.env },
   })
+
+  forwardAgentStderr(proc.stderr)
 
   // Only `write` is wired: `ndJsonStream` builds its own `WritableStream` over this
   // sink and never forwards `close`/`abort` to it, so sink-level teardown hooks would
@@ -65,6 +68,79 @@ export function spawnAgentTransport(config: AgentConfig): AgentTransport {
       await proc.exited
     },
   }
+}
+
+/** The Node warning emitted when Claude's inherited bypass mode shadows canUseTool. */
+const CLAUDE_BYPASS_WARNING_CODE = "[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED]"
+const NODE_WARNING_HINT = "(Use `node --trace-warnings"
+
+/**
+ * Remove only the noisy Node warning that accompanies Claude's inherited bypass
+ * mode. All other agent diagnostics still reach the operator exactly as before.
+ * The transform is line-buffered because process pipes can split one warning line
+ * across arbitrary chunks.
+ */
+export function createAgentStderrFilter(): TransformStream<string, string> {
+  let buffered = ""
+  let suppressNodeWarningHint = false
+
+  const forwardLine = (line: string, controller: TransformStreamDefaultController<string>) => {
+    const normalized = line.replace(/\r?\n$/, "")
+    if (normalized.includes(CLAUDE_BYPASS_WARNING_CODE)) {
+      suppressNodeWarningHint = true
+      return
+    }
+    if (suppressNodeWarningHint && normalized.startsWith(NODE_WARNING_HINT)) {
+      suppressNodeWarningHint = false
+      return
+    }
+    suppressNodeWarningHint = false
+    controller.enqueue(line)
+  }
+
+  return new TransformStream({
+    transform(chunk, controller) {
+      buffered += chunk
+      let newline = buffered.indexOf("\n")
+      while (newline !== -1) {
+        forwardLine(buffered.slice(0, newline + 1), controller)
+        buffered = buffered.slice(newline + 1)
+        newline = buffered.indexOf("\n")
+      }
+    },
+    flush(controller) {
+      if (buffered.length > 0) forwardLine(buffered, controller)
+    },
+  })
+}
+
+/** Preserve subprocess diagnostics without letting the known warning corrupt the TUI. */
+function forwardAgentStderr(stderr: ReadableStream<Uint8Array>): void {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  const decode = new TransformStream<Uint8Array, string>({
+    transform(chunk, controller) {
+      controller.enqueue(decoder.decode(chunk, { stream: true }))
+    },
+    flush(controller) {
+      const finalChunk = decoder.decode()
+      if (finalChunk.length > 0) controller.enqueue(finalChunk)
+    },
+  })
+  const encode = new TransformStream<string, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(encoder.encode(chunk))
+    },
+  })
+
+  void stderr
+    .pipeThrough(decode)
+    .pipeThrough(createAgentStderrFilter())
+    .pipeThrough(encode)
+    .pipeTo(new WritableStream<Uint8Array>({ write: (chunk) => { process.stderr.write(chunk) } }))
+    // The subprocess exit and ACP connection report actual failures; a diagnostic
+    // forwarding failure must never create an unhandled rejection in the UI tree.
+    .catch(() => {})
 }
 
 /**

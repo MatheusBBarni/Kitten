@@ -83,7 +83,7 @@ describe("provider identity contracts", () => {
     expect(PROVIDER_METADATA).toEqual({
       "claude-code": { displayName: "Claude Code", compactLabel: "Claude" },
       codex: { displayName: "Codex", compactLabel: "Codex" },
-      cursor: { displayName: "Cursor", compactLabel: "Cursor" },
+      cursor: { displayName: "Cursor", compactLabel: "Cursor", fixedReasoningEffort: "default" },
     })
     expect(PROVIDER_DISPLAY_NAMES).toEqual({ "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor" })
   })

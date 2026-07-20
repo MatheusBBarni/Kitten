@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test"
 import type { AnyMessage } from "@agentclientprotocol/sdk"
 
 import type { AgentConfig } from "../core/types.ts"
-import { spawnAgentTransport } from "./transport.ts"
+import { createAgentStderrFilter, spawnAgentTransport } from "./transport.ts"
 
 /**
  * Transport tests for the real `Bun.spawn` stdio wiring. These use trivial system
@@ -42,5 +42,45 @@ describe("spawnAgentTransport", () => {
     const code = await new Promise<number | null>((resolve) => transport.onClose((info) => resolve(info.code)))
     expect(code).toBe(0)
     await transport.dispose()
+  })
+
+  it("removes only Claude's known bypass warning, even when its line is chunked", async () => {
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("(node:42) [CLAUDE_SDK_CAN_USE_")
+        controller.enqueue("TOOL_SHADOWED] Warning: canUseTool will not be invoked\n")
+        controller.enqueue("(Use `node --trace-warnings ...` to show where the warning was created)\n")
+        controller.enqueue("adapter startup failed\n")
+        controller.close()
+      },
+    })
+    const reader = source.pipeThrough(createAgentStderrFilter()).getReader()
+    let output = ""
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      output += value
+    }
+
+    expect(output).toBe("adapter startup failed\n")
+  })
+
+  it("preserves unrelated agent diagnostics", async () => {
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("adapter warning\n")
+        controller.enqueue("adapter failure\n")
+        controller.close()
+      },
+    })
+    const reader = source.pipeThrough(createAgentStderrFilter()).getReader()
+    let output = ""
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      output += value
+    }
+
+    expect(output).toBe("adapter warning\nadapter failure\n")
   })
 })

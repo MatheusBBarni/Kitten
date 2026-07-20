@@ -111,8 +111,8 @@ function codexConfigOptions(currentModel = "gpt-5.6-terra", currentEffort = "ult
   ]
 }
 
-/** Cursor advertises opaque option identifiers and values like every other provider. */
-function cursorConfigOptions(currentModel = "cursor:composer", currentEffort = "cursor:high"): ConfigOption[] {
+/** Cursor advertises an opaque model choice, but its effort is provider-owned and fixed. */
+function cursorConfigOptions(currentModel = "cursor:composer"): ConfigOption[] {
   return [
     {
       id: "cursor/model-profile",
@@ -122,16 +122,6 @@ function cursorConfigOptions(currentModel = "cursor:composer", currentEffort = "
       options: [
         { value: "cursor:composer", name: "Composer" },
         { value: "cursor:agent-fast", name: "Agent Fast" },
-      ],
-    },
-    {
-      id: "cursor/effort-profile",
-      category: EFFORT_CATEGORY,
-      label: "Reasoning effort",
-      currentValue: currentEffort,
-      options: [
-        { value: "cursor:high", name: "High" },
-        { value: "cursor:low", name: "Low" },
       ],
     },
   ]
@@ -306,6 +296,45 @@ describe("ModelSelect visibility and content", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(MODEL_HEADING)
     expect(frame).not.toContain(EFFORT_HEADING)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("shows Cursor's advertised models and fixed default effort", async () => {
+    const controller = createFakeController({ runtimes: [...readyRuntimes(), cursorRuntime()] })
+    seedOptions(controller, "cursor", cursorConfigOptions())
+    controller.actions.selectConversation("cursor")
+    const setup = await renderWithSelector(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(modelSelectTitleFor("Cursor"))
+    expect(frame).toContain(MODEL_HEADING)
+    expect(frame).toContain(`${CURRENT_MARK} Composer`)
+    expect(frame).toContain(`${OTHER_MARK} Agent Fast`)
+    expect(frame).toContain(EFFORT_HEADING)
+    expect(frame).toContain(`${CURRENT_MARK} default`)
+    // The fixed effort is an honest display fact, not a third selectable option.
+    expect(frame).not.toContain(`${ROW_MARKER} ${CURRENT_MARK} default`)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps Cursor's confirmed model visible when ACP supplies no model choices", async () => {
+    const controller = createFakeController({ runtimes: [...readyRuntimes(), cursorRuntime()] })
+    const [cursorModel] = cursorConfigOptions()
+    if (!cursorModel) throw new Error("expected Cursor model fixture")
+    seedOptions(controller, "cursor", [{ ...cursorModel, currentValue: "default", options: [] }])
+    controller.actions.selectConversation("cursor")
+    const setup = await renderWithSelector(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(MODEL_HEADING)
+    expect(frame).toContain(`${CURRENT_MARK} default`)
+    expect(frame).toContain(EFFORT_HEADING)
+    expect(frame).not.toContain(NO_OPTIONS_NOTICE)
+    // Neither read-only fact is a switch target when the ACP choice list is empty.
+    expect(frame).not.toContain(`${ROW_MARKER} ${CURRENT_MARK} default`)
+    expect(controller.calls.setSessionConfigOption).toEqual([])
 
     await destroyMounted(setup.renderer)
   })

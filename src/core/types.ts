@@ -182,13 +182,15 @@ export const DEFAULT_PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "claude
 export interface ProviderDisplayMetadata {
   displayName: string
   compactLabel: string
+  /** A provider-owned effort value displayed when ACP advertises no adjustable effort. */
+  fixedReasoningEffort?: string
 }
 
 /** Total UI-facing metadata; views never need provider-specific label branches. */
 export const PROVIDER_METADATA = {
   "claude-code": { displayName: "Claude Code", compactLabel: "Claude" },
   codex: { displayName: "Codex", compactLabel: "Codex" },
-  cursor: { displayName: "Cursor", compactLabel: "Cursor" },
+  cursor: { displayName: "Cursor", compactLabel: "Cursor", fixedReasoningEffort: "default" },
 } as const satisfies Readonly<Record<ProviderKind, ProviderDisplayMetadata>>
 
 /** The human-facing name for each provider kind; the default session title. */

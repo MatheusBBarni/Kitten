@@ -1430,6 +1430,10 @@ describe("config options (task_03)", () => {
     ["medium", "Medium"],
     ["high", "High"],
   ])
+  const CLAUDE_BYPASS_MODE = selectOption("mode", "mode", "bypassPermissions", [
+    ["default", "Default"],
+    ["bypassPermissions", "Bypass Permissions"],
+  ])
 
   const configEvents = (events: DomainSessionEvent[]) => events.filter((e) => e.kind === "config_options")
 
@@ -1462,6 +1466,59 @@ describe("config options (task_03)", () => {
         ],
       },
     ])
+    await conn.dispose()
+  })
+
+  it("restores Claude's approval boundary before exposing a bypassed new session", async () => {
+    const { conn, mock, events } = await connected({ configOptions: [CLAUDE_BYPASS_MODE, MODEL] })
+
+    const sessionId = await conn.newSession("/tmp/project")
+
+    expect(mock.configOptionRequests).toEqual([{ sessionId, configId: "mode", value: "default" }])
+    expect(configEvents(events)).toEqual([
+      {
+        kind: "config_options",
+        options: [
+          { id: "mode", category: "mode", label: "mode", currentValue: "default", options: [{ value: "default", name: "Default" }, { value: "bypassPermissions", name: "Bypass Permissions" }] },
+          { id: "model", category: "model", label: "model", currentValue: "sonnet", options: [{ value: "sonnet", name: "Sonnet" }, { value: "opus", name: "Opus" }] },
+        ],
+      },
+    ])
+    await conn.dispose()
+  })
+
+  it("restores Claude's approval boundary when loading a bypassed session", async () => {
+    const { conn, mock, events } = await connected({ canLoadSession: true, configOptions: [CLAUDE_BYPASS_MODE, MODEL] })
+
+    await conn.loadSession("stored-session", "/tmp/project")
+
+    expect(mock.configOptionRequests).toEqual([{ sessionId: "stored-session", configId: "mode", value: "default" }])
+    expect(configEvents(events).at(-1)).toMatchObject({
+      kind: "config_options",
+      options: expect.arrayContaining([expect.objectContaining({ id: "mode", currentValue: "default" })]),
+    })
+    await conn.dispose()
+  })
+
+  it("fails Claude closed when a bypassed session cannot restore Kitten's approval boundary", async () => {
+    const { conn, mock } = await connected({
+      configOptions: [CLAUDE_BYPASS_MODE],
+      onSetConfigOption: () => { throw new Error("mode change rejected") },
+    })
+
+    await expect(conn.newSession("/tmp/project")).rejects.toThrow(
+      "Claude Code started in bypass permissions mode, and Kitten could not restore its approval boundary.",
+    )
+    expect(mock.configOptionRequests).toEqual([{ sessionId: "mock-session-1", configId: "mode", value: "default" }])
+    await conn.dispose()
+  })
+
+  it("does not impose Claude's permission mode on another provider", async () => {
+    const { conn, mock } = await connected({ configOptions: [CLAUDE_BYPASS_MODE] }, undefined, CODEX_CONFIG)
+
+    await conn.newSession("/tmp/project")
+
+    expect(mock.configOptionRequests).toEqual([])
     await conn.dispose()
   })
 

@@ -295,6 +295,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   useKeyboard(onKey)
 
   const displayName = tabs.find((tab) => tab.sessionId === sessionId)?.label ?? controller.runtime(sessionId)?.displayName ?? sessionId
+  const fixedEffort = tabs.find((tab) => tab.sessionId === sessionId)?.fixedReasoningEffort
   return (
     <box
       style={{
@@ -318,7 +319,7 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
       {confirming ? (
         <ConfirmStep row={confirming} />
       ) : (
-        <ModelEffortControl options={options} highlighted={clamped} requested={requested} />
+        <ModelEffortControl options={options} highlighted={clamped} requested={requested} fixedEffort={fixedEffort} />
       )}
       {!confirming ? <DefaultApplyFeedback result={defaultApplyResult} /> : null}
 
@@ -354,6 +355,7 @@ function DefaultApplyFeedback({ result }: { result: DefaultApplyResult | null })
 interface ModelSelectTab {
   sessionId: SessionId
   label: string
+  fixedReasoningEffort?: string
 }
 
 /**
@@ -370,9 +372,11 @@ function modelSelectTabs(
 
   return sessions.map((session, index) => {
     const label = baseLabels[index]!
+    const metadata = PROVIDER_METADATA[session.providerKind]
     return {
       sessionId: session.id,
       label: (counts.get(label) ?? 0) > 1 ? `${label}: ${session.title}` : label,
+      fixedReasoningEffort: "fixedReasoningEffort" in metadata ? metadata.fixedReasoningEffort : undefined,
     }
   })
 }
@@ -406,21 +410,25 @@ export function ModelEffortControl({
   highlighted,
   requested,
   outgoing,
+  fixedEffort,
   emptyNotice = NO_OPTIONS_NOTICE,
 }: {
   options: ConfigOption[]
   highlighted: number
   requested?: ReadonlyMap<string, string>
   outgoing?: ReadonlyMap<string, string>
+  /** A provider-confirmed fixed value, rendered without a config-option action. */
+  fixedEffort?: string
   emptyNotice?: string
 }): ReactNode {
   const palette = usePalette()
   const modelOption = options.find((option) => option.category === MODEL_CATEGORY)
   const effortOption = options.find((option) => option.category === EFFORT_CATEGORY)
   const showEffort = effortOption !== undefined && effortOption.options.length > 0
+  const showFixedEffort = !showEffort && fixedEffort !== undefined
   const rows = modelEffortValueRows(options)
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && !showFixedEffort) {
     return (
       <text style={{ flexShrink: 0 }} fg={palette.muted}>
         {emptyNotice}
@@ -438,6 +446,7 @@ export function ModelEffortControl({
           outgoing={outgoing?.get(modelOption.id)}
           offset={0}
           highlighted={highlighted}
+          showCurrentWhenNoChoices={showFixedEffort}
           first
         />
       ) : null}
@@ -449,9 +458,11 @@ export function ModelEffortControl({
           outgoing={outgoing?.get(effortOption.id)}
           offset={modelOption ? modelOption.options.length : 0}
           highlighted={highlighted}
+          showCurrentWhenNoChoices={false}
           first={!modelOption}
         />
       ) : null}
+      {showFixedEffort ? <FixedEffortSection value={fixedEffort} first={!modelOption && !showEffort} /> : null}
     </box>
   )
 }
@@ -470,6 +481,7 @@ function Section({
   outgoing,
   offset,
   highlighted,
+  showCurrentWhenNoChoices,
   first,
 }: {
   heading: string
@@ -478,6 +490,7 @@ function Section({
   outgoing: string | undefined
   offset: number
   highlighted: number
+  showCurrentWhenNoChoices: boolean
   first: boolean
 }): ReactNode {
   const palette = usePalette()
@@ -487,7 +500,7 @@ function Section({
         <span fg={palette.accent}>{heading}</span>
         {unverified ? <span fg={palette.status.awaiting_approval}>{`  (${UNVERIFIED_LABEL})`}</span> : null}
       </text>
-      {option.options.map((value, index) => (
+      {option.options.length > 0 ? option.options.map((value, index) => (
         <ValueRowView
           key={value.value}
           name={value.name}
@@ -495,7 +508,22 @@ function Section({
           outgoing={value.value === outgoing}
           highlighted={highlighted === offset + index}
         />
-      ))}
+      )) : showCurrentWhenNoChoices && option.currentValue.length > 0 ? (
+        <ValueRowView name={option.currentValue} current outgoing={false} highlighted={false} />
+      ) : null}
+    </box>
+  )
+}
+
+/** A capability fact, not an ACP config option: it is deliberately not keyboard-selectable. */
+function FixedEffortSection({ value, first }: { value: string; first: boolean }): ReactNode {
+  const palette = usePalette()
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+      <text style={{ flexShrink: 0, marginTop: first ? 0 : 1 }}>
+        <span fg={palette.accent}>{EFFORT_HEADING}</span>
+      </text>
+      <ValueRowView name={value} current outgoing={false} highlighted={false} />
     </box>
   )
 }
