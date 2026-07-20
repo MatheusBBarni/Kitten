@@ -3,6 +3,7 @@ import { mkdtemp, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
+import { THEME_PRESET_ALIASES, type ThemePresetId } from "../core/themeCatalog.ts"
 import type { AppConfig } from "../core/types.ts"
 import { CONFIG_PATH_ENV_VAR } from "./configLoader.ts"
 import { watchUserConfig } from "./configWatcher.ts"
@@ -107,6 +108,29 @@ describe("watchUserConfig", () => {
     } finally {
       watcher.close()
     }
+  })
+
+  it("Should canonicalize every declared alias and suppress its canonical-equivalent reload", async () => {
+    const aliases = Object.entries(THEME_PRESET_ALIASES) as [string, ThemePresetId][]
+
+    for (const [alias, canonical] of aliases) {
+      const path = await makeConfigPath()
+      const configs: AppConfig[] = []
+      const watcher = watchUserConfig((config) => configs.push(config), { path, debounceMs: DEBOUNCE_MS })
+
+      try {
+        await writeFile(path, JSON.stringify({ theme: alias }))
+        await waitUntil(() => configs.length === 1)
+        expect(configs[0]?.theme).toBe(canonical)
+
+        await writeFile(path, JSON.stringify({ theme: canonical }))
+        await expectConditionToRemain(() => configs.length === 1)
+      } finally {
+        watcher.close()
+      }
+    }
+
+    expect(aliases).toEqual([])
   })
 
   it("Should cancel queued reloads and ignore later changes after close", async () => {

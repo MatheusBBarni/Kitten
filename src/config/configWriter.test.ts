@@ -7,9 +7,8 @@ import {
   CONFIG_PATH_ENV_VAR,
   loadAppConfig,
   USER_CONFIG_SCHEMA,
-  type UserConfig,
 } from "./configLoader.ts"
-import { persistUserConfig } from "./configWriter.ts"
+import { persistUserConfig, type UserConfigPatch } from "./configWriter.ts"
 
 // Suite: Atomic user-config write-back
 // Invariant: A persist either commits one schema-valid merged delta or leaves the prior target bytes unchanged.
@@ -109,12 +108,12 @@ describe("persistUserConfig", () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
 
-    await persistUserConfig({ theme: "catppuccin-mocha", telemetryEnabled: true }, { path })
+    await persistUserConfig({ theme: "tokyo-night-storm", telemetryEnabled: true }, { path })
 
     const source = await readFile(path, "utf8")
     expect(USER_CONFIG_SCHEMA.safeParse(JSON.parse(source)).success).toBe(true)
     await expect(loadAppConfig({ path })).resolves.toMatchObject({
-      theme: "catppuccin-mocha",
+      theme: "tokyo-night-storm",
       telemetryEnabled: true,
     })
   })
@@ -124,7 +123,7 @@ describe("persistUserConfig", () => {
     const path = join(dir, "config.json")
     const original = Buffer.from('{\n  "theme": "light",\n  "telemetryEnabled": false\n}\n')
     await writeFile(path, original)
-    const invalidPatch = { theme: "neon" } as unknown as Partial<UserConfig>
+    const invalidPatch = { theme: "neon" } as unknown as UserConfigPatch
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/theme/)
 
@@ -138,7 +137,7 @@ describe("persistUserConfig", () => {
     const path = join(parent, "config.json")
     const invalidPatch = {
       editor: { kind: "custom", executable: "code", args: ["--goto={file}"] },
-    } as unknown as Partial<UserConfig>
+    } as unknown as UserConfigPatch
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/editor\.args/)
 
@@ -151,7 +150,7 @@ describe("persistUserConfig", () => {
     const original = Buffer.from('{\n  "editor": { "kind": "system-default" },\n  "theme": "light"\n}\n')
     const invalidPatch = {
       editor: { kind: "custom", executable: "code", args: ["{file}", "{file}"] },
-    } as unknown as Partial<UserConfig>
+    } as unknown as UserConfigPatch
     await writeFile(path, original)
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/editor\.args/)
@@ -263,10 +262,10 @@ describe("writer-loader integration", () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
 
-    await persistUserConfig({ theme: "catppuccin-latte" }, { path })
+    await persistUserConfig({ theme: "dracula" }, { path })
     const loaded = await loadAppConfig({ path })
 
-    expect(loaded.theme).toBe("catppuccin-latte")
+    expect(loaded.theme).toBe("dracula")
   })
 
   it("preserves unrelated settings across acknowledgement-only and complete statusline writes", async () => {

@@ -41,6 +41,7 @@ import {
   type SessionStatus,
   type ThemePreference,
 } from "../core/types.ts"
+import { isThemePresetId } from "../core/themeCatalog.ts"
 import {
   bucketChars,
   detectReexplanation,
@@ -53,6 +54,8 @@ import {
   type ExploreDenialReason,
 } from "../core/explorePolicy.ts"
 import type { AppStore, Unsubscribe } from "../store/appStore.ts"
+
+const BUILTIN_THEME_PREFERENCES = new Set<ThemePreference>(["auto", "light", "dark"])
 
 /** The exact content-free debug record used to validate adapter usage emission. */
 export interface UsageSeenRecord {
@@ -979,6 +982,7 @@ class ActiveRecorder implements TelemetryRecorder {
   }
 
   themeSet(themeId: ThemePreference): void {
+    if (!BUILTIN_THEME_PREFERENCES.has(themeId) && !isThemePresetId(themeId)) return
     this.record({ type: "theme_set", themeId })
   }
 

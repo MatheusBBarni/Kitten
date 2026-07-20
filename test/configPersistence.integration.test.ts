@@ -211,11 +211,12 @@ describe("boot config persistence integration", () => {
     }
   })
 
-  it("round-trips a store theme to disk and ignores the following self-write reload", async () => {
+  it("leaves boot bytes unchanged, then round-trips one explicit canonical theme and ignores its self-write", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-boot-config-"))
     tempDirs.push(dir)
     const path = join(dir, "config.json")
-    await writeFile(path, JSON.stringify({ theme: "light" }))
+    const bootBytes = Buffer.from('{\n  "theme": "dracula"\n}\n')
+    await writeFile(path, bootBytes)
 
     let writeCalls = 0
     let watchEvents = 0
@@ -234,14 +235,16 @@ describe("boot config persistence integration", () => {
     })
 
     try {
-      expect(selectThemePreference(session.controller.store.getState())).toBe("light")
-      session.controller.store.setThemePreference("catppuccin-mocha")
+      expect(selectThemePreference(session.controller.store.getState())).toBe("dracula")
+      expect(await readFile(path)).toEqual(bootBytes)
+      expect(writeCalls).toBe(0)
+      session.controller.store.setThemePreference("one-dark")
 
-      await waitUntil(async () => JSON.parse(await readFile(path, "utf8")).theme === "catppuccin-mocha")
+      await waitUntil(async () => JSON.parse(await readFile(path, "utf8")).theme === "one-dark")
       await waitUntil(async () => watchEvents >= 1)
       await Bun.sleep(100)
 
-      expect(selectThemePreference(session.controller.store.getState())).toBe("catppuccin-mocha")
+      expect(selectThemePreference(session.controller.store.getState())).toBe("one-dark")
       expect(writeCalls).toBe(1)
     } finally {
       await session.controller.dispose()

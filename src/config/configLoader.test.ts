@@ -3,6 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 
+import {
+  THEME_PRESET_ALIASES,
+  THEME_PRESET_IDS,
+  type ThemePresetId,
+} from "../core/themeCatalog.ts"
 import { PROVIDER_KINDS } from "../core/types.ts"
 
 import {
@@ -847,8 +852,20 @@ describe("theme preference", () => {
     expect(parseAppConfig("{}").theme).toBe("auto")
   })
 
-  it("Should accept a valid named theme preference", () => {
-    expect(parseAppConfig('{"theme":"catppuccin-mocha"}').theme).toBe("catppuccin-mocha")
+  it.each([...THEME_PRESET_IDS])("Should accept canonical catalog theme %s", (theme) => {
+    expect(parseAppConfig(JSON.stringify({ theme })).theme).toBe(theme)
+  })
+
+  it("Should resolve every declared compatibility alias to canonical application state", () => {
+    const aliases = Object.entries(THEME_PRESET_ALIASES) as [string, ThemePresetId][]
+
+    for (const [alias, canonical] of aliases) {
+      expect(parseAppConfig(JSON.stringify({ theme: alias })).theme).toBe(canonical)
+    }
+
+    // The initial catalog intentionally has no historical rename. This assertion
+    // keeps the table authoritative without inventing a compatibility input.
+    expect(aliases).toEqual([])
   })
 
   it("Should load a theme delta from a real config file", async () => {
@@ -900,10 +917,14 @@ describe("invalid config", () => {
     },
   )
 
-  it("Should reject an invalid theme preference naming the offending field", () => {
-    expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(ConfigError)
-    expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(/theme/)
-  })
+  it.each(["neon", "toString", "__proto__"])(
+    "Should reject invalid or inherited theme value %s naming the offending field",
+    (theme) => {
+      const parse = () => parseAppConfig(JSON.stringify({ theme }))
+      expect(parse).toThrow(ConfigError)
+      expect(parse).toThrow(/theme/)
+    },
+  )
 
   it("Should reject an unknown provider id", () => {
     expect(() => parseAppConfig(JSON.stringify({ providers: { gemini: { command: "gemini" } } }))).toThrow(ConfigError)

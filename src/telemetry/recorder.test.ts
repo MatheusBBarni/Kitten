@@ -8,6 +8,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { THEME_PRESET_IDS } from "../core/themeCatalog.ts"
+import type { ThemePreference } from "../core/types.ts"
 import { bucketChars, CHAR_BUCKETS, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
 import { createAppStore } from "../store/appStore.ts"
 import {
@@ -1475,16 +1477,28 @@ describe("settings events", () => {
     expect(sink.records).toEqual([{ type: "settings_opened", at: 42, sessionRef: "run-1" }])
   })
 
-  it("records theme_set with a fixed ThemePreference and no text field", () => {
+  it("records every canonical catalog choice with only fixed theme_set fields", () => {
     const sink = memorySink()
     const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
 
-    recorder.themeSet("catppuccin-mocha")
+    for (const themeId of THEME_PRESET_IDS) recorder.themeSet(themeId)
 
-    expect(sink.records).toEqual([
-      { type: "theme_set", themeId: "catppuccin-mocha", at: 42, sessionRef: "run-1" },
-    ])
-    expect(Object.keys(sink.records[0]!)).not.toContain("text")
+    expect(sink.records.map((record) => record.themeId)).toEqual([...THEME_PRESET_IDS])
+    for (const record of sink.records) {
+      expect(Object.keys(record)).toEqual(["type", "themeId", "at", "sessionRef"])
+      for (const forbidden of ["family", "displayName", "sourceUrl", "licenseAttribution", "text", "content"]) {
+        expect(Object.keys(record)).not.toContain(forbidden)
+      }
+    }
+  })
+
+  it("drops a non-canonical runtime theme value instead of recording arbitrary text", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.themeSet("PRIVATE_THEME_SENTINEL" as ThemePreference)
+
+    expect(sink.records).toEqual([])
   })
 
   it("records config write outcomes with the fixed modal source", () => {

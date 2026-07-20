@@ -13,6 +13,9 @@
 import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
 import type { StatuslinePreference } from "./statusline.ts"
 import type { ExplorePolicySnapshot } from "./explorePolicy.ts"
+import type { ThemePresetId } from "./themeCatalog.ts"
+
+export type { ThemePresetId } from "./themeCatalog.ts"
 
 /**
  * The kind of agent a session runs - the spawn-recipe identity, not the session's
@@ -921,9 +924,6 @@ export interface SessionDescriptor {
   title?: string
   task?: string
 }
-
-/** A curated, named theme palette that can be persisted as a user preference. */
-export type ThemePresetId = "catppuccin-mocha" | "catppuccin-latte"
 
 /** The user's persisted theme choice; `auto` follows the terminal-reported mode. */
 export type ThemePreference = "auto" | "light" | "dark" | ThemePresetId
