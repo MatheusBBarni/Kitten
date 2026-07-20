@@ -4,6 +4,11 @@ import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
+import {
+  THEME_PRESET_ALIASES,
+  THEME_PRESET_IDS,
+  type ThemePresetId,
+} from "../core/themeCatalog.ts"
 import { createAppStore } from "../store/appStore.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import {
@@ -12,6 +17,7 @@ import {
   DARK_PALETTE,
   LIGHT_PALETTE,
   PALETTES,
+  PRESET_PALETTES,
   paletteFor,
   resolvePalette,
   syntaxStyleFor,
@@ -78,6 +84,21 @@ function ansi256Fallback(hex: string): string {
 
   return `#${fallback.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
 }
+
+function foregroundsOnSurface(palette: CockpitPalette): readonly string[] {
+  return [
+    palette.text,
+    palette.muted,
+    palette.accent,
+    ...Object.values(palette.banner),
+    ...Object.values(palette.context),
+    ...Object.values(palette.status),
+    ...Object.values(palette.tool),
+    ...Object.values(palette.syntax),
+  ]
+}
+
+const THEME_PRESET_ALIAS_ENTRIES = Object.entries(THEME_PRESET_ALIASES) as [string, ThemePresetId][]
 
 describe("paletteFor", () => {
   it("returns the light palette for a light terminal", () => {
@@ -160,21 +181,57 @@ describe("PALETTES", () => {
     for (const [id, palette] of Object.entries(PALETTES)) expect(palette.id).toBe(id)
   })
 
-  it("keeps both Catppuccin presets readable on their dark and light cockpit surfaces", () => {
-    expect(CATPPUCCIN_MOCHA_PALETTE.mode).toBe("dark")
-    expect(CATPPUCCIN_LATTE_PALETTE.mode).toBe("light")
+  it("exactly covers the canonical catalog with matching palette ids", () => {
+    expect(Object.keys(PRESET_PALETTES)).toEqual([...THEME_PRESET_IDS])
+    for (const id of THEME_PRESET_IDS) expect(PRESET_PALETTES[id].id).toBe(id)
+  })
 
-    for (const palette of [CATPPUCCIN_MOCHA_PALETTE, CATPPUCCIN_LATTE_PALETTE]) {
-      const foregrounds = [
-        palette.text,
-        palette.muted,
-        palette.accent,
-        ...Object.values(palette.status),
-        ...Object.values(palette.tool),
-        ...Object.values(palette.syntax),
-      ]
-      for (const color of foregrounds) expect(contrastRatio(color, palette.surface)).toBeGreaterThanOrEqual(4.5)
+  it("provides every semantic role for every canonical preset", () => {
+    for (const palette of Object.values(PRESET_PALETTES)) {
+      expect(palette.mode === "dark" || palette.mode === "light").toBe(true)
+      expect(foregroundsOnSurface(palette).every((color) => /^#[0-9A-F]{6}$/.test(color))).toBe(true)
+      expect(/^#[0-9A-F]{6}$/.test(palette.border)).toBe(true)
+      expect(/^#[0-9A-F]{6}$/.test(palette.userMessageSurface)).toBe(true)
+      expect(/^#[0-9A-F]{6}$/.test(palette.selectionSurface)).toBe(true)
+    }
+  })
+
+  it("keeps every rendered foreground pair readable in truecolor", () => {
+    for (const palette of Object.values(PRESET_PALETTES)) {
+      for (const color of foregroundsOnSurface(palette)) {
+        expect(contrastRatio(color, palette.surface)).toBeGreaterThanOrEqual(4.5)
+      }
       expect(contrastRatio(palette.text, palette.userMessageSurface)).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(palette.text, palette.selectionSurface)).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  it("keeps every rendered foreground pair readable after ANSI-256 fallback", () => {
+    for (const palette of Object.values(PRESET_PALETTES)) {
+      const surface = ansi256Fallback(palette.surface)
+      for (const color of foregroundsOnSurface(palette)) {
+        expect(contrastRatio(ansi256Fallback(color), surface)).toBeGreaterThanOrEqual(4.5)
+      }
+      expect(
+        contrastRatio(ansi256Fallback(palette.text), ansi256Fallback(palette.userMessageSurface)),
+      ).toBeGreaterThanOrEqual(4.5)
+      expect(
+        contrastRatio(ansi256Fallback(palette.text), ansi256Fallback(palette.selectionSurface)),
+      ).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  it("preserves distinct message, selection, status, and tool affordances in both color modes", () => {
+    for (const palette of Object.values(PRESET_PALETTES)) {
+      expect(new Set([palette.surface, palette.userMessageSurface, palette.selectionSurface]).size).toBe(3)
+      expect(
+        new Set([palette.surface, palette.userMessageSurface, palette.selectionSurface].map(ansi256Fallback)).size,
+      ).toBe(3)
+
+      for (const tones of [Object.values(palette.status), Object.values(palette.tool)]) {
+        expect(new Set(tones).size).toBe(tones.length)
+        expect(new Set(tones.map(ansi256Fallback)).size).toBe(tones.length)
+      }
     }
   })
 })
@@ -190,9 +247,18 @@ describe("resolvePalette", () => {
     expect(resolvePalette("dark", "light")).toBe(DARK_PALETTE)
   })
 
-  it("selects each Catppuccin preset regardless of terminal mode", () => {
-    expect(resolvePalette("catppuccin-mocha", "light")).toBe(CATPPUCCIN_MOCHA_PALETTE)
-    expect(resolvePalette("catppuccin-latte", "dark")).toBe(CATPPUCCIN_LATTE_PALETTE)
+  it("selects every canonical preset regardless of terminal mode", () => {
+    for (const id of THEME_PRESET_IDS) {
+      expect(resolvePalette(id, "dark")).toBe(PRESET_PALETTES[id])
+      expect(resolvePalette(id, "light")).toBe(PRESET_PALETTES[id])
+    }
+  })
+
+  it("canonicalizes every declared alias to the canonical palette object", () => {
+    for (const [alias, canonicalId] of THEME_PRESET_ALIAS_ENTRIES) {
+      expect(resolvePalette(alias, "dark")).toBe(PRESET_PALETTES[canonicalId])
+      expect(resolvePalette(alias, "light")).toBe(PRESET_PALETTES[canonicalId])
+    }
   })
 
   it("falls back to the terminal palette for an unknown id", () => {
@@ -212,6 +278,17 @@ describe("syntaxStyleFor", () => {
     expect(syntaxStyleFor(DARK_PALETTE)).toBe(syntaxStyleFor(DARK_PALETTE))
     expect(syntaxStyleFor(CATPPUCCIN_MOCHA_PALETTE)).toBe(syntaxStyleFor(CATPPUCCIN_MOCHA_PALETTE))
     expect(syntaxStyleFor(DARK_PALETTE)).not.toBe(syntaxStyleFor(CATPPUCCIN_MOCHA_PALETTE))
+  })
+
+  it("uses one stable cache entry per canonical preset and its declared aliases", () => {
+    const canonicalStyles = THEME_PRESET_IDS.map((id) => syntaxStyleFor(resolvePalette(id, "dark")))
+    expect(new Set(canonicalStyles).size).toBe(THEME_PRESET_IDS.length)
+
+    for (const [alias, canonicalId] of THEME_PRESET_ALIAS_ENTRIES) {
+      expect(syntaxStyleFor(resolvePalette(alias, "dark"))).toBe(
+        syntaxStyleFor(PRESET_PALETTES[canonicalId]),
+      )
+    }
   })
 
   it("colors code differently in each effective palette", () => {
@@ -328,6 +405,29 @@ describe("usePalette", () => {
     })
 
     expect(await waitForFrame((f) => f.includes("id=catppuccin-mocha"))).toContain(CATPPUCCIN_MOCHA_PALETTE.accent)
+
+    await destroyMounted(renderer)
+  })
+
+  it("keeps a selected canonical preset pinned while terminal mode changes", async () => {
+    const store = createAppStore({ preferences: { theme: "tokyo-night-day" } })
+    const controller = createFakeController({ store })
+    const { renderer, waitForFrame } = await testRender(
+      <CockpitProvider controller={controller}>
+        <PaletteProbe />
+      </CockpitProvider>,
+      { width: 160, height: 4 },
+    )
+
+    const initialFrame = await waitForFrame((frame) => frame.includes("id=tokyo-night-day"))
+    expect(initialFrame).toContain(PRESET_PALETTES["tokyo-night-day"].accent)
+
+    await actAsync(() => {
+      renderer.emit("theme_mode", "light")
+    })
+
+    const repaintedFrame = await waitForFrame((frame) => frame.includes("id=tokyo-night-day"))
+    expect(repaintedFrame).toContain(PRESET_PALETTES["tokyo-night-day"].accent)
 
     await destroyMounted(renderer)
   })
