@@ -8,6 +8,8 @@
 
 import { createHash, randomUUID } from "node:crypto"
 import {
+  chmod,
+  lstat,
   mkdir,
   readFile,
   realpath,
@@ -17,13 +19,17 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join } from "node:path"
+import { basename, dirname, isAbsolute, join } from "node:path"
 
-import { artifactName, BUILD_TARGETS } from "../scripts/build.ts"
+import { artifactName, BUILD_TARGETS, CHECKSUM_MANIFEST } from "../scripts/build.ts"
 import { KITTEN_VERSION } from "./version.ts"
 
 export const STANDALONE_REGISTRY_SCHEMA_VERSION = 1 as const
 export const STANDALONE_REGISTRY_FILE = "standalone-installations.json"
+export const LATEST_RELEASE_URL =
+  "https://api.github.com/repos/MatheusBBarni/Kitten/releases/latest"
+export const RELEASE_DOWNLOAD_BASE_URL =
+  "https://github.com/MatheusBBarni/Kitten/releases/download"
 
 export const NPM_RECOVERY_COMMAND = "npm install --global @matheusbbarni/kitten@latest"
 export const STANDALONE_RECOVERY_COMMAND =
@@ -85,6 +91,28 @@ export interface UpdateDependencies {
   homeDirectory(): string
 }
 
+export interface StandaloneTransactionPaths {
+  lock: string
+  candidate: string
+  backup: string
+  registryCandidate: string
+  registrySnapshot: string
+  targetRestore: string
+  registryRestore: string
+}
+
+export interface StandaloneUpdateDependencies extends UpdateDependencies {
+  hostPlatform(): string
+  isSymbolicLink(path: string): Promise<boolean>
+  fileMode(path: string): Promise<number>
+  chmod(path: string, mode: number): Promise<void>
+  removeFile(path: string): Promise<void>
+  pathExists(path: string): Promise<boolean>
+  acquireLock(path: string): Promise<void>
+  releaseLock(path: string): Promise<void>
+  transactionPaths(targetPath: string, registryPath: string): StandaloneTransactionPaths
+}
+
 export type UpdateOutcome =
   | { kind: "updated"; channel: "standalone"; from: string; to: string }
   | { kind: "already-current"; channel: "standalone" | "npm"; version: string }
@@ -92,6 +120,7 @@ export type UpdateOutcome =
   | { kind: "failed"; message: string }
 
 export type RefusedUpdateOutcome = Extract<UpdateOutcome, { kind: "refused" }>
+export type FailedUpdateOutcome = Extract<UpdateOutcome, { kind: "failed" }>
 
 export type PrimitiveResult<T> =
   | { ok: true; value: T }
@@ -386,6 +415,125 @@ export async function loadStandaloneInstallation(
   }
 }
 
+/** Built-in production effects for the fail-closed standalone transaction. */
+export function createStandaloneUpdateDependencies(
+  overrides: Partial<StandaloneUpdateDependencies> = {},
+): StandaloneUpdateDependencies {
+  return {
+    fetchJson: async (url) => {
+      const response = await fetch(url, { headers: { Accept: "application/vnd.github+json" } })
+      if (!response.ok) throw new Error(`release metadata request failed with ${response.status}`)
+      return response.json() as Promise<unknown>
+    },
+    fetchBytes: async (url) => {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`release asset request failed with ${response.status}`)
+      return new Uint8Array(await response.arrayBuffer())
+    },
+    sha256: defaultSha256,
+    resolveExecutable: async () => process.execPath,
+    canonicalizePath: realpath,
+    isRegularFile: async (path) => (await stat(path)).isFile(),
+    isSymbolicLink: async (path) => (await lstat(path)).isSymbolicLink(),
+    fileMode: async (path) => (await stat(path)).mode & 0o777,
+    readFile,
+    writeFile: async (path, bytes, mode = 0o600) => {
+      await writeFile(path, bytes, { flag: "wx", mode })
+    },
+    chmod,
+    rename,
+    replaceExecutable: rename,
+    removeFile: async (path) => { await rm(path, { force: true }) },
+    pathExists: async (path) => {
+      try {
+        await lstat(path)
+        return true
+      } catch (error) {
+        if (isMissingFileError(error)) return false
+        throw error
+      }
+    },
+    acquireLock: async (path) => {
+      await writeFile(path, new Uint8Array(), { flag: "wx", mode: 0o600 })
+    },
+    releaseLock: async (path) => { await rm(path) },
+    transactionPaths: defaultTransactionPaths,
+    environment: () => process.env,
+    homeDirectory: homedir,
+    hostPlatform: () => `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`,
+    ...overrides,
+  }
+}
+
+/**
+ * Update one installer-proven standalone executable without ever selecting npm.
+ * Ownership and candidate validation finish before the transaction writes a byte.
+ */
+export async function runStandaloneUpdate(
+  dependencies: StandaloneUpdateDependencies = createStandaloneUpdateDependencies(),
+  embeddedVersion: string = KITTEN_VERSION,
+): Promise<UpdateOutcome> {
+  const ownership = await loadStandaloneOwnership(dependencies, embeddedVersion)
+  if (!ownership.ok) return ownership.outcome
+
+  let releaseMetadata: unknown
+  try {
+    releaseMetadata = await dependencies.fetchJson(LATEST_RELEASE_URL)
+  } catch {
+    return failed("the latest standalone release metadata could not be retrieved safely")
+  }
+  const release = parseStableReleaseMetadata(releaseMetadata)
+  if (!release.ok) return release.outcome
+  if (release.value.version === embeddedVersion) {
+    return { kind: "already-current", channel: "standalone", version: embeddedVersion }
+  }
+
+  const artifactUrl = releaseAssetUrl(release.value.tag, ownership.value.host.artifact)
+  const manifestUrl = releaseAssetUrl(release.value.tag, CHECKSUM_MANIFEST)
+  let candidateBytes: Uint8Array
+  let manifestBytes: Uint8Array
+  try {
+    candidateBytes = await dependencies.fetchBytes(artifactUrl)
+  } catch {
+    return failed("the standalone release artifact could not be retrieved safely")
+  }
+  try {
+    manifestBytes = await dependencies.fetchBytes(manifestUrl)
+  } catch {
+    return failed("the standalone checksum manifest could not be retrieved safely")
+  }
+
+  let manifestSource: string
+  try {
+    manifestSource = new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)
+  } catch {
+    return { kind: "refused", message: "the checksum manifest is malformed" }
+  }
+  const expectedChecksum = parseManifestChecksum(manifestSource, ownership.value.host.artifact)
+  if (!expectedChecksum.ok) return expectedChecksum.outcome
+  const candidateSha256 = dependencies.sha256(candidateBytes)
+  if (!LOWERCASE_SHA256.test(candidateSha256) || candidateSha256 !== expectedChecksum.value) {
+    return { kind: "refused", message: "the standalone release artifact does not match its published SHA-256" }
+  }
+
+  const nextRegistry = updateRegistryRecord(
+    ownership.value.registry,
+    ownership.value.record,
+    release.value.version,
+    candidateSha256,
+    dependencies.sha256,
+  )
+  if (!nextRegistry.ok) return nextRegistry.outcome
+  const nextRegistryBytes = new TextEncoder().encode(`${JSON.stringify(nextRegistry.value, null, 2)}\n`)
+  return commitStandaloneUpdate(
+    ownership.value,
+    candidateBytes,
+    nextRegistryBytes,
+    release.value.version,
+    dependencies,
+  )
+}
+
 /** Deterministic terminal text shared by all structured update outcomes. */
 export function formatUpdateOutcome(outcome: UpdateOutcome): string {
   switch (outcome.kind) {
@@ -397,6 +545,300 @@ export function formatUpdateOutcome(outcome: UpdateOutcome): string {
       return formatNoChangeOutcome("refused", outcome.message)
     case "failed":
       return formatNoChangeOutcome("failed", outcome.message)
+  }
+}
+
+interface StandaloneOwnership {
+  canonicalPath: string
+  registryPath: string
+  record: StandaloneInstallationRecord
+  registry: StandaloneInstallationRegistry
+  targetBytes: Uint8Array
+  registryBytes: Uint8Array
+  targetMode: number
+  host: HostArtifact
+}
+
+async function loadStandaloneOwnership(
+  dependencies: StandaloneUpdateDependencies,
+  embeddedVersion: string,
+): Promise<PrimitiveResult<StandaloneOwnership>> {
+  try {
+    const executablePath = await dependencies.resolveExecutable()
+    if (await dependencies.isSymbolicLink(executablePath)) {
+      return refused("the running executable path is a symbolic link")
+    }
+    const canonicalPath = await dependencies.canonicalizePath(executablePath)
+    if (!(await dependencies.isRegularFile(canonicalPath))) {
+      return refused("the running executable is not a canonical regular file")
+    }
+    const targetMode = await dependencies.fileMode(canonicalPath)
+    if ((targetMode & 0o111) === 0) {
+      return refused("the recorded standalone target is not executable")
+    }
+
+    const host = resolveHostArtifact(dependencies.hostPlatform())
+    if (!host.ok) return host
+    const registryPath = resolveStandaloneRegistryPath(
+      dependencies.environment(),
+      dependencies.homeDirectory(),
+    )
+    const registryBytes = await dependencies.readFile(registryPath)
+    const registrySource = new TextDecoder("utf-8", { fatal: true }).decode(registryBytes)
+    const rawRegistry: unknown = JSON.parse(registrySource)
+    const registry = validateStandaloneRegistryEnvelope(rawRegistry, dependencies.sha256)
+    if (!registry.ok) return registry
+    const selected = validateStandaloneRegistry(rawRegistry, canonicalPath, dependencies.sha256)
+    if (!selected.ok) return selected
+    if (selected.value.platform !== host.value.platform) {
+      return refused("the standalone installation record does not match the host platform")
+    }
+    if (selected.value.version !== embeddedVersion) {
+      return refused("the standalone installation record has a stale version")
+    }
+
+    const targetBytes = await dependencies.readFile(canonicalPath)
+    const targetSha256 = dependencies.sha256(targetBytes)
+    if (!LOWERCASE_SHA256.test(targetSha256) || targetSha256 !== selected.value.sha256) {
+      return refused("the standalone installation record has a stale executable hash")
+    }
+    return accepted({
+      canonicalPath,
+      registryPath,
+      record: selected.value,
+      registry: registry.value,
+      targetBytes,
+      registryBytes,
+      targetMode,
+      host: host.value,
+    })
+  } catch {
+    return refused("standalone ownership could not be validated safely")
+  }
+}
+
+function updateRegistryRecord(
+  registry: StandaloneInstallationRegistry,
+  current: StandaloneInstallationRecord,
+  version: string,
+  sha256: string,
+  hash: (bytes: Uint8Array) => string,
+): PrimitiveResult<StandaloneInstallationRegistry> {
+  const key = registryKeyForCanonicalPath(current.canonicalPath, hash)
+  if (!key.ok) return key
+  const next: StandaloneInstallationRegistry = {
+    schemaVersion: STANDALONE_REGISTRY_SCHEMA_VERSION,
+    installations: {
+      ...registry.installations,
+      [key.value]: { ...current, version, sha256 },
+    },
+  }
+  return validateStandaloneRegistryEnvelope(next, hash)
+}
+
+async function commitStandaloneUpdate(
+  ownership: StandaloneOwnership,
+  candidateBytes: Uint8Array,
+  nextRegistryBytes: Uint8Array,
+  candidateVersion: string,
+  dependencies: StandaloneUpdateDependencies,
+): Promise<UpdateOutcome> {
+  const paths = dependencies.transactionPaths(ownership.canonicalPath, ownership.registryPath)
+  try {
+    await dependencies.acquireLock(paths.lock)
+  } catch {
+    return { kind: "refused", message: "the standalone target is locked or could not be locked safely" }
+  }
+
+  const stillOwned = await ownershipSnapshotMatches(ownership, dependencies)
+  if (!stillOwned) {
+    try {
+      await dependencies.releaseLock(paths.lock)
+      return { kind: "refused", message: "the standalone target or registry changed before replacement" }
+    } catch {
+      return failed("the standalone target changed and its update lock could not be cleaned safely")
+    }
+  }
+
+  try {
+    if (await anyPathExists(paths, dependencies)) {
+      throw new Error("transaction path collision")
+    }
+    await dependencies.writeFile(paths.candidate, candidateBytes, 0o600)
+    await dependencies.chmod(paths.candidate, 0o700)
+    await dependencies.writeFile(paths.registryCandidate, nextRegistryBytes, 0o600)
+    await dependencies.writeFile(paths.registrySnapshot, ownership.registryBytes, 0o600)
+
+    await dependencies.rename(ownership.canonicalPath, paths.backup)
+    await dependencies.chmod(paths.backup, 0o600)
+    await dependencies.replaceExecutable(paths.candidate, ownership.canonicalPath)
+    await dependencies.chmod(ownership.canonicalPath, ownership.targetMode)
+    await dependencies.rename(paths.registryCandidate, ownership.registryPath)
+
+    await dependencies.removeFile(paths.registrySnapshot)
+    await dependencies.removeFile(paths.backup)
+    await dependencies.releaseLock(paths.lock)
+    return {
+      kind: "updated",
+      channel: "standalone",
+      from: ownership.record.version,
+      to: candidateVersion,
+    }
+  } catch {
+    const restored = await rollbackStandaloneUpdate(ownership, paths, dependencies)
+    const cleaned = await cleanupTransactionPaths(paths, dependencies, !restored)
+    let lockReleased = true
+    try {
+      await dependencies.releaseLock(paths.lock)
+    } catch {
+      lockReleased = false
+    }
+    return failed(
+      restored && cleaned && lockReleased
+        ? "the standalone update transaction failed; the previous executable and registry were restored"
+        : "the standalone update transaction failed and recovery evidence is inconclusive",
+    )
+  }
+}
+
+async function ownershipSnapshotMatches(
+  ownership: StandaloneOwnership,
+  dependencies: StandaloneUpdateDependencies,
+): Promise<boolean> {
+  try {
+    const executablePath = await dependencies.resolveExecutable()
+    if (await dependencies.isSymbolicLink(executablePath)) return false
+    if (await dependencies.canonicalizePath(executablePath) !== ownership.canonicalPath) return false
+    if (!(await dependencies.isRegularFile(ownership.canonicalPath))) return false
+    if ((await dependencies.fileMode(ownership.canonicalPath)) !== ownership.targetMode) return false
+    const [targetBytes, registryBytes] = await Promise.all([
+      dependencies.readFile(ownership.canonicalPath),
+      dependencies.readFile(ownership.registryPath),
+    ])
+    return bytesEqual(targetBytes, ownership.targetBytes) && bytesEqual(registryBytes, ownership.registryBytes)
+  } catch {
+    return false
+  }
+}
+
+async function rollbackStandaloneUpdate(
+  ownership: StandaloneOwnership,
+  paths: StandaloneTransactionPaths,
+  dependencies: StandaloneUpdateDependencies,
+): Promise<boolean> {
+  let targetRestored = false
+  let registryRestored = false
+
+  try {
+    if (await dependencies.pathExists(paths.backup)) {
+      try {
+        await dependencies.chmod(paths.backup, ownership.targetMode)
+      } finally {
+        await dependencies.rename(paths.backup, ownership.canonicalPath)
+      }
+    } else {
+      const current = await readFileOrUndefined(ownership.canonicalPath, dependencies)
+      if (!current || !bytesEqual(current, ownership.targetBytes)) {
+        await dependencies.writeFile(paths.targetRestore, ownership.targetBytes, 0o600)
+        await dependencies.chmod(paths.targetRestore, ownership.targetMode)
+        await dependencies.replaceExecutable(paths.targetRestore, ownership.canonicalPath)
+      }
+    }
+    const restoredBytes = await dependencies.readFile(ownership.canonicalPath)
+    const restoredMode = await dependencies.fileMode(ownership.canonicalPath)
+    targetRestored = bytesEqual(restoredBytes, ownership.targetBytes) && restoredMode === ownership.targetMode
+  } catch {
+    targetRestored = false
+  }
+
+  try {
+    const currentRegistry = await readFileOrUndefined(ownership.registryPath, dependencies)
+    if (!currentRegistry || !bytesEqual(currentRegistry, ownership.registryBytes)) {
+      if (await dependencies.pathExists(paths.registrySnapshot)) {
+        await dependencies.rename(paths.registrySnapshot, ownership.registryPath)
+      } else {
+        await dependencies.writeFile(paths.registryRestore, ownership.registryBytes, 0o600)
+        await dependencies.rename(paths.registryRestore, ownership.registryPath)
+      }
+    }
+    const restoredRegistry = await dependencies.readFile(ownership.registryPath)
+    registryRestored = bytesEqual(restoredRegistry, ownership.registryBytes)
+  } catch {
+    registryRestored = false
+  }
+  return targetRestored && registryRestored
+}
+
+async function cleanupTransactionPaths(
+  paths: StandaloneTransactionPaths,
+  dependencies: StandaloneUpdateDependencies,
+  preserveRecoveryEvidence: boolean,
+): Promise<boolean> {
+  let cleaned = true
+  const disposablePaths = [
+    paths.candidate,
+    paths.registryCandidate,
+    paths.targetRestore,
+    paths.registryRestore,
+  ]
+  if (!preserveRecoveryEvidence) {
+    disposablePaths.push(paths.backup, paths.registrySnapshot)
+  }
+  for (const path of disposablePaths) {
+    try {
+      await dependencies.removeFile(path)
+    } catch {
+      cleaned = false
+    }
+  }
+  return cleaned
+}
+
+async function anyPathExists(
+  paths: StandaloneTransactionPaths,
+  dependencies: StandaloneUpdateDependencies,
+): Promise<boolean> {
+  for (const path of [
+    paths.candidate,
+    paths.backup,
+    paths.registryCandidate,
+    paths.registrySnapshot,
+    paths.targetRestore,
+    paths.registryRestore,
+  ]) {
+    if (await dependencies.pathExists(path)) return true
+  }
+  return false
+}
+
+async function readFileOrUndefined(
+  path: string,
+  dependencies: StandaloneUpdateDependencies,
+): Promise<Uint8Array | undefined> {
+  try {
+    return await dependencies.readFile(path)
+  } catch (error) {
+    if (isMissingFileError(error)) return undefined
+    throw error
+  }
+}
+
+function releaseAssetUrl(tag: string, asset: string): string {
+  return `${RELEASE_DOWNLOAD_BASE_URL}/${tag}/${asset}`
+}
+
+function defaultTransactionPaths(targetPath: string, registryPath: string): StandaloneTransactionPaths {
+  const transactionId = `${process.pid}.${randomUUID()}`
+  const targetPrefix = join(dirname(targetPath), `.${basename(targetPath)}.${transactionId}`)
+  const registryPrefix = join(dirname(registryPath), `.${basename(registryPath)}.${transactionId}`)
+  return {
+    lock: join(dirname(targetPath), `.${basename(targetPath)}.update.lock`),
+    candidate: `${targetPrefix}.candidate`,
+    backup: `${targetPrefix}.backup`,
+    registryCandidate: `${registryPrefix}.candidate`,
+    registrySnapshot: `${registryPrefix}.snapshot`,
+    targetRestore: `${targetPrefix}.restore`,
+    registryRestore: `${registryPrefix}.restore`,
   }
 }
 
@@ -464,12 +906,21 @@ function defaultSha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex")
 }
 
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false
+  return left.every((value, index) => value === right[index])
+}
+
 function accepted<T>(value: T): PrimitiveResult<T> {
   return { ok: true, value }
 }
 
 function refused(message: string): PrimitiveResult<never> {
   return { ok: false, outcome: { kind: "refused", message } }
+}
+
+function failed(message: string): FailedUpdateOutcome {
+  return { kind: "failed", message }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

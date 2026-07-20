@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
 import { KITTEN_VERSION } from "./version.ts"
 import {
   createStandaloneRecordWriterDependencies,
+  createStandaloneUpdateDependencies,
   formatUpdateOutcome,
+  LATEST_RELEASE_URL,
   loadStandaloneInstallation,
   NPM_RECOVERY_COMMAND,
   parseManifestChecksum,
@@ -17,10 +19,13 @@ import {
   registryKeyForCanonicalPath,
   resolveHostArtifact,
   resolveStandaloneRegistryPath,
+  runStandaloneUpdate,
   STANDALONE_RECOVERY_COMMAND,
   type StandaloneInstallationRecord,
   type StandaloneInstallationRegistry,
   type StandaloneRecordWriterDependencies,
+  type StandaloneTransactionPaths,
+  type StandaloneUpdateDependencies,
   type UpdateDependencies,
   validateStandaloneRegistry,
 } from "./update.ts"
@@ -256,6 +261,276 @@ describe("read-only standalone registry boundary", () => {
   })
 })
 
+describe("fail-closed standalone update transaction", () => {
+  it("refuses every inconclusive ownership shape before release or mutation seams", async () => {
+    for (const failure of [
+      "missing",
+      "malformed",
+      "stale-path",
+      "symlink",
+      "nonregular",
+      "version",
+      "platform",
+      "hash",
+    ] as const) {
+      const fixture = await standaloneUpdateFixture()
+      let dependencies = fixture.dependencies
+      switch (failure) {
+        case "missing":
+          await rm(fixture.registryPath)
+          break
+        case "malformed":
+          await writeFile(fixture.registryPath, "{ malformed")
+          break
+        case "stale-path":
+          await writeFixtureRegistry(fixture, { canonicalPath: join(fixture.root, "other", "kitten") })
+          break
+        case "symlink": {
+          const link = join(fixture.root, "bin", "kitten-link")
+          await symlink(fixture.targetPath, link)
+          dependencies = createStandaloneUpdateDependencies({
+            ...dependencies,
+            resolveExecutable: async () => link,
+          })
+          break
+        }
+        case "nonregular":
+          dependencies = createStandaloneUpdateDependencies({
+            ...dependencies,
+            isRegularFile: async () => false,
+          })
+          break
+        case "version":
+          await writeFixtureRegistry(fixture, { version: "8.8.8" })
+          break
+        case "platform":
+          await writeFixtureRegistry(fixture, { platform: "darwin-arm64" })
+          break
+        case "hash":
+          await writeFile(fixture.targetPath, "changed-after-install", { mode: 0o755 })
+          break
+      }
+      const beforeTarget = await readFile(fixture.targetPath)
+      const beforeRegistry = await readFileOrMissing(fixture.registryPath)
+
+      expect((await runStandaloneUpdate(dependencies)).kind, failure).toBe("refused")
+      expect(fixture.calls.fetchJson, failure).toEqual([])
+      expect(fixtureMutationCount(fixture), failure).toBe(0)
+      expect(await readFile(fixture.targetPath), failure).toEqual(beforeTarget)
+      expect(await readFileOrMissing(fixture.registryPath), failure).toEqual(beforeRegistry)
+    }
+  })
+
+  it("rejects unsafe release, fetch, manifest, and candidate responses without writing", async () => {
+    for (const failure of [
+      "draft",
+      "prerelease",
+      "malformed",
+      "missing-tag",
+      "artifact-fetch",
+      "manifest-fetch",
+      "duplicate-row",
+      "checksum-mismatch",
+    ] as const) {
+      const fixture = await standaloneUpdateFixture()
+      let dependencies = fixture.dependencies
+      if (failure === "draft" || failure === "prerelease" || failure === "malformed" || failure === "missing-tag") {
+        const metadata = failure === "draft"
+          ? { draft: true, prerelease: false, tag_name: "kitten-v9.9.9" }
+          : failure === "prerelease"
+            ? { draft: false, prerelease: true, tag_name: "kitten-v9.9.9" }
+            : failure === "missing-tag"
+              ? { draft: false, prerelease: false }
+              : null
+        dependencies = createStandaloneUpdateDependencies({
+          ...dependencies,
+          fetchJson: async (url) => { fixture.calls.fetchJson.push(url); return metadata },
+        })
+      } else if (failure === "artifact-fetch") {
+        dependencies = createStandaloneUpdateDependencies({
+          ...dependencies,
+          fetchBytes: async (url) => { fixture.calls.fetchBytes.push(url); throw new Error("artifact unavailable") },
+        })
+      } else if (failure === "manifest-fetch") {
+        dependencies = createStandaloneUpdateDependencies({
+          ...dependencies,
+          fetchBytes: async (url) => {
+            fixture.calls.fetchBytes.push(url)
+            if (url.endsWith("/SHA256SUMS")) throw new Error("manifest unavailable")
+            return fixture.candidateBytes
+          },
+        })
+      } else if (failure === "duplicate-row") {
+        const row = `${fixture.candidateSha256}  kitten-linux-x64\n`
+        dependencies = createStandaloneUpdateDependencies({
+          ...dependencies,
+          fetchBytes: async (url) => {
+            fixture.calls.fetchBytes.push(url)
+            return url.endsWith("/SHA256SUMS") ? new TextEncoder().encode(row + row) : fixture.candidateBytes
+          },
+        })
+      } else {
+        dependencies = createStandaloneUpdateDependencies({
+          ...dependencies,
+          fetchBytes: async (url) => {
+            fixture.calls.fetchBytes.push(url)
+            return url.endsWith("/SHA256SUMS")
+              ? new TextEncoder().encode(`${HASH_A}  kitten-linux-x64\n`)
+              : fixture.candidateBytes
+          },
+        })
+      }
+      const beforeTarget = await readFile(fixture.targetPath)
+      const beforeRegistry = await readFile(fixture.registryPath)
+
+      const outcome = await runStandaloneUpdate(dependencies)
+
+      expect(["refused", "failed"], failure).toContain(outcome.kind)
+      expect(fixtureMutationCount(fixture), failure).toBe(0)
+      expect(await readFile(fixture.targetPath), failure).toEqual(beforeTarget)
+      expect(await readFile(fixture.registryPath), failure).toEqual(beforeRegistry)
+    }
+  })
+
+  it("reports already-current after metadata validation with no artifact or write activity", async () => {
+    const fixture = await standaloneUpdateFixture()
+    const dependencies = createStandaloneUpdateDependencies({
+      ...fixture.dependencies,
+      fetchJson: async (url) => {
+        fixture.calls.fetchJson.push(url)
+        return { draft: false, prerelease: false, tag_name: `kitten-v${KITTEN_VERSION}` }
+      },
+    })
+    const beforeTarget = await readFile(fixture.targetPath)
+    const beforeRegistry = await readFile(fixture.registryPath)
+
+    expect(await runStandaloneUpdate(dependencies)).toEqual({
+      kind: "already-current",
+      channel: "standalone",
+      version: KITTEN_VERSION,
+    })
+    expect(fixture.calls.fetchJson).toEqual([LATEST_RELEASE_URL])
+    expect(fixture.calls.fetchBytes).toEqual([])
+    expect(fixtureMutationCount(fixture)).toBe(0)
+    expect(await readFile(fixture.targetPath)).toEqual(beforeTarget)
+    expect(await readFile(fixture.registryPath)).toEqual(beforeRegistry)
+    await expectNoTransactionArtifacts(fixture)
+  })
+
+  it("updates the exact tag-scoped artifact and registry while preserving sibling records", async () => {
+    const fixture = await standaloneUpdateFixture()
+    const sibling = validRecord({ canonicalPath: "/opt/kitten/bin/kitten", version: "7.7.7", sha256: HASH_B })
+    await writeFile(fixture.registryPath, `${JSON.stringify(registryForRecords([fixture.record, sibling]), null, 4)}\n`)
+
+    expect(await runStandaloneUpdate(fixture.dependencies)).toEqual({
+      kind: "updated",
+      channel: "standalone",
+      from: KITTEN_VERSION,
+      to: "9.9.9",
+    })
+    expect(fixture.calls.fetchJson).toEqual([LATEST_RELEASE_URL])
+    expect(fixture.calls.fetchBytes).toEqual([
+      "https://github.com/MatheusBBarni/Kitten/releases/download/kitten-v9.9.9/kitten-linux-x64",
+      "https://github.com/MatheusBBarni/Kitten/releases/download/kitten-v9.9.9/SHA256SUMS",
+    ])
+    expect(await readFile(fixture.targetPath)).toEqual(Buffer.from(fixture.candidateBytes))
+    const registry = JSON.parse(await readFile(fixture.registryPath, "utf8")) as StandaloneInstallationRegistry
+    expect(registry.installations[hashText(fixture.canonicalPath)]).toEqual({
+      ...fixture.record,
+      version: "9.9.9",
+      sha256: fixture.candidateSha256,
+    })
+    expect(registry.installations[hashText(sibling.canonicalPath)]).toEqual(sibling)
+    await expectNoTransactionArtifacts(fixture)
+  })
+
+  it("restores byte-identical target and registry state across the transaction failure matrix", async () => {
+    for (const failure of [
+      "lock",
+      "temp-write",
+      "temp-chmod",
+      "target-chmod",
+      "backup-rename",
+      "candidate-rename",
+      "registry-publish",
+      "cleanup",
+    ] as const) {
+      const fixture = await standaloneUpdateFixture()
+      const base = fixture.dependencies
+      let cleanupFailed = false
+      const dependencies = createStandaloneUpdateDependencies({
+        ...base,
+        acquireLock: async (path) => {
+          if (failure === "lock") throw new Error("injected lock failure")
+          return base.acquireLock(path)
+        },
+        writeFile: async (path, bytes, mode) => {
+          if (failure === "temp-write" && path === fixture.paths.candidate) throw new Error("injected write failure")
+          return base.writeFile(path, bytes, mode)
+        },
+        chmod: async (path, mode) => {
+          if (failure === "temp-chmod" && path === fixture.paths.candidate) throw new Error("injected chmod failure")
+          if (failure === "target-chmod" && path === fixture.canonicalPath) throw new Error("injected target chmod failure")
+          return base.chmod(path, mode)
+        },
+        rename: async (from, to) => {
+          if (failure === "backup-rename" && from === fixture.canonicalPath) throw new Error("injected backup failure")
+          if (failure === "registry-publish" && from === fixture.paths.registryCandidate) {
+            throw new Error("injected registry publish failure")
+          }
+          return base.rename(from, to)
+        },
+        replaceExecutable: async (from, to) => {
+          if (failure === "candidate-rename") throw new Error("injected candidate failure")
+          return base.replaceExecutable(from, to)
+        },
+        removeFile: async (path) => {
+          if (failure === "cleanup" && path === fixture.paths.registrySnapshot && !cleanupFailed) {
+            cleanupFailed = true
+            throw new Error("injected cleanup failure")
+          }
+          return base.removeFile(path)
+        },
+      })
+      const beforeTarget = await readFile(fixture.targetPath)
+      const beforeRegistry = await readFile(fixture.registryPath)
+
+      const outcome = await runStandaloneUpdate(dependencies)
+
+      expect(outcome.kind, failure).toBe(failure === "lock" ? "refused" : "failed")
+      expect(await readFile(fixture.targetPath), failure).toEqual(beforeTarget)
+      expect(await readFile(fixture.registryPath), failure).toEqual(beforeRegistry)
+      await expectNoTransactionArtifacts(fixture)
+    }
+  })
+
+  it("returns an inconclusive failure and retains recovery evidence when rollback itself fails", async () => {
+    const fixture = await standaloneUpdateFixture()
+    const base = fixture.dependencies
+    let publishFailed = false
+    const dependencies = createStandaloneUpdateDependencies({
+      ...base,
+      rename: async (from, to) => {
+        if (from === fixture.paths.registryCandidate) {
+          publishFailed = true
+          throw new Error("injected registry publish failure")
+        }
+        if (publishFailed && from === fixture.paths.backup && to === fixture.canonicalPath) {
+          throw new Error("injected rollback failure")
+        }
+        return base.rename(from, to)
+      },
+    })
+
+    const outcome = await runStandaloneUpdate(dependencies)
+
+    expect(outcome.kind).toBe("failed")
+    expect(outcome.kind === "failed" ? outcome.message : "").toContain("inconclusive")
+    expect(await readFile(fixture.registryPath)).toEqual(Buffer.from(fixture.registryBytes))
+    expect(await readFile(fixture.paths.backup)).toEqual(Buffer.from(fixture.targetBytes))
+  })
+})
+
 describe("installer-owned standalone registry writer", () => {
   it("replaces one canonical-path record while preserving an unrelated installation", async () => {
     const fixture = await recordWriterFixture()
@@ -372,6 +647,172 @@ describe("installer-owned standalone registry writer", () => {
     expect(await readFile(fixture.registryPath)).toEqual(priorBytes)
   })
 })
+
+interface StandaloneUpdateCalls {
+  fetchJson: string[]
+  fetchBytes: string[]
+  writes: string[]
+  chmods: string[]
+  renames: string[]
+  replacements: string[]
+  removals: string[]
+  locks: string[]
+  releases: string[]
+}
+
+interface StandaloneUpdateFixture {
+  root: string
+  targetPath: string
+  canonicalPath: string
+  registryPath: string
+  record: StandaloneInstallationRecord
+  targetBytes: Uint8Array
+  registryBytes: Uint8Array
+  candidateBytes: Uint8Array
+  candidateSha256: string
+  paths: StandaloneTransactionPaths
+  calls: StandaloneUpdateCalls
+  dependencies: StandaloneUpdateDependencies
+}
+
+async function standaloneUpdateFixture(): Promise<StandaloneUpdateFixture> {
+  const root = await temporaryDirectory()
+  const targetPath = join(root, "bin", "kitten")
+  const stateHome = join(root, "state")
+  const registryPath = resolveStandaloneRegistryPath({ XDG_STATE_HOME: stateHome }, root)
+  await mkdir(dirname(targetPath), { recursive: true })
+  await mkdir(dirname(registryPath), { recursive: true })
+  const targetBytes = new TextEncoder().encode("installed-binary")
+  const candidateBytes = new TextEncoder().encode("#!/bin/sh\ntouch must-not-exist\n")
+  await writeFile(targetPath, targetBytes, { mode: 0o755 })
+  await chmod(targetPath, 0o755)
+  const canonicalPath = await realpath(targetPath)
+  const record = validRecord({
+    canonicalPath,
+    version: KITTEN_VERSION,
+    sha256: hashBytes(targetBytes),
+  })
+  const registryBytes = new TextEncoder().encode(`${JSON.stringify(registryFor(record), null, 4)}\n`)
+  await writeFile(registryPath, registryBytes, { mode: 0o600 })
+  const paths: StandaloneTransactionPaths = {
+    lock: join(dirname(targetPath), ".kitten.update.lock"),
+    candidate: join(dirname(targetPath), ".kitten.candidate"),
+    backup: join(dirname(targetPath), ".kitten.backup"),
+    registryCandidate: join(dirname(registryPath), ".standalone-installations.candidate"),
+    registrySnapshot: join(dirname(registryPath), ".standalone-installations.snapshot"),
+    targetRestore: join(dirname(targetPath), ".kitten.restore"),
+    registryRestore: join(dirname(registryPath), ".standalone-installations.restore"),
+  }
+  const calls: StandaloneUpdateCalls = {
+    fetchJson: [],
+    fetchBytes: [],
+    writes: [],
+    chmods: [],
+    renames: [],
+    replacements: [],
+    removals: [],
+    locks: [],
+    releases: [],
+  }
+  const candidateSha256 = hashBytes(candidateBytes)
+  const production = createStandaloneUpdateDependencies({
+    resolveExecutable: async () => targetPath,
+    environment: () => ({ XDG_STATE_HOME: stateHome }),
+    homeDirectory: () => root,
+    hostPlatform: () => "linux-x64",
+    transactionPaths: () => paths,
+    fetchJson: async (url) => {
+      calls.fetchJson.push(url)
+      return { draft: false, prerelease: false, tag_name: "kitten-v9.9.9" }
+    },
+    fetchBytes: async (url) => {
+      calls.fetchBytes.push(url)
+      if (url.endsWith("/kitten-linux-x64")) return candidateBytes
+      if (url.endsWith("/SHA256SUMS")) {
+        return new TextEncoder().encode(`${candidateSha256}  kitten-linux-x64\n`)
+      }
+      throw new Error(`unexpected release URL: ${url}`)
+    },
+  })
+  const dependencies = createStandaloneUpdateDependencies({
+    ...production,
+    writeFile: async (path, bytes, mode) => {
+      calls.writes.push(path)
+      return production.writeFile(path, bytes, mode)
+    },
+    chmod: async (path, mode) => {
+      calls.chmods.push(path)
+      return production.chmod(path, mode)
+    },
+    rename: async (from, to) => {
+      calls.renames.push(`${from}->${to}`)
+      return production.rename(from, to)
+    },
+    replaceExecutable: async (from, to) => {
+      calls.replacements.push(`${from}->${to}`)
+      return production.replaceExecutable(from, to)
+    },
+    removeFile: async (path) => {
+      calls.removals.push(path)
+      return production.removeFile(path)
+    },
+    acquireLock: async (path) => {
+      calls.locks.push(path)
+      return production.acquireLock(path)
+    },
+    releaseLock: async (path) => {
+      calls.releases.push(path)
+      return production.releaseLock(path)
+    },
+  })
+  return {
+    root,
+    targetPath,
+    canonicalPath,
+    registryPath,
+    record,
+    targetBytes,
+    registryBytes,
+    candidateBytes,
+    candidateSha256,
+    paths,
+    calls,
+    dependencies,
+  }
+}
+
+async function writeFixtureRegistry(
+  fixture: StandaloneUpdateFixture,
+  overrides: Partial<StandaloneInstallationRecord>,
+): Promise<void> {
+  const record = { ...fixture.record, ...overrides }
+  await writeFile(fixture.registryPath, `${JSON.stringify(registryFor(record), null, 4)}\n`)
+}
+
+async function readFileOrMissing(path: string): Promise<Uint8Array | null> {
+  try {
+    return await readFile(path)
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return null
+    throw error
+  }
+}
+
+function fixtureMutationCount(fixture: StandaloneUpdateFixture): number {
+  return fixture.calls.writes.length
+    + fixture.calls.chmods.length
+    + fixture.calls.renames.length
+    + fixture.calls.replacements.length
+    + fixture.calls.removals.length
+    + fixture.calls.locks.length
+    + fixture.calls.releases.length
+}
+
+async function expectNoTransactionArtifacts(fixture: StandaloneUpdateFixture): Promise<void> {
+  for (const path of Object.values(fixture.paths)) {
+    expect(await readFileOrMissing(path), path).toBeNull()
+  }
+}
 
 function validRecord(overrides: Partial<StandaloneInstallationRecord> = {}): StandaloneInstallationRecord {
   return {
