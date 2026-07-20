@@ -1,6 +1,6 @@
 # Compozy Tasks Report
 
-Generated: 2026-07-16
+Generated: 2026-07-20
 
 Status of every PRD task packet under `.compozy/`. Completion is judged by the canonical
 `status:` field on each `task_NN.md` (cross-checked against the `_tasks.md` index). A feature is
@@ -14,101 +14,106 @@ archived to `.compozy/tasks_done/` only when **all** of its tasks are `completed
 
 | | Features | Task files |
 |---|---:|---:|
-| Remaining (`.compozy/tasks/`) | 2 | 0 pending + 2 not-yet-decomposed |
-| Archived (`.compozy/tasks_done/`) | 30 | 250 completed |
+| Remaining (`.compozy/tasks/`) | 0 | 0 pending + 0 not-yet-decomposed |
+| Archived (`.compozy/tasks_done/`) | 36 | 296 completed |
 
-- **Moved this run:** 5 features (38 tasks).
-
-## Remaining — `.compozy/tasks/`
-
-Both remaining folders are EARLY-STAGE according to the canonical scan: they contain only an
-empty `adrs/` directory and have no `_idea.md`, `_prd.md`, or `task_NN.md` files. They need
-`cy-create-techspec` / `cy-create-tasks` before execution.
-
-| Feature | Status | Present artifacts |
-|---|---|---|
-| `keyboard-shortcuts` | EARLY-STAGE | `adrs/` only; no task files |
-| `multi-agent-orchestration` | EARLY-STAGE | `adrs/` only; no task files |
+- **Moved this run:** 6 features (46 tasks).
 
 ## Moved to `.compozy/tasks_done/` this run
 
-### Agent Role Profiles
+### PRD: Reliable Concurrent MCP Calls for Supervised Work
 
-All 6 tasks completed. The packet has 10 un-ticked embedded checklist lines.
-
-| # | Title |
-|---:|---|
-| 01 | Add the closed explore policy and immutable child snapshot contract |
-| 02 | Reserve and release explore capacity atomically in delegation state |
-| 03 | Add attested fail-closed explore child launch and MCP isolation |
-| 04 | Add explore availability and typed denial handling to the delegation dialog |
-| 05 | Render active explore policy in session and tab presentation |
-| 06 | Add content-free explore telemetry and cross-layer safety hardening |
-
-### PRD: Host-Owned MCP Child Control
-
-All 7 tasks completed. The packet has 10 un-ticked embedded checklist lines.
+All 5 tasks completed. The packet has 12 un-ticked embedded checklist lines.
 
 | # | Title |
 |---:|---|
-| 01 | Compose the bundled Kitten MCP child server |
-| 02 | Define the strict agent_run MCP tool contract |
-| 03 | Generalize the authenticated Kitten MCP bridge |
-| 04 | Make delegated-session registration selection-neutral |
-| 05 | Implement route-authorized batch start and poll |
-| 06 | Wire agent_run lifecycle composition and end-to-end coverage |
-| 07 | Record content-free agent_run telemetry |
+| 01 | Add targeted clarification cancellation and bridge telemetry |
+| 02 | Admit concurrent authenticated MCP sockets per route |
+| 03 | Model closed MCP failure state in the core |
+| 04 | Classify bundled MCP failures at the ACP boundary |
+| 05 | Render truthful concurrent MCP tool outcomes |
 
-### PRD: Managed Child Worktrees
+### Context Packs
 
-All 9 tasks completed. The packet has 41 un-ticked embedded checklist lines.
+All 15 tasks completed. The packet has 11 un-ticked embedded checklist lines.
 
 | # | Title |
 |---:|---|
-| 01 | Add protocol-free managed-worktree binding state |
-| 02 | Add memoized managed-worktree review presentation |
-| 03 | Build verified managed-worktree provisioner |
-| 04 | Reconcile bindings and safely clean retained worktrees |
-| 05 | Make delegated child launch transactional |
-| 06 | Persist V4 bindings and reconcile restored worktrees |
-| 07 | Disclose managed launch semantics and tab identity |
-| 08 | Add terminal worktree review and cleanup routing |
-| 09 | Emit content-free managed-worktree lifecycle telemetry |
+| 01 | Core Context Pack lifecycle and deterministic assembly |
+| 02 | Store-owned Context Pack slice and selectors |
+| 03 | Strict Context Pack persistence |
+| 04 | Closed explore-v2 capability and Recipient Profile evidence |
+| 05 | Bounded workspace materialization and source fences |
+| 06 | Generation-bound Context Pack bridge |
+| 07 | Controller-owned Context Build lifecycle |
+| 08 | Review, sealing, and fail-closed Send Here |
+| 09 | Immutable sealed-pack handoff composition |
+| 10 | Confirmed Context Pack Markdown export |
+| 11 | /context workspace and review UI |
+| 12 | Context Pack File Explorer membership |
+| 13 | Context Pack attention cues |
+| 14 | Content-free Context Pack telemetry |
+| 15 | Explore-v2 real-adapter certification |
 
-### Product Requirements Document: Mid-Turn Steering
+### PRD: Cursor ACP Readiness and Truthful Model Controls
 
-All 6 tasks completed. The packet has 25 un-ticked embedded checklist lines.
-
-| # | Title |
-|---:|---|
-| 01 | Core Steering Lifecycle |
-| 02 | Steering Store Projection and Selectors |
-| 03 | Fail-Closed Capability and Adapter Guard |
-| 04 | Privacy-Safe Steering Observability |
-| 05 | Controller Steering Orchestration |
-| 06 | Composer Steering and End-to-End Behavior |
-
-### Windowed Transcript Live Tail
-
-All 10 tasks completed. The packet has 113 un-ticked embedded checklist lines.
+All 7 tasks completed. The packet has 51 un-ticked embedded checklist lines.
 
 | # | Title |
 |---:|---|
-| 01 | Build the Pure Transcript Projection |
-| 02 | Add Per-Session Presentation State and Selectors |
-| 03 | Add the Strict Default-Off Configuration Contract |
-| 04 | Migrate Controller and Boot Config Fixtures |
-| 05 | Migrate UI Config Fixtures |
-| 06 | Migrate Runtime Integration Config Fixtures |
-| 07 | Migrate Session Shell and Telemetry Config Fixtures |
-| 08 | Render the Projected Conversation and Preserve Anchors |
-| 09 | Register Canonical History Commands |
-| 10 | Emit Content-Free Experiment Telemetry |
+| 01 | Preserve exact Cursor profile and readiness taxonomy |
+| 02 | Add closed ACP live-config contract evidence |
+| 03 | Add targeted unavailable-Cursor recheck |
+| 04 | Render readiness-first Cursor model controls |
+| 05 | Align local-only Cursor docs and telemetry guardrails |
+| 06 | Review native evidence and add the exact Cursor profile |
+| 07 | Project bounded Cursor recovery state |
+
+### Harness Capability Composition
+
+All 4 tasks completed. The packet has 44 un-ticked embedded checklist lines.
+
+| # | Title |
+|---:|---|
+| 01 | Core capability-composition contract |
+| 02 | Fresh-generation controller composition |
+| 03 | Envelope-only adapter bridge guidance |
+| 04 | Content-free composition telemetry |
+
+### Kitten Orchestrator
+
+All 6 tasks completed. The packet has 67 un-ticked embedded checklist lines.
+
+| # | Title |
+|---:|---|
+| 01 | Establish Private Workspace and Cockpit Package Boundary |
+| 02 | Relocate Cockpit Runtime Launcher and Build Tooling |
+| 03 | Relocate Cockpit Contract Suite and Preserve App Local CWD |
+| 04 | Delegate Root Development Commands and CI to Cockpit |
+| 05 | Bridge Root Release Orchestration to Cockpit Artifacts |
+| 06 | Preserve Root Installer and Documentation Contract |
+
+### PRD: Session-Scoped File Explorer
+
+All 9 tasks completed. The packet has 78 un-ticked embedded checklist lines.
+
+| # | Title |
+|---:|---|
+| 01 | Store Explorer State, Transitions, and Narrow Selectors |
+| 02 | Containment-Safe Lazy Workspace Tree Source |
+| 03 | Direct-Argv External Editor Launcher |
+| 04 | Strict Editor Preference Config and Atomic Persistence |
+| 05 | Session-Addressed Explorer Orchestration and Production Injection |
+| 06 | Apply Saved and Watched Editor Preference at Runtime |
+| 07 | Explorer Command Registry, Keyboard Tree, and Responsive Presentation |
+| 08 | Settings Editor Draft and Explicit Save/Cancel UX |
+| 09 | Content-Free Explorer Telemetry and Cross-Boundary Proof |
 
 ## Previously archived (already in `.compozy/tasks_done/`)
 
 | Feature | Title | Tasks |
 |---|---|---:|
+| `agent-role-profiles` | Agent Role Profiles | 6/6 |
 | `agent-usage-gauge` | PRD: Agent Usage Gauge | 7/7 |
 | `ask-user-mcp-bridge` | PRD: Provider-Independent `ask_user` MCP Bridge | 7/7 |
 | `clarification-question-picker` | Product Requirements Document: Clarification Question Picker | 12/12 |
@@ -118,9 +123,12 @@ All 10 tasks completed. The packet has 113 un-ticked embedded checklist lines.
 | `file-selector-at` | Product Requirements Document: @ File Selector | 6/6 |
 | `harness-delivery` | Product Requirements Document: Harness Delivery for Fresh Conversations | 5/5 |
 | `harness-prompt-contract` | PRD: Versioned Kitten Harness Prompt Contract | 1/1 |
+| `host-owned-mcp-control` | PRD: Host-Owned MCP Child Control | 7/7 |
 | `integrated-shell` | PRD: Integrated Shell | 14/14 |
 | `kitten-agent-tui` | PRD: Kitten - Cross-Agent Hand-off Cockpit | 14/14 |
 | `kitten-showcase-site` | Product Requirements Document: Kitten Showcase Site | 8/8 |
+| `managed-child-worktrees` | PRD: Managed Child Worktrees | 9/9 |
+| `mid-turn-steering` | Product Requirements Document: Mid-Turn Steering | 6/6 |
 | `model-effort-selector` | PRD: Kitten - In-App Model & Reasoning-Effort Selector | 9/9 |
 | `multi-agent-orchestration-registry` | PRD: Multi-Agent Orchestration Registry | 8/8 |
 | `multi-language-syntax-highlighting` | Product Requirements Document: Multi-Language Syntax Highlighting | 9/9 |
@@ -134,10 +142,11 @@ All 10 tasks completed. The packet has 113 un-ticked embedded checklist lines.
 | `statusline-customization` | PRD: Conversational Statusline Customization (`/statusline`) | 7/7 |
 | `streaming-markdown-rendering` | PRD: Elevated Markdown - The Trustworthy Hand-off Review Console | 6/6 |
 | `unified-mcp-config` | PRD: Unified MCP Configuration for Kitten | 9/9 |
+| `windowed-transcript-live-tail` | Windowed Transcript Live Tail | 10/10 |
 
 ## Index drift observations
 
 The authoritative per-task frontmatter marks every archived task complete. The archival scan found
-pre-existing `_tasks.md` index drift in `integrated-shell` (4 entries), `model-effort-selector`
-(6 entries), and `npm-and-github-release` (1 entry); those packets remain correctly archived because
-their per-task `status:` fields are complete. No moved packet had material index drift.
+`indexDrift(0)` for each packet moved this run (`concurrent-mcp-calls`, `context-packs`,
+`cursor-acp-readiness`, `harness-capability-composition`, `kitten-orchestrator`, and
+`session-file-explorer`); their `_tasks.md` indexes were therefore not used to decide completion.
