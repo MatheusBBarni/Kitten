@@ -6,9 +6,18 @@
  * contracts while providing only pure validation and a read-only ownership load.
  */
 
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises"
 import { homedir } from "node:os"
-import { isAbsolute, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 
 import { artifactName, BUILD_TARGETS } from "../scripts/build.ts"
 import { KITTEN_VERSION } from "./version.ts"
@@ -35,6 +44,12 @@ export interface StandaloneInstallationRecord {
 export interface StandaloneInstallationRegistry {
   schemaVersion: 1
   installations: Record<string, StandaloneInstallationRecord>
+}
+
+export interface StandaloneInstallationRecordInput {
+  targetPath: string
+  platform: string
+  sha256: string
 }
 
 export interface StableRelease {
@@ -92,6 +107,15 @@ export type StandaloneReadDependencies = Pick<
   | "environment"
   | "homeDirectory"
 >
+
+export interface StandaloneRecordWriterDependencies extends StandaloneReadDependencies {
+  hostPlatform(): string
+  makeDirectory(path: string): Promise<void>
+  writeTemporaryFile(path: string, bytes: Uint8Array): Promise<void>
+  rename(from: string, to: string): Promise<void>
+  removeFile(path: string): Promise<void>
+  temporaryPath(registryPath: string): string
+}
 
 /** Resolve the standalone registry without reusing first-run `state.json`. */
 export function resolveStandaloneRegistryPath(
@@ -180,6 +204,24 @@ export function validateStandaloneRegistry(
   canonicalPath: string,
   sha256: (bytes: Uint8Array) => string,
 ): PrimitiveResult<StandaloneInstallationRecord> {
+  const registry = validateStandaloneRegistryEnvelope(raw, sha256)
+  if (!registry.ok) return registry
+
+  const requestedKey = registryKeyForCanonicalPath(canonicalPath, sha256)
+  if (!requestedKey.ok) return requestedKey
+  const selected = registry.value.installations[requestedKey.value]
+  if (!selected) return refused("the running executable has no standalone installation record")
+  if (selected.canonicalPath !== canonicalPath) {
+    return refused("the standalone installation record does not match the running executable")
+  }
+  return accepted(selected)
+}
+
+/** Validate every registry record without requiring one particular target to exist. */
+export function validateStandaloneRegistryEnvelope(
+  raw: unknown,
+  sha256: (bytes: Uint8Array) => string,
+): PrimitiveResult<StandaloneInstallationRegistry> {
   if (!hasExactKeys(raw, ["schemaVersion", "installations"])) {
     return refused("the standalone registry envelope is malformed")
   }
@@ -187,10 +229,8 @@ export function validateStandaloneRegistry(
     return refused("the standalone registry schema is unsupported")
   }
 
-  const requestedKey = registryKeyForCanonicalPath(canonicalPath, sha256)
-  if (!requestedKey.ok) return requestedKey
-
   const canonicalPaths = new Set<string>()
+  const installations: Record<string, StandaloneInstallationRecord> = {}
   for (const [key, value] of Object.entries(raw.installations)) {
     const record = validateRecord(value)
     if (!record.ok) return record
@@ -202,16 +242,110 @@ export function validateStandaloneRegistry(
       return refused("the standalone registry contains a duplicate canonical path")
     }
     canonicalPaths.add(record.value.canonicalPath)
+    installations[key] = record.value
   }
+  return accepted({
+    schemaVersion: STANDALONE_REGISTRY_SCHEMA_VERSION,
+    installations,
+  })
+}
 
-  const selected = raw.installations[requestedKey.value]
-  if (!selected) return refused("the running executable has no standalone installation record")
-  const record = validateRecord(selected)
-  if (!record.ok) return record
-  if (record.value.canonicalPath !== canonicalPath) {
-    return refused("the standalone installation record does not match the running executable")
+/**
+ * Record one installer-owned executable after proving the installed bytes and the
+ * running compiled binary are the same canonical regular file.
+ */
+export async function recordStandaloneInstallation(
+  input: StandaloneInstallationRecordInput,
+  dependencies: StandaloneRecordWriterDependencies = createStandaloneRecordWriterDependencies(),
+  embeddedVersion: string = KITTEN_VERSION,
+): Promise<PrimitiveResult<StandaloneInstallationRecord>> {
+  let temporaryPath: string | undefined
+  try {
+    const canonicalPath = await dependencies.canonicalizePath(input.targetPath)
+    const executablePath = await dependencies.canonicalizePath(await dependencies.resolveExecutable())
+    if (canonicalPath !== executablePath) {
+      return refused("the installed target does not match the running record writer")
+    }
+    if (!(await dependencies.isRegularFile(canonicalPath))) {
+      return refused("the installed target is not a canonical regular file")
+    }
+    if (input.platform !== dependencies.hostPlatform()) {
+      return refused("the installed target platform does not match the running record writer")
+    }
+
+    const record = validateRecord({
+      schemaVersion: STANDALONE_REGISTRY_SCHEMA_VERSION,
+      canonicalPath,
+      platform: input.platform,
+      version: embeddedVersion,
+      sha256: input.sha256,
+    })
+    if (!record.ok) return record
+
+    const executableBytes = await dependencies.readFile(canonicalPath)
+    const actualSha256 = dependencies.sha256(executableBytes)
+    if (!LOWERCASE_SHA256.test(actualSha256) || actualSha256 !== record.value.sha256) {
+      return refused("the installed target does not match the verified SHA-256")
+    }
+
+    const registryPath = resolveStandaloneRegistryPath(
+      dependencies.environment(),
+      dependencies.homeDirectory(),
+    )
+    const existing = await readRegistryForWrite(registryPath, dependencies)
+    if (!existing.ok) return existing
+    const key = registryKeyForCanonicalPath(canonicalPath, dependencies.sha256)
+    if (!key.ok) return key
+    const registry: StandaloneInstallationRegistry = {
+      schemaVersion: STANDALONE_REGISTRY_SCHEMA_VERSION,
+      installations: {
+        ...existing.value.installations,
+        [key.value]: record.value,
+      },
+    }
+    const validated = validateStandaloneRegistryEnvelope(registry, dependencies.sha256)
+    if (!validated.ok) return validated
+
+    const registryBytes = new TextEncoder().encode(`${JSON.stringify(validated.value, null, 2)}\n`)
+    await dependencies.makeDirectory(dirname(registryPath))
+    temporaryPath = dependencies.temporaryPath(registryPath)
+    await dependencies.writeTemporaryFile(temporaryPath, registryBytes)
+    await dependencies.rename(temporaryPath, registryPath)
+    temporaryPath = undefined
+    return accepted(record.value)
+  } catch {
+    return refused("the standalone installation record could not be written safely")
+  } finally {
+    if (temporaryPath) {
+      try {
+        await dependencies.removeFile(temporaryPath)
+      } catch {
+        // Best-effort cleanup only; the canonical registry was never published.
+      }
+    }
   }
-  return record
+}
+
+/** Built-in-only production effects for the installer-owned record path. */
+export function createStandaloneRecordWriterDependencies(
+  overrides: Partial<StandaloneRecordWriterDependencies> = {},
+): StandaloneRecordWriterDependencies {
+  return {
+    sha256: defaultSha256,
+    resolveExecutable: async () => process.execPath,
+    canonicalizePath: realpath,
+    isRegularFile: async (path) => (await stat(path)).isFile(),
+    readFile,
+    environment: () => process.env,
+    homeDirectory: homedir,
+    hostPlatform: () => `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`,
+    makeDirectory: async (path) => { await mkdir(path, { recursive: true }) },
+    writeTemporaryFile: async (path, bytes) => { await writeFile(path, bytes, { flag: "wx", mode: 0o600 }) },
+    rename,
+    removeFile: async (path) => { await rm(path, { force: true }) },
+    temporaryPath: (registryPath) => `${registryPath}.${process.pid}.${randomUUID()}.tmp`,
+    ...overrides,
+  }
 }
 
 /**
@@ -263,6 +397,25 @@ export function formatUpdateOutcome(outcome: UpdateOutcome): string {
       return formatNoChangeOutcome("refused", outcome.message)
     case "failed":
       return formatNoChangeOutcome("failed", outcome.message)
+  }
+}
+
+async function readRegistryForWrite(
+  registryPath: string,
+  dependencies: StandaloneRecordWriterDependencies,
+): Promise<PrimitiveResult<StandaloneInstallationRegistry>> {
+  try {
+    const bytes = await dependencies.readFile(registryPath)
+    const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+    return validateStandaloneRegistryEnvelope(JSON.parse(source) as unknown, dependencies.sha256)
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return accepted({
+        schemaVersion: STANDALONE_REGISTRY_SCHEMA_VERSION,
+        installations: {},
+      })
+    }
+    return refused("the existing standalone installation registry is unreadable")
   }
 }
 
@@ -331,4 +484,8 @@ function hasExactKeys<const Keys extends readonly string[]>(
   const actual = Object.keys(value).sort()
   const expected = [...keys].sort()
   return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return isObject(error) && error.code === "ENOENT"
 }

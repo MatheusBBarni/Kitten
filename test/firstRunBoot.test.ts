@@ -13,9 +13,11 @@ import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, ty
 import {
   dispatchCliFlags,
   dispatchReservedChildMode,
+  dispatchStandaloneRecordMode,
   exitBlocked,
   main,
   runtimeSetup,
+  STANDALONE_RECORD_MODE_FLAG,
   wantsAskUserMcp,
   wantsContextPackMcp,
   wantsHelp,
@@ -368,6 +370,96 @@ describe("wantsSelfCheck", () => {
   it("detects the opt-in real-adapter reload probe flag independently", () => {
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check", "--reload-probe"])).toBe(true)
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check"])).toBe(false)
+  })
+})
+
+describe("private standalone record dispatch", () => {
+  it("short-circuits before MCP, self-check, repository, renderer, agent, or network work", async () => {
+    const calls = {
+      record: 0,
+      mcp: 0,
+      selfCheck: 0,
+      repository: 0,
+      renderer: 0,
+      agent: 0,
+      network: 0,
+    }
+    const exits: number[] = []
+    const handled = await dispatchStandaloneRecordMode(
+      ["kitten", STANDALONE_RECORD_MODE_FLAG, "/usr/local/bin/kitten", "linux-x64", "a".repeat(64)],
+      {
+        record: async (input) => {
+          calls.record += 1
+          return {
+            ok: true,
+            value: {
+              schemaVersion: 1,
+              canonicalPath: input.targetPath,
+              platform: input.platform,
+              version: "1.2.3",
+              sha256: input.sha256,
+            },
+          }
+        },
+        exit: (code) => exits.push(code),
+      },
+    )
+
+    if (!handled) {
+      calls.mcp += 1
+      calls.selfCheck += 1
+      calls.repository += 1
+      calls.renderer += 1
+      calls.agent += 1
+      calls.network += 1
+    }
+
+    expect(calls).toEqual({
+      record: 1,
+      mcp: 0,
+      selfCheck: 0,
+      repository: 0,
+      renderer: 0,
+      agent: 0,
+      network: 0,
+    })
+    expect(exits).toEqual([0])
+  })
+
+  it("exits nonzero on validation failure without continuing into boot", async () => {
+    const errors: string[] = []
+    const exits: number[] = []
+    expect(await dispatchStandaloneRecordMode(
+      ["kitten", STANDALONE_RECORD_MODE_FLAG, "/tmp/kitten", "linux-x64", "a".repeat(64)],
+      {
+        record: async () => ({
+          ok: false,
+          outcome: { kind: "refused", message: "target identity mismatch" },
+        }),
+        writeError: (output) => errors.push(output),
+        exit: (code) => exits.push(code),
+      },
+    )).toBe(true)
+    expect(errors).toEqual(["STANDALONE RECORD FAILED: target identity mismatch\n"])
+    expect(exits).toEqual([1])
+  })
+
+  it("rejects malformed installer arguments without invoking the writer", async () => {
+    let records = 0
+    const exits: number[] = []
+    expect(await dispatchStandaloneRecordMode(
+      ["kitten", STANDALONE_RECORD_MODE_FLAG, "/tmp/kitten", "linux-x64"],
+      {
+        record: async () => {
+          records += 1
+          throw new Error("must not run")
+        },
+        writeError: () => {},
+        exit: (code) => exits.push(code),
+      },
+    )).toBe(true)
+    expect(records).toBe(0)
+    expect(exits).toEqual([1])
   })
 })
 

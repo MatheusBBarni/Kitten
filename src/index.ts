@@ -66,6 +66,12 @@ import { createTelemetryRecorder, recordReadiness, type TelemetryRecorder } from
 import { renderBootBanner, type BootBannerDisposer, type BootBannerOptions } from "./ui/bootBanner.tsx"
 import { renderCockpit } from "./ui/main.tsx"
 import { registerSyntaxParsers } from "./ui/syntaxParsers.ts"
+import {
+  recordStandaloneInstallation,
+  type PrimitiveResult,
+  type StandaloneInstallationRecord,
+  type StandaloneInstallationRecordInput,
+} from "./update.ts"
 import { KITTEN_VERSION } from "./version.ts"
 
 export { renderCockpit }
@@ -689,6 +695,48 @@ export function wantsContextPackMcp(argv: readonly string[]): boolean {
   return argv.includes(CONTEXT_PACK_MCP_MODE_FLAG)
 }
 
+export const STANDALONE_RECORD_MODE_FLAG = "--_kitten-record-standalone-installation"
+
+export interface StandaloneRecordModeOptions {
+  readonly record?: (
+    input: StandaloneInstallationRecordInput,
+  ) => Promise<PrimitiveResult<StandaloneInstallationRecord>>
+  readonly writeError?: (output: string) => void
+  readonly exit?: (code: number) => void
+}
+
+/** Dispatch the installer's private record writer before every boot-capable path. */
+export async function dispatchStandaloneRecordMode(
+  argv: readonly string[],
+  options: StandaloneRecordModeOptions = {},
+): Promise<boolean> {
+  const flagIndex = argv.indexOf(STANDALONE_RECORD_MODE_FLAG)
+  if (flagIndex < 0) return false
+
+  const values = argv.slice(flagIndex + 1)
+  const writeError = options.writeError ?? ((output: string) => process.stderr.write(output))
+  const exit = options.exit ?? ((code: number) => process.exit(code))
+  if (values.length !== 3 || values.some((value) => value.length === 0)) {
+    writeError("STANDALONE RECORD FAILED: invalid installer handoff\n")
+    exit(1)
+    return true
+  }
+
+  const [targetPath, platform, sha256] = values as [string, string, string]
+  const result = await (options.record ?? recordStandaloneInstallation)({
+    targetPath,
+    platform,
+    sha256,
+  })
+  if (!result.ok) {
+    writeError(`STANDALONE RECORD FAILED: ${result.outcome.message}\n`)
+    exit(1)
+    return true
+  }
+  exit(0)
+  return true
+}
+
 export interface ReservedChildModeOptions {
   readonly run?: () => Promise<void>
   readonly writeError?: (output: string) => void
@@ -791,7 +839,10 @@ export function wantsReloadProbe(argv: readonly string[]): boolean {
 }
 
 if (import.meta.main) {
-  if (!await dispatchReservedChildMode(process.argv, process.env)) {
+  if (
+    !await dispatchStandaloneRecordMode(process.argv) &&
+    !await dispatchReservedChildMode(process.argv, process.env)
+  ) {
     const cliFlagHandled = dispatchCliFlags(process.argv)
     if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
       try {

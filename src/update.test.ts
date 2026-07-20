@@ -1,23 +1,26 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
 import { KITTEN_VERSION } from "./version.ts"
 import {
+  createStandaloneRecordWriterDependencies,
   formatUpdateOutcome,
   loadStandaloneInstallation,
   NPM_RECOVERY_COMMAND,
   parseManifestChecksum,
   parseStableReleaseMetadata,
   parseStableReleaseTag,
+  recordStandaloneInstallation,
   registryKeyForCanonicalPath,
   resolveHostArtifact,
   resolveStandaloneRegistryPath,
   STANDALONE_RECOVERY_COMMAND,
   type StandaloneInstallationRecord,
   type StandaloneInstallationRegistry,
+  type StandaloneRecordWriterDependencies,
   type UpdateDependencies,
   validateStandaloneRegistry,
 } from "./update.ts"
@@ -253,6 +256,123 @@ describe("read-only standalone registry boundary", () => {
   })
 })
 
+describe("installer-owned standalone registry writer", () => {
+  it("replaces one canonical-path record while preserving an unrelated installation", async () => {
+    const fixture = await recordWriterFixture()
+    const sibling = validRecord({
+      canonicalPath: "/opt/kitten/bin/kitten",
+      version: "8.8.8",
+      sha256: HASH_B,
+    })
+    const staleTarget = validRecord({
+      canonicalPath: fixture.canonicalPath,
+      version: "0.1.0",
+      sha256: HASH_A,
+    })
+    const prior = registryForRecords([staleTarget, sibling])
+    await mkdir(dirname(fixture.registryPath), { recursive: true })
+    await writeFile(fixture.registryPath, `${JSON.stringify(prior)}\n`)
+
+    const result = await recordStandaloneInstallation(fixture.input, fixture.dependencies, KITTEN_VERSION)
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        schemaVersion: 1,
+        canonicalPath: fixture.canonicalPath,
+        platform: "linux-x64",
+        version: KITTEN_VERSION,
+        sha256: fixture.input.sha256,
+      },
+    })
+    const registry = JSON.parse(await readFile(fixture.registryPath, "utf8")) as StandaloneInstallationRegistry
+    expect(Object.keys(registry.installations)).toHaveLength(2)
+    expect(registry.installations[hashText(sibling.canonicalPath)]).toEqual(sibling)
+    if (!result.ok) throw new Error("expected record publication to succeed")
+    expect(registry.installations[hashText(fixture.canonicalPath)]).toEqual(result.value)
+  })
+
+  it("rejects invalid target identity and record fields before registry mutation", async () => {
+    const fixture = await recordWriterFixture()
+    const priorBytes = Buffer.from(`${JSON.stringify(registryFor(validRecord()))}\n`)
+    await mkdir(dirname(fixture.registryPath), { recursive: true })
+    await writeFile(fixture.registryPath, priorBytes)
+
+    const otherExecutable = join(fixture.root, "bin", "other-kitten")
+    await writeFile(otherExecutable, "installed-binary")
+    const cases: Array<{
+      name: string
+      input?: typeof fixture.input
+      dependencies?: StandaloneRecordWriterDependencies
+      embeddedVersion?: string
+    }> = [
+      {
+        name: "invalid path type",
+        dependencies: createStandaloneRecordWriterDependencies({
+          ...fixture.dependencies,
+          isRegularFile: async () => false,
+        }),
+      },
+      {
+        name: "canonical mismatch",
+        dependencies: createStandaloneRecordWriterDependencies({
+          ...fixture.dependencies,
+          resolveExecutable: async () => otherExecutable,
+        }),
+      },
+      {
+        name: "unsupported platform",
+        input: { ...fixture.input, platform: "windows-x64" },
+        dependencies: createStandaloneRecordWriterDependencies({
+          ...fixture.dependencies,
+          hostPlatform: () => "windows-x64",
+        }),
+      },
+      { name: "invalid embedded version", embeddedVersion: "latest" },
+      { name: "invalid hash", input: { ...fixture.input, sha256: "A".repeat(64) } },
+    ]
+
+    for (const testCase of cases) {
+      const result = await recordStandaloneInstallation(
+        testCase.input ?? fixture.input,
+        testCase.dependencies ?? fixture.dependencies,
+        testCase.embeddedVersion ?? KITTEN_VERSION,
+      )
+      expect(result.ok, testCase.name).toBe(false)
+      expect(await readFile(fixture.registryPath), testCase.name).toEqual(priorBytes)
+    }
+  })
+
+  it("preserves exact prior bytes and removes temporary state when atomic write or publish fails", async () => {
+    const fixture = await recordWriterFixture()
+    const priorBytes = Buffer.from(`${JSON.stringify(registryFor(validRecord()), null, 4)}\n`)
+    await mkdir(dirname(fixture.registryPath), { recursive: true })
+    await writeFile(fixture.registryPath, priorBytes)
+    for (const failure of ["write", "rename"] as const) {
+      const dependencies = createStandaloneRecordWriterDependencies({
+        ...fixture.dependencies,
+        ...(failure === "write"
+          ? { writeTemporaryFile: async () => { throw new Error("simulated atomic write failure") } }
+          : { rename: async () => { throw new Error("simulated atomic publish failure") } }),
+      })
+
+      expect((await recordStandaloneInstallation(fixture.input, dependencies)).ok, failure).toBe(false)
+      expect(await readFile(fixture.registryPath), failure).toEqual(priorBytes)
+      expect((await readdir(dirname(fixture.registryPath))).filter((name) => name.includes(".tmp")), failure).toEqual([])
+    }
+  })
+
+  it("refuses malformed prior registry bytes without publishing a replacement", async () => {
+    const fixture = await recordWriterFixture()
+    const priorBytes = Buffer.from("{ malformed registry")
+    await mkdir(dirname(fixture.registryPath), { recursive: true })
+    await writeFile(fixture.registryPath, priorBytes)
+
+    expect((await recordStandaloneInstallation(fixture.input, fixture.dependencies)).ok).toBe(false)
+    expect(await readFile(fixture.registryPath)).toEqual(priorBytes)
+  })
+})
+
 function validRecord(overrides: Partial<StandaloneInstallationRecord> = {}): StandaloneInstallationRecord {
   return {
     schemaVersion: 1,
@@ -269,6 +389,13 @@ function registryFor(
   key: string = hashText(record.canonicalPath),
 ): StandaloneInstallationRegistry {
   return { schemaVersion: 1, installations: { [key]: record } }
+}
+
+function registryForRecords(records: readonly StandaloneInstallationRecord[]): StandaloneInstallationRegistry {
+  return {
+    schemaVersion: 1,
+    installations: Object.fromEntries(records.map((record) => [hashText(record.canonicalPath), record])),
+  }
 }
 
 function hashBytes(bytes: Uint8Array): string {
@@ -320,4 +447,36 @@ async function temporaryDirectory(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "kitten-update-"))
   temporaryDirectories.push(path)
   return path
+}
+
+async function recordWriterFixture(): Promise<{
+  root: string
+  canonicalPath: string
+  registryPath: string
+  input: { targetPath: string; platform: string; sha256: string }
+  dependencies: StandaloneRecordWriterDependencies
+}> {
+  const root = await temporaryDirectory()
+  const targetPath = join(root, "bin", "kitten")
+  const stateHome = join(root, "state")
+  await mkdir(dirname(targetPath), { recursive: true })
+  await writeFile(targetPath, "installed-binary")
+  const canonicalPath = await realpath(targetPath)
+  const dependencies = createStandaloneRecordWriterDependencies({
+    resolveExecutable: async () => targetPath,
+    environment: () => ({ XDG_STATE_HOME: stateHome }),
+    homeDirectory: () => root,
+    hostPlatform: () => "linux-x64",
+  })
+  return {
+    root,
+    canonicalPath,
+    registryPath: resolveStandaloneRegistryPath({ XDG_STATE_HOME: stateHome }, root),
+    input: {
+      targetPath,
+      platform: "linux-x64",
+      sha256: hashText("installed-binary"),
+    },
+    dependencies,
+  }
 }
