@@ -27,6 +27,7 @@ import {
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectSessionBranch,
+  selectSessionHeadroom,
   selectStatuslinePreference,
   selectStatuslineOverlay,
 } from "../store/selectors.ts"
@@ -76,6 +77,7 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
   const model = useAppSelector(useMemo(() => selectAgentModel(sessionId), [sessionId]))
   const effort = useAppSelector(useMemo(() => selectAgentEffort(sessionId), [sessionId]))
   const configOptions = useAppSelector(useMemo(() => selectAgentConfigOptions(sessionId), [sessionId]))
+  const contextHeadroom = useAppSelector(useMemo(() => selectSessionHeadroom(sessionId), [sessionId]))
   const statuslinePreference = useAppSelector(selectStatuslinePreference)
 
   const context = useMemo<StatuslineContext>(() => ({
@@ -85,7 +87,8 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
     model: displayOption(configOptions, MODEL_CATEGORY, model),
     effort: displayOption(configOptions, EFFORT_CATEGORY, effort),
     helpText: KEYMAP_HINT,
-  }), [branch, configOptions, effort, model, runtime])
+    contextHeadroom,
+  }), [branch, configOptions, contextHeadroom, effort, model, runtime])
 
   const fail = useCallback((requestText: string, reason: string): void => {
     setBusy(false)

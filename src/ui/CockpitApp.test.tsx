@@ -1308,6 +1308,77 @@ describe("CockpitApp keymap", () => {
 })
 
 describe("/statusline cockpit integration", () => {
+  it("keeps captured preview and focused saved-footer CONTEXT equivalent for matching inputs and width", async () => {
+    const layout: StatuslineLayout = { separator: " · ", line: ["CONTEXT"] }
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout })
+    controller.store.openStatusline({
+      sessionId: "claude-code",
+      phase: "preview",
+      requestText: "context only",
+      layout,
+      preset: null,
+    })
+    const setup = await renderCockpitApp(controller)
+    const frame = await setup.waitForFrame((candidate) => (candidate.match(/ctx 38%/g)?.length ?? 0) === 2)
+
+    const rows = lines(frame)
+    const previewOutput = rows.slice(0, -1).find((row) => row.includes("ctx 38%"))?.match(/ctx \d+%/)?.[0]
+    const footerOutput = rows.at(-1)?.match(/ctx \d+%/)?.[0]
+    expect(previewOutput).toBe("ctx 38%")
+    expect(previewOutput).toBe(footerOutput)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps preview target-owned while the saved footer follows new global focus", async () => {
+    const layout: StatuslineLayout = { separator: " · ", line: ["CONTEXT"] }
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.applyEvent("codex", { kind: "usage", used: 50_000, size: 200_000 })
+    controller.store.backgroundConversation("codex")
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout })
+    controller.store.openStatusline({
+      sessionId: "claude-code",
+      phase: "preview",
+      requestText: "context only",
+      layout,
+      preset: null,
+    })
+    const setup = await renderCockpitApp(controller)
+    await setup.waitForFrame((frame) => (frame.match(/ctx 38%/g)?.length ?? 0) === 2)
+
+    await actAsync(() => controller.store.reopenConversation("codex"))
+    const refocused = await setup.waitForFrame((frame) => (lines(frame).at(-1) ?? "").includes("ctx 75%"))
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(refocused.match(/ctx 38%/g)).toHaveLength(1)
+    expect(lines(refocused).at(-1)).toContain("ctx 75%")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("drops trailing CONTEXT identically from preview and saved footer at narrow width", async () => {
+    const layout: StatuslineLayout = { separator: " · ", line: ["FOLDER", "CONTEXT"] }
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: "/workspace/parity" })),
+    })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout })
+    controller.store.openStatusline({
+      sessionId: "claude-code",
+      phase: "preview",
+      requestText: "folder and context",
+      layout,
+      preset: null,
+    })
+    const setup = await renderCockpitApp(controller, 23, 24)
+    const frame = await setup.waitForFrame((candidate) => (candidate.match(/parity/g)?.length ?? 0) >= 2)
+
+    expect(frame).not.toContain("ctx ")
+    expect(lines(frame).at(-1)).toContain("parity")
+    expect(frame.match(/parity/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+    await destroyMounted(setup.renderer)
+  })
+
   it("runs the exact cockpit command through disclosure, one transcript proposal, and one confirmation", async () => {
     const layout: StatuslineLayout = { separator: " · ", line: ["FOLDER", "MODEL"] }
     const proposal = `\`\`\`json\n${JSON.stringify({ statusline: layout })}\n\`\`\``

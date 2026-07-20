@@ -8,7 +8,7 @@ import { describe, expect, it } from "bun:test"
 import type { TextareaRenderable } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 
-import { createFakeController, type FakeController } from "../../test/fakeController.ts"
+import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import type { StatuslineFlow } from "../app/statuslineFlow.ts"
 import {
@@ -114,6 +114,86 @@ describe("StatuslineOverlay disclosure and request", () => {
 })
 
 describe("StatuslineOverlay review and recovery", () => {
+  it("previews captured-session CONTEXT and persists only its literal identifier", async () => {
+    const layout: StatuslineLayout = { separator: " · ", line: ["CONTEXT"] }
+    const controller = createFakeController()
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStatusline({
+      controller,
+      overlay: {
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "context only",
+        layout,
+        preset: null,
+      },
+    })
+
+    const frame = setup.captureCharFrame()
+    const projectedConfig = statuslineConfigChange(layout, true)
+    expect(frame).toContain("ctx 38%")
+    expect(projectedConfig).toContain('"line":["CONTEXT"]')
+    expect(projectedConfig).not.toContain("38%")
+    expect(projectedConfig).not.toContain("124000")
+    expect(projectedConfig).not.toContain("200000")
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((candidate) => !candidate.includes(STATUSLINE_TITLE))
+    expect(setup.controller.calls.confirmStatusline).toEqual([layout])
+    expect(setup.controller.store.getState().preferences.statusline.layout).toEqual(layout)
+    expect(JSON.stringify(setup.controller.store.getState().preferences.statusline)).not.toContain("38%")
+    await destroyMounted(setup.renderer)
+  })
+
+  it.each([
+    ["unavailable", null],
+    ["selector-invalid", { used: -10_000, size: 200_000 }],
+  ] as const)("canonically omits %s captured-session CONTEXT", async (_case, usage) => {
+    const controller = createFakeController()
+    if (usage !== null) controller.store.applyEvent("claude-code", { kind: "usage", ...usage })
+    const setup = await renderStatusline({
+      controller,
+      overlay: {
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "provider context folder",
+        layout: { separator: " · ", line: ["PROVIDER", "CONTEXT", "FOLDER"] },
+        preset: null,
+      },
+    })
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`Claude · ${process.cwd().split("/").at(-1)}`)
+    expect(frame).not.toContain("ctx ")
+    expect(frame).not.toContain(" ·  · ")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("retains captured-session CONTEXT when global focus changes", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.applyEvent("codex", { kind: "usage", used: 50_000, size: 200_000 })
+    controller.store.backgroundConversation("codex")
+    const setup = await renderStatusline({
+      controller,
+      overlay: {
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "context only",
+        layout: { separator: " · ", line: ["CONTEXT"] },
+        preset: null,
+      },
+    })
+
+    expect(setup.captureCharFrame()).toContain("ctx 38%")
+    await actAsync(() => controller.store.reopenConversation("codex"))
+    const refocused = await setup.waitForFrame((frame) => frame.includes("ctx 38%"))
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(refocused).not.toContain("ctx 75%")
+    await destroyMounted(setup.renderer)
+  })
+
   it("shows the rendered line and exact config change, then confirms once", async () => {
     const controller = createFakeController()
     controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
@@ -335,6 +415,30 @@ describe("StatuslineOverlay keyboard and width behavior", () => {
     await actAsync(() => setup.resize(30, HEIGHT))
     const narrow = await setup.waitForFrame((frame) => frame.includes("(no fields fit)"))
     expect(narrow.split("\n").filter((line) => line.includes("(no fields fit)"))).toHaveLength(1)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("drops trailing captured-session CONTEXT at narrow width without malformed separators", async () => {
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: "/workspace/parity" })),
+    })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStatusline({
+      controller,
+      overlay: {
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "folder and context",
+        layout: { separator: " · ", line: ["FOLDER", "CONTEXT"] },
+        preset: null,
+      },
+    })
+    expect(setup.captureCharFrame()).toContain("parity · ctx 38%")
+
+    await actAsync(() => setup.resize(23, HEIGHT))
+    const narrow = await setup.waitForFrame((frame) => frame.includes("parity"))
+    expect(narrow).not.toContain("ctx ")
+    expect(narrow).not.toContain(" ·  · ")
     await destroyMounted(setup.renderer)
   })
 })
