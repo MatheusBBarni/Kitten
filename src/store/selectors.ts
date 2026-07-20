@@ -725,8 +725,18 @@ export const selectSessionHeadroom =
   (sessionId: SessionId): Selector<number | null> =>
   (state) => {
     const usage = state.sessions[sessionId]?.usage
-    if (!usage || usage.size <= 0) return null
-    return Math.round(((usage.size - usage.used) / usage.size) * 100)
+    if (
+      !usage ||
+      !Number.isFinite(usage.used) ||
+      !Number.isFinite(usage.size) ||
+      usage.size <= 0
+    ) {
+      return null
+    }
+    const headroom = Math.round(((usage.size - usage.used) / usage.size) * 100)
+    return Number.isFinite(headroom) && headroom >= 0 && headroom <= 100
+      ? headroom
+      : null
   }
 
 /** Exact immutable usage object that invalidates a displayed Context Pack fit assessment. */

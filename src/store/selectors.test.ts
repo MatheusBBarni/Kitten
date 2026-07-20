@@ -711,12 +711,16 @@ describe("per-agent session selectors", () => {
     expect(selectSessionBranch("claude-code")(withBranch)).toBe("feature/status-bar")
   })
 
-  it("derives rounded remaining-context headroom from reported usage", () => {
+  it("preserves valid boundary and rounded remaining-context headroom", () => {
     const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "usage", used: 0, size: 200_000 })
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBe(100)
+
     store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBe(38)
+
     store.applyEvent("codex", { kind: "usage", used: 200_000, size: 200_000 })
 
-    expect(selectSessionHeadroom("claude-code")(store.getState())).toBe(38)
     expect(selectSessionHeadroom("codex")(store.getState())).toBe(0)
   })
 
@@ -731,8 +735,45 @@ describe("per-agent session selectors", () => {
     expect(selectSessionHeadroom("codex")(store.getState())).toBeNull()
   })
 
+  it("returns null when either usage counter is not finite", () => {
+    const invalidCounters = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]
+
+    for (const used of invalidCounters) {
+      const store = createAppStore()
+      store.applyEvent("claude-code", { kind: "usage", used, size: 200_000 })
+      expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+    }
+
+    for (const size of invalidCounters) {
+      const store = createAppStore()
+      store.applyEvent("claude-code", { kind: "usage", used: 124_000, size })
+      expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+    }
+  })
+
+  it("returns null when rounded headroom falls outside zero through one hundred", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", { kind: "usage", used: 202, size: 200 })
+    store.applyEvent("codex", { kind: "usage", used: -2, size: 200 })
+
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+    expect(selectSessionHeadroom("codex")(store.getState())).toBeNull()
+  })
+
+  it("returns null when finite counters derive non-finite rounded headroom", () => {
+    const store = createAppStore()
+    store.applyEvent("claude-code", {
+      kind: "usage",
+      used: -Number.MAX_VALUE,
+      size: Number.MAX_VALUE,
+    })
+
+    expect(selectSessionHeadroom("claude-code")(store.getState())).toBeNull()
+  })
+
   it("preserves another agent's headroom value and session identity across a usage update", () => {
     const store = createAppStore()
+    store.applyEvent("codex", { kind: "usage", used: 50_000, size: 200_000 })
     const before = store.getState()
     const codexHeadroom = selectSessionHeadroom("codex")
     const beforeHeadroom = codexHeadroom(before)
@@ -740,6 +781,8 @@ describe("per-agent session selectors", () => {
     store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
 
     const after = store.getState()
+    expect(selectSessionHeadroom("claude-code")(after)).toBe(38)
+    expect(beforeHeadroom).toBe(75)
     expect(codexHeadroom(after)).toBe(beforeHeadroom)
     expect(selectSessionState("codex")(after)).toBe(before.sessions.codex!)
   })
