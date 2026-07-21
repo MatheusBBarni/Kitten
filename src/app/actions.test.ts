@@ -106,6 +106,22 @@ describe("ControllerActions steering boundary", () => {
   })
 })
 
+describe("ControllerActions default fail-closed seams", () => {
+  it("refuses an unmanaged worktree when the controller does not install a cleanup seam", async () => {
+    const store = createAppStore()
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+    })
+
+    await expect(actions.cleanupManagedWorktree("child")).resolves.toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+  })
+})
+
 describe("ControllerActions Hard Stop continuation boundary", () => {
   it("queues exact blocks, acknowledges exact recovery, and gives local recovery Escape precedence", async () => {
     const store = createAppStore({ selectedVisibleId: "alpha" })

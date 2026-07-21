@@ -83,4 +83,19 @@ describe("spawnAgentTransport", () => {
 
     expect(output).toBe("adapter warning\nadapter failure\n")
   })
+
+  it("preserves an unterminated diagnostic when the stderr stream closes", async () => {
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("adapter warning without a final newline")
+        controller.close()
+      },
+    })
+    const reader = source.pipeThrough(createAgentStderrFilter()).getReader()
+    const { done, value } = await reader.read()
+
+    expect(done).toBe(false)
+    expect(value).toBe("adapter warning without a final newline")
+    expect((await reader.read()).done).toBe(true)
+  })
 })
