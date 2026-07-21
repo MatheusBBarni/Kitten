@@ -44,6 +44,15 @@ describe("spawnAgentTransport", () => {
     await transport.dispose()
   })
 
+  it("forwards a child stderr diagnostic through the line filter", async () => {
+    const transport = spawnAgentTransport(config("sh", ["-c", "printf 'adapter diagnostic\\n' >&2"]))
+    const code = await new Promise<number | null>((resolve) => transport.onClose((info) => resolve(info.code)))
+
+    expect(code).toBe(0)
+    await Bun.sleep(0)
+    await transport.dispose()
+  })
+
   it("removes only Claude's known bypass warning, even when its line is chunked", async () => {
     const source = new ReadableStream<string>({
       start(controller) {
