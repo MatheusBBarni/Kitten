@@ -201,6 +201,20 @@ export function parseStableReleaseMetadata(metadata: unknown): PrimitiveResult<S
   return parseStableReleaseTag(metadata.tag_name)
 }
 
+/** Compare strict stable versions without losing precision for large numeric components. */
+export function compareStableVersions(left: string, right: string): -1 | 0 | 1 | null {
+  if (!STABLE_VERSION.test(left) || !STABLE_VERSION.test(right)) return null
+  const leftParts = left.split(".")
+  const rightParts = right.split(".")
+  for (let index = 0; index < leftParts.length; index += 1) {
+    const leftPart = leftParts[index]!
+    const rightPart = rightParts[index]!
+    if (leftPart.length !== rightPart.length) return leftPart.length < rightPart.length ? -1 : 1
+    if (leftPart !== rightPart) return leftPart < rightPart ? -1 : 1
+  }
+  return 0
+}
+
 /**
  * Parse the release manifest strictly and return the selected artifact checksum.
  * Every row must use the build contract's exact `<hash>  <artifact>` shape, every
@@ -511,8 +525,18 @@ export async function runStandaloneUpdate(
   }
   const release = parseStableReleaseMetadata(releaseMetadata)
   if (!release.ok) return release.outcome
-  if (release.value.version === embeddedVersion) {
+  const releaseOrder = compareStableVersions(release.value.version, embeddedVersion)
+  if (releaseOrder === null) {
+    return { kind: "refused", message: "the installed standalone version is invalid" }
+  }
+  if (releaseOrder === 0) {
     return { kind: "already-current", channel: "standalone", version: embeddedVersion }
+  }
+  if (releaseOrder < 0) {
+    return {
+      kind: "refused",
+      message: "the latest standalone release would downgrade the installed version",
+    }
   }
 
   const artifactUrl = releaseAssetUrl(release.value.tag, ownership.value.host.artifact)

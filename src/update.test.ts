@@ -8,6 +8,7 @@ import { KITTEN_VERSION } from "./version.ts"
 import {
   createStandaloneRecordWriterDependencies,
   createStandaloneUpdateDependencies,
+  compareStableVersions,
   formatUpdateOutcome,
   LATEST_RELEASE_URL,
   loadStandaloneInstallation,
@@ -131,6 +132,14 @@ describe("release primitives", () => {
     expect(parseStableReleaseMetadata({ tag_name: "kitten-v1.2.3", draft: false, prerelease: true }).ok).toBe(false)
     expect(parseStableReleaseMetadata({ tag_name: "kitten-v1.2.3" }).ok).toBe(false)
     expect(parseStableReleaseMetadata([]).ok).toBe(false)
+  })
+
+  it("compares strict stable versions without numeric precision loss", () => {
+    expect(compareStableVersions("1.2.3", "1.2.3")).toBe(0)
+    expect(compareStableVersions("1.2.3", "1.2.4")).toBe(-1)
+    expect(compareStableVersions("1.10.0", "1.2.999")).toBe(1)
+    expect(compareStableVersions("1.2.3", "1.2.3-beta")).toBeNull()
+    expect(compareStableVersions("1.9007199254740993.0", "1.9007199254740992.0")).toBe(1)
   })
 
   it("selects only the four shipped host artifacts", () => {
@@ -410,6 +419,30 @@ describe("fail-closed standalone update transaction", () => {
       channel: "standalone",
       version: KITTEN_VERSION,
     })
+    expect(fixture.calls.fetchJson).toEqual([LATEST_RELEASE_URL])
+    expect(fixture.calls.fetchBytes).toEqual([])
+    expect(fixtureMutationCount(fixture)).toBe(0)
+    expect(await readFile(fixture.targetPath)).toEqual(beforeTarget)
+    expect(await readFile(fixture.registryPath)).toEqual(beforeRegistry)
+    await expectNoTransactionArtifacts(fixture)
+  })
+
+  it("refuses an older latest release before downloading or mutating the standalone target", async () => {
+    const fixture = await standaloneUpdateFixture()
+    const dependencies = createStandaloneUpdateDependencies({
+      ...fixture.dependencies,
+      fetchJson: async (url) => {
+        fixture.calls.fetchJson.push(url)
+        return { draft: false, prerelease: false, tag_name: "kitten-v0.0.0" }
+      },
+    })
+    const beforeTarget = await readFile(fixture.targetPath)
+    const beforeRegistry = await readFile(fixture.registryPath)
+
+    const outcome = await runStandaloneUpdate(dependencies)
+
+    expect(outcome).toEqual(expect.objectContaining({ kind: "refused" }))
+    expect(outcome.kind === "refused" ? outcome.message : "").toContain("would downgrade")
     expect(fixture.calls.fetchJson).toEqual([LATEST_RELEASE_URL])
     expect(fixture.calls.fetchBytes).toEqual([])
     expect(fixtureMutationCount(fixture)).toBe(0)
