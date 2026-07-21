@@ -14,7 +14,6 @@ import type { StatuslineFlow } from "../app/statuslineFlow.ts"
 import {
   STATUSLINE_RECOVERY_PRESETS,
   renderStatusline,
-  statuslineText,
   type StatuslineContext,
   type StatuslineLayout,
 } from "../core/statusline.ts"
@@ -34,6 +33,7 @@ import {
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, matchStatuslineCommand, STATUSLINE_HINT } from "./keymap.ts"
 import { statuslineFooterBudget } from "./StatusStrip.tsx"
+import { StatuslineSegments } from "./statuslineSegments.tsx"
 import { usePalette } from "./theme.ts"
 
 export const STATUSLINE_TITLE = "Personal statusline"
@@ -368,12 +368,16 @@ function Preview({
   busy: boolean
 }): ReactNode {
   const palette = usePalette()
-  const preview = statuslineText(renderStatusline(layout, context, previewBudget))
+  const segments = renderStatusline(layout, context, previewBudget)
   return (
     <>
       {preset ? <text fg={palette.accent}>{`${preset} recovery layout`}</text> : null}
       <text fg={palette.muted}>{STATUSLINE_PREVIEW_LABEL}</text>
-      <text style={{ flexShrink: 0, overflow: "hidden" }} wrapMode="none" fg={palette.text}>{preview || "(no fields fit)"}</text>
+      <text style={{ flexShrink: 0, overflow: "hidden" }} wrapMode="none" fg={palette.text}>
+        {segments.length > 0
+          ? <StatuslineSegments segments={segments} palette={palette} />
+          : "(no fields fit)"}
+      </text>
       <text style={{ marginTop: 1 }} fg={palette.muted}>{STATUSLINE_CONFIG_LABEL}</text>
       <text fg={palette.text}>{statuslineConfigChange(layout, llmDisclosureAcknowledged)}</text>
       <Choice label={busy ? "Saving…" : STATUSLINE_SAVED_LABEL} selected={selected === 0} />

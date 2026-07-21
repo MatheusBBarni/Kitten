@@ -5,7 +5,8 @@
 
 import { describe, expect, it } from "bun:test"
 
-import type { TextareaRenderable } from "@opentui/core"
+import { RGBA, type TextareaRenderable } from "@opentui/core"
+import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
@@ -22,6 +23,7 @@ import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { KEYMAP_HINT } from "./keymap.ts"
 import { statuslineFooterBudget } from "./StatusStrip.tsx"
+import { DARK_PALETTE } from "./theme.ts"
 import {
   STATUSLINE_CONFIG_LABEL,
   STATUSLINE_DISCLOSURE,
@@ -37,6 +39,18 @@ import {
 const WIDTH = 80
 const HEIGHT = 24
 const PROPOSAL: StatuslineLayout = { separator: " | ", line: ["FOLDER", "BRANCH", "MODEL"] }
+
+function foregroundOf(setup: TestRendererSetup, text: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text === text)
+    ?.fg.toString()
+}
+
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
+}
 
 interface RenderOptions {
   overlay?: StatuslineOverlayState
@@ -158,7 +172,7 @@ describe("StatuslineOverlay review and recovery", () => {
         sessionId: "claude-code",
         phase: "preview",
         requestText: "provider context folder",
-        layout: { separator: " · ", line: ["PROVIDER", "CONTEXT", "FOLDER"] },
+        layout: { separator: " · ", line: ["PROVIDER", { kind: "CONTEXT", color: "#123456" }, "FOLDER"] },
         preset: null,
       },
     })
@@ -221,6 +235,33 @@ describe("StatuslineOverlay review and recovery", () => {
     await setup.waitForFrame((candidate) => !candidate.includes(STATUSLINE_TITLE))
     expect(setup.controller.calls.confirmStatusline).toEqual([PROPOSAL])
     expect(setup.controller.store.getState().preferences.statusline.layout).toEqual(PROPOSAL)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("matches footer field and separator colors while showing the exact canonical config change", async () => {
+    const layout: StatuslineLayout = {
+      separator: " | ",
+      line: [{ kind: "FOLDER", color: "#123456" }, "PROVIDER"],
+    }
+    const setup = await renderStatusline({
+      overlay: {
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "color the folder",
+        layout,
+        preset: null,
+      },
+    })
+    const folder = process.cwd().split("/").at(-1)!
+
+    expect(setup.captureCharFrame()).toContain(`${folder} | Claude`)
+    expect(foregroundOf(setup, folder)).toBe(paletteColor("#123456"))
+    expect(foregroundOf(setup, " | ")).toBe(paletteColor(DARK_PALETTE.muted))
+    expect(foregroundOf(setup, "Claude")).toBe(paletteColor(DARK_PALETTE.text))
+    expect(statuslineConfigChange(layout, true)).toBe(
+      '{"statusline":{"llmDisclosureAcknowledged":true,"separator":" | ","line":[{"kind":"FOLDER","color":"#123456"},"PROVIDER"]}}',
+    )
+
     await destroyMounted(setup.renderer)
   })
 
@@ -415,6 +456,34 @@ describe("StatuslineOverlay keyboard and width behavior", () => {
     await actAsync(() => setup.resize(30, HEIGHT))
     const narrow = await setup.waitForFrame((frame) => frame.includes("(no fields fit)"))
     expect(narrow.split("\n").filter((line) => line.includes("(no fields fit)"))).toHaveLength(1)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a colored preview on one line at both 80 and 64 columns", async () => {
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: "/workspace/parity" })),
+    })
+    const setup = await renderStatusline({
+      controller,
+      overlay: {
+        sessionId: "claude-code",
+        phase: "preview",
+        requestText: "colored parity",
+        layout: { separator: " · ", line: [{ kind: "FOLDER", color: "#123456" }, "PROVIDER"] },
+        preset: null,
+      },
+    })
+
+    const wide = setup.captureCharFrame()
+    expect(wide.split("\n").filter((line) => line.includes("parity · Claude"))).toHaveLength(1)
+    expect(foregroundOf(setup, "parity")).toBe(paletteColor("#123456"))
+
+    await actAsync(() => setup.resize(64, HEIGHT))
+    const constrained = await setup.waitForFrame((frame) => frame.includes("parity · Claude"))
+    expect(constrained.split("\n").filter((line) => line.includes("parity · Claude"))).toHaveLength(1)
+    expect(constrained).not.toContain("਀")
+    expect(foregroundOf(setup, "parity")).toBe(paletteColor("#123456"))
+
     await destroyMounted(setup.renderer)
   })
 
