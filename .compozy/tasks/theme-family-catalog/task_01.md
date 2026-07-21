@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Create the protocol-free theme catalog
 type: refactor
 complexity: medium

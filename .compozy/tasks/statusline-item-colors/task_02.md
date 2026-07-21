@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Persist Canonical Statusline Colors Safely
 type: refactor
 complexity: high
@@ -32,10 +32,10 @@ failed writes retain the existing fail-closed and no-state-change behavior.
 
 ## Subtasks
 
-- [ ] 2.1 Extend strict statusline preference loading and resolved configuration for canonical colored layouts.
-- [ ] 2.2 Preserve atomic, unrelated-setting-safe persistence for colored statusline deltas.
-- [ ] 2.3 Carry canonical layouts through confirmation, boot seeding, and external reload without changing write ordering.
-- [ ] 2.4 Cover successful persistence, invalid configuration, failed writes, and watcher reload behavior with colored layouts.
+- [x] 2.1 Extend strict statusline preference loading and resolved configuration for canonical colored layouts.
+- [x] 2.2 Preserve atomic, unrelated-setting-safe persistence for colored statusline deltas.
+- [x] 2.3 Carry canonical layouts through confirmation, boot seeding, and external reload without changing write ordering.
+- [x] 2.4 Cover successful persistence, invalid configuration, failed writes, and watcher reload behavior with colored layouts.
 
 ## Implementation Details
 
@@ -73,13 +73,13 @@ layouts must originate from the pure core normalizer.
 ## Tests
 
 - Unit tests:
-  - [ ] Valid named and hex colors load as canonical values and round-trip without altering unrelated preferences.
-  - [ ] Invalid color syntax or extra item keys cause the existing hard configuration failure path.
-  - [ ] Atomic writes, malformed-file handling, and symlink protections continue to hold for colored layouts.
+  - [x] Valid named and hex colors load as canonical values and round-trip without altering unrelated preferences.
+  - [x] Invalid color syntax or extra item keys cause the existing hard configuration failure path.
+  - [x] Atomic writes, malformed-file handling, and symlink protections continue to hold for colored layouts.
 - Integration tests:
-  - [ ] Explicit confirmation persists before applying the reviewed canonical colored layout.
-  - [ ] Failed persistence and cancellation leave the active layout untouched.
-  - [ ] Fresh boot and an external config watcher reload expose the canonical color without a write-back loop.
+  - [x] Explicit confirmation persists before applying the reviewed canonical colored layout.
+  - [x] Failed persistence and cancellation leave the active layout untouched.
+  - [x] Fresh boot and an external config watcher reload expose the canonical color without a write-back loop.
 - Test coverage target: >=80%
 - All tests must pass
 

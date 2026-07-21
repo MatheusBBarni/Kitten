@@ -46,6 +46,7 @@ import {
   canonicalThemePresetId,
   type ThemePresetAlias,
 } from "../core/themeCatalog.ts"
+import { HARD_STOP_CONTINUATION_ADAPTER_IMPLEMENTATIONS } from "../agent/hardStopContinuation.ts"
 import { NATIVE_STEERING_ADAPTER_IMPLEMENTATIONS } from "../agent/nativeSteering.ts"
 import {
   normalizeStatuslineLayout,
@@ -53,6 +54,12 @@ import {
   type StatuslinePreference,
 } from "../core/statusline.ts"
 import { classifyClarificationCapability } from "./clarificationCapability.ts"
+import {
+  CERTIFIED_HARD_STOP_CONTINUATION_RECIPES,
+  classifyHardStopContinuationCapability,
+  type CertifiedHardStopContinuationRecipe,
+  type HardStopContinuationAdapterImplementation,
+} from "./hardStopContinuationCapability.ts"
 import {
   CERTIFIED_NATIVE_STEERING_RECIPES,
   classifySteeringCapability,
@@ -540,14 +547,29 @@ export async function loadAppConfig(options: LoadAppConfigOptions = {}): Promise
   return parseAppConfig(source, path)
 }
 
+/** Test-only evidence injection for exact Hard Stop continuation classification. */
+export interface FindAgentConfigOptions {
+  readonly certifiedHardStopContinuationRecipes?: readonly CertifiedHardStopContinuationRecipe[]
+  readonly hardStopContinuationImplementations?: readonly HardStopContinuationAdapterImplementation[]
+}
+
 /** The spawn recipe for one provider, paired with its id. `undefined` when omitted. */
-export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAgentConfig | undefined {
+export function findAgentConfig(
+  config: AppConfig,
+  id: ProviderKind,
+  options: FindAgentConfigOptions = {},
+): ResolvedAgentConfig | undefined {
   const recipe = config.providers[id]
   if (!recipe) return undefined
   const resolved = { id, ...recipe }
   return {
     ...resolved,
     clarificationCapability: classifyClarificationCapability(resolved),
+    hardStopContinuationCapability: classifyHardStopContinuationCapability(
+      resolved,
+      options.certifiedHardStopContinuationRecipes ?? CERTIFIED_HARD_STOP_CONTINUATION_RECIPES,
+      options.hardStopContinuationImplementations ?? HARD_STOP_CONTINUATION_ADAPTER_IMPLEMENTATIONS,
+    ),
     steeringCapability: classifySteeringCapability(
       resolved,
       CERTIFIED_NATIVE_STEERING_RECIPES,

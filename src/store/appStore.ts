@@ -330,12 +330,27 @@ export interface AppState {
   restorationBundle: HandoffBundle | null
 }
 
-export interface HarnessDeliveryCheckpointProjection {
+interface HarnessDeliveryCheckpointProjectionBase {
   readonly version: HarnessPromptVersion
   readonly generation: number
-  readonly state: "not_required" | "pending" | "in_flight" | "delivered" | "failed"
-  readonly failureCategory?: "unsupported_profile" | "harness_render_failed" | "dispatch_indeterminate"
 }
+
+export type HarnessDeliveryCheckpointProjection =
+  | (HarnessDeliveryCheckpointProjectionBase & {
+      readonly state:
+        | "not_required"
+        | "pending"
+        | "in_flight"
+        | "delivered"
+        | "settled_interrupted"
+    })
+  | (HarnessDeliveryCheckpointProjectionBase & {
+      readonly state: "failed"
+      readonly failureCategory:
+        | "unsupported_profile"
+        | "harness_render_failed"
+        | "dispatch_indeterminate"
+    })
 
 /** Inputs required to atomically register one normal session as a delegated child. */
 export interface DelegatedSessionRegistration {
@@ -1783,12 +1798,26 @@ class AppStoreImpl implements AppStore {
     if (!this.state.sessions[sessionId]) return
     const current = this.state.harnessDeliveries[sessionId]
     const currentNotice = this.state.harnessDeliveryNotices[sessionId]
-    const nextNotice = checkpoint.state === "failed" ? HARNESS_DELIVERY_FAILED_NOTICE : undefined
+    const projected: HarnessDeliveryCheckpointProjection = checkpoint.state === "failed"
+      ? {
+          version: checkpoint.version,
+          generation: checkpoint.generation,
+          state: "failed",
+          failureCategory: checkpoint.failureCategory,
+        }
+      : {
+          version: checkpoint.version,
+          generation: checkpoint.generation,
+          state: checkpoint.state,
+        }
+    const currentFailureCategory = current?.state === "failed" ? current.failureCategory : undefined
+    const nextFailureCategory = projected.state === "failed" ? projected.failureCategory : undefined
+    const nextNotice = projected.state === "failed" ? HARNESS_DELIVERY_FAILED_NOTICE : undefined
     if (
-      current?.version === checkpoint.version &&
-      current.generation === checkpoint.generation &&
-      current.state === checkpoint.state &&
-      current.failureCategory === checkpoint.failureCategory &&
+      current?.version === projected.version &&
+      current.generation === projected.generation &&
+      current.state === projected.state &&
+      currentFailureCategory === nextFailureCategory &&
       currentNotice === nextNotice
     ) return
     const harnessDeliveryNotices = { ...this.state.harnessDeliveryNotices }
@@ -1798,7 +1827,7 @@ class AppStoreImpl implements AppStore {
       ...this.state,
       harnessDeliveries: {
         ...this.state.harnessDeliveries,
-        [sessionId]: { ...checkpoint },
+        [sessionId]: projected,
       },
       harnessDeliveryNotices,
     })

@@ -57,6 +57,26 @@ describe("local npm launcher install", () => {
       const selfCheck = run(["node", launcher, "--self-check"], REPO_ROOT)
       if (selfCheck.exitCode !== 0) throw commandError("installed self-check", selfCheck)
       expect(selfCheck.stdout).toContain("SELF-CHECK OK")
+
+      const fakeBin = join(dir, "help-fake-bin")
+      const installLog = join(dir, "help-install.log")
+      await mkdir(fakeBin)
+      await writeFile(join(fakeBin, "npm"), FAKE_NPM_SOURCE)
+      await chmod(join(fakeBin, "npm"), 0o755)
+      const help = run(["node", launcher, "--help"], REPO_ROOT, {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        FAKE_NPM_INSTALL_LOG: installLog,
+      })
+      expect(help.exitCode).toBe(0)
+      expect(help.stdout).toStartWith("Examples:\n")
+      expect(help.stdout).toContain("kitten --update")
+      expect(help.stdout).toContain("npm install --global @matheusbbarni/kitten@latest")
+      expect(help.stdout).toContain(
+        "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+      )
+      expect(help.stderr).toBe("")
+      expect(await readIfPresent(installLog)).toBe("")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -196,6 +216,12 @@ async function packedUpdateFixture(layout: UpdateLayout, resultVersion?: string)
         FAKE_NPM_ROOT: fakeGlobalRoot,
         FAKE_NPM_INSTALL_LOG: installLog,
         FAKE_NPM_RESULT_VERSION: resultVersion,
+        FAKE_NPM_PLATFORM_MANIFEST: join(
+          fakeGlobalRoot,
+          "@matheusbbarni",
+          `kitten-${target.platform}`,
+          "package.json",
+        ),
       },
       cleanup: () => rm(dir, { recursive: true, force: true }),
     }
@@ -219,6 +245,9 @@ if (JSON.stringify(argv) === JSON.stringify(["install", "--global", "@matheusbba
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
   manifest.version = process.env.FAKE_NPM_RESULT_VERSION || manifest.version
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\\n")
+  const platformManifest = JSON.parse(readFileSync(process.env.FAKE_NPM_PLATFORM_MANIFEST, "utf8"))
+  platformManifest.version = process.env.FAKE_NPM_RESULT_VERSION || platformManifest.version
+  writeFileSync(process.env.FAKE_NPM_PLATFORM_MANIFEST, JSON.stringify(platformManifest, null, 2) + "\\n")
   process.exit(0)
 }
 process.exit(64)

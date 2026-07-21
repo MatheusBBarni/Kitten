@@ -52,6 +52,7 @@ import {
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
 import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type CursorRecoveryState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import type { HardStopContinuationCapability } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
 import { countOccupiedDelegatedChildren, isDelegationSettled } from "../core/orchestration.ts"
@@ -99,6 +100,7 @@ import {
   type McpBridgeFailureCategory,
   type SteeringCapabilityClass,
   type SteeringTelemetryOutcome,
+  type HardStopOutcomeInput,
   type ContextPackBuildDeniedInput,
   type ContextPackBuildSettledInput,
   type ContextPackBuildStartedInput,
@@ -139,12 +141,18 @@ import {
 } from "./actions.ts"
 import { createSteeringCoordinator, type SteeringCoordinator } from "./steeringCoordinator.ts"
 import {
+  createPostInterruptContinuationCoordinator,
+  type PostInterruptContinuationCoordinator,
+  type PostInterruptContinuationTerminalReason,
+} from "./postInterruptContinuationCoordinator.ts"
+import {
   beginDispatch,
   beginFresh,
   completeDispatch,
   failBeforeDispatch,
   failIndeterminate,
   restoreHarnessDelivery,
+  settleInterrupted,
   type HarnessDelivery,
 } from "./harnessDelivery.ts"
 import {
@@ -249,6 +257,7 @@ export interface ControllerTelemetry extends ActionTelemetry {
     outcome: SteeringTelemetryOutcome,
     capabilityClass: SteeringCapabilityClass,
   ): void
+  hardStopOutcome?(lifecycleKey: string, input: HardStopOutcomeInput): void
   contextPackDraftCreated?(input: ContextPackDraftCreatedInput): void
   contextPackBuildStarted?(lifecycleKey: string, input: ContextPackBuildStartedInput): void
   contextPackBuildDenied?(input: ContextPackBuildDeniedInput): void
@@ -390,6 +399,10 @@ export interface SessionControllerOptions {
   applyProviderDefaultsOnFreshSession?: boolean
   /** Exact profile decision; injectable for deterministic credential-free tests. */
   resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
+  /** Protocol-free Hard Stop attestation; defaults to the resolved recipe verdict. */
+  resolveHardStopContinuationCapability?: (
+    config: ResolvedAgentConfig,
+  ) => HardStopContinuationCapability
   /** Closed explore attestation decision; injectable with reviewed fake evidence in tests. */
   resolveExploreCapability?: (config: ResolvedAgentConfig) => ExploreCapability
   /** Closed explore-v2 decision; called again for every Context Build launch. */
@@ -407,6 +420,8 @@ export interface SessionControllerOptions {
   scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Schedule one bounded steering settlement wait and return its cancellation hook. */
   scheduleSteeringSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
+  /** Schedule one bounded Hard Stop proof wait and return its cancellation hook. */
+  schedulePostInterruptSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
   /** Controller-owned bridge factory; injectable for lifecycle and composition tests. */
   createKittenMcpBridge?: (options: KittenMcpBridgeOptions) => KittenMcpBridge
   /** Dedicated Context Pack bridge factory; never shares the mixed child action surface. */
@@ -838,10 +853,16 @@ interface ActivePromptLifecycle {
   readonly turnId: string
   readonly generation: number
   readonly settlement: Promise<void>
+  hardStopRequested: boolean
   settle(): void
 }
 
 interface SteeringRecoveryTransfer {
+  readonly requestId: string
+  readonly blocks: readonly PromptBlock[]
+}
+
+interface PostInterruptRecoveryTransfer {
   readonly requestId: string
   readonly blocks: readonly PromptBlock[]
 }
@@ -884,6 +905,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const scheduleClarificationTimeout = options.scheduleClarificationTimeout ?? defaultScheduleClarificationTimeout
   const newSessionId = options.newSessionId ?? (() => crypto.randomUUID())
   const newSteeringId = options.newSteeringId ?? (() => crypto.randomUUID())
+  const newMessageId = options.newMessageId ?? (() => crypto.randomUUID())
   const now = options.now ?? Date.now
   let providerDefaults = cloneProviderDefaults(options.config.providerDefaults ?? {})
   const usageSeenSink = options.config.telemetryEnabled
@@ -905,6 +927,7 @@ export async function createSessionController(options: SessionControllerOptions)
   const closePromises = new Map<SessionId, Promise<CloseConversationResult>>()
   const activePrompts = new Map<SessionId, ActivePromptLifecycle>()
   const steeringCoordinators = new Map<SessionId, SteeringCoordinator>()
+  const postInterruptCoordinators = new Map<SessionId, PostInterruptContinuationCoordinator>()
   const activeAgentRunStarts = new Set<string>()
   const pendingClarificationCounts = new Map<string, number>()
   const contextBuildChildren = new Map<SessionId, ContextBuildChildRuntime>()
@@ -1084,10 +1107,25 @@ export async function createSessionController(options: SessionControllerOptions)
     publishHarnessDelivery(runtime, failIndeterminate(delivery, generation))
   }
 
+  function settleInterruptedHarnessDelivery(
+    runtime: AgentRuntime,
+    generation = runtime.generation,
+  ): boolean {
+    if (!isCurrentGeneration(runtime, generation)) return false
+    const delivery = runtime.harnessDelivery
+    if (!delivery || delivery.state === "failed" || delivery.state === "pending") return false
+    if (delivery.state !== "in_flight") return true
+    const settled = settleInterrupted(delivery, generation)
+    if (settled.state !== "settled_interrupted") return false
+    publishHarnessDelivery(runtime, settled)
+    return true
+  }
+
   function applyRuntimeEvent(runtime: AgentRuntime, event: DomainSessionEvent): void {
     if (!acceptsRuntimeEvents(runtime)) return
     if (event.kind === "status" && event.status === "error") {
       terminalizeSteering(runtime.seed.id)
+      terminalizePostInterruptContinuation(runtime.seed.id, "lifecycle_lost")
       abandonPromptLifecycle(runtime.seed.id)
       terminalizeHarnessDelivery(runtime)
       invalidateBridge(runtime, runtime.generation, "connection_error")
@@ -1187,6 +1225,7 @@ export async function createSessionController(options: SessionControllerOptions)
   function releaseCompletedDelegatedRuntime(runtime: AgentRuntime): void {
     const connection = runtime.connection
     terminalizeSteering(runtime.seed.id)
+    terminalizePostInterruptContinuation(runtime.seed.id, "lifecycle_lost")
     abandonPromptLifecycle(runtime.seed.id)
     terminalizeHarnessDelivery(runtime)
     invalidateBridge(runtime, runtime.generation, "conversation_closed")
@@ -1531,6 +1570,7 @@ export async function createSessionController(options: SessionControllerOptions)
     cursorReadinessCause?: CursorReadinessCause,
   ): Promise<void> {
     terminalizeSteering(runtime.seed.id)
+    terminalizePostInterruptContinuation(runtime.seed.id, "lifecycle_lost")
     abandonPromptLifecycle(runtime.seed.id)
     terminalizeHarnessDelivery(runtime)
     invalidateBridge(runtime, runtime.generation, "connection_error")
@@ -1617,6 +1657,9 @@ export async function createSessionController(options: SessionControllerOptions)
     const replacedGeneration = previous.generation
     terminalizeSteering(seed.id)
     const steeringRecovery = captureSteeringRecovery(seed.id)
+    terminalizePostInterruptContinuation(seed.id, "lifecycle_lost")
+    const postInterruptRecovery = capturePostInterruptRecovery(seed.id)
+    postInterruptCoordinators.delete(seed.id)
     abandonPromptLifecycle(seed.id)
     terminalizeHarnessDelivery(previous, replacedGeneration)
     invalidateBridge(previous, replacedGeneration, "session_replaced")
@@ -1756,6 +1799,7 @@ export async function createSessionController(options: SessionControllerOptions)
       previous.unsubscribe = unsubscribe
       store.setConversationAvailability(seed.id, { kind: "ready" })
       restoreSteeringRecovery(seed.id, generation, steeringRecovery)
+      restorePostInterruptRecovery(seed.id, generation, postInterruptRecovery)
       if (config.id === "cursor") {
         options.recorder?.providerReadiness?.(config.id, "ready")
         readinessRecorded = true
@@ -1887,6 +1931,7 @@ export async function createSessionController(options: SessionControllerOptions)
     const sessionId = runtime.seed.id
     const generation = runtime.generation
     terminalizeSteering(sessionId)
+    terminalizePostInterruptContinuation(sessionId, "lifecycle_lost")
     abandonPromptLifecycle(sessionId)
     terminalizeHarnessDelivery(runtime, generation)
     invalidateBridge(runtime, generation, "conversation_closed")
@@ -3453,7 +3498,11 @@ export async function createSessionController(options: SessionControllerOptions)
     }
   }
 
-  function preparePromptDispatch(sessionId: SessionId, blocks: PromptBlock[]) {
+  function preparePromptDispatch(
+    sessionId: SessionId,
+    blocks: PromptBlock[],
+    postInterruptRequestId?: string,
+  ) {
     const runtime = runtimes.get(sessionId)
     if (
       !runtime?.state.ready ||
@@ -3464,6 +3513,15 @@ export async function createSessionController(options: SessionControllerOptions)
     ) return null
 
     if (activePrompts.has(sessionId)) return null
+
+    const continuation = store.getState().sessions[sessionId]?.postInterruptContinuation
+    const continuationRequest = continuation?.request
+    if (
+      continuationRequest
+        ? continuationRequest.id !== postInterruptRequestId ||
+          continuationRequest.phase !== "dispatching"
+        : postInterruptCoordinators.has(sessionId)
+    ) return null
 
     const generation = runtime.generation
     const delivery = runtime.harnessDelivery
@@ -3522,7 +3580,11 @@ export async function createSessionController(options: SessionControllerOptions)
       async invoke() {
         try {
           const result = await connection.prompt(acpSessionId, input)
-          if (settlesHarnessDelivery && isCurrentGeneration(runtime, generation)) {
+          if (
+            settlesHarnessDelivery &&
+            !lifecycle.hardStopRequested &&
+            isCurrentGeneration(runtime, generation)
+          ) {
             const current = runtime.harnessDelivery
             if (current) publishHarnessDelivery(runtime, completeDispatch(current, generation))
           }
@@ -3555,6 +3617,7 @@ export async function createSessionController(options: SessionControllerOptions)
       turnId,
       generation,
       settlement,
+      hardStopRequested: false,
       settle() {
         if (settled) return
         settled = true
@@ -3573,6 +3636,165 @@ export async function createSessionController(options: SessionControllerOptions)
   function abandonPromptLifecycle(sessionId: SessionId): void {
     const lifecycle = activePrompts.get(sessionId)
     if (lifecycle) finishPromptLifecycle(sessionId, lifecycle)
+  }
+
+  function hardStopCapability(runtime: AgentRuntime): HardStopContinuationCapability {
+    if (!runtime.config) return { status: "unavailable", reason: "unknown_recipe" }
+    try {
+      return options.resolveHardStopContinuationCapability?.(runtime.config) ??
+        runtime.config.hardStopContinuationCapability
+    } catch {
+      return { status: "unavailable", reason: "unknown_recipe" }
+    }
+  }
+
+  function terminalizePostInterruptContinuation(
+    sessionId: SessionId,
+    reason: PostInterruptContinuationTerminalReason,
+  ): void {
+    postInterruptCoordinators.get(sessionId)?.terminalize(reason)
+  }
+
+  function capturePostInterruptRecovery(sessionId: SessionId): PostInterruptRecoveryTransfer | null {
+    const continuation = store.getState().sessions[sessionId]?.postInterruptContinuation
+    if (!continuation) return null
+    const request = continuation?.request
+    return request?.phase === "recovery" && continuation.recovery
+      ? { requestId: request.id, blocks: continuation.recovery }
+      : null
+  }
+
+  function restorePostInterruptRecovery(
+    sessionId: SessionId,
+    generation: number,
+    transfer: PostInterruptRecoveryTransfer | null,
+  ): void {
+    if (!transfer || !store.getState().sessions[sessionId]) return
+    const interruptedTurnId = `replaced:${transfer.requestId}`
+    store.applyEvent(sessionId, {
+      kind: "post_interrupt_continuation_enqueue",
+      interruptedTurnId,
+      requestId: transfer.requestId,
+      generation,
+      blocks: transfer.blocks,
+    })
+    store.applyEvent(sessionId, {
+      kind: "post_interrupt_continuation_recover",
+      interruptedTurnId,
+      requestId: transfer.requestId,
+      generation,
+    })
+  }
+
+  function beginHardStop(sessionId: SessionId): boolean {
+    if (postInterruptCoordinators.has(sessionId)) return true
+    const runtime = runtimes.get(sessionId)
+    const targetTurn = activePrompts.get(sessionId)
+    const delegatedChild = store.getState().delegation.children[sessionId]
+    if (
+      !runtime?.state.ready ||
+      !runtime.connection ||
+      runtime.acpSessionId === null ||
+      !acceptsRuntimeEvents(runtime) ||
+      !targetTurn ||
+      targetTurn.generation !== runtime.generation ||
+      delegatedChild ||
+      interactionCoordinator.hasPending(sessionId, runtime.generation)
+    ) {
+      return false
+    }
+
+    const generation = runtime.generation
+    const connection = runtime.connection
+    const acpSessionId = runtime.acpSessionId
+    const hardStopStartedAt = now()
+    const ownsCapturedLifecycle = (): boolean => {
+      if (
+        !isCurrentGeneration(runtime, generation) ||
+        !acceptsRuntimeEvents(runtime) ||
+        runtime.connection !== connection ||
+        runtime.acpSessionId !== acpSessionId
+      ) return false
+      const active = activePrompts.get(sessionId)
+      return active === undefined || active === targetTurn
+    }
+    let coordinator!: PostInterruptContinuationCoordinator
+    coordinator = createPostInterruptContinuationCoordinator({
+      sessionId,
+      generation,
+      interruptedTurnId: targetTurn.turnId,
+      store,
+      capability: () => hardStopCapability(runtime),
+      cancelActiveTurn: () => connection.cancel(acpSessionId),
+      terminalSettlement: targetTurn.settlement,
+      ownsCapturedLifecycle,
+      settleInterruptedHarness: () => {
+        const settled = settleInterruptedHarnessDelivery(runtime, generation)
+        if (settled) {
+          options.recorder?.hardStopOutcome?.(targetTurn.turnId, {
+            outcome: "settled_interrupted",
+            provider: runtime.seed.providerKind,
+            durationMs: Math.max(0, now() - hardStopStartedAt),
+          })
+        }
+        return settled
+      },
+      terminalizeHarness: () => terminalizeHarnessDelivery(runtime, generation),
+      dispatchOrdinary: (blocks, requestId) => {
+        if (!ownsCapturedLifecycle()) return null
+        const prepared = preparePromptDispatch(sessionId, [...blocks], requestId)
+        if (!prepared) return null
+        const messageId = newMessageId()
+        const pending = prepared.invoke()
+        void pending.catch((error) => onError(sessionId, error)).finally(() => refreshBranch(sessionId))
+        return { messageId }
+      },
+      scheduleSettlementTimeout: options.schedulePostInterruptSettlementTimeout,
+      onError: (_reason, error) => {
+        if (error !== undefined) onError(sessionId, error)
+      },
+      onFinished: () => {
+        if (postInterruptCoordinators.get(sessionId) === coordinator) {
+          postInterruptCoordinators.delete(sessionId)
+        }
+      },
+    })
+    postInterruptCoordinators.set(sessionId, coordinator)
+    targetTurn.hardStopRequested = true
+    coordinator.start()
+    return true
+  }
+
+  function queuePostInterruptContinuation(
+    sessionId: SessionId,
+    blocks: readonly PromptBlock[],
+  ) {
+    return postInterruptCoordinators.get(sessionId)?.queue(newSteeringId(), blocks) ?? {
+      kind: "unavailable" as const,
+      reason: "inactive" as const,
+    }
+  }
+
+  function recoverPostInterruptContinuation(sessionId: SessionId): boolean {
+    return postInterruptCoordinators.get(sessionId)?.recover() ?? false
+  }
+
+  function acknowledgePostInterruptRecovery(sessionId: SessionId, requestId: string): void {
+    const coordinator = postInterruptCoordinators.get(sessionId)
+    if (coordinator?.acknowledgeRecovery(requestId)) return
+    const continuation = store.getState().sessions[sessionId]?.postInterruptContinuation
+    const request = continuation?.request
+    if (
+      request?.id !== requestId ||
+      request.phase !== "recovery" ||
+      !continuation?.interruptedTurnId
+    ) return
+    store.applyEvent(sessionId, {
+      kind: "post_interrupt_continuation_acknowledge_recovery",
+      interruptedTurnId: continuation.interruptedTurnId,
+      requestId,
+      generation: request.generation,
+    })
   }
 
   function terminalizeSteering(
@@ -3716,6 +3938,7 @@ export async function createSessionController(options: SessionControllerOptions)
 
     const replacedGeneration = runtime.generation
     terminalizeSteering(sessionId)
+    terminalizePostInterruptContinuation(sessionId, "lifecycle_lost")
     abandonPromptLifecycle(sessionId)
     terminalizeHarnessDelivery(runtime, replacedGeneration)
     invalidateBridge(runtime, replacedGeneration, "session_replaced")
@@ -3752,6 +3975,10 @@ export async function createSessionController(options: SessionControllerOptions)
     store,
     getSession,
     preparePromptDispatch,
+    beginHardStop,
+    queuePostInterruptContinuation,
+    recoverPostInterruptContinuation,
+    acknowledgePostInterruptRecovery,
     enqueueSteering,
     terminalizeSteering: (sessionId) => terminalizeSteering(sessionId, "hard_stop"),
     terminalizePromptDispatch: (sessionId) => {
@@ -3764,7 +3991,7 @@ export async function createSessionController(options: SessionControllerOptions)
     },
     resolvePermission,
     resolveClarification,
-    newMessageId: options.newMessageId,
+    newMessageId,
     onError,
     refreshBranch,
     recorder: options.recorder,
@@ -3861,16 +4088,23 @@ export async function createSessionController(options: SessionControllerOptions)
       )
       interactionCoordinator.cancelAll()
       const steeringRecoveries = new Map<SessionId, SteeringRecoveryTransfer>()
+      const postInterruptRecoveries = new Map<SessionId, PostInterruptRecoveryTransfer>()
       for (const runtime of runtimes.values()) {
         terminalizeSteering(runtime.seed.id)
         const recovery = captureSteeringRecovery(runtime.seed.id)
         if (recovery) steeringRecoveries.set(runtime.seed.id, recovery)
+        terminalizePostInterruptContinuation(runtime.seed.id, "lifecycle_lost")
+        const postInterruptRecovery = capturePostInterruptRecovery(runtime.seed.id)
+        if (postInterruptRecovery) {
+          postInterruptRecoveries.set(runtime.seed.id, postInterruptRecovery)
+        }
         abandonPromptLifecycle(runtime.seed.id)
         terminalizeHarnessDelivery(runtime)
         invalidateBridge(runtime, runtime.generation, "session_replaced")
       }
       await disposeAgentRuntimes(runtimes)
       runtimes.clear()
+      postInterruptCoordinators.clear()
       branchReadGenerations.clear()
       pendingClarificationCounts.clear()
 
@@ -3902,6 +4136,10 @@ export async function createSessionController(options: SessionControllerOptions)
         const runtime = runtimes.get(sessionId)
         if (runtime) restoreSteeringRecovery(sessionId, runtime.generation, recovery)
       }
+      for (const [sessionId, recovery] of postInterruptRecoveries) {
+        const runtime = runtimes.get(sessionId)
+        if (runtime) restorePostInterruptRecovery(sessionId, runtime.generation, recovery)
+      }
       for (const entry of entries) refreshBranch(entry.seed.id)
       const restoration = store.getState().restoration
       let live = 0
@@ -3928,6 +4166,7 @@ export async function createSessionController(options: SessionControllerOptions)
     async dispose(): Promise<void> {
       for (const runtime of runtimes.values()) {
         terminalizeSteering(runtime.seed.id)
+        terminalizePostInterruptContinuation(runtime.seed.id, "lifecycle_lost")
         abandonPromptLifecycle(runtime.seed.id)
         terminalizeHarnessDelivery(runtime)
       }
@@ -3938,6 +4177,7 @@ export async function createSessionController(options: SessionControllerOptions)
       await Promise.all([kittenMcpBridge.dispose(), contextPackBridge.dispose()])
       interactionCoordinator.dispose()
       steeringCoordinators.clear()
+      postInterruptCoordinators.clear()
       activePrompts.clear()
       pendingClarificationCounts.clear()
       unsubscribeShell?.()

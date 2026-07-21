@@ -105,6 +105,7 @@ export function resolveExploreCapability(
       args: [...profile.recipe.args],
       env: { ...profile.recipe.env },
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     },

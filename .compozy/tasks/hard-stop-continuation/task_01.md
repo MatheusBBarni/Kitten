@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Model the live post-interrupt continuation lifecycle
 type: refactor
 complexity: high

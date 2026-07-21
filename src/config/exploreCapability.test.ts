@@ -21,6 +21,7 @@ const CONFIG: ResolvedAgentConfig = {
   args: ["--mode", "explore"],
   env: { KITTEN_POLICY: "read-only" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
   steeringCapability: { status: "unavailable" },
   runtimeProfile: { kind: "standard" },
 }

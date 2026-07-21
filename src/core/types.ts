@@ -612,6 +612,60 @@ export interface PromptBlock {
   readonly text: string
 }
 
+/** Closed lifecycle vocabulary for one live post-interrupt continuation. */
+export type PostInterruptContinuationPhase =
+  | "idle"
+  | "queued"
+  | "waiting"
+  | "dispatching"
+  | "recovery"
+
+/** One generation-fenced ordinary continuation accepted after an explicit interruption. */
+export interface PostInterruptContinuationRequest {
+  readonly id: string
+  readonly generation: number
+  readonly blocks: readonly PromptBlock[]
+  readonly phase: PostInterruptContinuationPhase
+}
+
+/**
+ * Reducer-owned live continuation truth. This state is deliberately absent from
+ * persistence and transcript projections; raw blocks clear only on delivery or
+ * recovery acknowledgement.
+ */
+export interface PostInterruptContinuationState {
+  readonly interruptedTurnId: string | null
+  readonly request: PostInterruptContinuationRequest | null
+  readonly recovery: readonly PromptBlock[] | null
+}
+
+/** Pure post-interrupt lifecycle events emitted by later controller work. */
+export type PostInterruptContinuationEvent =
+  | {
+      readonly kind: "post_interrupt_continuation_enqueue"
+      readonly interruptedTurnId: string
+      readonly requestId: string
+      readonly generation: number
+      readonly blocks: readonly PromptBlock[]
+    }
+  | {
+      readonly kind:
+        | "post_interrupt_continuation_wait"
+        | "post_interrupt_continuation_dispatch"
+        | "post_interrupt_continuation_recover"
+        | "post_interrupt_continuation_acknowledge_recovery"
+      readonly interruptedTurnId: string
+      readonly requestId: string
+      readonly generation: number
+    }
+  | {
+      readonly kind: "post_interrupt_continuation_deliver"
+      readonly interruptedTurnId: string
+      readonly requestId: string
+      readonly generation: number
+      readonly messageId: string
+    }
+
 /** Closed lifecycle vocabulary for one accepted steering request. */
 export type SteeringPhase =
   | "idle"
@@ -742,6 +796,8 @@ export interface SessionState {
   commands: AvailableCommand[]
   /** Current-run composer submissions and recall position, private to this session. */
   promptHistory: PromptHistoryState
+  /** Reducer-owned, live-only ordinary continuation after one explicit interruption. */
+  postInterruptContinuation: PostInterruptContinuationState
   /** Reducer-owned, live-only mid-turn steering lifecycle. */
   steering: SteeringState
 }
@@ -795,6 +851,7 @@ export type DomainSessionEvent =
   | { kind: "default_apply_result"; result: DefaultApplyResult }
   | { kind: "commands"; commands: AvailableCommand[] } // wholesale replace of the advertised slash-command set
   | PromptHistoryEvent
+  | PostInterruptContinuationEvent
   | SteeringEvent
 
 /**
@@ -858,6 +915,28 @@ export type ClarificationCapability =
       reason: "unknown_recipe" | "recipe_overridden" | "unverified_recipe"
     }
 
+/** Closed reasons why one resolved recipe cannot safely continue after Hard Stop. */
+export type HardStopContinuationUnavailableReason =
+  | "unknown_recipe"
+  | "unreviewed_recipe"
+  | "adapter_release_mismatch"
+  | "recipe_mismatch"
+  | "missing_implementation"
+  | "attestation_mismatch"
+  | "incomplete_attestation"
+
+/**
+ * Whether a fully resolved provider recipe may release one ordinary continuation
+ * after cancellation and terminal settlement. Provider evidence remains inside
+ * the adapter/config boundary; consumers receive only this protocol-free verdict.
+ */
+export type HardStopContinuationCapability =
+  | { readonly status: "supported" }
+  | {
+      readonly status: "unavailable"
+      readonly reason: HardStopContinuationUnavailableReason
+    }
+
 /**
  * Whether a fully resolved provider recipe may use an adapter-certified native
  * steering path. The vocabulary is deliberately protocol-free and fail-closed;
@@ -908,6 +987,7 @@ export type ProviderRuntimeProfile =
 /** A provider config after all runtime-only capability classification. */
 export interface ResolvedAgentConfig extends AgentConfig {
   clarificationCapability: ClarificationCapability
+  hardStopContinuationCapability: HardStopContinuationCapability
   steeringCapability: SteeringCapability
   runtimeProfile: ProviderRuntimeProfile
 }

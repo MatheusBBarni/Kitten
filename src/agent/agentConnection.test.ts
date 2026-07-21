@@ -44,12 +44,14 @@ const SUPPORTED_CONFIG: ResolvedAgentConfig = {
     adapterPackage: "@agentclientprotocol/claude-agent-acp",
     adapterVersion: "0.14.1",
   },
+  hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
   runtimeProfile: { kind: "standard" },
 }
 const UNSUPPORTED_CONFIG: ResolvedAgentConfig = {
   ...CONFIG,
   steeringCapability: { status: "unavailable" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
   runtimeProfile: { kind: "standard" },
 }
 const CERTIFIED_CURSOR_CONFIG: ResolvedAgentConfig = {
@@ -60,6 +62,7 @@ const CERTIFIED_CURSOR_CONFIG: ResolvedAgentConfig = {
   env: {},
   steeringCapability: { status: "unavailable" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
   runtimeProfile: {
     kind: "cursor-certified",
     command: "agent",
@@ -73,6 +76,7 @@ const STANDARD_CODEX_CONFIG: ResolvedAgentConfig = {
   ...CODEX_CONFIG,
   steeringCapability: { status: "unavailable" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
   runtimeProfile: { kind: "standard" },
 }
 const OVERRIDDEN_CURSOR_CONFIG: ResolvedAgentConfig = {

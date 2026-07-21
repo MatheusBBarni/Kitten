@@ -331,6 +331,42 @@ describe("shell snapshot assembly", () => {
 })
 
 describe("transcript excerpt", () => {
+  it("excludes reducer-held queued and recovery continuations from bundle input", () => {
+    for (const phase of ["queued", "recovery"] as const) {
+      const events: DomainSessionEvent[] = [
+        { kind: "user_message", messageId: "u1", text: "ordinary transcript text" },
+        {
+          kind: "post_interrupt_continuation_enqueue",
+          interruptedTurnId: "INTERRUPTED_TURN_ID_SENTINEL",
+          requestId: "CONTINUATION_REQUEST_ID_SENTINEL",
+          generation: 4,
+          blocks: [{ type: "text", text: "LIVE_CONTINUATION_CONTENT_SENTINEL" }],
+        },
+      ]
+      if (phase === "recovery") {
+        events.push({
+          kind: "post_interrupt_continuation_recover",
+          interruptedTurnId: "INTERRUPTED_TURN_ID_SENTINEL",
+          requestId: "CONTINUATION_REQUEST_ID_SENTINEL",
+          generation: 4,
+        })
+      }
+
+      const session = fold(events)
+      expect(session.postInterruptContinuation.request?.phase).toBe(phase)
+      const serialized = JSON.stringify(assembler.assemble(session, "codex"))
+
+      expect(serialized).toContain("ordinary transcript text")
+      for (const sentinel of [
+        "LIVE_CONTINUATION_CONTENT_SENTINEL",
+        "CONTINUATION_REQUEST_ID_SENTINEL",
+        "INTERRUPTED_TURN_ID_SENTINEL",
+      ]) {
+        expect(serialized).not.toContain(sentinel)
+      }
+    }
+  })
+
   it("renders user, agent, and tool-call turns in transcript order", () => {
     const session = fold([
       { kind: "user_message", messageId: "u1", text: "fix the lexer" },

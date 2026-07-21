@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Dispatch standalone updates before boot"
 type: backend
 complexity: medium
@@ -30,12 +30,12 @@ Expose the completed standalone update transaction through the compiled `kitten 
 
 ## Subtasks
 
-- [ ] 4.1 Recognize the public update invocation without disturbing existing metadata flags.
-- [ ] 4.2 Route standalone outcomes before self-check and normal boot.
-- [ ] 4.3 Preserve terminal output and process-status semantics for every outcome.
-- [ ] 4.4 Keep private installer-record behavior separate from public update behavior.
-- [ ] 4.5 Add in-process precedence and no-boot tests.
-- [ ] 4.6 Prove compiled-artifact safe refusal from isolated state.
+- [x] 4.1 Recognize the public update invocation without disturbing existing metadata flags.
+- [x] 4.2 Route standalone outcomes before self-check and normal boot.
+- [x] 4.3 Preserve terminal output and process-status semantics for every outcome.
+- [x] 4.4 Keep private installer-record behavior separate from public update behavior.
+- [x] 4.5 Add in-process precedence and no-boot tests.
+- [x] 4.6 Prove compiled-artifact safe refusal from isolated state.
 
 ## Implementation Details
 
@@ -72,13 +72,13 @@ Implement TechSpec "Standalone update boundary" at the sole executable entry pat
 ## Tests
 
 - Unit tests:
-  - [ ] `wantsUpdate(["--update"])` is true and rejects self-check and unknown-only argument lists.
-  - [ ] Injected updated and already-current outcomes write once and exit 0 with the expected channel/version text.
-  - [ ] Injected refused and failed outcomes write no-change text, both literal recovery commands, and a nonzero exit without leaking private error causes.
-  - [ ] `--version --update` prints only the version and `--help --update` prints only help; neither invokes the update runner.
-  - [ ] `--update --self-check` runs only the update path, while unknown arguments retain normal boot behavior.
+  - [x] `wantsUpdate(["--update"])` is true and rejects self-check and unknown-only argument lists.
+  - [x] Injected updated and already-current outcomes write once and exit 0 with the expected channel/version text.
+  - [x] Injected refused and failed outcomes write no-change text, both literal recovery commands, and a nonzero exit without leaking private error causes.
+  - [x] `--version --update` prints only the version and `--help --update` prints only help; neither invokes the update runner.
+  - [x] `--update --self-check` runs only the update path, while unknown arguments retain normal boot behavior.
 - Integration tests:
-  - [ ] A real host compiled artifact run with `--update` and fresh isolated XDG state returns nonzero safe refusal, creates no registry/target mutation, and emits no self-check, repository-gate, agent, or Cockpit output.
+  - [x] A real host compiled artifact run with `--update` and fresh isolated XDG state returns nonzero safe refusal, creates no registry/target mutation, and emits no self-check, repository-gate, agent, or Cockpit output.
 - Test coverage target: >=80%
 - All tests must pass
 

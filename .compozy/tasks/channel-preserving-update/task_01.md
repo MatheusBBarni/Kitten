@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Define standalone update primitives"
 type: backend
 complexity: medium
@@ -30,11 +30,11 @@ Create the standalone update module's stable contracts before any installer, net
 
 ## Subtasks
 
-- [ ] 1.1 Establish the standalone record and outcome contracts referenced by the TechSpec.
-- [ ] 1.2 Define registry path, canonical-key, stable-tag, host-artifact, and strict-manifest validation behavior.
-- [ ] 1.3 Provide deterministic success and safe-refusal terminal output.
-- [ ] 1.4 Expose narrow injectable effect boundaries for later update work.
-- [ ] 1.5 Cover valid and invalid primitive inputs with colocated tests.
+- [x] 1.1 Establish the standalone record and outcome contracts referenced by the TechSpec.
+- [x] 1.2 Define registry path, canonical-key, stable-tag, host-artifact, and strict-manifest validation behavior.
+- [x] 1.3 Provide deterministic success and safe-refusal terminal output.
+- [x] 1.4 Expose narrow injectable effect boundaries for later update work.
+- [x] 1.5 Cover valid and invalid primitive inputs with colocated tests.
 
 ## Implementation Details
 
@@ -72,14 +72,14 @@ Create the narrow standalone-update boundary described in TechSpec "System Archi
 ## Tests
 
 - Unit tests:
-  - [ ] `$XDG_STATE_HOME=/state` resolves the standalone registry under `/state/kitten`, while an unset value falls back under `.local/state/kitten`.
-  - [ ] Canonical-path keys are deterministic and reject mismatched keys, unknown schemas, unsupported platforms, non-semver versions, and malformed or uppercase SHA-256 values.
-  - [ ] Stable-tag validation accepts `kitten-v1.2.3` and rejects missing prefixes, incomplete versions, prereleases, whitespace, suffixes, drafts, and prerelease metadata.
-  - [ ] Manifest validation accepts one exact lowercase 64-hex checksum row for the selected artifact and rejects missing, duplicate, tab-separated, one-space, traversal, and malformed rows.
-  - [ ] Updated, already-current, refused, and failed output includes the required channel/version or no-change wording; refusals include both literal recovery commands.
-  - [ ] Invalid record, tag, and manifest inputs call no injected fetch, write, rename, or replacement seam.
+  - [x] `$XDG_STATE_HOME=/state` resolves the standalone registry under `/state/kitten`, while an unset value falls back under `.local/state/kitten`.
+  - [x] Canonical-path keys are deterministic and reject mismatched keys, unknown schemas, unsupported platforms, non-semver versions, and malformed or uppercase SHA-256 values.
+  - [x] Stable-tag validation accepts `kitten-v1.2.3` and rejects missing prefixes, incomplete versions, prereleases, whitespace, suffixes, drafts, and prerelease metadata.
+  - [x] Manifest validation accepts one exact lowercase 64-hex checksum row for the selected artifact and rejects missing, duplicate, tab-separated, one-space, traversal, and malformed rows.
+  - [x] Updated, already-current, refused, and failed output includes the required channel/version or no-change wording; refusals include both literal recovery commands.
+  - [x] Invalid record, tag, and manifest inputs call no injected fetch, write, rename, or replacement seam.
 - Integration tests:
-  - [ ] A temporary XDG registry containing one valid record loads through the public module boundary, while a malformed or stale sibling remains byte-for-byte unchanged.
+  - [x] A temporary XDG registry containing one valid record loads through the public module boundary, while a malformed or stale sibling remains byte-for-byte unchanged.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -93,6 +93,7 @@ export interface UpdateDependencies {
 
 export interface StandaloneTransactionPaths {
   lock: string
+  registryLock: string
   candidate: string
   backup: string
   registryCandidate: string
@@ -140,6 +141,8 @@ export type StandaloneReadDependencies = Pick<
 export interface StandaloneRecordWriterDependencies extends StandaloneReadDependencies {
   hostPlatform(): string
   makeDirectory(path: string): Promise<void>
+  acquireLock(path: string): Promise<void>
+  releaseLock(path: string): Promise<void>
   writeTemporaryFile(path: string, bytes: Uint8Array): Promise<void>
   rename(from: string, to: string): Promise<void>
   removeFile(path: string): Promise<void>
@@ -153,6 +156,11 @@ export function resolveStandaloneRegistryPath(
 ): string {
   const stateHome = env.XDG_STATE_HOME || join(homeDirectory, ".local", "state")
   return join(stateHome, "kitten", STANDALONE_REGISTRY_FILE)
+}
+
+/** Serialize every standalone registry read-modify-write transaction. */
+export function standaloneRegistryLockPath(registryPath: string): string {
+  return join(dirname(registryPath), `.${basename(registryPath)}.lock`)
 }
 
 /** The registry key is the full lowercase SHA-256 of the canonical path bytes. */
@@ -289,6 +297,8 @@ export async function recordStandaloneInstallation(
   embeddedVersion: string = KITTEN_VERSION,
 ): Promise<PrimitiveResult<StandaloneInstallationRecord>> {
   let temporaryPath: string | undefined
+  let registryLockHeld = false
+  let registryLockPath: string | undefined
   try {
     const canonicalPath = await dependencies.canonicalizePath(input.targetPath)
     const executablePath = await dependencies.canonicalizePath(await dependencies.resolveExecutable())
@@ -311,16 +321,21 @@ export async function recordStandaloneInstallation(
     })
     if (!record.ok) return record
 
+    const registryPath = resolveStandaloneRegistryPath(
+      dependencies.environment(),
+      dependencies.homeDirectory(),
+    )
+    await dependencies.makeDirectory(dirname(registryPath))
+    registryLockPath = standaloneRegistryLockPath(registryPath)
+    await dependencies.acquireLock(registryLockPath)
+    registryLockHeld = true
+
     const executableBytes = await dependencies.readFile(canonicalPath)
     const actualSha256 = dependencies.sha256(executableBytes)
     if (!LOWERCASE_SHA256.test(actualSha256) || actualSha256 !== record.value.sha256) {
       return refused("the installed target does not match the verified SHA-256")
     }
 
-    const registryPath = resolveStandaloneRegistryPath(
-      dependencies.environment(),
-      dependencies.homeDirectory(),
-    )
     const existing = await readRegistryForWrite(registryPath, dependencies)
     if (!existing.ok) return existing
     const key = registryKeyForCanonicalPath(canonicalPath, dependencies.sha256)
@@ -336,11 +351,12 @@ export async function recordStandaloneInstallation(
     if (!validated.ok) return validated
 
     const registryBytes = new TextEncoder().encode(`${JSON.stringify(validated.value, null, 2)}\n`)
-    await dependencies.makeDirectory(dirname(registryPath))
     temporaryPath = dependencies.temporaryPath(registryPath)
     await dependencies.writeTemporaryFile(temporaryPath, registryBytes)
     await dependencies.rename(temporaryPath, registryPath)
     temporaryPath = undefined
+    await dependencies.releaseLock(registryLockPath)
+    registryLockHeld = false
     return accepted(record.value)
   } catch {
     return refused("the standalone installation record could not be written safely")
@@ -350,6 +366,13 @@ export async function recordStandaloneInstallation(
         await dependencies.removeFile(temporaryPath)
       } catch {
         // Best-effort cleanup only; the canonical registry was never published.
+      }
+    }
+    if (registryLockHeld && registryLockPath) {
+      try {
+        await dependencies.releaseLock(registryLockPath)
+      } catch {
+        // Best-effort cleanup only; a failed record mode exits nonzero above.
       }
     }
   }
@@ -369,6 +392,10 @@ export function createStandaloneRecordWriterDependencies(
     homeDirectory: homedir,
     hostPlatform: () => `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`,
     makeDirectory: async (path) => { await mkdir(path, { recursive: true }) },
+    acquireLock: async (path) => {
+      await writeFile(path, new Uint8Array(), { flag: "wx", mode: 0o600 })
+    },
+    releaseLock: async (path) => { await rm(path) },
     writeTemporaryFile: async (path, bytes) => { await writeFile(path, bytes, { flag: "wx", mode: 0o600 }) },
     rename,
     removeFile: async (path) => { await rm(path, { force: true }) },
@@ -516,20 +543,11 @@ export async function runStandaloneUpdate(
     return { kind: "refused", message: "the standalone release artifact does not match its published SHA-256" }
   }
 
-  const nextRegistry = updateRegistryRecord(
-    ownership.value.registry,
-    ownership.value.record,
-    release.value.version,
-    candidateSha256,
-    dependencies.sha256,
-  )
-  if (!nextRegistry.ok) return nextRegistry.outcome
-  const nextRegistryBytes = new TextEncoder().encode(`${JSON.stringify(nextRegistry.value, null, 2)}\n`)
   return commitStandaloneUpdate(
     ownership.value,
     candidateBytes,
-    nextRegistryBytes,
     release.value.version,
+    candidateSha256,
     dependencies,
   )
 }
@@ -639,8 +657,8 @@ function updateRegistryRecord(
 async function commitStandaloneUpdate(
   ownership: StandaloneOwnership,
   candidateBytes: Uint8Array,
-  nextRegistryBytes: Uint8Array,
   candidateVersion: string,
+  candidateSha256: string,
   dependencies: StandaloneUpdateDependencies,
 ): Promise<UpdateOutcome> {
   const paths = dependencies.transactionPaths(ownership.canonicalPath, ownership.registryPath)
@@ -650,15 +668,45 @@ async function commitStandaloneUpdate(
     return { kind: "refused", message: "the standalone target is locked or could not be locked safely" }
   }
 
+  try {
+    await dependencies.acquireLock(paths.registryLock)
+  } catch {
+    try {
+      await dependencies.releaseLock(paths.lock)
+      return { kind: "refused", message: "the standalone registry is locked or could not be locked safely" }
+    } catch {
+      return failed("the standalone registry is locked and the target lock could not be cleaned safely")
+    }
+  }
+
   const stillOwned = await ownershipSnapshotMatches(ownership, dependencies)
   if (!stillOwned) {
     try {
       await dependencies.releaseLock(paths.lock)
+      await dependencies.releaseLock(paths.registryLock)
       return { kind: "refused", message: "the standalone target or registry changed before replacement" }
     } catch {
-      return failed("the standalone target changed and its update lock could not be cleaned safely")
+      return failed("the standalone target or registry changed and its update locks could not be cleaned safely")
     }
   }
+
+  const nextRegistry = updateRegistryRecord(
+    ownership.registry,
+    ownership.record,
+    candidateVersion,
+    candidateSha256,
+    dependencies.sha256,
+  )
+  if (!nextRegistry.ok) {
+    try {
+      await dependencies.releaseLock(paths.lock)
+      await dependencies.releaseLock(paths.registryLock)
+      return nextRegistry.outcome
+    } catch {
+      return failed("the standalone registry could not be prepared and its update locks could not be cleaned safely")
+    }
+  }
+  const nextRegistryBytes = new TextEncoder().encode(`${JSON.stringify(nextRegistry.value, null, 2)}\n`)
 
   try {
     if (await anyPathExists(paths, dependencies)) {
@@ -678,6 +726,7 @@ async function commitStandaloneUpdate(
     await dependencies.removeFile(paths.registrySnapshot)
     await dependencies.removeFile(paths.backup)
     await dependencies.releaseLock(paths.lock)
+    await dependencies.releaseLock(paths.registryLock)
     return {
       kind: "updated",
       channel: "standalone",
@@ -687,14 +736,19 @@ async function commitStandaloneUpdate(
   } catch {
     const restored = await rollbackStandaloneUpdate(ownership, paths, dependencies)
     const cleaned = await cleanupTransactionPaths(paths, dependencies, !restored)
-    let lockReleased = true
+    let locksReleased = true
     try {
       await dependencies.releaseLock(paths.lock)
     } catch {
-      lockReleased = false
+      locksReleased = false
+    }
+    try {
+      await dependencies.releaseLock(paths.registryLock)
+    } catch {
+      locksReleased = false
     }
     return failed(
-      restored && cleaned && lockReleased
+      restored && cleaned && locksReleased
         ? "the standalone update transaction failed; the previous executable and registry were restored"
         : "the standalone update transaction failed and recovery evidence is inconclusive",
     )
@@ -833,6 +887,7 @@ function defaultTransactionPaths(targetPath: string, registryPath: string): Stan
   const registryPrefix = join(dirname(registryPath), `.${basename(registryPath)}.${transactionId}`)
   return {
     lock: join(dirname(targetPath), `.${basename(targetPath)}.update.lock`),
+    registryLock: standaloneRegistryLockPath(registryPath),
     candidate: `${targetPrefix}.candidate`,
     backup: `${targetPrefix}.backup`,
     registryCandidate: `${registryPrefix}.candidate`,

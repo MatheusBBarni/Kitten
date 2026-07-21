@@ -47,6 +47,8 @@ import type {
   DelegationState,
   PendingDiff,
   PlanEntry,
+  PostInterruptContinuationPhase,
+  PostInterruptContinuationState,
   PromptBlock,
   ProviderKind,
   SessionId,
@@ -120,6 +122,12 @@ const EMPTY_STEERING_STATUS: SteeringStatus = Object.freeze({
   queueCount: 0,
   recoveryAvailable: false,
 })
+const EMPTY_POST_INTERRUPT_CONTINUATION_STATUS: PostInterruptContinuationStatus =
+  Object.freeze({
+    phase: "idle",
+    queueCount: 0,
+    recoveryAvailable: false,
+  })
 const UNKNOWN_CLARIFICATION_CAPABILITY: ClarificationCapability = {
   status: "unsupported",
   reason: "unknown_recipe",
@@ -645,6 +653,99 @@ export const selectSessionStatus =
   (sessionId: SessionId | null): Selector<SessionStatus> =>
   (state) =>
     (sessionId ? state.sessions[sessionId]?.status : undefined) ?? "idle"
+
+/** Content-free composer status for one session's post-interrupt continuation. */
+export interface PostInterruptContinuationStatus {
+  readonly phase: PostInterruptContinuationPhase
+  readonly queueCount: number
+  readonly recoveryAvailable: boolean
+}
+
+/** Focused recovery data copied once by the composer before acknowledgement. */
+export interface PostInterruptContinuationRecovery {
+  readonly requestId: string
+  readonly blocks: readonly PromptBlock[]
+}
+
+const postInterruptContinuationStatusCache = new WeakMap<
+  PostInterruptContinuationState,
+  PostInterruptContinuationStatus
+>()
+const postInterruptContinuationRecoveryCache = new WeakMap<
+  PostInterruptContinuationState,
+  PostInterruptContinuationRecovery
+>()
+
+function postInterruptContinuationStatus(
+  state: PostInterruptContinuationState | undefined,
+): PostInterruptContinuationStatus {
+  if (!state || (!state.request && state.recovery === null)) {
+    return EMPTY_POST_INTERRUPT_CONTINUATION_STATUS
+  }
+  const cached = postInterruptContinuationStatusCache.get(state)
+  if (cached) return cached
+  const status: PostInterruptContinuationStatus = Object.freeze({
+    phase: state.request?.phase ?? "idle",
+    queueCount: state.request ? 1 : 0,
+    recoveryAvailable: state.recovery !== null,
+  })
+  postInterruptContinuationStatusCache.set(state, status)
+  return status
+}
+
+function postInterruptContinuationRecovery(
+  state: PostInterruptContinuationState | undefined,
+): PostInterruptContinuationRecovery | null {
+  if (!state?.request || state.recovery === null) return null
+  const cached = postInterruptContinuationRecoveryCache.get(state)
+  if (cached) return cached
+  const recovery: PostInterruptContinuationRecovery = Object.freeze({
+    requestId: state.request.id,
+    blocks: state.recovery,
+  })
+  postInterruptContinuationRecoveryCache.set(state, recovery)
+  return recovery
+}
+
+/** Stable compact continuation projection; missing sessions share the idle fallback. */
+export const selectSessionPostInterruptContinuationStatus =
+  (sessionId: SessionId | null): Selector<PostInterruptContinuationStatus> =>
+  (state) =>
+    postInterruptContinuationStatus(
+      sessionId ? state.sessions[sessionId]?.postInterruptContinuation : undefined,
+    )
+
+/** One session's current continuation phase, safely idle when absent. */
+export const selectSessionPostInterruptContinuationPhase =
+  (sessionId: SessionId | null): Selector<PostInterruptContinuationPhase> =>
+  (state) =>
+    postInterruptContinuationStatus(
+      sessionId ? state.sessions[sessionId]?.postInterruptContinuation : undefined,
+    ).phase
+
+/** Number of accepted continuation requests still owned by one session. */
+export const selectSessionPostInterruptContinuationQueueCount =
+  (sessionId: SessionId | null): Selector<number> =>
+  (state) =>
+    postInterruptContinuationStatus(
+      sessionId ? state.sessions[sessionId]?.postInterruptContinuation : undefined,
+    ).queueCount
+
+/** Whether the focused composer has one reducer-owned payload available to copy. */
+export const selectSessionPostInterruptContinuationRecoveryAvailable =
+  (sessionId: SessionId | null): Selector<boolean> =>
+  (state) =>
+    postInterruptContinuationStatus(
+      sessionId ? state.sessions[sessionId]?.postInterruptContinuation : undefined,
+    ).recoveryAvailable
+
+/** Exact one-time recovery data for the focused composer; generic status is content-free. */
+export const selectSessionPostInterruptContinuationRecovery =
+  (sessionId: SessionId | null): Selector<PostInterruptContinuationRecovery | null> =>
+  (state) =>
+    postInterruptContinuationRecovery(
+      sessionId ? state.sessions[sessionId]?.postInterruptContinuation : undefined,
+    )
 
 /** Content-free composer status for one session's reducer-owned steering lifecycle. */
 export interface SteeringStatus {

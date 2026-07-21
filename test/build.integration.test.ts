@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -17,6 +17,8 @@ import {
   SELF_CHECK_UNKNOWN_TOKEN,
   selfCheckEvidenceKey,
 } from "../src/app/selfCheck.ts"
+import { REPO_REQUIREMENT_MESSAGE } from "../src/config/firstRun.ts"
+import { NPM_RECOVERY_COMMAND, STANDALONE_RECOVERY_COMMAND, STANDALONE_REGISTRY_FILE } from "../src/update.ts"
 import pkg from "../package.json" with { type: "json" }
 
 /**
@@ -77,8 +79,42 @@ describe("compiled artifact self-check (ADR-006)", () => {
       expect(helpRun.exitCode).toBe(0)
       expect(helpRun.stdout.toString()).toStartWith("Examples:\n")
       expect(helpRun.stdout.toString()).toContain("npx @matheusbbarni/kitten")
+      expect(helpRun.stdout.toString()).toContain("kitten --update")
+      expect(helpRun.stdout.toString()).toContain("npm install --global @matheusbbarni/kitten@latest")
+      expect(helpRun.stdout.toString()).toContain(
+        "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+      )
+      expect(helpRun.stdout.toString()).not.toContain("npm i -g")
+      expect(helpRun.stdout.toString()).not.toContain(" | sh\n")
       expect(helpRun.stdout.toString()).toContain("--self-check")
       expect(helpRun.stderr.toString()).toBe("")
+
+      const isolatedState = join(dir, "isolated-state")
+      const targetBefore = await readFile(outfile)
+      const targetModeBefore = (await stat(outfile)).mode
+      const updateRun = Bun.spawnSync([outfile, "--update"], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          XDG_STATE_HOME: isolatedState,
+        },
+      })
+      const updateOutput = updateRun.stdout.toString()
+      expect(updateRun.exitCode).not.toBe(0)
+      expect(updateOutput).toContain("Kitten update refused")
+      expect(updateOutput).toContain("No change occurred.")
+      expect(updateOutput).toContain(NPM_RECOVERY_COMMAND)
+      expect(updateOutput).toContain(STANDALONE_RECOVERY_COMMAND)
+      expect(updateOutput).not.toContain("SELF-CHECK")
+      expect(updateOutput).not.toContain(REPO_REQUIREMENT_MESSAGE)
+      expect(updateOutput).not.toContain("Claude Code")
+      expect(updateOutput).not.toContain("Codex")
+      expect(updateOutput).not.toContain("Cockpit")
+      expect(updateRun.stderr.toString()).toBe("")
+      expect(await readFile(outfile)).toEqual(targetBefore)
+      expect((await stat(outfile)).mode).toBe(targetModeBefore)
+      expect(await Bun.file(join(isolatedState, "kitten", STANDALONE_REGISTRY_FILE)).exists()).toBe(false)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

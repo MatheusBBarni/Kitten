@@ -64,6 +64,11 @@ describe("createSessionState", () => {
       defaultApplyResult: null,
       commands: [],
       promptHistory: { entries: [], cursor: null },
+      postInterruptContinuation: {
+        interruptedTurnId: null,
+        request: null,
+        recovery: null,
+      },
       steering: { activeTurnId: null, queue: [], recovery: null },
     })
   })
@@ -142,6 +147,134 @@ describe("prompt history events", () => {
     const before = initial()
 
     expect(sessionReducer(before, { kind: "prompt_history", action: "next" })).toBe(before)
+  })
+})
+
+describe("post-interrupt continuation events", () => {
+  const enqueue = {
+    kind: "post_interrupt_continuation_enqueue",
+    interruptedTurnId: "turn-interrupted",
+    requestId: "continuation-1",
+    generation: 4,
+    blocks: [
+      { type: "text", text: "continue normally" },
+      { type: "text", text: "keep this context" },
+    ],
+  } as const
+
+  it("holds the continuation outside the transcript until valid delivery", () => {
+    const before = fold([{ kind: "user_message", messageId: "u1", text: "original task" }])
+    const queued = sessionReducer(before, enqueue)
+    const waiting = sessionReducer(queued, {
+      kind: "post_interrupt_continuation_wait",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+    const dispatching = sessionReducer(waiting, {
+      kind: "post_interrupt_continuation_dispatch",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+
+    expect(queued.turns).toBe(before.turns)
+    expect(waiting.turns).toBe(before.turns)
+    expect(dispatching.turns).toBe(before.turns)
+
+    const delivered = sessionReducer(dispatching, {
+      kind: "post_interrupt_continuation_deliver",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+      messageId: "u-continuation",
+    })
+
+    expect(delivered.turns).toEqual([
+      { kind: "user", messageId: "u1", text: "original task" },
+      {
+        kind: "user",
+        messageId: "u-continuation",
+        text: "continue normally\nkeep this context",
+      },
+    ])
+    expect(delivered.postInterruptContinuation).toEqual({
+      interruptedTurnId: null,
+      request: null,
+      recovery: null,
+    })
+  })
+
+  it("rejects stale delivery by identity without changing the transcript", () => {
+    const queued = sessionReducer(initial(), enqueue)
+    const invalid = sessionReducer(queued, {
+      kind: "post_interrupt_continuation_deliver",
+      interruptedTurnId: "wrong-turn",
+      requestId: "continuation-1",
+      generation: 4,
+      messageId: "must-not-append",
+    })
+
+    expect(invalid).toBe(queued)
+    expect(invalid.turns).toEqual([])
+  })
+
+  it("recovers and acknowledges exact blocks without adding a user turn", () => {
+    const queued = sessionReducer(initial(), enqueue)
+    const recovered = sessionReducer(queued, {
+      kind: "post_interrupt_continuation_recover",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+
+    expect(recovered.turns).toBe(queued.turns)
+    expect(recovered.postInterruptContinuation.recovery).toEqual(enqueue.blocks)
+
+    const acknowledged = sessionReducer(recovered, {
+      kind: "post_interrupt_continuation_acknowledge_recovery",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+    expect(acknowledged.turns).toBe(recovered.turns)
+    expect(acknowledged.postInterruptContinuation).toEqual({
+      interruptedTurnId: null,
+      request: null,
+      recovery: null,
+    })
+  })
+
+  it("keeps steering and continuation transitions independent with structural sharing", () => {
+    const before = initial()
+    const continuation = sessionReducer(before, enqueue)
+
+    expect(continuation.steering).toBe(before.steering)
+    expect(continuation.turns).toBe(before.turns)
+
+    const steered = sessionReducer(continuation, {
+      kind: "steering_enqueue",
+      activeTurnId: "turn-active",
+      requestId: "steer-1",
+      generation: 4,
+      blocks: [{ type: "text", text: "independent steering" }],
+    })
+
+    expect(steered.postInterruptContinuation).toBe(
+      continuation.postInterruptContinuation,
+    )
+    expect(steered.turns).toBe(continuation.turns)
+
+    const waitingContinuation = sessionReducer(steered, {
+      kind: "post_interrupt_continuation_wait",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+    expect(waitingContinuation.steering).toBe(steered.steering)
+    expect(waitingContinuation.postInterruptContinuation).not.toBe(
+      steered.postInterruptContinuation,
+    )
   })
 })
 

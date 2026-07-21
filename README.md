@@ -19,6 +19,28 @@ The package installs the `kitten` command. To use the standalone binary instead,
 curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash
 ```
 
+### Update Kitten
+
+Run one explicit update to the latest stable release, then return to the shell:
+
+```bash
+kitten --update
+```
+
+This command does not launch the Cockpit, require a Git repository, start agents, prompt, or relaunch Kitten. It updates only a verified global npm installation through npm or an installer-managed standalone binary through the standalone release channel. Source checkouts, local dependencies, `npx` invocations, copied binaries, and unknown or uncertain installation contexts remain unchanged. There is no channel fallback.
+
+If Kitten refuses an update safely, no change is made. Choose either supported recovery command intentionally:
+
+```bash
+npm install --global @matheusbbarni/kitten@latest
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash
+```
+
+For standalone updates, checksum verification establishes release-asset integrity by detecting corrupted or mismatched downloads. It does not protect against a compromised release publisher.
+
 Launch Kitten from inside the Git repository where you want the agents to work:
 
 ```bash

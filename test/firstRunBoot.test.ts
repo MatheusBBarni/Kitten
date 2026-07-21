@@ -12,8 +12,10 @@ import { defaultAppConfig } from "../src/config/configLoader.ts"
 import { formatFirstRunReport, REPO_REQUIREMENT_MESSAGE, type FirstRunReport, type FirstRunGuidanceOptions } from "../src/config/firstRun.ts"
 import {
   dispatchCliFlags,
+  dispatchPreBootCliFlags,
   dispatchReservedChildMode,
   dispatchStandaloneRecordMode,
+  dispatchStandaloneUpdate,
   exitBlocked,
   main,
   runtimeSetup,
@@ -23,10 +25,12 @@ import {
   wantsHelp,
   wantsReloadProbe,
   wantsSelfCheck,
+  wantsUpdate,
   wantsVersion,
 } from "../src/index.ts"
 import type { AgentRuntimeState } from "../src/app/controller.ts"
 import { createAppStore } from "../src/store/appStore.ts"
+import { NPM_RECOVERY_COMMAND, STANDALONE_RECOVERY_COMMAND, type UpdateOutcome } from "../src/update.ts"
 import { KITTEN_VERSION } from "../src/version.ts"
 import { createFakeController } from "./fakeController.ts"
 import { actAsync, destroyMounted } from "./reactTui.ts"
@@ -371,9 +375,57 @@ describe("wantsSelfCheck", () => {
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check", "--reload-probe"])).toBe(true)
     expect(wantsReloadProbe(["bun", "index.ts", "--self-check"])).toBe(false)
   })
+
+  it("recognizes only an explicit public update flag", () => {
+    expect(wantsUpdate(["--update"])).toBe(true)
+    expect(wantsUpdate(["kitten", "--self-check"])).toBe(false)
+    expect(wantsUpdate(["kitten", "--unknown"])).toBe(false)
+  })
 })
 
 describe("private standalone record dispatch", () => {
+  it("keeps the private installer handoff ahead of public update dispatch", async () => {
+    const argv = [
+      "kitten",
+      "--update",
+      STANDALONE_RECORD_MODE_FLAG,
+      "/usr/local/bin/kitten",
+      "linux-x64",
+      "a".repeat(64),
+    ]
+    let records = 0
+    let updates = 0
+
+    const recordHandled = await dispatchStandaloneRecordMode(argv, {
+      record: async (input) => {
+        records += 1
+        return {
+          ok: true,
+          value: {
+            schemaVersion: 1,
+            canonicalPath: input.targetPath,
+            platform: input.platform,
+            version: "1.2.3",
+            sha256: input.sha256,
+          },
+        }
+      },
+      exit: () => {},
+    })
+    if (!recordHandled) {
+      await dispatchPreBootCliFlags(argv, {
+        runUpdate: async () => {
+          updates += 1
+          return { kind: "already-current", channel: "standalone", version: "1.2.3" }
+        },
+      })
+    }
+
+    expect(recordHandled).toBe(true)
+    expect(records).toBe(1)
+    expect(updates).toBe(0)
+  })
+
   it("short-circuits before MCP, self-check, repository, renderer, agent, or network work", async () => {
     const calls = {
       record: 0,
@@ -464,6 +516,28 @@ describe("private standalone record dispatch", () => {
 })
 
 describe("reserved MCP child dispatch", () => {
+  it("keeps reserved child modes ahead of public update dispatch", async () => {
+    const argv = ["kitten", "--context-pack-mcp", "--update"]
+    let childRuns = 0
+    let updates = 0
+
+    const childHandled = await dispatchReservedChildMode(argv, {}, {
+      run: async () => { childRuns += 1 },
+    })
+    if (!childHandled) {
+      await dispatchPreBootCliFlags(argv, {
+        runUpdate: async () => {
+          updates += 1
+          return { kind: "already-current", channel: "standalone", version: KITTEN_VERSION }
+        },
+      })
+    }
+
+    expect(childHandled).toBe(true)
+    expect(childRuns).toBe(1)
+    expect(updates).toBe(0)
+  })
+
   it("runs before normal repository and readiness boot paths", async () => {
     let childRuns = 0
     let normalBoots = 0
@@ -546,7 +620,7 @@ describe("CLI metadata flags", () => {
     expect(exits).toEqual([0])
   })
 
-  it("prints examples-first help with install and self-check guidance, then exits successfully", () => {
+  it("prints examples-first help with channel-preserving update guidance, then exits successfully", () => {
     const writes: string[] = []
     const exits: number[] = []
 
@@ -559,9 +633,20 @@ describe("CLI metadata flags", () => {
     expect(writes).toHaveLength(1)
     expect(writes[0]).toStartWith("Examples:\n")
     expect(writes[0]).toContain("npx @matheusbbarni/kitten")
+    expect(writes[0]).toContain("kitten --update")
+    expect(writes[0]).toContain("latest stable")
     expect(writes[0]).toContain("--self-check")
-    expect(writes[0]).toContain("npm i -g @matheusbbarni/kitten@latest")
-    expect(writes[0]).toContain("raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh")
+    expect(writes[0]).toContain("Only verified global npm installs and installer-managed standalone binaries can update.")
+    expect(writes[0]).toContain("Source, local, npx, copied, and unknown contexts remain unchanged")
+    expect(writes[0]).toContain("there is no channel fallback")
+    expect(writes[0]).toContain("does not launch the Cockpit, require a repository, start agents, prompt, or relaunch")
+    expect(writes[0]).toContain("npm install --global @matheusbbarni/kitten@latest")
+    expect(writes[0]).toContain(
+      "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+    )
+    expect(writes[0]).not.toContain("npm i -g")
+    expect(writes[0]).not.toContain(" | sh\n")
+    expect(writes[0]).not.toContain(STANDALONE_RECORD_MODE_FLAG)
     expect(exits).toEqual([0])
   })
 
@@ -581,6 +666,156 @@ describe("CLI metadata flags", () => {
     ).toBe(false)
     expect(writes).toEqual([])
     expect(exits).toEqual([])
+  })
+})
+
+describe("public standalone update dispatch", () => {
+  it("uses the production stdout and exit seams for a handled update", async () => {
+    const write = spyOn(process.stdout, "write").mockImplementation((() => true) as never)
+    const exit = spyOn(process, "exit").mockImplementation((() => undefined) as never)
+    try {
+      expect(await dispatchStandaloneUpdate(["kitten", "--update"], {
+        run: async () => ({
+          kind: "already-current",
+          channel: "standalone",
+          version: KITTEN_VERSION,
+        }),
+      })).toBe(true)
+      expect(write).toHaveBeenCalledTimes(1)
+      expect(write).toHaveBeenCalledWith(
+        `Kitten is already current via standalone at version ${KITTEN_VERSION}.\nNo change occurred.\n`,
+      )
+      expect(exit).toHaveBeenCalledWith(0)
+    } finally {
+      write.mockRestore()
+      exit.mockRestore()
+    }
+  })
+
+  it.each([
+    {
+      outcome: { kind: "updated", channel: "standalone", from: "1.2.3", to: "1.3.0" } satisfies UpdateOutcome,
+      expected: "Kitten updated via standalone: 1.2.3 -> 1.3.0.\n",
+    },
+    {
+      outcome: { kind: "already-current", channel: "standalone", version: "1.3.0" } satisfies UpdateOutcome,
+      expected: "Kitten is already current via standalone at version 1.3.0.\nNo change occurred.\n",
+    },
+  ])("writes one successful $outcome.kind outcome and exits zero", async ({ outcome, expected }) => {
+    const writes: string[] = []
+    const exits: number[] = []
+
+    expect(await dispatchStandaloneUpdate(["kitten", "--update"], {
+      run: async () => outcome,
+      write: (output) => writes.push(output),
+      exit: (code) => exits.push(code),
+    })).toBe(true)
+
+    expect(writes).toEqual([expected])
+    expect(exits).toEqual([0])
+  })
+
+  it.each([
+    { kind: "refused", message: "standalone ownership was not proven" },
+    { kind: "failed", message: "the standalone transaction failed safely" },
+  ] satisfies UpdateOutcome[])("writes one fail-closed $kind outcome and exits nonzero", async (outcome) => {
+    const writes: string[] = []
+    const exits: number[] = []
+
+    expect(await dispatchStandaloneUpdate(["kitten", "--update"], {
+      run: async () => outcome,
+      write: (output) => writes.push(output),
+      exit: (code) => exits.push(code),
+    })).toBe(true)
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toContain("No change occurred.")
+    expect(writes[0]).toContain(NPM_RECOVERY_COMMAND)
+    expect(writes[0]).toContain(STANDALONE_RECOVERY_COMMAND)
+    expect(exits).toEqual([1])
+  })
+
+  it("sanitizes an unexpected runner rejection", async () => {
+    const writes: string[] = []
+    const exits: number[] = []
+
+    expect(await dispatchStandaloneUpdate(["kitten", "--update"], {
+      run: async () => { throw new Error("private update cause") },
+      write: (output) => writes.push(output),
+      exit: (code) => exits.push(code),
+    })).toBe(true)
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toContain("Kitten update failed")
+    expect(writes[0]).toContain("No change occurred.")
+    expect(writes[0]).toContain(NPM_RECOVERY_COMMAND)
+    expect(writes[0]).toContain(STANDALONE_RECOVERY_COMMAND)
+    expect(writes[0]).not.toContain("private update cause")
+    expect(exits).toEqual([1])
+  })
+
+  it.each([
+    { argv: ["kitten", "--version", "--update"], expected: `${KITTEN_VERSION}\n` },
+    { argv: ["kitten", "--help", "--update"], expected: "Examples:\n" },
+  ])("keeps metadata precedence for $argv", async ({ argv, expected }) => {
+    const writes: string[] = []
+    const exits: number[] = []
+    let updates = 0
+
+    expect(await dispatchPreBootCliFlags(argv, {
+      runUpdate: async () => {
+        updates += 1
+        return { kind: "already-current", channel: "standalone", version: KITTEN_VERSION }
+      },
+      write: (output) => writes.push(output),
+      exit: (code) => exits.push(code),
+    })).toBe(true)
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toStartWith(expected)
+    expect(writes[0]).not.toContain("already current")
+    if (expected === "Examples:\n") {
+      expect(writes[0]).toContain("kitten --update")
+      expect(writes[0]).toContain("npm install --global @matheusbbarni/kitten@latest")
+      expect(writes[0]).toContain(
+        "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+      )
+    }
+    expect(updates).toBe(0)
+    expect(exits).toEqual([0])
+  })
+
+  it("runs update before self-check and leaves unknown flags for normal boot", async () => {
+    let updates = 0
+    let selfChecks = 0
+    let normalBoots = 0
+
+    const updateArgv = ["kitten", "--update", "--self-check"]
+    const updateHandled = await dispatchPreBootCliFlags(updateArgv, {
+      runUpdate: async () => {
+        updates += 1
+        return { kind: "already-current", channel: "standalone", version: KITTEN_VERSION }
+      },
+      write: () => {},
+      exit: () => {},
+    })
+    if (!updateHandled && wantsSelfCheck(updateArgv)) selfChecks += 1
+
+    const unknownHandled = await dispatchPreBootCliFlags(["kitten", "--unknown"], {
+      runUpdate: async () => {
+        updates += 1
+        throw new Error("unknown flags must not update")
+      },
+      write: () => {},
+      exit: () => {},
+    })
+    if (!unknownHandled) normalBoots += 1
+
+    expect(updateHandled).toBe(true)
+    expect(unknownHandled).toBe(false)
+    expect(updates).toBe(1)
+    expect(selfChecks).toBe(0)
+    expect(normalBoots).toBe(1)
   })
 })
 

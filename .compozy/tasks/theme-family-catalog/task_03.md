@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Expand palette rendering and accessibility coverage
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Render every canonical catalog preset through a complete Cockpit palette while p
 
 ## Subtasks
 
-- [ ] Import catalog-derived types and canonicalization helpers into `src/ui/theme.ts` without moving UI palette values into core.
-- [ ] Define all approved preset palettes and replace the string-indexed preset registry with an exhaustive `Record<ThemePresetId, CockpitPalette>`.
-- [ ] Update resolver and syntax-style cache paths so aliases share canonical palette identity and cache behavior.
-- [ ] Verify direct palette consumers retain their existing fallback and repaint behavior.
-- [ ] Expand `src/ui/theme.test.tsx` with full roster, contrast, ANSI-256, resolver, and cache regression matrices.
+- [x] Import catalog-derived types and canonicalization helpers into `src/ui/theme.ts` without moving UI palette values into core.
+- [x] Define all approved preset palettes and replace the string-indexed preset registry with an exhaustive `Record<ThemePresetId, CockpitPalette>`.
+- [x] Update resolver and syntax-style cache paths so aliases share canonical palette identity and cache behavior.
+- [x] Verify direct palette consumers retain their existing fallback and repaint behavior.
+- [x] Expand `src/ui/theme.test.tsx` with full roster, contrast, ANSI-256, resolver, and cache regression matrices.
 
 ## Implementation Details
 
@@ -67,13 +67,13 @@ Render every canonical catalog preset through a complete Cockpit palette while p
 ## Tests
 
 - Unit tests:
-  - [ ] Assert registry keys exactly equal the core catalog IDs and every palette's `id` equals its registry key.
-  - [ ] Assert every palette has all `CockpitPalette` semantic roles and canonical IDs resolve across both terminal modes.
-  - [ ] Assert every declared alias resolves to its canonical palette object; unknown and `__proto__` use terminal-mode fallback.
-  - [ ] Assert syntax styles are stable per canonical palette, distinct across presets where expected, and shared by alias/canonical inputs.
-  - [ ] Assert all required foreground/background contrast pairs meet 4.5:1 in truecolor and under ANSI-256 fallback, with distinct message, selection, status, and tool affordances.
+  - [x] Assert registry keys exactly equal the core catalog IDs and every palette's `id` equals its registry key.
+  - [x] Assert every palette has all `CockpitPalette` semantic roles and canonical IDs resolve across both terminal modes.
+  - [x] Assert every declared alias resolves to its canonical palette object; unknown and `__proto__` use terminal-mode fallback.
+  - [x] Assert syntax styles are stable per canonical palette, distinct across presets where expected, and shared by alias/canonical inputs.
+  - [x] Assert all required foreground/background contrast pairs meet 4.5:1 in truecolor and under ANSI-256 fallback, with distinct message, selection, status, and tool affordances.
 - Integration tests:
-  - [ ] Exercise the live theme-resolution/repaint path across terminal modes using the existing UI test seam to ensure consumers receive the selected canonical palette.
+  - [x] Exercise the live theme-resolution/repaint path across terminal modes using the existing UI test seam to ensure consumers receive the selected canonical palette.
 - Test coverage target: >=80% for changed palette registry, resolver, fallback, and syntax cache branches.
 - All targeted tests pass before handoff.
 

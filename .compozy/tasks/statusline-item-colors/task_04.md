@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Render Shared Colored Statusline Segments
 type: frontend
 complexity: high
@@ -32,10 +32,10 @@ colors visible only on field text and keeping separators visually muted.
 
 ## Subtasks
 
-- [ ] 4.1 Establish a shared UI presentation surface for rendered statusline segments and palette foreground policy.
-- [ ] 4.2 Replace flattened custom footer output with the shared segment presentation while retaining existing footer behavior.
-- [ ] 4.3 Replace flattened preview output with the same presentation and retain exact reviewed configuration changes.
-- [ ] 4.4 Verify active and preview surfaces agree across explicit colors, theme defaults, muted separators, missing values, and constrained widths.
+- [x] 4.1 Establish a shared UI presentation surface for rendered statusline segments and palette foreground policy.
+- [x] 4.2 Replace flattened custom footer output with the shared segment presentation while retaining existing footer behavior.
+- [x] 4.3 Replace flattened preview output with the same presentation and retain exact reviewed configuration changes.
+- [x] 4.4 Verify active and preview surfaces agree across explicit colors, theme defaults, muted separators, missing values, and constrained widths.
 
 ## Implementation Details
 
@@ -71,13 +71,13 @@ segment text, and width budgeting; this task owns only presentation policy.
 ## Tests
 
 - Unit tests:
-  - [ ] Explicit field colors apply only to the matching field text.
-  - [ ] Uncolored field text uses the active theme text color and separators use the muted palette color.
-  - [ ] The shared helper does not alter segment order, text, or width-bounded omission decisions from core.
+  - [x] Explicit field colors apply only to the matching field text.
+  - [x] Uncolored field text uses the active theme text color and separators use the muted palette color.
+  - [x] The shared helper does not alter segment order, text, or width-bounded omission decisions from core.
 - Integration tests:
-  - [ ] Mounted active footer and `/statusline` preview render equivalent colored and uncolored segment semantics.
-  - [ ] 64- and 80-column layouts remain one line without overflow while preserving shell hint, null layout, and missing-value behavior.
-  - [ ] The preview diff shows canonical colors and save, cancel, invalid-proposal, and recovery interactions retain their current behavior.
+  - [x] Mounted active footer and `/statusline` preview render equivalent colored and uncolored segment semantics.
+  - [x] 64- and 80-column layouts remain one line without overflow while preserving shell hint, null layout, and missing-value behavior.
+  - [x] The preview diff shows canonical colors and save, cancel, invalid-proposal, and recovery interactions retain their current behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

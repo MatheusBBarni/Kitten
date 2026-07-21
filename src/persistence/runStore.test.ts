@@ -192,6 +192,7 @@ function resolvedSession(id: string, providerKind: "claude-code" | "codex", cwd:
       args: [],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     },
@@ -253,7 +254,13 @@ describe("createRunStore", () => {
   })
 
   it("round-trips every fixed V3 checkpoint state", () => {
-    const states = ["not_required", "pending", "in_flight", "delivered"] as const
+    const states = [
+      "not_required",
+      "pending",
+      "in_flight",
+      "delivered",
+      "settled_interrupted",
+    ] as const
     for (const state of states) {
       withTempStore((base) => {
         const cwd = join(base, state)
@@ -438,6 +445,13 @@ describe("createRunStore", () => {
       { version: "v1", generation: 1, state: "failed", failureCategory: "raw failure" },
       { version: "v1", generation: 1, state: "failed" },
       { version: "v1", generation: 1, state: "delivered", failureCategory: "dispatch_indeterminate" },
+      { version: "v1", generation: 1, state: "settled_interrupted", failureCategory: "dispatch_indeterminate" },
+      { version: "v1", generation: 1, state: "settled_interrupted", blocks: [] },
+      { version: "v1", generation: 1, state: "settled_interrupted", requestId: "private" },
+      { version: "v1", generation: 1, state: "settled_interrupted", sessionId: "private" },
+      { version: "v1", generation: 1, state: "settled_interrupted", acpSessionId: "private" },
+      { version: "v1", generation: 1, state: "settled_interrupted", recovery: "private" },
+      { version: "v1", generation: 1, state: "settled_interrupted", rawError: "private" },
       { version: "v1", generation: 1, state: "pending", prompt: "private" },
     ]
     for (const checkpoint of invalidCheckpoints) {

@@ -63,6 +63,7 @@ async function createHarness(options: {
     id: "claude-code",
     ...recipe,
     clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+    hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
     steeringCapability: { status: "unavailable" },
     runtimeProfile: { kind: "standard" },
   }

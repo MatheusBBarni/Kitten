@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Attest safe continuation settlement at the adapter boundary
 type: refactor
 complexity: high

@@ -626,6 +626,7 @@ function fakeDependencies(
         args: ["acp"],
         env: {},
         clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+        hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
         steeringCapability: { status: "unavailable" },
         runtimeProfile: { kind: "standard" },
       }

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Present and recover continuation drafts in the composer
 type: frontend
 complexity: high

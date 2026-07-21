@@ -174,6 +174,7 @@ export type TelemetryEventType =
   | "agent_run_control"
   | "kitten_mcp_bridge_failure"
   | "steering_outcome"
+  | "hard_stop_outcome"
   | "context_pack_draft_created"
   | "build_started"
   | "build_denied"
@@ -301,6 +302,16 @@ export type SteeringTelemetryOutcome =
 export type SteeringCapabilityClass = "native" | "fallback" | "unavailable"
 export type SteeringDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
 
+/** Closed, content-free dimensions for one confirmed Hard Stop settlement. */
+export type HardStopTelemetryOutcome = "settled_interrupted"
+export type HardStopDurationBucket = "under_5s" | "5_to_30s" | "30_to_120s" | "over_120s"
+
+export interface HardStopOutcomeInput {
+  readonly outcome: HardStopTelemetryOutcome
+  readonly provider: ProviderKind
+  readonly durationMs: number
+}
+
 /** Closed Context Pack dimensions. Exact counts, bytes, durations, and identities never cross the recorder API. */
 export type ContextPackSelectionCountBucket = "zero" | "one" | "two_to_four" | "five_to_nine" | "ten_or_more"
 export type ContextPackRedactionCountBucket = "zero" | "one" | "two_to_four" | "five_or_more"
@@ -388,6 +399,16 @@ export interface SteeringOutcomeRecord {
   readonly durationBucket: SteeringDurationBucket
 }
 
+/** The exact Hard Stop record written locally; lifecycle identity never crosses this boundary. */
+export interface HardStopOutcomeRecord {
+  readonly type: "hard_stop_outcome"
+  readonly at: number
+  readonly sessionRef: string
+  readonly outcome: HardStopTelemetryOutcome
+  readonly provider: ProviderKind
+  readonly durationBucket: HardStopDurationBucket
+}
+
 export interface AgentRunTelemetryInput {
   readonly operation: AgentRunOperation
   readonly outcome: AgentRunOutcome
@@ -458,7 +479,8 @@ export interface TelemetryRecord {
   /** Whether the first post-resume prompt continued instead of re-explaining. */
   continued?: boolean
   /** Fixed file-discovery outcome; never a source error, path, or query. */
-  outcome?: FileSelectorDiscoveryOutcome | ExplorerTelemetryOutcome | AgentRunOutcome | SteeringTelemetryOutcome
+  outcome?: FileSelectorDiscoveryOutcome | ExplorerTelemetryOutcome | AgentRunOutcome |
+    SteeringTelemetryOutcome | HardStopTelemetryOutcome
   /** Fixed warm-query render state; never a candidate count or candidate content. */
   state?: FileSelectorRenderState
   /** Recorder-owned ordinal for one session in this run; never a Kitten/ACP session id. */
@@ -476,7 +498,8 @@ export interface TelemetryRecord {
   hasMulti?: boolean
   hasText?: boolean
   /** Coarse latency bucket; exact durations are not recorded. */
-  durationBucket?: ClarificationDurationBucket | AgentRunDurationBucket | SteeringDurationBucket
+  durationBucket?: ClarificationDurationBucket | AgentRunDurationBucket |
+    SteeringDurationBucket | HardStopDurationBucket
   /** The closed kind of interaction suspended or resumed by clarification priority. */
   interactionKind?: ClarificationInteractionKind
   /** The closed lifecycle reason for terminal cancellation on session loss. */
@@ -713,6 +736,8 @@ export interface TelemetryRecorder {
     outcome: SteeringTelemetryOutcome,
     capabilityClass: SteeringCapabilityClass,
   ): void
+  /** Record one confirmed Hard Stop settlement, deduplicated by a private lifecycle key. */
+  hardStopOutcome(lifecycleKey: string, input: HardStopOutcomeInput): void
   /** Record one accepted draft creation using only a coarse selection bucket. */
   contextPackDraftCreated(input: ContextPackDraftCreatedInput): void
   /** Start one private Context Build lifecycle after launch settles as accepted. */
@@ -836,6 +861,7 @@ const NOOP_RECORDER: TelemetryRecorder = {
   agentRunControl() {},
   mcpBridgeFailure() {},
   steeringOutcome() {},
+  hardStopOutcome() {},
   contextPackDraftCreated() {},
   contextPackBuildStarted() {},
   contextPackBuildDenied() {},
@@ -934,6 +960,7 @@ class ActiveRecorder implements TelemetryRecorder {
   private readonly managedWorktreeProvisionSettled = new Set<string>()
   private readonly steeringLifecycleStarts = new Map<string, number>()
   private readonly steeringLifecycleOutcomes = new Set<string>()
+  private readonly hardStopLifecycleOutcomes = new Set<string>()
   private readonly contextPackBuildStarts = new Map<string, number>()
   private readonly contextPackBuildSettledKeys = new Set<string>()
   private nextAgentRef = 1
@@ -1414,6 +1441,28 @@ class ActiveRecorder implements TelemetryRecorder {
     }, at)
   }
 
+  hardStopOutcome(lifecycleKey: string, input: HardStopOutcomeInput): void {
+    if (
+      typeof lifecycleKey !== "string" ||
+      lifecycleKey.length === 0 ||
+      !hasExactKeys(input, ["outcome", "provider", "durationMs"]) ||
+      !isHardStopTelemetryOutcome(input.outcome) ||
+      !isProviderKind(input.provider) ||
+      typeof input.durationMs !== "number" ||
+      !Number.isFinite(input.durationMs) ||
+      input.durationMs < 0 ||
+      this.hardStopLifecycleOutcomes.has(lifecycleKey)
+    ) return
+
+    this.hardStopLifecycleOutcomes.add(lifecycleKey)
+    this.record({
+      type: "hard_stop_outcome",
+      outcome: input.outcome,
+      provider: input.provider,
+      durationBucket: bucketHardStopDuration(input.durationMs),
+    })
+  }
+
   contextPackDraftCreated(input: ContextPackDraftCreatedInput): void {
     if (
       !hasExactKeys(input, ["selectionCountBucket"]) ||
@@ -1793,6 +1842,10 @@ function isSteeringTelemetryOutcome(value: unknown): value is SteeringTelemetryO
     value === "unavailable"
 }
 
+function isHardStopTelemetryOutcome(value: unknown): value is HardStopTelemetryOutcome {
+  return value === "settled_interrupted"
+}
+
 function isMcpBridgeFailureCategory(value: unknown): value is McpBridgeFailureCategory {
   return value === "capacity_limited" || value === "unavailable" || value === "invalid_request"
 }
@@ -1899,6 +1952,14 @@ export function bucketSteeringDuration(durationMs: number): SteeringDurationBuck
   if (normalized < 5_000) return "under_5s"
   if (normalized < 30_000) return "5_to_30s"
   if (normalized < 120_000) return "30_to_120s"
+  return "over_120s"
+}
+
+/** Reduce confirmed Hard Stop latency before any value reaches the local sink. */
+export function bucketHardStopDuration(durationMs: number): HardStopDurationBucket {
+  if (durationMs < 5_000) return "under_5s"
+  if (durationMs < 30_000) return "5_to_30s"
+  if (durationMs < 120_000) return "30_to_120s"
   return "over_120s"
 }
 

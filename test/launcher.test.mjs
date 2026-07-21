@@ -138,6 +138,7 @@ describe("Node launcher", () => {
       fixture.mainRoot,
       fixture.platformRoot,
       fixture.mainRoot,
+      fixture.platformRoot,
     ])
     expect(fixture.outputs).toEqual(["Kitten updated via npm: 1.2.3 -> 1.3.0."])
     expect(fixture.errors).toEqual([])
@@ -258,6 +259,20 @@ describe("Node launcher", () => {
     }
   })
 
+  it("fails safely when the post-install platform package is absent or no longer matches", () => {
+    for (const postInstallPlatformFailure of ["resolve", "missing", "invalid-name", "version-mismatch"]) {
+      const fixture = npmUpdateFixture({ postInstallPlatformFailure })
+
+      expect(runLauncher(fixture.options), postInstallPlatformFailure).toBe(1)
+      expect(fixture.commandCalls, postInstallPlatformFailure).toEqual([
+        ["npm", ["root", "--global"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }],
+        ["npm", ["install", "--global", NPM_UPDATE_SPECIFIER], { stdio: "inherit" }],
+      ])
+      expect(fixture.outputs, postInstallPlatformFailure).toEqual([])
+      expectSafeFailure(fixture.errors)
+    }
+  })
+
   it("uses update recovery output for unsupported or unresolved update hosts", () => {
     const errors = []
     const base = {
@@ -288,13 +303,18 @@ function npmUpdateFixture(overrides = {}) {
   const outputs = []
   const errors = []
   let mainReads = 0
+  let platformReads = 0
+  let installed = false
 
   const options = {
     platform: "linux",
     arch: "x64",
     argv: ["--update"],
     packageRoot: mainRoot,
-    resolve: () => binary,
+    resolve: () => {
+      if (installed && overrides.postInstallPlatformFailure === "resolve") throw new Error("missing after install")
+      return binary
+    },
     canonicalize: (path) => {
       const call = path === mainRoot
         ? "main"
@@ -325,10 +345,22 @@ function npmUpdateFixture(overrides = {}) {
         }
       }
       if (root === platformRoot) {
+        platformReads += 1
         if (overrides.manifestFailure === "platform-missing") throw new Error("missing")
+        if (platformReads > 1 && overrides.postInstallPlatformFailure === "missing") throw new Error("missing")
         return {
-          name: overrides.manifestFailure === "platform-name" ? "not-platform" : `${NPM_PACKAGE_NAME}-linux-x64`,
-          version: overrides.manifestFailure === "version-mismatch" ? "9.9.9" : "1.2.3",
+          name:
+            overrides.manifestFailure === "platform-name" ||
+              (platformReads > 1 && overrides.postInstallPlatformFailure === "invalid-name")
+              ? "not-platform"
+              : `${NPM_PACKAGE_NAME}-linux-x64`,
+          version:
+            overrides.manifestFailure === "version-mismatch" ||
+              (platformReads > 1 && overrides.postInstallPlatformFailure === "version-mismatch")
+              ? "9.9.9"
+              : platformReads === 1
+                ? "1.2.3"
+                : (overrides.resultVersion ?? "1.3.0"),
         }
       }
       throw new Error(`unexpected manifest root ${root}`)
@@ -338,7 +370,11 @@ function npmUpdateFixture(overrides = {}) {
       if (argv[0] === "root") {
         return overrides.rootResult ?? { status: 0, stdout: overrides.rootOutput ?? `${globalRoot}\n` }
       }
-      if (argv[0] === "install") return overrides.installResult ?? { status: 0 }
+      if (argv[0] === "install") {
+        const result = overrides.installResult ?? { status: 0 }
+        if (result.status === 0) installed = true
+        return result
+      }
       throw new Error(`unexpected command ${command} ${argv.join(" ")}`)
     },
     reportOutput: (message) => outputs.push(message),

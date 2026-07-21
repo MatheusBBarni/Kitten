@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test"
+import { readFileSync } from "node:fs"
 import { checkReadmeInstall, readInstallContract, type ResolveUrl } from "../scripts/check-readme-install.ts"
+
+const README = readFileSync(new URL("../README.md", import.meta.url), "utf8")
 
 const REAL_README = `
 # Kitten
@@ -16,6 +19,17 @@ describe("README install contract", () => {
       repoUrl: "https://github.com/MatheusBBarni/Kitten",
       installUrl: "https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh",
     })
+  })
+
+  it("keeps the real README on the canonical raw installer contract without resolving the network", () => {
+    expect(readInstallContract(README)).toEqual({
+      repo: "MatheusBBarni/Kitten",
+      repoUrl: "https://github.com/MatheusBBarni/Kitten",
+      installUrl: "https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh",
+    })
+    expect(README).toContain(
+      "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
+    )
   })
 
   it("rejects the OWNER placeholder before resolving URLs", async () => {

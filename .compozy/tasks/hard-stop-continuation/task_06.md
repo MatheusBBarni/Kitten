@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Record content-free hard-stop outcomes and prove privacy boundaries
 type: refactor
 complexity: high

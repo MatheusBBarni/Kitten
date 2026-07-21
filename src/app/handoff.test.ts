@@ -461,6 +461,44 @@ describe("sealed Context Pack handoff integration", () => {
 })
 
 describe("HandoffFlow.begin", () => {
+  it("excludes a live recovered Hard Stop continuation from preview and final dispatch", async () => {
+    const controller = controllerWithWork()
+    controller.store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_enqueue",
+      interruptedTurnId: "INTERRUPTED_TURN_ID_SENTINEL",
+      requestId: "CONTINUATION_REQUEST_ID_SENTINEL",
+      generation: 4,
+      blocks: [{ type: "text", text: "LIVE_CONTINUATION_CONTENT_SENTINEL" }],
+    })
+    controller.store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_recover",
+      interruptedTurnId: "INTERRUPTED_TURN_ID_SENTINEL",
+      requestId: "CONTINUATION_REQUEST_ID_SENTINEL",
+      generation: 4,
+    })
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toEqual([{ type: "text", text: "LIVE_CONTINUATION_CONTENT_SENTINEL" }])
+
+    const flow = createHandoffFlow({ controller })
+    expect(flow.begin()).toEqual({ ok: true })
+    const bundle = openBundle(controller)
+    const preview = JSON.stringify(bundle)
+    await flow.confirm(createHandoffEdits(bundle))
+    const dispatched = sentText(controller)
+
+    expect(preview).toContain("bump b")
+    expect(dispatched).toContain("bump b")
+    for (const sentinel of [
+      "LIVE_CONTINUATION_CONTENT_SENTINEL",
+      "CONTINUATION_REQUEST_ID_SENTINEL",
+      "INTERRUPTED_TURN_ID_SENTINEL",
+    ]) {
+      expect(preview).not.toContain(sentinel)
+      expect(dispatched).not.toContain(sentinel)
+    }
+  })
+
   it("assembles a bundle from the focused session and opens the preview toward the other agent", () => {
     const controller = controllerWithWork()
     const flow = createHandoffFlow({ controller })

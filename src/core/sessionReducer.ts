@@ -13,6 +13,16 @@
 
 import { createPromptHistoryState, promptHistoryReducer } from "./promptHistory.ts"
 import {
+  acknowledgePostInterruptContinuationRecovery,
+  beginPostInterruptContinuationDispatch,
+  coalescePostInterruptContinuationText,
+  createPostInterruptContinuationState,
+  deliverPostInterruptContinuation,
+  enqueuePostInterruptContinuation,
+  recoverPostInterruptContinuation,
+  waitForPostInterruptContinuation,
+} from "./postInterruptContinuation.ts"
+import {
   acknowledgeSteeringRecovery,
   beginSteeringCancellation,
   beginSteeringSend,
@@ -62,6 +72,7 @@ export function createSessionState(seed: SessionSeed): SessionState {
     defaultApplyResult: null,
     commands: [],
     promptHistory: createPromptHistoryState(),
+    postInterruptContinuation: createPostInterruptContinuationState(),
     steering: createSteeringState(),
   }
 }
@@ -126,6 +137,78 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
       return promptHistory === state.promptHistory ? state : { ...state, promptHistory }
     }
 
+    case "post_interrupt_continuation_enqueue":
+      return withPostInterruptContinuation(
+        state,
+        enqueuePostInterruptContinuation(
+          state.postInterruptContinuation,
+          event.interruptedTurnId,
+          event.requestId,
+          event.generation,
+          event.blocks,
+        ),
+      )
+
+    case "post_interrupt_continuation_wait":
+      return withPostInterruptContinuation(
+        state,
+        waitForPostInterruptContinuation(
+          state.postInterruptContinuation,
+          event.interruptedTurnId,
+          event.requestId,
+          event.generation,
+        ),
+      )
+
+    case "post_interrupt_continuation_dispatch":
+      return withPostInterruptContinuation(
+        state,
+        beginPostInterruptContinuationDispatch(
+          state.postInterruptContinuation,
+          event.interruptedTurnId,
+          event.requestId,
+          event.generation,
+        ),
+      )
+
+    case "post_interrupt_continuation_deliver": {
+      const text = coalescePostInterruptContinuationText(state.postInterruptContinuation)
+      const postInterruptContinuation = deliverPostInterruptContinuation(
+        state.postInterruptContinuation,
+        event.interruptedTurnId,
+        event.requestId,
+        event.generation,
+      )
+      if (postInterruptContinuation === state.postInterruptContinuation) return state
+      return {
+        ...state,
+        postInterruptContinuation,
+        turns: [...state.turns, { kind: "user", messageId: event.messageId, text }],
+      }
+    }
+
+    case "post_interrupt_continuation_recover":
+      return withPostInterruptContinuation(
+        state,
+        recoverPostInterruptContinuation(
+          state.postInterruptContinuation,
+          event.interruptedTurnId,
+          event.requestId,
+          event.generation,
+        ),
+      )
+
+    case "post_interrupt_continuation_acknowledge_recovery":
+      return withPostInterruptContinuation(
+        state,
+        acknowledgePostInterruptContinuationRecovery(
+          state.postInterruptContinuation,
+          event.interruptedTurnId,
+          event.requestId,
+          event.generation,
+        ),
+      )
+
     case "steering_enqueue":
       return withSteering(
         state,
@@ -188,6 +271,15 @@ export function sessionReducer(state: SessionState, event: DomainSessionEvent): 
     default:
       return assertNever(event)
   }
+}
+
+function withPostInterruptContinuation(
+  state: SessionState,
+  postInterruptContinuation: SessionState["postInterruptContinuation"],
+): SessionState {
+  return postInterruptContinuation === state.postInterruptContinuation
+    ? state
+    : { ...state, postInterruptContinuation }
 }
 
 function withSteering(state: SessionState, steering: SessionState["steering"]): SessionState {

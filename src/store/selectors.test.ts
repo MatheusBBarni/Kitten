@@ -81,6 +81,11 @@ import {
   MANAGED_WORKTREE_AVAILABILITY_LABELS,
   MANAGED_WORKTREE_REASON_LABELS,
   selectManagedWorktreeReview,
+  selectSessionPostInterruptContinuationPhase,
+  selectSessionPostInterruptContinuationQueueCount,
+  selectSessionPostInterruptContinuationRecovery,
+  selectSessionPostInterruptContinuationRecoveryAvailable,
+  selectSessionPostInterruptContinuationStatus,
   selectSessionSteeringPhase,
   selectSessionSteeringQueueCount,
   selectSessionSteeringRecovery,
@@ -329,6 +334,21 @@ const enqueueSteering = (
   })
 }
 
+const enqueuePostInterruptContinuation = (
+  store: AppStore,
+  sessionId: "claude-code" | "codex",
+  requestId: string,
+  text: string,
+): void => {
+  store.applyEvent(sessionId, {
+    kind: "post_interrupt_continuation_enqueue",
+    interruptedTurnId: "turn-interrupted",
+    requestId,
+    generation: 4,
+    blocks: [{ type: "text", text }],
+  })
+}
+
 describe("Cursor recovery selector", () => {
   it("returns only the bounded projection for an unavailable Cursor session", () => {
     const store = createAppStore({
@@ -523,6 +543,139 @@ describe("steering selectors", () => {
       textDelta: "token",
     })
     enqueueSteering(store, "codex", "steer-other", "other session")
+
+    expect(selectStatus(store.getState())).toBe(status)
+    expect(selectRecovery(store.getState())).toBe(recovery)
+  })
+})
+
+describe("post-interrupt continuation selectors", () => {
+  it("projects compact idle, queued, dispatching, and recovery status", () => {
+    const store = createAppStore()
+    const selectStatus = selectSessionPostInterruptContinuationStatus("claude-code")
+
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "idle",
+      queueCount: 0,
+      recoveryAvailable: false,
+    })
+    expect(selectSessionPostInterruptContinuationPhase("claude-code")(store.getState())).toBe(
+      "idle",
+    )
+    expect(
+      selectSessionPostInterruptContinuationQueueCount("claude-code")(store.getState()),
+    ).toBe(0)
+    expect(
+      selectSessionPostInterruptContinuationRecoveryAvailable("claude-code")(
+        store.getState(),
+      ),
+    ).toBe(false)
+
+    enqueuePostInterruptContinuation(store, "claude-code", "continuation-1", "recover me")
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "queued",
+      queueCount: 1,
+      recoveryAvailable: false,
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_dispatch",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "dispatching",
+      queueCount: 1,
+      recoveryAvailable: false,
+    })
+
+    store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_recover",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+    expect(selectStatus(store.getState())).toEqual({
+      phase: "recovery",
+      queueCount: 1,
+      recoveryAvailable: true,
+    })
+  })
+
+  it("uses stable content-free fallbacks for null, unknown, and idle sessions", () => {
+    const state = createAppStore().getState()
+    const fallback = selectSessionPostInterruptContinuationStatus(null)(state)
+
+    expect(selectSessionPostInterruptContinuationStatus("missing")(state)).toBe(fallback)
+    expect(selectSessionPostInterruptContinuationStatus("claude-code")(state)).toBe(
+      fallback,
+    )
+    expect(selectSessionPostInterruptContinuationRecovery(null)(state)).toBeNull()
+    expect(selectSessionPostInterruptContinuationRecovery("missing")(state)).toBeNull()
+    expect(selectSessionPostInterruptContinuationRecovery("claude-code")(state)).toBeNull()
+  })
+
+  it("keeps generic status content-free and exposes exact recovery once", () => {
+    const store = createAppStore()
+    enqueuePostInterruptContinuation(
+      store,
+      "claude-code",
+      "continuation-secret",
+      "exact private continuation",
+    )
+    store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_recover",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-secret",
+      generation: 4,
+    })
+
+    const status = selectSessionPostInterruptContinuationStatus("claude-code")(
+      store.getState(),
+    )
+    expect(Object.keys(status).sort()).toEqual(["phase", "queueCount", "recoveryAvailable"])
+    expect(JSON.stringify(status)).not.toContain("exact private continuation")
+    expect(JSON.stringify(status)).not.toContain("continuation-secret")
+    expect(selectSessionPostInterruptContinuationRecovery("claude-code")(store.getState())).toEqual(
+      {
+        requestId: "continuation-secret",
+        blocks: [{ type: "text", text: "exact private continuation" }],
+      },
+    )
+
+    store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_acknowledge_recovery",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-secret",
+      generation: 4,
+    })
+    expect(selectSessionPostInterruptContinuationRecovery("claude-code")(store.getState())).toBeNull()
+    expect(selectSessionPostInterruptContinuationStatus("claude-code")(store.getState())).toBe(
+      selectSessionPostInterruptContinuationStatus(null)(store.getState()),
+    )
+  })
+
+  it("preserves projection identities across token and sibling-session updates", () => {
+    const store = createAppStore()
+    enqueuePostInterruptContinuation(store, "claude-code", "continuation-1", "recover me")
+    store.applyEvent("claude-code", {
+      kind: "post_interrupt_continuation_recover",
+      interruptedTurnId: "turn-interrupted",
+      requestId: "continuation-1",
+      generation: 4,
+    })
+    const selectStatus = selectSessionPostInterruptContinuationStatus("claude-code")
+    const selectRecovery = selectSessionPostInterruptContinuationRecovery("claude-code")
+    const status = selectStatus(store.getState())
+    const recovery = selectRecovery(store.getState())
+
+    store.applyEvent("claude-code", {
+      kind: "agent_message",
+      messageId: "stream",
+      textDelta: "token",
+    })
+    enqueuePostInterruptContinuation(store, "codex", "continuation-other", "other session")
 
     expect(selectStatus(store.getState())).toBe(status)
     expect(selectRecovery(store.getState())).toBe(recovery)

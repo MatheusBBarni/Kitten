@@ -63,6 +63,7 @@ export function runLauncher({
       slug,
       binary,
       packageRoot,
+      resolve,
       canonicalize,
       readManifest,
       spawn,
@@ -88,6 +89,7 @@ function runNpmUpdate({
   slug,
   binary,
   packageRoot,
+  resolve,
   canonicalize,
   readManifest,
   spawn,
@@ -180,6 +182,31 @@ function runNpmUpdate({
   }
   if (!isPackageManifest(resultManifest, NPM_PACKAGE_NAME)) {
     return failUpdate("the updated npm package manifest does not match Kitten", reportError)
+  }
+
+  let resultBinary
+  let canonicalResultBinary
+  let resultPlatformRoot
+  let resultPlatformManifest
+  try {
+    resultBinary = resolve(platformBinarySpecifier(slug))
+    canonicalResultBinary = canonicalize(resultBinary)
+    resultPlatformRoot = canonicalize(dirname(canonicalResultBinary))
+    resultPlatformManifest = readManifest(resultPlatformRoot)
+  } catch {
+    return failUpdate("the updated npm platform package could not be resolved safely", reportError)
+  }
+  if (
+    !isPathDescendant(canonicalGlobalRoot, canonicalResultBinary) ||
+    !isPathDescendant(canonicalGlobalRoot, resultPlatformRoot)
+  ) {
+    return failUpdate("the updated npm platform package is not owned by the same global npm root", reportError)
+  }
+  if (!isPackageManifest(resultPlatformManifest, expectedPlatformPackage)) {
+    return failUpdate("the updated npm platform package manifest does not match the resolved binary", reportError)
+  }
+  if (resultPlatformManifest.version !== resultManifest.version) {
+    return failUpdate("the updated main and platform npm package versions do not match", reportError)
   }
 
   if (resultManifest.version === priorVersion) {

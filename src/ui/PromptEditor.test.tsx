@@ -16,7 +16,11 @@ import type { AgentRuntimeState } from "../app/controller.ts"
 import type { RepositoryFileList } from "../app/fileDiscovery.ts"
 import type { HandoffBundle } from "../core/types.ts"
 import { createAppStore } from "../store/appStore.ts"
-import { selectHasOpenOverlay, selectSessionSteeringRecovery } from "../store/selectors.ts"
+import {
+  selectHasOpenOverlay,
+  selectSessionPostInterruptContinuationRecovery,
+  selectSessionSteeringRecovery,
+} from "../store/selectors.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { ConversationView } from "./ConversationView.tsx"
 import {
@@ -453,6 +457,186 @@ describe("PromptEditor steering status and recovery", () => {
     expect(controller.calls.cancel).toEqual([undefined])
     expect(controller.calls.steer).toHaveLength(1)
     expect(controller.calls.sendPrompt).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+})
+
+describe("PromptEditor post-interrupt continuation", () => {
+  it("renders distinct content-free queued, waiting, dispatching, and recovery copy", async () => {
+    const controller = createFakeController()
+    const setup = await renderEditor(controller)
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "post_interrupt_continuation_enqueue",
+        interruptedTurnId: "turn-private",
+        requestId: "request-private",
+        generation: 1,
+        blocks: [{ type: "text", text: "private continuation body" }],
+      })
+    })
+    expect(await frameWith(setup, "Continuation queued · waiting to continue safely"))
+      .not.toContain("private continuation body")
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "post_interrupt_continuation_wait",
+        interruptedTurnId: "turn-private",
+        requestId: "request-private",
+        generation: 1,
+      })
+    })
+    expect(await frameWith(setup, "Continuation waiting for the interrupted turn to settle"))
+      .not.toContain("request-private")
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "post_interrupt_continuation_dispatch",
+        interruptedTurnId: "turn-private",
+        requestId: "request-private",
+        generation: 1,
+      })
+    })
+    expect(await frameWith(setup, "Continuation dispatching as the next prompt"))
+      .not.toContain("turn-private")
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", {
+        kind: "post_interrupt_continuation_recover",
+        interruptedTurnId: "turn-private",
+        requestId: "request-private",
+        generation: 1,
+      })
+    })
+    expect(await frameWith(setup, "Continuation not sent · draft restored; use /new"))
+      .not.toContain("request-private")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("accepts exactly the first post-interrupt follow-up and keeps a later draft editable", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await pressEscape(setup)
+    await type(setup, "continue with the narrow fix")
+    await pressEnter(setup)
+
+    expect(controller.calls.queuePostInterruptContinuation).toEqual([{
+      input: "continue with the narrow fix",
+      sessionId: undefined,
+    }])
+    expect(controller.calls.steer).toEqual([])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(controller.calls.recordPromptHistory).toEqual([{
+      text: "continue with the narrow fix",
+      sessionId: "claude-code",
+    }])
+    expect(await frameWith(setup, "Continuation queued", PROMPT_STEERING_PLACEHOLDER))
+      .not.toContain("continue with the narrow fix")
+
+    await type(setup, "later local draft")
+    await pressEnter(setup)
+    expect(controller.calls.queuePostInterruptContinuation).toHaveLength(1)
+    expect(controller.calls.steer).toEqual([])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("later local draft")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("restores a queued multiline continuation on second Escape without cancelling again", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await pressEscape(setup)
+    await type(setup, "first exact line")
+    await pressEnter(setup, { shift: true })
+    await type(setup, "second exact line")
+    await pressEnter(setup)
+    await pressEscape(setup)
+
+    expect(controller.calls.cancel).toEqual([undefined])
+    expect(controller.calls.recoverPostInterruptContinuation).toEqual([undefined])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("first exact line\nsecond exact line")
+    expect(controller.calls.acknowledgePostInterruptRecovery).toEqual([{
+      sessionId: "claude-code",
+      requestId: "fake-continuation-1",
+    }])
+    expect(selectSessionPostInterruptContinuationRecovery("claude-code")(
+      controller.store.getState(),
+    )).toBeNull()
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("retains a changed draft with /new guidance until the editor is empty", async () => {
+    const controller = createFakeController()
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller)
+
+    await pressEscape(setup)
+    await type(setup, "recover this continuation")
+    await pressEnter(setup)
+    await type(setup, "my newer changed draft")
+    await pressEscape(setup)
+
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("my newer changed draft")
+    expect(await frameWith(setup, "Continuation not sent", "use /new", "my newer changed draft"))
+      .toContain("clear editor to restore")
+    expect(controller.calls.acknowledgePostInterruptRecovery).toEqual([])
+
+    await actAsync(() => setup.renderer.currentFocusedEditor?.clear())
+    expect(await frameWith(setup, "draft restored", "recover this continuation"))
+      .toContain("use /new")
+    expect(controller.calls.acknowledgePostInterruptRecovery).toHaveLength(1)
+
+    await actAsync(() => {
+      controller.store.applyEvent("claude-code", { kind: "status", status: "idle" })
+    })
+    await pressEnter(setup)
+    expect(sentText(controller)).toBe("recover this continuation")
+    expect(controller.calls.steer).toEqual([])
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps slash, file, and modal Escape precedence ahead of continuation recovery", async () => {
+    const controller = createFakeController({
+      listRepositoryFiles: () => ({ kind: "ready", paths: ["src/a.ts"] }),
+    })
+    controller.store.applyEvent("claude-code", { kind: "status", status: "working" })
+    const setup = await renderEditor(controller, 32, undefined, true)
+
+    await pressEscape(setup)
+    await type(setup, "queued continuation")
+    await pressEnter(setup)
+
+    await type(setup, "/")
+    await frameWith(setup, "Commands")
+    await pressEscape(setup)
+    expect(controller.calls.recoverPostInterruptContinuation).toEqual([])
+
+    await actAsync(() => setup.renderer.currentFocusedEditor?.clear())
+    await type(setup, "@")
+    await frameWith(setup, "Files", "src/a.ts")
+    await pressEscape(setup)
+    expect(controller.calls.recoverPostInterruptContinuation).toEqual([])
+
+    await actAsync(() => {
+      setup.renderer.currentFocusedEditor?.clear()
+      controller.store.openModelSelect({ sessionId: "claude-code" })
+    })
+    await pressEscape(setup)
+    expect(controller.calls.recoverPostInterruptContinuation).toEqual([])
+
+    await actAsync(() => controller.store.closeModelSelect())
+    await pressEscape(setup)
+    expect(controller.calls.recoverPostInterruptContinuation).toEqual([undefined])
+    expect(controller.calls.cancel).toEqual([undefined])
 
     await destroyMounted(setup.renderer)
   })

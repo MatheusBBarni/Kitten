@@ -14,6 +14,7 @@ import {
   failBeforeDispatch,
   failIndeterminate,
   restoreHarnessDelivery,
+  settleInterrupted,
   type HarnessDelivery,
   type HarnessFailureCategory,
 } from "./harnessDelivery.ts"
@@ -38,6 +39,7 @@ describe("harness delivery creation", () => {
     const loaded = beginLoaded("v1", generation)
     expect(beginDispatch(loaded, generation)).toBe(loaded)
     expect(completeDispatch(loaded, generation)).toBe(loaded)
+    expect(settleInterrupted(loaded, generation)).toBe(loaded)
     expect(failBeforeDispatch(loaded, generation, { retrySafe: false, category: "unsupported_profile" })).toBe(loaded)
     expect(failIndeterminate(loaded, generation)).toBe(loaded)
   })
@@ -56,6 +58,7 @@ describe("harness delivery dispatch", () => {
   it.each([
     { version: "v1", generation, state: "not_required" } as const,
     { version: "v1", generation, state: "delivered" } as const,
+    { version: "v1", generation, state: "settled_interrupted" } as const,
     { version: "v1", generation, state: "failed", failureCategory: "dispatch_indeterminate" } as const,
   ])("keeps terminal or loaded state $state closed", (delivery) => {
     expect(beginDispatch(delivery, generation)).toBe(delivery)
@@ -73,6 +76,36 @@ describe("harness delivery settlement", () => {
     expect(completeDispatch(delivered, generation)).toBe(delivered)
     expect(beginDispatch(delivered, generation)).toBe(delivered)
     expect(failIndeterminate(delivered, generation)).toBe(delivered)
+    expect(settleInterrupted(delivered, generation)).toBe(delivered)
+  })
+
+  it("settles interruption only for the matching in-flight generation and exactly once", () => {
+    const pending = beginFresh("v1", generation)
+    const inFlight = beginDispatch(pending, generation)
+    const settled = settleInterrupted(inFlight, generation)
+
+    expect(settled).toEqual({
+      version: "v1",
+      generation,
+      state: "settled_interrupted",
+    })
+    expect(settleInterrupted(pending, generation)).toBe(pending)
+    expect(settleInterrupted(inFlight, generation + 1)).toBe(inFlight)
+    expect(settleInterrupted(settled, generation)).toBe(settled)
+    expect(beginDispatch(settled, generation)).toBe(settled)
+    expect(completeDispatch(settled, generation)).toBe(settled)
+    expect(failIndeterminate(settled, generation)).toBe(settled)
+  })
+
+  it("keeps timeout, connection-error, replacement, and indeterminate paths fail-closed", () => {
+    for (const _ambiguousOutcome of ["timeout", "connection_error", "indeterminate"] as const) {
+      const inFlight = beginDispatch(beginFresh("v1", generation), generation)
+      const failed = failIndeterminate(inFlight, generation)
+      expect(settleInterrupted(failed, generation)).toBe(failed)
+    }
+
+    const replacement = beginFresh("v1", generation + 1)
+    expect(settleInterrupted(replacement, generation)).toBe(replacement)
   })
 
   it("keeps known retry-safe pre-dispatch failure pending", () => {
@@ -93,6 +126,7 @@ describe("harness delivery settlement", () => {
     expect(completeDispatch(failed, generation)).toBe(failed)
     expect(failBeforeDispatch(failed, generation, { retrySafe: true })).toBe(failed)
     expect(failIndeterminate(failed, generation)).toBe(failed)
+    expect(settleInterrupted(failed, generation)).toBe(failed)
   })
 
   it("terminalizes post-invocation ambiguity without reopening dispatch", () => {
@@ -108,6 +142,7 @@ describe("harness delivery settlement", () => {
     expect(failIndeterminate(inFlight, generation + 1)).toBe(inFlight)
     expect(beginDispatch(failed, generation)).toBe(failed)
     expect(completeDispatch(failed, generation)).toBe(failed)
+    expect(settleInterrupted(failed, generation)).toBe(failed)
   })
 
   it("does not classify a pending generation as post-invocation ambiguity", () => {
@@ -127,6 +162,7 @@ describe("replacement isolation and composite lifecycle", () => {
       retrySafe: false,
       category: "unsupported_profile",
     })).toBe(replacement)
+    expect(settleInterrupted(replacement, generation)).toBe(replacement)
 
     const replacementInFlight = beginDispatch(replacement, generation + 1)
     expect(replacementInFlight.state).toBe("in_flight")
@@ -203,6 +239,25 @@ describe("persisted checkpoint restoration", () => {
       generation,
       state: "pending",
     })
+  })
+
+  it("rebinds settled interruption as a closed historical fact without replay", () => {
+    const checkpoint = {
+      version: "v1",
+      generation: 99,
+      state: "settled_interrupted",
+    } as const
+
+    for (const lifecycle of ["loaded", "fresh"] as const) {
+      const restored = restoreHarnessDelivery(checkpoint, "v1", generation, lifecycle)
+      expect(restored).toEqual({
+        version: "v1",
+        generation,
+        state: "settled_interrupted",
+      })
+      expect(beginDispatch(restored, generation)).toBe(restored)
+      expect(settleInterrupted(restored, generation)).toBe(restored)
+    }
   })
 })
 

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Persist only the settled-interrupted harness checkpoint
 type: refactor
 complexity: high

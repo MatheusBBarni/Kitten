@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Extend Core Statusline Color Contract
 type: refactor
 complexity: medium
@@ -32,10 +32,10 @@ proposals, preview, and active-footer rendering.
 
 ## Subtasks
 
-- [ ] 1.1 Define the closed canonical color and structured-item contract in the pure statusline domain.
-- [ ] 1.2 Preserve valid legacy layouts while rejecting unsupported color inputs and object shapes.
-- [ ] 1.3 Make rendered field segments retain their canonical color without changing text selection or width accounting.
-- [ ] 1.4 Cover valid names and hex values, canonicalization, invalid inputs, legacy layouts, and constrained rendering behavior.
+- [x] 1.1 Define the closed canonical color and structured-item contract in the pure statusline domain.
+- [x] 1.2 Preserve valid legacy layouts while rejecting unsupported color inputs and object shapes.
+- [x] 1.3 Make rendered field segments retain their canonical color without changing text selection or width accounting.
+- [x] 1.4 Cover valid names and hex values, canonicalization, invalid inputs, legacy layouts, and constrained rendering behavior.
 
 ## Implementation Details
 
@@ -69,12 +69,12 @@ sequences, configuration I/O, and agent orchestration.
 ## Tests
 
 - Unit tests:
-  - [ ] Known supported names and lowercase six-digit hex normalize to canonical uppercase RGB.
-  - [ ] Unknown names, short or long hex, alpha/RGBA forms, `transparent`, ANSI/control content, arrays, and extra keys fail closed.
-  - [ ] Legacy simple items and existing ellipsis layouts remain valid with their prior text and width behavior.
-  - [ ] Structured simple and ellipsis items carry only canonical colors to field segments; separators and flattened text remain color-free.
+  - [x] Known supported names and lowercase six-digit hex normalize to canonical uppercase RGB.
+  - [x] Unknown names, short or long hex, alpha/RGBA forms, `transparent`, ANSI/control content, arrays, and extra keys fail closed.
+  - [x] Legacy simple items and existing ellipsis layouts remain valid with their prior text and width behavior.
+  - [x] Structured simple and ellipsis items carry only canonical colors to field segments; separators and flattened text remain color-free.
 - Integration tests:
-  - [ ] Public normalization-to-rendering flow retains canonical color metadata while preserving unavailable-field omission and constrained width behavior.
+  - [x] Public normalization-to-rendering flow retains canonical color metadata while preserving unavailable-field omission and constrained width behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

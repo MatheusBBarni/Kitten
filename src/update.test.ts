@@ -20,6 +20,7 @@ import {
   resolveHostArtifact,
   resolveStandaloneRegistryPath,
   runStandaloneUpdate,
+  standaloneRegistryLockPath,
   STANDALONE_RECOVERY_COMMAND,
   type StandaloneInstallationRecord,
   type StandaloneInstallationRegistry,
@@ -444,6 +445,29 @@ describe("fail-closed standalone update transaction", () => {
     await expectNoTransactionArtifacts(fixture)
   })
 
+  it("refuses rather than overwrite a registry publication observed under the shared registry lock", async () => {
+    const fixture = await standaloneUpdateFixture()
+    const sibling = validRecord({ canonicalPath: "/opt/kitten/bin/kitten", version: "7.7.7", sha256: HASH_B })
+    const base = fixture.dependencies
+    let published = false
+    const dependencies = createStandaloneUpdateDependencies({
+      ...base,
+      acquireLock: async (path) => {
+        if (path === fixture.paths.registryLock && !published) {
+          published = true
+          await writeFile(fixture.registryPath, `${JSON.stringify(registryForRecords([fixture.record, sibling]))}\n`)
+        }
+        return base.acquireLock(path)
+      },
+    })
+
+    expect(await runStandaloneUpdate(dependencies)).toEqual(expect.objectContaining({ kind: "refused" }))
+    expect(await readFile(fixture.targetPath)).toEqual(Buffer.from(fixture.targetBytes))
+    const registry = JSON.parse(await readFile(fixture.registryPath, "utf8")) as StandaloneInstallationRegistry
+    expect(registry.installations[hashText(sibling.canonicalPath)]).toEqual(sibling)
+    await expectNoTransactionArtifacts(fixture)
+  })
+
   it("restores byte-identical target and registry state across the transaction failure matrix", async () => {
     for (const failure of [
       "lock",
@@ -565,6 +589,33 @@ describe("installer-owned standalone registry writer", () => {
     expect(registry.installations[hashText(sibling.canonicalPath)]).toEqual(sibling)
     if (!result.ok) throw new Error("expected record publication to succeed")
     expect(registry.installations[hashText(fixture.canonicalPath)]).toEqual(result.value)
+  })
+
+  it("locks, reloads, and merges the registry after another writer publishes", async () => {
+    const fixture = await recordWriterFixture()
+    const sibling = validRecord({ canonicalPath: "/opt/kitten/bin/kitten", version: "8.8.8", sha256: HASH_B })
+    const base = fixture.dependencies
+    let published = false
+    const dependencies = createStandaloneRecordWriterDependencies({
+      ...base,
+      acquireLock: async (path) => {
+        expect(path).toBe(standaloneRegistryLockPath(fixture.registryPath))
+        if (!published) {
+          published = true
+          await mkdir(dirname(fixture.registryPath), { recursive: true })
+          await writeFile(fixture.registryPath, `${JSON.stringify(registryFor(sibling))}\n`)
+        }
+        return base.acquireLock(path)
+      },
+    })
+
+    expect((await recordStandaloneInstallation(fixture.input, dependencies)).ok).toBe(true)
+    const registry = JSON.parse(await readFile(fixture.registryPath, "utf8")) as StandaloneInstallationRegistry
+    expect(registry.installations[hashText(sibling.canonicalPath)]).toEqual(sibling)
+    expect(registry.installations[hashText(fixture.canonicalPath)]).toMatchObject({
+      version: KITTEN_VERSION,
+      sha256: fixture.input.sha256,
+    })
   })
 
   it("rejects invalid target identity and record fields before registry mutation", async () => {
@@ -696,6 +747,7 @@ async function standaloneUpdateFixture(): Promise<StandaloneUpdateFixture> {
   await writeFile(registryPath, registryBytes, { mode: 0o600 })
   const paths: StandaloneTransactionPaths = {
     lock: join(dirname(targetPath), ".kitten.update.lock"),
+    registryLock: standaloneRegistryLockPath(registryPath),
     candidate: join(dirname(targetPath), ".kitten.candidate"),
     backup: join(dirname(targetPath), ".kitten.backup"),
     registryCandidate: join(dirname(registryPath), ".standalone-installations.candidate"),

@@ -21,7 +21,24 @@ import {
   type RecipientFit,
   type RevisionFencedContextPackMutation,
   type SessionId,
+  type ThemePreference,
+  type ThemePresetId,
 } from "./types.ts"
+
+describe("theme preference contracts", () => {
+  it("keeps built-ins alongside catalog-derived preset identities", () => {
+    const preset: ThemePresetId = "tokyo-night-storm"
+    const preferences: ThemePreference[] = ["auto", "light", "dark", preset]
+
+    expect(preferences).toEqual(["auto", "light", "dark", "tokyo-night-storm"])
+
+    if (false) {
+      // @ts-expect-error Built-in preferences are not curated preset identities.
+      const invalidPreset: ThemePresetId = "auto"
+      expect(invalidPreset).toBeDefined()
+    }
+  })
+})
 
 describe("managed-worktree contracts", () => {
   it("keeps availability and lifecycle reasons bounded and protocol-free", () => {

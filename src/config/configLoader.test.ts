@@ -9,6 +9,10 @@ import {
   type ThemePresetId,
 } from "../core/themeCatalog.ts"
 import { PROVIDER_KINDS } from "../core/types.ts"
+import type {
+  CertifiedHardStopContinuationRecipe,
+  HardStopContinuationAdapterImplementation,
+} from "./hardStopContinuationCapability.ts"
 
 import {
   CLAUDE_CODE_ACP_PACKAGE,
@@ -84,6 +88,7 @@ describe("defaults", () => {
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
@@ -94,6 +99,7 @@ describe("defaults", () => {
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
@@ -104,6 +110,7 @@ describe("defaults", () => {
       args: ["acp"],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
@@ -488,6 +495,65 @@ describe("user overrides", () => {
     expect(findAgentConfig(command, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
     expect(findAgentConfig(args, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
     expect(findAgentConfig(env, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
+    expect(findAgentConfig(command, "codex")?.hardStopContinuationCapability.status).toBe("unavailable")
+    expect(findAgentConfig(args, "codex")?.hardStopContinuationCapability.status).toBe("unavailable")
+    expect(findAgentConfig(env, "codex")?.hardStopContinuationCapability.status).toBe("unavailable")
+  })
+
+  it("Should classify Hard Stop continuation from the fully merged exact recipe", () => {
+    const certification: CertifiedHardStopContinuationRecipe = {
+      implementationId: "codex-acp-hard-stop-v1",
+      providerKind: "codex",
+      command: "npx",
+      args: ["-y", CODEX_ACP_PACKAGE],
+      env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+      reviewed: true,
+    }
+    const implementation: HardStopContinuationAdapterImplementation = {
+      implementationId: certification.implementationId,
+      providerKind: certification.providerKind,
+      adapterPackage: certification.adapterPackage,
+      adapterVersion: certification.adapterVersion,
+      cancellationAccepted: true,
+      terminalSettlement: true,
+    }
+    const evidence = {
+      certifiedHardStopContinuationRecipes: [certification],
+      hardStopContinuationImplementations: [implementation],
+    }
+
+    const production = findAgentConfig(defaultAppConfig(), "codex")!
+    const ordinary = findAgentConfig(defaultAppConfig(), "codex", evidence)!
+    expect(ordinary.hardStopContinuationCapability).toEqual({ status: "supported" })
+    expect(ordinary).toMatchObject({
+      id: "codex",
+      displayName: "Codex",
+      command: "npx",
+      args: ["-y", CODEX_ACP_PACKAGE],
+      env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
+      runtimeProfile: { kind: "standard" },
+    })
+    const { hardStopContinuationCapability: _productionVerdict, ...productionRecipe } = production
+    const { hardStopContinuationCapability: _injectedVerdict, ...injectedRecipe } = ordinary
+    expect(injectedRecipe).toEqual(productionRecipe)
+
+    const driftedConfigs = [
+      parseAppConfig(JSON.stringify({ providers: { codex: { command: "/opt/bin/npx" } } })),
+      parseAppConfig(JSON.stringify({ providers: { codex: { args: [CODEX_ACP_PACKAGE, "-y"] } } })),
+      parseAppConfig(
+        JSON.stringify({ providers: { codex: { args: ["-y", "@agentclientprotocol/codex-acp@1.1.3"] } } }),
+      ),
+      parseAppConfig(JSON.stringify({ providers: { codex: { env: { CODEX_HOME: "/tmp" } } } })),
+    ]
+
+    for (const config of driftedConfigs) {
+      const resolved = findAgentConfig(config, "codex", evidence)!
+      expect(resolved.hardStopContinuationCapability.status).toBe("unavailable")
+      expect(resolved.id).toBe("codex")
+      expect(resolved.displayName).toBe("Codex")
+    }
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {

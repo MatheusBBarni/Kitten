@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Supply captured-session CONTEXT to preview and prove saved-layout parity
 type: frontend
 complexity: medium

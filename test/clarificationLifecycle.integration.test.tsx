@@ -93,6 +93,7 @@ function wireAgent(providerKind: ProviderKind, options: MockAgentOptions = {}): 
     id: providerKind,
     ...recipe,
     clarificationCapability: { status: "supported", ...supportedAdapter },
+    hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
     steeringCapability: { status: "unavailable" },
     runtimeProfile: { kind: "standard" },
   }

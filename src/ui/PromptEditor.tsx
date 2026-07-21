@@ -37,6 +37,8 @@ import {
   selectRestoration,
   selectRestorationBundle,
   selectSessionCommands,
+  selectSessionPostInterruptContinuationRecovery,
+  selectSessionPostInterruptContinuationStatus,
   selectSessionPromptHistory,
   selectSessionSteeringRecovery,
   selectSessionSteeringStatus,
@@ -324,6 +326,16 @@ function SelectedPromptEditor({
   const agentCommands = useAppSelector(commandsSelector)
   const historySelector = useMemo(() => selectSessionPromptHistory(focusedSessionId), [focusedSessionId])
   const promptHistory = useAppSelector(historySelector)
+  const continuationStatusSelector = useMemo(
+    () => selectSessionPostInterruptContinuationStatus(focusedSessionId),
+    [focusedSessionId],
+  )
+  const continuationStatus = useAppSelector(continuationStatusSelector)
+  const continuationRecoverySelector = useMemo(
+    () => selectSessionPostInterruptContinuationRecovery(focusedSessionId),
+    [focusedSessionId],
+  )
+  const continuationRecovery = useAppSelector(continuationRecoverySelector)
   const steeringStatusSelector = useMemo(
     () => selectSessionSteeringStatus(focusedSessionId),
     [focusedSessionId],
@@ -358,6 +370,9 @@ function SelectedPromptEditor({
   focusedSession.current = focusedSessionId
   const [rows, setRows] = useState(MIN_EDITOR_ROWS)
   const [recoveryNotice, setRecoveryNotice] = useState<"restored" | "waiting" | null>(null)
+  const [continuationNotice, setContinuationNotice] = useState<
+    "restored" | "waiting" | "fallback" | null
+  >(null)
   const [completion, setCompletion] = useState<PromptCompletion>(null)
   const completionRef = useRef<PromptCompletion>(null)
   const fileCache = useRef<FilePathCache | null>(null)
@@ -369,6 +384,8 @@ function SelectedPromptEditor({
   const pendingFileReferences = useRef<readonly PendingFileReference[]>([])
   const previousDraft = useRef("")
   const acceptingFileReference = useRef(false)
+  const continuationAdmissionOpen = useRef(false)
+  const applyingContinuationRecovery = useRef(false)
   const applyingSteeringRecovery = useRef(false)
   const pendingQueryRenderMetric = useRef<PendingQueryRenderMetric | null>(null)
 
@@ -421,6 +438,36 @@ function SelectedPromptEditor({
     setRecoveryNotice("restored")
     return true
   }, [commitCompletion, controller, focusedSessionId, steeringRecovery, syncRows])
+
+  const restoreContinuationRecovery = useCallback((): boolean => {
+    const editor = textarea.current
+    if (!editor || !continuationRecovery) return false
+    if (editor.plainText.length > 0) {
+      setContinuationNotice("waiting")
+      return false
+    }
+
+    const recoveredText = continuationRecovery.blocks.map((block) => block.text).join("\n")
+    applyingContinuationRecovery.current = true
+    acceptingFileReference.current = true
+    editor.setText(recoveredText)
+    previousDraft.current = recoveredText
+    acceptingFileReference.current = false
+    recalledSession.current = null
+    pendingFileReferences.current = []
+    activeFileInteraction.current = null
+    fileSuppression.current = null
+    pendingQueryRenderMetric.current = null
+    continuationAdmissionOpen.current = false
+    commitCompletion(null)
+    syncRows(editor)
+    controller.actions.acknowledgePostInterruptRecovery(
+      focusedSessionId,
+      continuationRecovery.requestId,
+    )
+    setContinuationNotice("restored")
+    return true
+  }, [commitCompletion, continuationRecovery, controller, focusedSessionId, syncRows])
 
   const renderCachedFileToken = useCallback((
     token: FileToken,
@@ -645,6 +692,8 @@ function SelectedPromptEditor({
     if (previousSession.current === focusedSessionId) return
     previousSession.current = focusedSessionId
     setRecoveryNotice(null)
+    setContinuationNotice(null)
+    continuationAdmissionOpen.current = false
     fileRequestGeneration.current += 1
     fileCache.current = null
     fileLoad.current = null
@@ -674,8 +723,12 @@ function SelectedPromptEditor({
   // Recovery is an external-store payload that must be copied into OpenTUI's native
   // edit buffer exactly once before the controller is allowed to acknowledge it.
   useEffect(() => {
+    if (continuationRecovery) {
+      restoreContinuationRecovery()
+      return
+    }
     if (steeringRecovery) restoreSteeringRecovery()
-  }, [restoreSteeringRecovery, steeringRecovery])
+  }, [continuationRecovery, restoreContinuationRecovery, restoreSteeringRecovery, steeringRecovery])
 
   useEffect(() => () => {
     fileRequestGeneration.current += 1
@@ -707,12 +760,31 @@ function SelectedPromptEditor({
 
     // A pending recovery owns its exact payload until the editor can copy it. Never
     // clear or dispatch a changed draft while that lossless hand-off is unresolved.
+    if (continuationRecovery !== null) {
+      setContinuationNotice("waiting")
+      return
+    }
     if (steeringRecovery !== null) {
       setRecoveryNotice("waiting")
       return
     }
 
-    if (activeTurn) {
+    if (continuationStatus.queueCount > 0) return
+
+    let acceptedContinuation = false
+    if (
+      continuationAdmissionOpen.current &&
+      continuationStatus.phase === "idle"
+    ) {
+      const result = controller.actions.queuePostInterruptContinuation(text)
+      continuationAdmissionOpen.current = false
+      if (result.kind !== "queued") {
+        setContinuationNotice("fallback")
+        return
+      }
+      acceptedContinuation = true
+      setContinuationNotice(null)
+    } else if (activeTurn) {
       const result = controller.actions.steer(text)
       if (result.kind !== "queued") return
     }
@@ -733,10 +805,13 @@ function SelectedPromptEditor({
     previousDraft.current = ""
     acceptingFileReference.current = false
     setRows(MIN_EDITOR_ROWS)
-    if (!activeTurn) void controller.actions.sendPrompt(text)
+    if (!activeTurn && !acceptedContinuation) void controller.actions.sendPrompt(text)
   }, [
     activeTurn,
     commitCompletion,
+    continuationRecovery,
+    continuationStatus.phase,
+    continuationStatus.queueCount,
     controller,
     focusedSessionId,
     onRunCommand,
@@ -870,16 +945,29 @@ function SelectedPromptEditor({
         return
       }
       if (key.name !== "escape" || key.ctrl || key.meta || key.shift) return
+      if (
+        continuationStatus.queueCount > 0 &&
+        continuationStatus.phase !== "recovery"
+      ) {
+        key.preventDefault()
+        continuationAdmissionOpen.current = false
+        controller.actions.recoverPostInterruptContinuation()
+        return
+      }
       // Escape only means "interrupt" when there is a turn to interrupt. Idle, it
       // stays free for whatever the shell or a future overlay wants to do with it.
       if (status !== "working") return
       key.preventDefault()
+      continuationAdmissionOpen.current = true
+      setContinuationNotice(null)
       void controller.actions.cancel()
     },
     [
       armedFileMenu,
       armedSlashMenu,
       commitCompletion,
+      continuationStatus.phase,
+      continuationStatus.queueCount,
       controller,
       fileCompletion,
       focusedSessionId,
@@ -899,6 +987,13 @@ function SelectedPromptEditor({
     if (!editor) return
     const text = editor.plainText
 
+    if (applyingContinuationRecovery.current) {
+      applyingContinuationRecovery.current = false
+      previousDraft.current = text
+      syncRows(editor)
+      return
+    }
+
     if (applyingSteeringRecovery.current) {
       applyingSteeringRecovery.current = false
       previousDraft.current = text
@@ -910,6 +1005,13 @@ function SelectedPromptEditor({
       previousDraft.current = text
       syncRows(editor)
       return
+    }
+
+    if (continuationRecovery !== null) {
+      if (text.length === 0 && restoreContinuationRecovery()) return
+      setContinuationNotice("waiting")
+    } else if (continuationNotice === "restored") {
+      setContinuationNotice(null)
     }
 
     if (steeringRecovery !== null) {
@@ -965,9 +1067,12 @@ function SelectedPromptEditor({
     agentCommands,
     beginFileCompletion,
     commitCompletion,
+    continuationNotice,
+    continuationRecovery,
     controller,
     onRunCommand,
     recoveryNotice,
+    restoreContinuationRecovery,
     restoreSteeringRecovery,
     steeringRecovery,
     syncRows,
@@ -1016,10 +1121,25 @@ function SelectedPromptEditor({
               : steeringStatus.phase === "queued"
                 ? `Steering queued (${steeringStatus.queueCount})`
                 : null
+  const continuationTitle = continuationNotice === "restored"
+    ? "Continuation not sent · draft restored; use /new"
+    : continuationNotice === "waiting"
+      ? "Continuation not sent · clear editor to restore; use /new"
+      : continuationNotice === "fallback"
+        ? "Continuation unavailable · draft retained; use /new"
+        : continuationStatus.phase === "recovery"
+          ? "Continuation not sent · recovery ready; use /new"
+          : continuationStatus.phase === "dispatching"
+            ? "Continuation dispatching as the next prompt"
+            : continuationStatus.phase === "waiting"
+              ? "Continuation waiting for the interrupted turn to settle"
+              : continuationStatus.phase === "queued"
+                ? "Continuation queued · waiting to continue safely"
+                : null
   const historyTitle = ready && promptHistory.cursor !== null
     ? `${PROMPT_HISTORY_TITLE} ${promptHistory.cursor + 1}/${promptHistory.entries.length}`
     : null
-  const composerTitle = [historyTitle, steeringTitle].filter(Boolean).join(" · ") || undefined
+  const composerTitle = [historyTitle, continuationTitle ?? steeringTitle].filter(Boolean).join(" · ") || undefined
 
   return (
     <box
@@ -1039,7 +1159,13 @@ function SelectedPromptEditor({
         overflow: "visible",
       }}
       title={composerTitle}
-      titleColor={steeringTitle?.startsWith("Steering failed") ? palette.status.error : palette.accent}
+      titleColor={
+        continuationTitle?.startsWith("Continuation not sent") ||
+        continuationTitle?.startsWith("Continuation unavailable") ||
+        steeringTitle?.startsWith("Steering failed")
+          ? palette.status.error
+          : palette.accent
+      }
     >
       {armedSlashMenu ? (
         <box style={{ position: "absolute", left: 0, right: 0, bottom: rows + 2, zIndex: 1 }}>

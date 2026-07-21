@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Harden per-session headroom validity
 type: bugfix
 complexity: low

@@ -67,10 +67,13 @@ import { renderBootBanner, type BootBannerDisposer, type BootBannerOptions } fro
 import { renderCockpit } from "./ui/main.tsx"
 import { registerSyntaxParsers } from "./ui/syntaxParsers.ts"
 import {
+  formatUpdateOutcome,
   recordStandaloneInstallation,
+  runStandaloneUpdate,
   type PrimitiveResult,
   type StandaloneInstallationRecord,
   type StandaloneInstallationRecordInput,
+  type UpdateOutcome,
 } from "./update.ts"
 import { KITTEN_VERSION } from "./version.ts"
 
@@ -786,6 +789,11 @@ export function wantsHelp(argv: readonly string[]): boolean {
   return argv.includes("--help")
 }
 
+/** Whether the CLI was asked to run one standalone update transaction. */
+export function wantsUpdate(argv: readonly string[]): boolean {
+  return argv.includes("--update")
+}
+
 export interface CliFlagDispatchOptions {
   /** Output seam used by tests and the real stdout stream. */
   write?: (output: string) => void
@@ -797,21 +805,28 @@ function formatCliHelp(): string {
   return `Examples:
   npx @matheusbbarni/kitten       Try Kitten without installing
   kitten                          Launch in the current Git repository
+  kitten --update                 Update a verified install to latest stable and exit
   kitten --self-check             Run the headless boot check
 
 Kitten ${KITTEN_VERSION}
 
 Usage:
-  kitten [--version | --help | --self-check]
+  kitten [--version | --help | --update | --self-check]
 
 Options:
   --version                       Print the installed version
   --help                          Print this help
+  --update                        Update a verified install to latest stable and exit
   --self-check                    Verify Kitten can boot headlessly
 
-Install or upgrade:
-  npm / npx channel:              npm i -g @matheusbbarni/kitten@latest
-  standalone binary channel:     curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | sh
+Update contract:
+  Only verified global npm installs and installer-managed standalone binaries can update.
+  Source, local, npx, copied, and unknown contexts remain unchanged; there is no channel fallback.
+  The command does not launch the Cockpit, require a repository, start agents, prompt, or relaunch.
+
+Recovery after a safe refusal:
+  npm install --global @matheusbbarni/kitten@latest
+  curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash
 `
 }
 
@@ -833,6 +848,57 @@ export function dispatchCliFlags(argv: readonly string[], options: CliFlagDispat
   return false
 }
 
+export interface StandaloneUpdateDispatchOptions {
+  /** Standalone-only update service; never selects the npm channel. */
+  run?: () => Promise<UpdateOutcome>
+  /** Output seam used by tests and the real stdout stream. */
+  write?: (output: string) => void
+  /** Exit seam used by tests and the real process. */
+  exit?: (code: number) => void
+}
+
+/** Handle the public standalone update flag as one terminal-visible transaction. */
+export async function dispatchStandaloneUpdate(
+  argv: readonly string[],
+  options: StandaloneUpdateDispatchOptions = {},
+): Promise<boolean> {
+  if (!wantsUpdate(argv)) return false
+
+  let outcome: UpdateOutcome
+  try {
+    outcome = await (options.run ?? runStandaloneUpdate)()
+  } catch {
+    outcome = {
+      kind: "failed",
+      message: "the standalone update could not be completed safely",
+    }
+  }
+
+  ;(options.write ?? ((output: string) => process.stdout.write(output)))(`${formatUpdateOutcome(outcome)}\n`)
+  ;(options.exit ?? ((code: number) => process.exit(code)))(
+    outcome.kind === "updated" || outcome.kind === "already-current" ? 0 : 1,
+  )
+  return true
+}
+
+export interface PreBootCliDispatchOptions extends CliFlagDispatchOptions {
+  /** Injectable standalone runner used only after version/help decline the invocation. */
+  runUpdate?: () => Promise<UpdateOutcome>
+}
+
+/** Preserve metadata precedence, then dispatch the public async update boundary. */
+export async function dispatchPreBootCliFlags(
+  argv: readonly string[],
+  options: PreBootCliDispatchOptions = {},
+): Promise<boolean> {
+  if (dispatchCliFlags(argv, options)) return true
+  return dispatchStandaloneUpdate(argv, {
+    run: options.runUpdate,
+    write: options.write,
+    exit: options.exit,
+  })
+}
+
 /** Whether self-check should run the manual/nightly real-adapter reload gate. */
 export function wantsReloadProbe(argv: readonly string[]): boolean {
   return argv.includes("--reload-probe")
@@ -843,8 +909,8 @@ if (import.meta.main) {
     !await dispatchStandaloneRecordMode(process.argv) &&
     !await dispatchReservedChildMode(process.argv, process.env)
   ) {
-    const cliFlagHandled = dispatchCliFlags(process.argv)
-    if (!cliFlagHandled && wantsSelfCheck(process.argv)) {
+    const preBootFlagHandled = await dispatchPreBootCliFlags(process.argv)
+    if (!preBootFlagHandled && wantsSelfCheck(process.argv)) {
       try {
         const { frame, reloadProbe, mcp } = await runSelfCheck({
           reloadProbe: wantsReloadProbe(process.argv) ? {} : false,
@@ -863,7 +929,7 @@ if (import.meta.main) {
         process.stderr.write(`SELF-CHECK FAILED: ${error instanceof Error ? error.message : String(error)}\n`)
         process.exit(1)
       }
-    } else if (!cliFlagHandled) {
+    } else if (!preBootFlagHandled) {
       await main()
     }
   }

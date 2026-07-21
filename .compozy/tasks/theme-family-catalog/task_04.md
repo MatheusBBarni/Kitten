@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the grouped scrollable Settings picker
 type: frontend
 complexity: medium
@@ -29,11 +29,11 @@ Project the core theme catalog into typed, grouped, accessible Settings rows and
 
 ## Subtasks
 
-- [ ] Replace Settings' handwritten theme option derivation with typed catalog-to-row projection helpers and deterministic family grouping.
-- [ ] Render group labels and selectable preset rows with stable IDs, active-state labeling, and no duplicate focus targets.
-- [ ] Adapt the existing scrollbox pattern so keyboard movement keeps the selected theme row visible within a bounded viewport.
-- [ ] Preserve current Settings keymap, overlay precedence, cursor movement, immediate apply, and persistence wiring.
-- [ ] Extend Settings/UI tests and snapshots only where the grouped, scrollable UI contract changes.
+- [x] Replace Settings' handwritten theme option derivation with typed catalog-to-row projection helpers and deterministic family grouping.
+- [x] Render group labels and selectable preset rows with stable IDs, active-state labeling, and no duplicate focus targets.
+- [x] Adapt the existing scrollbox pattern so keyboard movement keeps the selected theme row visible within a bounded viewport.
+- [x] Preserve current Settings keymap, overlay precedence, cursor movement, immediate apply, and persistence wiring.
+- [x] Extend Settings/UI tests and snapshots only where the grouped, scrollable UI contract changes.
 
 ## Implementation Details
 
@@ -68,13 +68,13 @@ Project the core theme catalog into typed, grouped, accessible Settings rows and
 ## Tests
 
 - Unit tests:
-  - [ ] Assert projected rows contain all and only canonical catalog IDs, with deterministic family grouping and catalog order.
-  - [ ] Assert every selectable row ID is stable and unique, with no collision between group labels and theme rows.
-  - [ ] Assert keyboard movement updates the selected row and invokes `scrollChildIntoView` for rows outside the bounded viewport.
-  - [ ] Assert selecting a row applies the corresponding canonical ID immediately through the existing callback.
-  - [ ] Assert the settings view exposes the documentation-first provenance affordance without embedding source metadata in rows.
+  - [x] Assert projected rows contain all and only canonical catalog IDs, with deterministic family grouping and catalog order.
+  - [x] Assert every selectable row ID is stable and unique, with no collision between group labels and theme rows.
+  - [x] Assert keyboard movement updates the selected row and invokes `scrollChildIntoView` for rows outside the bounded viewport.
+  - [x] Assert selecting a row applies the corresponding canonical ID immediately through the existing callback.
+  - [x] Assert the settings view exposes the documentation-first provenance affordance without embedding source metadata in rows.
 - Integration tests:
-  - [ ] Exercise Settings overlay navigation with existing key bindings and verify overlay precedence/focus behavior remains unchanged while selecting an off-screen preset.
+  - [x] Exercise Settings overlay navigation with existing key bindings and verify overlay precedence/focus behavior remains unchanged while selecting an off-screen preset.
 - Test coverage target: >=80% for changed Settings row projection, navigation, and scrolling branches.
 - All targeted tests pass before handoff.
 
