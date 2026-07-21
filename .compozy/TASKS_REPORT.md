@@ -13,101 +13,88 @@ archived to `.compozy/tasks_done/` only when **all** of its tasks are `completed
 ## Summary
 
 | | Features | Task files |
-|---|---:|---:|
-| Remaining (`.compozy/tasks/`) | 0 | 0 pending + 0 not-yet-decomposed |
-| Archived (`.compozy/tasks_done/`) | 36 | 296 completed |
+|---|---:|---|
+| Remaining (`.compozy/tasks/`) | 1 | 6 pending + 0 not-yet-decomposed |
+| Archived (`.compozy/tasks_done/`) | 40 | 315 completed |
 
-- **Moved this run:** 6 features (46 tasks).
+- **Moved this run:** 5 features (25 tasks).
 
-## Moved to `.compozy/tasks_done/` this run
-
-### PRD: Reliable Concurrent MCP Calls for Supervised Work
-
-All 5 tasks completed. The packet has 12 un-ticked embedded checklist lines.
-
-| # | Title |
-|---:|---|
-| 01 | Add targeted clarification cancellation and bridge telemetry |
-| 02 | Admit concurrent authenticated MCP sockets per route |
-| 03 | Model closed MCP failure state in the core |
-| 04 | Classify bundled MCP failures at the ACP boundary |
-| 05 | Render truthful concurrent MCP tool outcomes |
-
-### Context Packs
-
-All 15 tasks completed. The packet has 11 un-ticked embedded checklist lines.
-
-| # | Title |
-|---:|---|
-| 01 | Core Context Pack lifecycle and deterministic assembly |
-| 02 | Store-owned Context Pack slice and selectors |
-| 03 | Strict Context Pack persistence |
-| 04 | Closed explore-v2 capability and Recipient Profile evidence |
-| 05 | Bounded workspace materialization and source fences |
-| 06 | Generation-bound Context Pack bridge |
-| 07 | Controller-owned Context Build lifecycle |
-| 08 | Review, sealing, and fail-closed Send Here |
-| 09 | Immutable sealed-pack handoff composition |
-| 10 | Confirmed Context Pack Markdown export |
-| 11 | /context workspace and review UI |
-| 12 | Context Pack File Explorer membership |
-| 13 | Context Pack attention cues |
-| 14 | Content-free Context Pack telemetry |
-| 15 | Explore-v2 real-adapter certification |
-
-### PRD: Cursor ACP Readiness and Truthful Model Controls
-
-All 7 tasks completed. The packet has 51 un-ticked embedded checklist lines.
-
-| # | Title |
-|---:|---|
-| 01 | Preserve exact Cursor profile and readiness taxonomy |
-| 02 | Add closed ACP live-config contract evidence |
-| 03 | Add targeted unavailable-Cursor recheck |
-| 04 | Render readiness-first Cursor model controls |
-| 05 | Align local-only Cursor docs and telemetry guardrails |
-| 06 | Review native evidence and add the exact Cursor profile |
-| 07 | Project bounded Cursor recovery state |
-
-### Harness Capability Composition
-
-All 4 tasks completed. The packet has 44 un-ticked embedded checklist lines.
-
-| # | Title |
-|---:|---|
-| 01 | Core capability-composition contract |
-| 02 | Fresh-generation controller composition |
-| 03 | Envelope-only adapter bridge guidance |
-| 04 | Content-free composition telemetry |
+## Remaining — `.compozy/tasks/`
 
 ### Kitten Orchestrator
 
-All 6 tasks completed. The packet has 67 un-ticked embedded checklist lines.
+All six task files remain `pending`; the `_tasks.md` index matches their frontmatter.
+
+| # | Title | Status |
+|---:|---|---|
+| 01 | Establish Private Workspace and Cockpit Package Boundary | pending |
+| 02 | Relocate Cockpit Runtime Launcher and Build Tooling | pending |
+| 03 | Relocate Cockpit Contract Suite and Preserve App Local CWD | pending |
+| 04 | Delegate Root Development Commands and CI to Cockpit | pending |
+| 05 | Bridge Root Release Orchestration to Cockpit Artifacts | pending |
+| 06 | Preserve Root Installer and Documentation Contract | pending |
+
+## Moved to `.compozy/tasks_done/` this run
+
+### PRD: Channel-Preserving CLI Update
+
+All 6 tasks completed. The packet has 11 un-ticked embedded checklist lines.
 
 | # | Title |
 |---:|---|
-| 01 | Establish Private Workspace and Cockpit Package Boundary |
-| 02 | Relocate Cockpit Runtime Launcher and Build Tooling |
-| 03 | Relocate Cockpit Contract Suite and Preserve App Local CWD |
-| 04 | Delegate Root Development Commands and CI to Cockpit |
-| 05 | Bridge Root Release Orchestration to Cockpit Artifacts |
-| 06 | Preserve Root Installer and Documentation Contract |
+| 01 | Define standalone update primitives |
+| 02 | Persist installer-owned standalone provenance |
+| 03 | Execute fail-closed standalone updates |
+| 04 | Dispatch standalone updates before boot |
+| 05 | Prove and update global npm installations |
+| 06 | Align update help and public install recovery guidance |
 
-### PRD: Session-Scoped File Explorer
+### PRD: Hard Stop Continuation
 
-All 9 tasks completed. The packet has 78 un-ticked embedded checklist lines.
+All 6 tasks completed. The packet has 69 un-ticked embedded checklist lines.
 
 | # | Title |
 |---:|---|
-| 01 | Store Explorer State, Transitions, and Narrow Selectors |
-| 02 | Containment-Safe Lazy Workspace Tree Source |
-| 03 | Direct-Argv External Editor Launcher |
-| 04 | Strict Editor Preference Config and Atomic Persistence |
-| 05 | Session-Addressed Explorer Orchestration and Production Injection |
-| 06 | Apply Saved and Watched Editor Preference at Runtime |
-| 07 | Explorer Command Registry, Keyboard Tree, and Responsive Presentation |
-| 08 | Settings Editor Draft and Explicit Save/Cancel UX |
-| 09 | Content-Free Explorer Telemetry and Cross-Boundary Proof |
+| 01 | Model the live post-interrupt continuation lifecycle |
+| 02 | Attest safe continuation settlement at the adapter boundary |
+| 03 | Persist only the settled-interrupted harness checkpoint |
+| 04 | Coordinate confirmed hard-stop continuation dispatch |
+| 05 | Present and recover continuation drafts in the composer |
+| 06 | Record content-free hard-stop outcomes and prove privacy boundaries |
+
+### Product Requirements Document: Statusline Context Headroom Field
+
+All 4 tasks completed.
+
+| # | Title |
+|---:|---|
+| 01 | Harden per-session headroom validity |
+| 02 | Add CONTEXT to pure statusline and proposal contracts |
+| 03 | Supply focused-session CONTEXT to the saved footer |
+| 04 | Supply captured-session CONTEXT to preview and prove saved-layout parity |
+
+### PRD: Statusline Item Colors
+
+All 4 tasks completed.
+
+| # | Title |
+|---:|---|
+| 01 | Extend Core Statusline Color Contract |
+| 02 | Persist Canonical Statusline Colors Safely |
+| 03 | Define Strict Colored Statusline Proposal Grammar |
+| 04 | Render Shared Colored Statusline Segments |
+
+### PRD: Accessible Source-Attributed Theme Family Catalog
+
+All 5 tasks completed. The packet has 11 un-ticked embedded checklist lines.
+
+| # | Title |
+|---:|---|
+| 01 | Create the protocol-free theme catalog |
+| 02 | Canonicalize configuration, persistence, and telemetry compatibility |
+| 03 | Expand palette rendering and accessibility coverage |
+| 04 | Build the grouped scrollable Settings picker |
+| 05 | Publish the catalog contract and release evidence |
 
 ## Previously archived (already in `.compozy/tasks_done/`)
 
@@ -118,9 +105,13 @@ All 9 tasks completed. The packet has 78 un-ticked embedded checklist lines.
 | `ask-user-mcp-bridge` | PRD: Provider-Independent `ask_user` MCP Bridge | 7/7 |
 | `clarification-question-picker` | Product Requirements Document: Clarification Question Picker | 12/12 |
 | `claude-code-style-tui` | PRD: Claude Code-Style TUI Reskin | 11/11 |
+| `concurrent-mcp-calls` | PRD: Reliable Concurrent MCP Calls for Supervised Work | 5/5 |
+| `context-packs` | Context Packs | 15/15 |
+| `cursor-acp-readiness` | PRD: Cursor ACP Readiness and Truthful Model Controls | 7/7 |
 | `cursor-integration` | Cursor Integration | 8/8 |
-| `default-models-per-provider` | Default Models per Provider Task List | 8/8 |
+| `default-models-per-provider` | Default Models per Provider | 8/8 |
 | `file-selector-at` | Product Requirements Document: @ File Selector | 6/6 |
+| `harness-capability-composition` | Harness Capability Composition | 4/4 |
 | `harness-delivery` | Product Requirements Document: Harness Delivery for Fresh Conversations | 5/5 |
 | `harness-prompt-contract` | PRD: Versioned Kitten Harness Prompt Contract | 1/1 |
 | `host-owned-mcp-control` | PRD: Host-Owned MCP Child Control | 7/7 |
@@ -135,9 +126,10 @@ All 9 tasks completed. The packet has 78 un-ticked embedded checklist lines.
 | `multi-provider-agent-sessions` | PRD: Kitten Multi-Session Fleet | 9/9 |
 | `npm-and-github-release` | NPM and GitHub Release - PRD | 8/8 |
 | `prompt-history-navigation` | Prompt History Navigation | 4/4 |
+| `session-file-explorer` | PRD: Session-Scoped File Explorer | 9/9 |
 | `session-resume` | PRD: Resumable Cross-Agent Sessions | 13/13 |
 | `session-tabs` | Product Requirements Document: Session Tabs | 12/12 |
-| `settings-modal` | Settings Modal - PRD | 10/10 |
+| `settings-modal` | Settings Modal | 10/10 |
 | `slash-command-menu` | PRD: Slash-Command Menu (`/`) | 7/7 |
 | `statusline-customization` | PRD: Conversational Statusline Customization (`/statusline`) | 7/7 |
 | `streaming-markdown-rendering` | PRD: Elevated Markdown - The Trustworthy Hand-off Review Console | 6/6 |
@@ -146,7 +138,7 @@ All 9 tasks completed. The packet has 78 un-ticked embedded checklist lines.
 
 ## Index drift observations
 
-The authoritative per-task frontmatter marks every archived task complete. The archival scan found
-`indexDrift(0)` for each packet moved this run (`concurrent-mcp-calls`, `context-packs`,
-`cursor-acp-readiness`, `harness-capability-composition`, `kitten-orchestrator`, and
-`session-file-explorer`); their `_tasks.md` indexes were therefore not used to decide completion.
+The authoritative per-task frontmatter marks every packet moved this run complete. The archival
+scan found `indexDrift(0)` for `channel-preserving-update`, `hard-stop-continuation`,
+`statusline-context-field`, `statusline-item-colors`, and `theme-family-catalog`; their
+`_tasks.md` indexes were not used to decide completion.
