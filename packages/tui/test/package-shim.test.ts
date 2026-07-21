@@ -15,7 +15,7 @@ describe("main npm package shim contract", () => {
   it("ships the Node launcher instead of the Bun source tree", () => {
     expect(pkg.name).toBe("@matheusbbarni/kitten")
     expect(pkg.bin).toEqual({ kitten: "bin/kitten.mjs" })
-    expect(pkg.files).toEqual(["bin"])
+    expect(pkg.files).toEqual(["bin", "CHANGELOG.md", "README.md"])
     expect(pkg).not.toHaveProperty("module")
     expect(pkg).not.toHaveProperty("engines.bun")
   })

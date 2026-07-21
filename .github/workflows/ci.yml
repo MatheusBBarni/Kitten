@@ -15,12 +15,12 @@ jobs:
         with:
           bun-version: 1.3.13
       - name: Resolve README install channel
-        run: bun run scripts/check-readme-install.ts README.md
+        run: bun run packages/tui/scripts/check-readme-install.ts README.md
       - run: bun install --frozen-lockfile
       - name: Install showcase dependencies
         working-directory: site
         run: bun install --frozen-lockfile
       - name: Typecheck
-        run: bun run typecheck
+        run: bun run --filter @matheusbbarni/kitten typecheck
       - name: Test with coverage
-        run: bun run test:coverage
+        run: bun run --filter @matheusbbarni/kitten test:coverage

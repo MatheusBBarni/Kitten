@@ -378,13 +378,14 @@ After a real release, the four-platform smoke job checks `npx @matheusbbarni/kit
 
 ## Project structure
 
-- `src/agent` — ACP adapter boundary
-- `src/core` — pure domain model and reducer
-- `src/store` — app state
-- `src/app` — controller and orchestration
-- `src/ui` — terminal interface
-- `src/config` — config loading, validation, boot flow
-- `scripts` — build helpers and tooling
+- `packages/tui/src/agent` — ACP adapter boundary
+- `packages/tui/src/core` — pure domain model and reducer
+- `packages/tui/src/store` — app state
+- `packages/tui/src/app` — controller and orchestration
+- `packages/tui/src/ui` — terminal interface
+- `packages/tui/src/config` — config loading, validation, boot flow
+- `packages/tui/scripts` — Cockpit build and delivery tooling
+- `scripts/install.sh` — stable checksummed standalone installer URL
 
 ## Tech stack
 

@@ -9,6 +9,7 @@ type Step = {
   uses?: string
   with?: Record<string, unknown>
   run?: string
+  "working-directory"?: string
 }
 
 type Job = {
@@ -91,6 +92,10 @@ describe("consolidated release workflow", () => {
     const buildCommands = build.steps?.map((step) => step.run ?? "").join("\n") ?? ""
     expect(buildCommands).toContain("bun run scripts/build.ts ${{ matrix.platform }}")
     expect(buildCommands).toContain("./dist/kitten-${{ matrix.platform }} --self-check")
+
+    for (const name of ["Compile ${{ matrix.platform }} on its native runner", "Self-check the artifact", "Per-target checksum"]) {
+      expect(build.steps?.find((step) => step.name === name)?.["working-directory"]).toBe("packages/tui")
+    }
   })
 
   it("assembles and uploads four binaries plus one combined checksum manifest", () => {
@@ -105,7 +110,7 @@ describe("consolidated release workflow", () => {
 
   it("transfers each generated platform package from the same native build", () => {
     const upload = build.steps?.find((step) => step.uses === "actions/upload-artifact@v4")
-    expect(upload?.with?.path).toContain("dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}")
+    expect(upload?.with?.path).toContain("packages/tui/dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}")
   })
 
   it("publishes all platform packages before the exact-pinned main shim", () => {
@@ -121,7 +126,9 @@ describe("consolidated release workflow", () => {
     expect(platformStep?.run).toContain('chmod +x "$package_dir/kitten-$platform"')
     expect(platformStep?.run).toContain('npm publish "$package_dir" --provenance --access public')
     expect(mainStep?.run).toContain("pkg.optionalDependencies[name] = version")
-    expect(mainStep?.run).toContain("npm publish . --provenance --access public")
+    expect(mainStep?.run).toContain('const path = "packages/tui/package.json"')
+    expect(mainStep?.run).toContain("cp README.md packages/tui/README.md")
+    expect(mainStep?.run).toContain("npm publish ./packages/tui --provenance --access public")
   })
 
   it("normalizes component release tags before validating, polling, and smoking the published version", () => {
@@ -209,6 +216,14 @@ describe("consolidated release workflow", () => {
     const versionStep = publish.steps?.find((step) => step.name === "Validate the release version")
     expect(versionStep?.run).toContain('^kitten-v[0-9]+\\.[0-9]+\\.[0-9]+$')
     expect(versionStep?.run).toContain('tag_version="${TAG_NAME#kitten-v}"')
+    expect(versionStep?.run).toContain("require('./packages/tui/package.json').version")
+  })
+
+  it("contains no obsolete root build or package publication path", () => {
+    const compile = build.steps?.find((step) => step.name === "Compile ${{ matrix.platform }} on its native runner")
+    expect(compile?.["working-directory"]).toBe("packages/tui")
+    expect(source).not.toContain("require('./package.json').version")
+    expect(source).not.toContain("npm publish . --provenance")
   })
 
   it("keeps ordinary pushes release-only and limits publish credentials to the npm token", () => {

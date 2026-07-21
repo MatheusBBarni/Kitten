@@ -11,7 +11,9 @@
     "kitten": "bin/kitten.mjs"
   },
   "files": [
-    "bin"
+    "bin",
+    "CHANGELOG.md",
+    "README.md"
   ],
   "publishConfig": {
     "access": "public"

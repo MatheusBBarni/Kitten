@@ -75,7 +75,7 @@ describe("configuration docs page", () => {
 
   test("keeps the configuration reference aligned with the runtime schema", async () => {
     const loaderSource = await readFile(
-      new URL("../../src/config/configLoader.ts", import.meta.url),
+      new URL("../../packages/tui/src/config/configLoader.ts", import.meta.url),
       "utf8",
     );
 

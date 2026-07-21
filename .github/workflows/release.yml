@@ -123,14 +123,17 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Compile ${{ matrix.platform }} on its native runner
+        working-directory: packages/tui
         run: bun run scripts/build.ts ${{ matrix.platform }}
 
       - name: Self-check the artifact
+        working-directory: packages/tui
         run: |
           chmod +x dist/kitten-${{ matrix.platform }}
           ./dist/kitten-${{ matrix.platform }} --self-check
 
       - name: Per-target checksum
+        working-directory: packages/tui
         run: |
           cd dist
           if command -v sha256sum >/dev/null 2>&1; then
@@ -143,9 +146,9 @@ jobs:
         with:
           name: kitten-${{ matrix.platform }}
           path: |
-            dist/kitten-${{ matrix.platform }}
-            dist/kitten-${{ matrix.platform }}.sha256
-            dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}
+            packages/tui/dist/kitten-${{ matrix.platform }}
+            packages/tui/dist/kitten-${{ matrix.platform }}.sha256
+            packages/tui/dist/npm/@matheusbbarni/kitten-${{ matrix.platform }}
 
   attach:
     name: Attach binaries and SHA256SUMS
@@ -237,7 +240,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
+          version="$(node -p "require('./packages/tui/package.json').version")"
           if [[ ! "$TAG_NAME" =~ ^kitten-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::release tag must be a stable Kitten release tag such as kitten-v1.2.3"
             exit 1
@@ -285,7 +288,7 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require("node:fs")
-          const path = "package.json"
+          const path = "packages/tui/package.json"
           const pkg = JSON.parse(fs.readFileSync(path, "utf8"))
           const version = process.env.VERSION
           const platforms = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]
@@ -299,7 +302,8 @@ jobs:
           }
           fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
           NODE
-          npm publish . --provenance --access public
+          cp README.md packages/tui/README.md
+          npm publish ./packages/tui --provenance --access public
 
   smoke:
     name: Smoke ${{ matrix.platform }} from npm

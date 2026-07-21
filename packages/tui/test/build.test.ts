@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { createHash } from "node:crypto"
-import { lstatSync, readFileSync, realpathSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -40,30 +40,10 @@ describe("package-local build ownership", () => {
     )
   })
 
-  it("keeps the remaining root build and bin surfaces as symlink-only bridges", () => {
-    const bridges = [
-      [join(WORKSPACE_ROOT, "scripts", "build.ts"), join(TUI_ROOT, "scripts", "build.ts")],
-      [join(WORKSPACE_ROOT, "bin", "kitten.mjs"), join(TUI_ROOT, "bin", "kitten.mjs")],
-      [join(WORKSPACE_ROOT, "bin", "launcher.mjs"), join(TUI_ROOT, "bin", "launcher.mjs")],
-    ] as const
-
-    for (const [bridge, owner] of bridges) {
-      expect(lstatSync(bridge).isSymbolicLink()).toBe(true)
-      expect(realpathSync(bridge)).toBe(realpathSync(owner))
-    }
-
-    const contract = readFileSync(join(TUI_ROOT, "COMPATIBILITY.md"), "utf8")
-    expect(contract).toContain("Task 03")
-    expect(contract).toContain("Task 04")
-  })
-
-  it("imports the root build bridge with the package-local resolution contract", async () => {
-    const bridge = await import("../../../scripts/build.ts")
-
-    expect(bridge.PACKAGE_ROOT).toBe(PACKAGE_ROOT)
-    expect(bridge.ENTRYPOINT).toBe(ENTRYPOINT)
-    expect(bridge.TREE_SITTER_WORKER_ENTRYPOINT).toBe(TREE_SITTER_WORKER_ENTRYPOINT)
-    expect(await bridge.readPackageVersion()).toBe(pkg.version)
+  it("removes the final root public-delivery bridges", () => {
+    expect(existsSync(join(WORKSPACE_ROOT, "scripts", "build.ts"))).toBe(false)
+    expect(existsSync(join(WORKSPACE_ROOT, "bin"))).toBe(false)
+    expect(existsSync(join(TUI_ROOT, "COMPATIBILITY.md"))).toBe(false)
   })
 })
 

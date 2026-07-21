@@ -3,6 +3,10 @@ import { describe, expect, it } from "bun:test"
 import rootPackage from "../../../package.json" with { type: "json" }
 import tuiPackage from "../package.json" with { type: "json" }
 
+const lockfile = Bun.JSONC.parse(
+  await Bun.file(new URL("../../../bun.lock", import.meta.url)).text(),
+) as { workspaces: Record<string, { name?: string }> }
+
 const TUI_PACKAGE_NAME = "@matheusbbarni/kitten"
 const FORWARDED_LIFECYCLE = [
   "start",
@@ -46,8 +50,18 @@ const EXPECTED_OPTIONAL_DEPENDENCIES = {
 
 describe("workspace ownership boundary", () => {
   it("makes the root a private packages-only workspace", () => {
+    expect(rootPackage.name).toBe("kitten-workspace")
     expect(rootPackage.private).toBe(true)
     expect(rootPackage.workspaces).toEqual(["packages/*"])
+    expect(rootPackage).not.toHaveProperty("version")
+    expect(rootPackage).not.toHaveProperty("description")
+    expect(rootPackage).not.toHaveProperty("repository")
+    expect(rootPackage).not.toHaveProperty("bin")
+    expect(rootPackage).not.toHaveProperty("files")
+    expect(rootPackage).not.toHaveProperty("publishConfig")
+    expect(rootPackage).not.toHaveProperty("optionalDependencies")
+    expect(lockfile.workspaces[""]?.name).toBe("kitten-workspace")
+    expect(lockfile.workspaces["packages/tui"]?.name).toBe(TUI_PACKAGE_NAME)
   })
 
   it("keeps every root lifecycle script forwarding-only", () => {
@@ -64,23 +78,29 @@ describe("workspace ownership boundary", () => {
     expect(tuiPackage.name).toBe(TUI_PACKAGE_NAME)
     expect(tuiPackage.version).toBe("0.6.1")
     expect(tuiPackage.bin).toEqual({ kitten: "bin/kitten.mjs" })
-    expect(tuiPackage.files).toEqual(["bin"])
+    expect(tuiPackage.files).toEqual(["bin", "CHANGELOG.md", "README.md"])
     expect(tuiPackage.publishConfig).toEqual({ access: "public" })
     expect(tuiPackage.optionalDependencies).toEqual(EXPECTED_OPTIONAL_DEPENDENCIES)
     expect(tuiPackage.dependencies).toEqual(EXPECTED_DEPENDENCIES)
     expect(tuiPackage.devDependencies).toEqual(EXPECTED_DEV_DEPENDENCIES)
   })
 
-  it("keeps the temporary root dependency bridge pinned to the TUI owner", () => {
-    expect(rootPackage.dependencies).toEqual(tuiPackage.dependencies)
-    expect(rootPackage.devDependencies).toEqual(tuiPackage.devDependencies)
+  it("keeps dependency ownership exclusively in the TUI package", () => {
+    expect(rootPackage).not.toHaveProperty("dependencies")
+    expect(rootPackage).not.toHaveProperty("devDependencies")
+    expect(tuiPackage.dependencies).toEqual(EXPECTED_DEPENDENCIES)
+    expect(tuiPackage.devDependencies).toEqual(EXPECTED_DEV_DEPENDENCIES)
   })
 
   it("keeps lifecycle authority in the TUI package", () => {
     expect(tuiPackage.scripts.start).toBe("bun run --cwd ../.. packages/tui/src/index.ts")
     expect(tuiPackage.scripts.typecheck).toBe("tsc --noEmit -p tsconfig.json")
     expect(tuiPackage.scripts.test).toBe("bun test --cwd ../.. packages/tui/src packages/tui/test")
-    expect(tuiPackage.scripts.selfcheck).toBe("bun run --cwd ../.. packages/tui/src/index.ts --self-check")
-    expect(tuiPackage.scripts.build).toBe("bun run --cwd ../.. packages/tui/scripts/build.ts")
+    expect(tuiPackage.scripts.selfcheck).toBe(
+      "bun run --cwd ../.. packages/tui/src/index.ts --self-check",
+    )
+    expect(tuiPackage.scripts.build).toBe(
+      "bun run --cwd ../.. packages/tui/scripts/build.ts",
+    )
   })
 })

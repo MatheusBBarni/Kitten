@@ -21,7 +21,7 @@ const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).
 }
 
 describe("CI workflow", () => {
-  it("resolves the README install channel before installing root dependencies", () => {
+  it("resolves the README install channel from the TUI package before installing dependencies", () => {
     const steps = workflow.jobs.verify.steps
     const resolveIndex = steps.findIndex(
       (step) => step.name === "Resolve README install channel",
@@ -34,7 +34,7 @@ describe("CI workflow", () => {
 
     expect(steps[resolveIndex]).toEqual({
       name: "Resolve README install channel",
-      run: "bun run scripts/check-readme-install.ts README.md",
+      run: "bun run packages/tui/scripts/check-readme-install.ts README.md",
     })
     expect(resolveIndex).toBeGreaterThanOrEqual(0)
     expect(resolveIndex).toBeLessThan(installIndex)
@@ -52,5 +52,16 @@ describe("CI workflow", () => {
     expect(packageJson.scripts["test:coverage"]).toBe(
       "bun test --cwd ../.. packages/tui/src packages/tui/test --coverage --isolate",
     )
+  })
+
+  it("invokes the TUI package explicitly for validation", () => {
+    expect(workflow.jobs.verify.steps).toContainEqual({
+      name: "Typecheck",
+      run: "bun run --filter @matheusbbarni/kitten typecheck",
+    })
+    expect(workflow.jobs.verify.steps).toContainEqual({
+      name: "Test with coverage",
+      run: "bun run --filter @matheusbbarni/kitten test:coverage",
+    })
   })
 })

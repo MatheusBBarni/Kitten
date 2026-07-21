@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { readFileSync } from "node:fs"
-import { checkReadmeInstall, readInstallContract, type ResolveUrl } from "../../../scripts/check-readme-install.ts"
+import { checkReadmeInstall, readInstallContract, type ResolveUrl } from "../scripts/check-readme-install.ts"
 
 const README = readFileSync(new URL("../../../README.md", import.meta.url), "utf8")
 
@@ -30,6 +30,13 @@ describe("README install contract", () => {
     expect(README).toContain(
       "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
     )
+  })
+
+  it("documents package-local Cockpit ownership without obsolete root application paths", () => {
+    expect(README).toContain("`packages/tui/src/agent`")
+    expect(README).toContain("`packages/tui/scripts`")
+    expect(README).not.toContain("- `src/agent`")
+    expect(README).not.toContain("- `scripts` — build helpers and tooling")
   })
 
   it("rejects the OWNER placeholder before resolving URLs", async () => {
