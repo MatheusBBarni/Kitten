@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.6.0...kitten-v0.6.1) (2026-07-21)
+
+
+### Fixes
+
+* improve Ask User and Cursor controls ([#41](https://github.com/MatheusBBarni/Kitten/issues/41)) ([abcb1ab](https://github.com/MatheusBBarni/Kitten/commit/abcb1ab729c27ed0c1337a906439827252cf4629))
+
 ## [0.6.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.5.0...kitten-v0.6.0) (2026-07-21)
 
 
