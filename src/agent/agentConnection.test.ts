@@ -1417,7 +1417,7 @@ describe("concurrent prompt guard", () => {
 
 describe("config options (task_03)", () => {
   /** A single ACP select config option, in the SDK wire shape the mock serves. */
-  const selectOption = (id: string, category: string, currentValue: string, values: [string, string][]) => ({
+  const selectOption = (id: string, category: string | undefined, currentValue: string, values: [string, string][]) => ({
     type: "select" as const,
     id,
     name: id,
@@ -1454,6 +1454,44 @@ describe("config options (task_03)", () => {
         ],
       },
     ])
+    await conn.dispose()
+  })
+
+  it("keeps Cursor's uncategorized model select visible across live session snapshots", async () => {
+    const cursorModel = selectOption("model", undefined, "composer-2.5", [
+      ["auto", "Auto"],
+      ["composer-2.5", "Composer 2.5"],
+      ["gpt-5.6", "GPT-5.6"],
+    ])
+    const cursorMode = selectOption("mode", undefined, "agent", [["agent", "Agent"]])
+    const { conn, mock, events } = await connected(
+      { authMethods: [CURSOR_LOGIN_METHOD], configOptions: [cursorModel, cursorMode] },
+      undefined,
+      CERTIFIED_CURSOR_CONFIG,
+    )
+
+    const sessionId = await conn.newSession("/tmp/project")
+    const expectedModel = {
+      id: "model",
+      category: "model",
+      label: "model",
+      currentValue: "composer-2.5",
+      options: [{ value: "auto", name: "Auto" }, { value: "composer-2.5", name: "Composer 2.5" }, { value: "gpt-5.6", name: "GPT-5.6" }],
+    }
+    const expectedMode = { id: "mode", category: "", label: "mode", currentValue: "agent", options: [{ value: "agent", name: "Agent" }] }
+    expect(configEvents(events)).toEqual([{ kind: "config_options", options: [expectedModel, expectedMode] }])
+
+    expect(await conn.setSessionConfigOption(sessionId, "model", "gpt-5.6")).toEqual([
+      { ...expectedModel, currentValue: "gpt-5.6" },
+      expectedMode,
+    ])
+
+    await mock.emitConfigOptionUpdate()
+    await waitFor(() => configEvents(events).length === 2)
+    expect(configEvents(events).at(-1)).toEqual({
+      kind: "config_options",
+      options: [{ ...expectedModel, currentValue: "gpt-5.6" }, expectedMode],
+    })
     await conn.dispose()
   })
 

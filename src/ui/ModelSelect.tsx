@@ -32,9 +32,9 @@
  * Portal (ADR-004).
  */
 
-import type { KeyEvent } from "@opentui/core"
+import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import {
   EFFORT_CATEGORY,
@@ -79,6 +79,12 @@ export const CURRENT_MARK = "●"
 export const OTHER_MARK = "○"
 /** A value chosen for the target of a pending hand-off, not yet applied. */
 export const TARGET_MARK = "→"
+
+/** Stable identity for the bounded model list viewport. */
+export const MODEL_SELECT_SCROLLBOX_ID = "model-select-options"
+
+/** Stable identity for the highlighted selectable row inside the model list. */
+export const MODEL_SELECT_HIGHLIGHTED_ROW_ID = "model-select-highlighted-option"
 
 /** The tag a section carries when a requested switch has not been confirmed (ADR-004). */
 export const UNVERIFIED_LABEL = "unverified"
@@ -182,8 +188,32 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
   const requested = requestedBySession.get(sessionId)
   // The pending mid-conversation confirm, or null when the list is showing.
   const [confirming, setConfirming] = useState<ModelEffortValueRow | null>(null)
+  const optionList = useRef<ScrollBoxRenderable | null>(null)
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const clamped = Math.min(selected, Math.max(rows.length - 1, 0))
+
+  const attachOptionList = useCallback((node: ScrollBoxRenderable | null): void => {
+    if (scrollTimer.current !== null) clearTimeout(scrollTimer.current)
+    optionList.current = node
+    if (node === null) {
+      scrollTimer.current = null
+      return
+    }
+    // ScrollBox resolves child positions during its native layout pass. Defer one task
+    // so the initial selected Cursor model is visible before the developer navigates.
+    scrollTimer.current = setTimeout(() => {
+      if (optionList.current === node) node.scrollChildIntoView(MODEL_SELECT_HIGHLIGHTED_ROW_ID)
+      scrollTimer.current = null
+    }, 0)
+  }, [])
+
+  useEffect(() => {
+    const node = optionList.current
+    if (node === null || confirming !== null) return
+    const timer = setTimeout(() => node.scrollChildIntoView(MODEL_SELECT_HIGHLIGHTED_ROW_ID), 0)
+    return () => clearTimeout(timer)
+  }, [clamped, confirming, sessionId])
 
   const apply = useCallback(
     (row: ModelEffortValueRow): void => {
@@ -319,7 +349,23 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
       {confirming ? (
         <ConfirmStep row={confirming} />
       ) : (
-        <ModelEffortControl options={options} highlighted={clamped} requested={requested} fixedEffort={fixedEffort} />
+        <scrollbox
+          id={MODEL_SELECT_SCROLLBOX_ID}
+          ref={attachOptionList}
+          // Keep ScrollBox's own content-and-scrollbar layout intact. Its child owns
+          // the column direction; overriding the scrollbox itself clips later sections.
+          style={{ flexGrow: 1, flexShrink: 1 }}
+          scrollX={false}
+          horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
+        >
+          <ModelEffortControl
+            options={options}
+            highlighted={clamped}
+            requested={requested}
+            fixedEffort={fixedEffort}
+            scrollable
+          />
+        </scrollbox>
       )}
       {!confirming ? <DefaultApplyFeedback result={defaultApplyResult} /> : null}
 
@@ -329,6 +375,9 @@ function ModelSelectDialog({ overlay }: { overlay: ModelSelectOverlay }): ReactN
     </box>
   )
 }
+
+/** OpenTUI otherwise reserves a row for a horizontal scrollbar. */
+const HIDDEN_HORIZONTAL_SCROLLBAR = { visible: false } as const
 
 /**
  * Describe only the terminal outcome. Confirmed model and effort remain the rows above;
@@ -412,6 +461,7 @@ export function ModelEffortControl({
   outgoing,
   fixedEffort,
   emptyNotice = NO_OPTIONS_NOTICE,
+  scrollable = false,
 }: {
   options: ConfigOption[]
   highlighted: number
@@ -420,6 +470,8 @@ export function ModelEffortControl({
   /** A provider-confirmed fixed value, rendered without a config-option action. */
   fixedEffort?: string
   emptyNotice?: string
+  /** Let a parent ScrollBox own overflow instead of clipping a long agent list. */
+  scrollable?: boolean
 }): ReactNode {
   const palette = usePalette()
   const modelOption = options.find((option) => option.category === MODEL_CATEGORY)
@@ -437,7 +489,7 @@ export function ModelEffortControl({
   }
 
   return (
-    <box style={{ flexDirection: "column", flexShrink: 1, overflow: "hidden" }}>
+    <box style={{ flexDirection: "column", flexShrink: scrollable ? 0 : 1, overflow: scrollable ? undefined : "hidden" }}>
       {modelOption ? (
         <Section
           heading={MODEL_HEADING}
@@ -446,6 +498,7 @@ export function ModelEffortControl({
           outgoing={outgoing?.get(modelOption.id)}
           offset={0}
           highlighted={highlighted}
+          highlightedRowId={MODEL_SELECT_HIGHLIGHTED_ROW_ID}
           showCurrentWhenNoChoices={showFixedEffort}
           first
         />
@@ -458,6 +511,7 @@ export function ModelEffortControl({
           outgoing={outgoing?.get(effortOption.id)}
           offset={modelOption ? modelOption.options.length : 0}
           highlighted={highlighted}
+          highlightedRowId={MODEL_SELECT_HIGHLIGHTED_ROW_ID}
           showCurrentWhenNoChoices={false}
           first={!modelOption}
         />
@@ -481,6 +535,7 @@ function Section({
   outgoing,
   offset,
   highlighted,
+  highlightedRowId,
   showCurrentWhenNoChoices,
   first,
 }: {
@@ -490,6 +545,7 @@ function Section({
   outgoing: string | undefined
   offset: number
   highlighted: number
+  highlightedRowId: string
   showCurrentWhenNoChoices: boolean
   first: boolean
 }): ReactNode {
@@ -507,6 +563,7 @@ function Section({
           current={value.value === option.currentValue}
           outgoing={value.value === outgoing}
           highlighted={highlighted === offset + index}
+          id={highlighted === offset + index ? highlightedRowId : undefined}
         />
       )) : showCurrentWhenNoChoices && option.currentValue.length > 0 ? (
         <ValueRowView name={option.currentValue} current outgoing={false} highlighted={false} />
@@ -534,15 +591,17 @@ function ValueRowView({
   current,
   outgoing,
   highlighted,
+  id,
 }: {
   name: string
   current: boolean
   outgoing: boolean
   highlighted: boolean
+  id?: string
 }): ReactNode {
   const palette = usePalette()
   return (
-    <text style={{ flexShrink: 0 }}>
+    <text id={id} style={{ flexShrink: 0 }}>
       <span fg={palette.accent}>{highlighted ? ROW_MARKER : " "}</span>
       <span fg={current ? palette.tool.completed : outgoing ? palette.accent : palette.muted}>{` ${current ? CURRENT_MARK : outgoing ? TARGET_MARK : OTHER_MARK} `}</span>
       <span fg={current || outgoing || highlighted ? palette.text : palette.muted}>{name}</span>

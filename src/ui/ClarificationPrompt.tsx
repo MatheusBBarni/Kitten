@@ -7,7 +7,7 @@
  * key is consumed while the projection is active.
  */
 
-import type { KeyEvent } from "@opentui/core"
+import type { EditBufferRenderable, KeyEvent, TextareaRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 
@@ -21,6 +21,7 @@ import type { ClarificationOverlay } from "../store/appStore.ts"
 import { selectClarificationOverlay } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import {
+  CLARIFICATION_TEXT_KEY_BINDINGS,
   CLARIFICATION_HINT,
   clarificationOptionIndex,
   matchClarificationCommand,
@@ -32,6 +33,12 @@ export const CLARIFICATION_SELECTION_MARKER = "▸"
 export const CLARIFICATION_REQUIRED_ERROR = "Complete every required field before submitting."
 /** Stable identity for the bounded clarification dialog viewport. */
 export const CLARIFICATION_DIALOG_ID = "clarification-dialog"
+/** Stable identity prefix for free-form clarification fields. */
+export const CLARIFICATION_TEXTAREA_ID_PREFIX = "clarification-text-"
+
+/** Short answers remain compact while long answers can wrap before scrolling. */
+export const MIN_CLARIFICATION_TEXT_ROWS = 1
+export const MAX_CLARIFICATION_TEXT_ROWS = 4
 
 export function clarificationTitleFor(displayName: string): string {
   return `${CLARIFICATION_TITLE} from ${displayName}`
@@ -238,12 +245,10 @@ function ClarificationDialog({ overlay }: { overlay: ClarificationOverlay }): Re
             activeTarget={activeTarget?.fieldIndex === fieldIndex ? activeTarget.kind : null}
             optionIndex={optionIndices[field.id] ?? 0}
             selected={multiValues[field.id] ?? []}
-            text={textValues[field.id] ?? ""}
             onText={(value) => {
               setValidationError(false)
               setTextValues((current) => ({ ...current, [field.id]: value }))
             }}
-            onSubmit={submit}
           />
         ))}
       </box>
@@ -261,17 +266,13 @@ function ClarificationFieldView({
   activeTarget,
   optionIndex,
   selected,
-  text,
   onText,
-  onSubmit,
 }: {
   field: ClarificationField
   activeTarget: "choice" | "text" | null
   optionIndex: number
   selected: readonly string[]
-  text: string
   onText: (value: string) => void
-  onSubmit: () => void
 }): ReactNode {
   const palette = usePalette()
   const fieldLabel = `${field.label}${field.required ? " *" : ""}`
@@ -316,7 +317,8 @@ function ClarificationFieldView({
       {field.mode !== "text" && field.allowsCustom ? (
         <box
           style={{
-            flexDirection: "row",
+            flexDirection: "column",
+            width: "100%",
             paddingLeft: 2,
             backgroundColor: customActive ? palette.selectionSurface : undefined,
           }}
@@ -326,43 +328,103 @@ function ClarificationFieldView({
               {customActive ? CLARIFICATION_SELECTION_MARKER : " "}
             </span>
             <span fg={palette.muted}>{` ${field.options.length + 1}. `}</span>
-            <span fg={customActive ? palette.text : palette.muted}>Custom answer: </span>
+            <span fg={customActive ? palette.text : palette.muted}>Custom answer:</span>
           </text>
-          <input
+          <ClarificationTextInput
+            fieldId={field.id}
             focused={customActive}
-            value={text}
             placeholder="Type a custom answer"
-            onInput={onText}
-            onSubmit={onSubmit}
-            style={{
-              flexGrow: 1,
-              textColor: palette.text,
-              cursorColor: palette.status.awaiting_clarification,
-              backgroundColor: customActive ? palette.selectionSurface : palette.surface,
-              focusedBackgroundColor: palette.selectionSurface,
-            }}
+            onText={onText}
+            backgroundColor={customActive ? palette.selectionSurface : palette.surface}
+            focusedBackgroundColor={palette.selectionSurface}
           />
         </box>
       ) : null}
       {field.mode === "text" ? (
-        <box style={{ flexDirection: "row", paddingLeft: 2 }}>
-          <text fg={activeTarget === "text" ? palette.text : palette.muted}>Response: </text>
-          <input
+        <box style={{ flexDirection: "column", width: "100%", paddingLeft: 2 }}>
+          <text fg={activeTarget === "text" ? palette.text : palette.muted}>Response:</text>
+          <ClarificationTextInput
+            fieldId={field.id}
             focused={activeTarget === "text"}
-            value={text}
             placeholder="Type a response"
-            onInput={onText}
-            onSubmit={onSubmit}
-            style={{
-              flexGrow: 1,
-              textColor: palette.text,
-              cursorColor: palette.status.awaiting_clarification,
-              backgroundColor: palette.surface,
-              focusedBackgroundColor: palette.selectionSurface,
-            }}
+            onText={onText}
+            backgroundColor={palette.surface}
+            focusedBackgroundColor={palette.selectionSurface}
           />
         </box>
       ) : null}
+    </box>
+  )
+}
+
+/** The shared multiline editor for every free-form clarification field. */
+function ClarificationTextInput({
+  fieldId,
+  focused,
+  placeholder,
+  onText,
+  backgroundColor,
+  focusedBackgroundColor,
+}: {
+  readonly fieldId: string
+  readonly focused: boolean
+  readonly placeholder: string
+  readonly onText: (value: string) => void
+  readonly backgroundColor: string
+  readonly focusedBackgroundColor: string
+}): ReactNode {
+  const palette = usePalette()
+  const textarea = useRef<TextareaRenderable>(null)
+  const [rows, setRows] = useState(MIN_CLARIFICATION_TEXT_ROWS)
+
+  const syncRows = useCallback((editor: EditBufferRenderable | null = textarea.current): void => {
+    if (!editor) return
+    const next = Math.min(
+      Math.max(Math.max(editor.lineCount, editor.editorView.getTotalVirtualLineCount()), MIN_CLARIFICATION_TEXT_ROWS),
+      MAX_CLARIFICATION_TEXT_ROWS,
+    )
+    setRows((current) => current === next ? current : next)
+  }, [])
+
+  const onContentChange = useCallback((): void => {
+    const editor = textarea.current
+    if (!editor) return
+    onText(editor.plainText)
+    syncRows(editor)
+  }, [onText, syncRows])
+
+  const onSizeChange = useCallback(
+    function onSizeChange(this: EditBufferRenderable): void {
+      syncRows(this)
+    },
+    [syncRows],
+  )
+
+  return (
+    <box style={{ flexDirection: "row", width: "100%", paddingLeft: 2 }}>
+      <textarea
+        id={`${CLARIFICATION_TEXTAREA_ID_PREFIX}${fieldId}`}
+        ref={textarea}
+        focused={focused}
+        placeholder={placeholder}
+        keyBindings={CLARIFICATION_TEXT_KEY_BINDINGS}
+        onContentChange={onContentChange}
+        onSizeChange={onSizeChange}
+        style={{
+          flexGrow: 1,
+          flexShrink: 1,
+          flexBasis: 0,
+          minWidth: 0,
+          maxWidth: "100%",
+          height: rows,
+          wrapMode: "word",
+          textColor: palette.text,
+          cursorColor: palette.status.awaiting_clarification,
+          placeholderColor: palette.muted,
+          backgroundColor,
+          focusedBackgroundColor,
+        }}
+      />
     </box>
   )
 }
@@ -410,5 +472,7 @@ function clarificationAnswers(
 /** Keys the focused OpenTUI input may consume without escaping the modal. */
 function isTextInputKey(key: KeyEvent): boolean {
   if (key.ctrl || key.meta) return false
-  return key.name.length === 1 || ["backspace", "delete", "left", "right", "home", "end"].includes(key.name)
+  return key.name.length === 1
+    || ["backspace", "delete", "left", "right", "home", "end"].includes(key.name)
+    || (key.shift && ["return", "kpenter"].includes(key.name))
 }

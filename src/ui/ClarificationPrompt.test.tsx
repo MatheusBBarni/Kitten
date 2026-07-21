@@ -4,7 +4,7 @@
 // Boundary OUT: ACP response mapping and controller coordinator lifecycle, owned by agentConnection/controller suites
 
 import { describe, expect, it } from "bun:test"
-import { RGBA, type Renderable } from "@opentui/core"
+import { RGBA, type Renderable, type TextareaRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -21,6 +21,9 @@ import {
   CLARIFICATION_REQUIRED_ERROR,
   CLARIFICATION_DIALOG_ID,
   CLARIFICATION_SELECTION_MARKER,
+  CLARIFICATION_TEXTAREA_ID_PREFIX,
+  MAX_CLARIFICATION_TEXT_ROWS,
+  MIN_CLARIFICATION_TEXT_ROWS,
   clarificationTitleFor,
 } from "./ClarificationPrompt.tsx"
 import { CockpitApp, HELP_TITLE } from "./CockpitApp.tsx"
@@ -33,6 +36,7 @@ const HEIGHT = 24
 const REQUEST_ID = "clarification-1"
 const GENERATION = 7
 const DRAFT_MARKER = "zzq"
+const LONG_TEXT_RESPONSE = "This answer uses enough separate words to wrap naturally inside the clarification field without collapsing into a narrow character column."
 
 function paletteColor(hex: string): string {
   return RGBA.fromHex(hex).toString()
@@ -44,6 +48,12 @@ function backgroundOf(setup: TestRendererSetup, needle: string): string | undefi
     .lines.flatMap((line) => line.spans)
     .find((span) => span.text.includes(needle))
     ?.bg.toString()
+}
+
+function clarificationTextarea(setup: TestRendererSetup, fieldId: string): TextareaRenderable | undefined {
+  return setup.renderer.root.findDescendantById(
+    `${CLARIFICATION_TEXTAREA_ID_PREFIX}${fieldId}`,
+  ) as TextareaRenderable | undefined
 }
 
 const SINGLE_PAYLOAD: ClarificationPayload = {
@@ -235,6 +245,52 @@ describe("ClarificationPrompt contents and priority", () => {
 
     await destroyMounted(renderer)
   })
+
+  it("wraps and grows every free-form clarification field like the prompt editor", async () => {
+    const payload: ClarificationPayload = {
+      prompt: "Choose a boundary and add the details",
+      fields: [
+        { ...(SINGLE_PAYLOAD.fields[0] as ClarificationSingleField), allowsCustom: true },
+        TEXT_PAYLOAD.fields[0]!,
+      ],
+    }
+    const controller = createFakeController()
+    const setup = await renderWithClarification(controller, payload)
+    const { renderer, mockInput, waitForFrame } = setup
+    const custom = clarificationTextarea(setup, "boundary")
+    const response = clarificationTextarea(setup, "notes")
+
+    expect(custom?.wrapMode).toBe("word")
+    expect(response?.wrapMode).toBe("word")
+    expect(custom?.height).toBe(MIN_CLARIFICATION_TEXT_ROWS)
+    expect(response?.height).toBe(MIN_CLARIFICATION_TEXT_ROWS)
+
+    await actAsync(() => {
+      mockInput.pressTab()
+    })
+    await actAsync(async () => {
+      await mockInput.typeText(LONG_TEXT_RESPONSE)
+    })
+    await waitForFrame(() => (custom?.height ?? 0) > MIN_CLARIFICATION_TEXT_ROWS)
+    expect(custom?.plainText).toBe(LONG_TEXT_RESPONSE)
+    expect(custom?.editorView.getTotalVirtualLineCount()).toBeGreaterThan(1)
+    expect(custom?.height).toBeGreaterThan(MIN_CLARIFICATION_TEXT_ROWS)
+    expect(custom?.height).toBeLessThanOrEqual(MAX_CLARIFICATION_TEXT_ROWS)
+
+    await actAsync(() => {
+      mockInput.pressTab()
+    })
+    await actAsync(async () => {
+      await mockInput.typeText(LONG_TEXT_RESPONSE)
+    })
+    await waitForFrame(() => (response?.height ?? 0) > MIN_CLARIFICATION_TEXT_ROWS)
+    expect(response?.plainText).toBe(LONG_TEXT_RESPONSE)
+    expect(response?.editorView.getTotalVirtualLineCount()).toBeGreaterThan(1)
+    expect(response?.height).toBeGreaterThan(MIN_CLARIFICATION_TEXT_ROWS)
+    expect(response?.height).toBeLessThanOrEqual(MAX_CLARIFICATION_TEXT_ROWS)
+
+    await destroyMounted(renderer)
+  })
 })
 
 describe("ClarificationPrompt outcomes", () => {
@@ -318,6 +374,47 @@ describe("ClarificationPrompt outcomes", () => {
         outcome: {
           kind: "submitted",
           answers: { notes: { selectedOptionIds: [], customText: "Keep the reducer pure" } },
+        },
+      },
+    ])
+
+    await destroyMounted(renderer)
+  })
+
+  it("adds a line with Shift+Enter before submitting a text response", async () => {
+    const controller = createFakeController()
+    const { renderer, mockInput, waitForFrame } = await renderWithClarification(controller, TEXT_PAYLOAD)
+
+    await actAsync(async () => {
+      await mockInput.typeText("Keep the reducer pure")
+    })
+    await actAsync(() => {
+      mockInput.pressEnter({ shift: true })
+    })
+    await actAsync(async () => {
+      await mockInput.typeText("and retain the visible history")
+    })
+
+    expect(controller.calls.respondClarification).toHaveLength(0)
+    await waitForFrame(
+      (frame) => frame.includes("Keep the reducer pure") && frame.includes("and retain the visible history"),
+    )
+    await actAsync(() => {
+      mockInput.pressEnter()
+    })
+
+    expect(controller.calls.respondClarification).toEqual([
+      {
+        requestId: REQUEST_ID,
+        generation: GENERATION,
+        outcome: {
+          kind: "submitted",
+          answers: {
+            notes: {
+              selectedOptionIds: [],
+              customText: "Keep the reducer pure\nand retain the visible history",
+            },
+          },
         },
       },
     ])

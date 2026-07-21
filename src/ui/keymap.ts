@@ -301,12 +301,18 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
  * one module-level array can be shared across renders without the textarea rebuilding
  * that map on every pass.
  */
-export const PROMPT_KEY_BINDINGS: TextareaKeyBinding[] = [
+const SUBMIT_AND_NEWLINE_KEY_BINDINGS: TextareaKeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "kpenter", action: "submit" },
   { name: "return", shift: true, action: "newline" },
   { name: "kpenter", shift: true, action: "newline" },
 ]
+
+/** The prompt and clarification text fields share the same familiar multiline contract. */
+export const PROMPT_KEY_BINDINGS = SUBMIT_AND_NEWLINE_KEY_BINDINGS
+
+/** Text answers in a clarification submit on Enter and add a line with Shift+Enter. */
+export const CLARIFICATION_TEXT_KEY_BINDINGS = SUBMIT_AND_NEWLINE_KEY_BINDINGS
 
 /**
  * The editor's keys, for the help panel.
@@ -915,7 +921,7 @@ export const APPROVAL_HINT = `↑↓ move  Enter choose  1-${MAX_DIGIT_OPTIONS} 
 
 /** The complete keyboard teaching surface shown only while clarification owns input. */
 export const CLARIFICATION_HINT =
-  `↑↓ move  Tab/Shift+Tab field/text  1-${MAX_DIGIT_OPTIONS} pick  Space toggle  Enter submit  Ctrl+S skip form  Esc cancel request`
+  `↑↓ move  Tab/Shift+Tab field/text  1-${MAX_DIGIT_OPTIONS} pick  Space toggle  Enter submit  Shift+Enter line  Ctrl+S skip form  Esc cancel request`
 
 /** The complete keyboard teaching surface for explicit delegation. */
 export const DELEGATION_HINT = "Tab/Shift+Tab field  Enter launch  Esc cancel"

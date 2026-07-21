@@ -67,7 +67,10 @@ describe("ask_user MCP schema", () => {
     ["too many options", { fields: [{ id: "field", question: "Question", options: Array.from({ length: MAX_ASK_USER_OPTIONS + 1 }, (_, index) => ({ id: `o-${index}`, label: "Option" })) }] }],
     ["duplicate field id", { fields: [{ id: "same", question: "One", allows_custom: true }, { id: "same", question: "Two", allows_custom: true }] }],
     ["duplicate option id", { fields: [{ id: "field", question: "Question", options: [{ id: "same", label: "One" }, { id: "same", label: "Two" }] }] }],
-    ["impossible field", { fields: [{ id: "field", question: "Question" }] }],
+    ["text-only non-final field", { fields: [
+      { id: "first", question: "Question" },
+      { id: "last", question: "Last question", options: [{ id: "option", label: "Option" }] },
+    ] }],
     ["caller timeout", { ...INPUT, timeout: 1 }],
     ["caller session identity", { ...INPUT, session_id: "private-session" }],
   ])("rejects %s", (_label, value) => {
@@ -95,6 +98,77 @@ describe("ask_user MCP schema", () => {
       }],
     })
   })
+
+  it("provides free-form input only for the final Ask User choice field", () => {
+    const parsed = askUserInputSchema.parse({
+      fields: [
+        {
+          id: "first-choice",
+          question: "Choose the first path",
+          options: [{ id: "safe", label: "Safe" }],
+          allows_custom: true,
+        },
+        {
+          id: "final-choice",
+          question: "Choose the final path",
+          options: [{ id: "fast", label: "Fast" }],
+          allows_custom: false,
+        },
+      ],
+    })
+
+    expect(normalizeAskUserInput(parsed).fields).toEqual([
+      {
+        id: "first-choice",
+        label: "Choose the first path",
+        required: true,
+        mode: "single",
+        options: [{ id: "safe", label: "Safe" }],
+        allowsCustom: false,
+      },
+      {
+        id: "final-choice",
+        label: "Choose the final path",
+        required: true,
+        mode: "single",
+        options: [{ id: "fast", label: "Fast" }],
+        allowsCustom: true,
+      },
+    ])
+  })
+
+  it("makes a text-only final field available without a caller flag", () => {
+    const parsed = askUserInputSchema.parse({
+      fields: [
+        {
+          id: "choice",
+          question: "Choose a path",
+          options: [{ id: "safe", label: "Safe" }],
+        },
+        {
+          id: "details",
+          question: "Add details",
+        },
+      ],
+    })
+
+    expect(normalizeAskUserInput(parsed).fields).toEqual([
+      {
+        id: "choice",
+        label: "Choose a path",
+        required: true,
+        mode: "single",
+        options: [{ id: "safe", label: "Safe" }],
+        allowsCustom: false,
+      },
+      {
+        id: "details",
+        label: "Add details",
+        required: true,
+        mode: "text",
+      },
+    ])
+  })
 })
 
 describe("ask_user MCP server and serialization", () => {
@@ -115,6 +189,7 @@ describe("ask_user MCP server and serialization", () => {
       expect(tools.tools.map((tool) => tool.name)).toEqual([ASK_USER_MCP_TOOL_NAME])
       expect(tools.tools[0]?.description).toContain("instead of writing a plain-text question")
       expect(tools.tools[0]?.description).toContain("consequential-decision")
+      expect(tools.tools[0]?.description).toContain("final field includes a free-form input")
       expect(tools.tools[0]!.inputSchema).toMatchObject({
         type: "object",
         required: ["fields"],
@@ -157,7 +232,12 @@ describe("ask_user MCP server and serialization", () => {
     try {
       const result = await client.callTool({
         name: ASK_USER_MCP_TOOL_NAME,
-        arguments: { fields: [{ id: "field", question: secret }] },
+        arguments: {
+          fields: [
+            { id: "field", question: secret },
+            { id: "final", question: "Choose a path", options: [{ id: "safe", label: "Safe" }] },
+          ],
+        },
       })
       expect(result.isError).toBe(true)
       expect(JSON.stringify(result)).not.toContain(secret)

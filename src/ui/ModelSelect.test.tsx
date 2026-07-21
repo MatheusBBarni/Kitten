@@ -35,6 +35,7 @@ import {
   ROW_MARKER,
   TAB_MARKER,
   UNVERIFIED_LABEL,
+  MODEL_SELECT_SCROLLBOX_ID,
 } from "./ModelSelect.tsx"
 import { APPROVAL_HINT, MODEL_SELECT_CONFIRM_HINT, MODEL_SELECT_HINT } from "./keymap.ts"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -315,6 +316,41 @@ describe("ModelSelect visibility and content", () => {
     expect(frame).toContain(`${CURRENT_MARK} default`)
     // The fixed effort is an honest display fact, not a third selectable option.
     expect(frame).not.toContain(`${ROW_MARKER} ${CURRENT_MARK} default`)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("scrolls Cursor's complete confirmed model list and applies an off-screen model", async () => {
+    const controller = createFakeController({ runtimes: [...readyRuntimes(), cursorRuntime()] })
+    const options: ConfigOption[] = [{
+      id: "model",
+      category: MODEL_CATEGORY,
+      label: "Model",
+      currentValue: "cursor-model-3",
+      options: Array.from({ length: 30 }, (_, index) => ({
+        value: `cursor-model-${index + 1}`,
+        name: `Cursor model ${index + 1}`,
+      })),
+    }]
+    seedOptions(controller, "cursor", options)
+    controller.actions.selectConversation("cursor")
+    const setup = await renderWithSelector(controller)
+    const list = setup.renderer.root.findDescendantById(MODEL_SELECT_SCROLLBOX_ID)
+
+    expect(list).toBeDefined()
+    expect(setup.captureCharFrame()).not.toContain("Cursor model 30")
+
+    await actAsync(async () => {
+      for (let index = 1; index < 30; index += 1) setup.mockInput.pressArrow("down")
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    })
+    const frame = await setup.waitForFrame((value) => value.includes("Cursor model 30"))
+    expect(frame).toContain(`${ROW_MARKER} ${OTHER_MARK} Cursor model 30`)
+
+    await actAsync(() => setup.mockInput.pressEnter())
+    expect(controller.calls.setSessionConfigOption).toEqual([
+      { configId: "model", value: "cursor-model-30", sessionId: "cursor" },
+    ])
 
     await destroyMounted(setup.renderer)
   })

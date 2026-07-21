@@ -737,6 +737,56 @@ describe("translateSessionUpdate: config options", () => {
     expect(event?.kind === "config_options" && event.options[0]?.category).toBe("")
   })
 
+  it("normalizes Cursor's uncategorized model select without surfacing its other controls", () => {
+    const update: SessionUpdate = {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        {
+          type: "select",
+          id: "model",
+          name: "Model",
+          currentValue: "composer-2.5",
+          options: [
+            { value: "auto", name: "Auto" },
+            { value: "composer-2.5", name: "Composer 2.5" },
+            { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+          ],
+        },
+        {
+          type: "select",
+          id: "mode",
+          name: "Mode",
+          currentValue: "ask",
+          options: [{ value: "ask", name: "Ask" }],
+        },
+      ],
+    }
+
+    expect(translateSessionUpdate(update, undefined, "cursor")).toEqual({
+      kind: "config_options",
+      options: [
+        {
+          id: "model",
+          category: "model",
+          label: "Model",
+          currentValue: "composer-2.5",
+          options: [
+            { value: "auto", name: "Auto" },
+            { value: "composer-2.5", name: "Composer 2.5" },
+            { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+          ],
+        },
+        {
+          id: "mode",
+          category: "",
+          label: "Mode",
+          currentValue: "ask",
+          options: [{ value: "ask", name: "Ask" }],
+        },
+      ],
+    })
+  })
+
   it("flattens grouped select options into a single ordered list", () => {
     const update: SessionUpdate = {
       sessionUpdate: "config_option_update",

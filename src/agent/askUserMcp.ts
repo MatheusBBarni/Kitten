@@ -23,16 +23,16 @@ export const ASK_USER_MCP_MODE_FLAG = KITTEN_MCP_MODE_FLAG
 export const ASK_USER_MCP_SERVER_NAME = KITTEN_MCP_SERVER_NAME
 export const ASK_USER_MCP_TOOL_NAME = "ask_user"
 
-/** MCP server metadata describing the unchanged structured interaction contract. */
+/** MCP server metadata describing the structured interaction contract. */
 export const ASK_USER_MCP_INSTRUCTIONS =
-  "Use the ask_user tool whenever you need input from the supervising user to continue. Do not present questions or answer choices as plain assistant text; call ask_user with the structured question, then wait for its outcome before continuing. This includes workflows and skills that require an interactive question tool."
+  "Use the ask_user tool whenever you need input from the supervising user to continue. Do not present questions or answer choices as plain assistant text; call ask_user with the structured question, then wait for its outcome before continuing. Kitten always gives the supervising user a free-form input on the final field. This includes workflows and skills that require an interactive question tool."
 
 /**
  * Adapter-only guidance prepended to a prompt when this server is attached. It never
  * enters Kitten's transcript, history, persistence, telemetry, or diagnostics.
  */
 export const ASK_USER_MCP_HOST_GUIDANCE =
-  "<kitten-runtime-instruction>When you need input from the supervising user to continue, you MUST call the ask_user MCP tool. Do not write a question or answer choices in assistant text. Call ask_user with one structured question and wait for its submitted, skipped, timed-out, or cancelled outcome before continuing. This applies when a workflow or skill requires an interactive question tool too.</kitten-runtime-instruction>"
+  "<kitten-runtime-instruction>When you need input from the supervising user to continue, you MUST call the ask_user MCP tool. Do not write a question or answer choices in assistant text. Call ask_user with one structured question and wait for its submitted, skipped, timed-out, or cancelled outcome before continuing. Kitten always provides a free-form input on the final field. This applies when a workflow or skill requires an interactive question tool too.</kitten-runtime-instruction>"
 
 export const MAX_ASK_USER_FRAME_BYTES = 64 * 1024
 export const MAX_ASK_USER_TEXT_BYTES = 4 * 1024
@@ -64,12 +64,8 @@ const fieldSchema = z.object({
   allows_multiple: z.boolean().optional(),
   allows_custom: z.boolean().optional(),
 }).strict().superRefine((field, context) => {
-  const options = field.options ?? []
-  if (options.length === 0 && field.allows_custom !== true) {
-    context.addIssue({ code: "custom", message: GENERIC_INVALID_REQUEST })
-  }
   const optionIds = new Set<string>()
-  for (const option of options) {
+  for (const option of field.options ?? []) {
     if (optionIds.has(option.id)) {
       context.addIssue({ code: "custom", message: GENERIC_INVALID_REQUEST })
       return
@@ -85,12 +81,18 @@ export const askUserInputSchema = z.object({
   fields: z.array(fieldSchema).min(1, GENERIC_INVALID_REQUEST).max(MAX_ASK_USER_FIELDS, GENERIC_INVALID_REQUEST),
 }).strict().superRefine((form, context) => {
   const fieldIds = new Set<string>()
-  for (const field of form.fields) {
+  for (const [index, field] of form.fields.entries()) {
     if (fieldIds.has(field.id)) {
       context.addIssue({ code: "custom", message: GENERIC_INVALID_REQUEST })
       return
     }
     fieldIds.add(field.id)
+    // The only free-form field is the final one. Earlier fields must provide
+    // choices so callers cannot create an interior text input.
+    if (index < form.fields.length - 1 && (field.options ?? []).length === 0) {
+      context.addIssue({ code: "custom", message: GENERIC_INVALID_REQUEST })
+      return
+    }
   }
 })
 
@@ -158,7 +160,8 @@ export interface RunAskUserMcpOptions extends AskUserMcpServerOptions {
 
 /** Convert the narrow external form into Kitten's protocol-free clarification model. */
 export function normalizeAskUserInput(input: AskUserMcpInput): ClarificationPayload {
-  const fields = input.fields.map(normalizeField)
+  const lastFieldIndex = input.fields.length - 1
+  const fields = input.fields.map((field, index) => normalizeField(field, index === lastFieldIndex))
   return {
     ...(input.title === undefined ? {} : { title: input.title }),
     ...(input.context === undefined ? {} : { context: input.context }),
@@ -274,7 +277,7 @@ export function createAskUserMcpRegistrar(
   return (server) => {
     server.registerTool(ASK_USER_MCP_TOOL_NAME, {
       title: "Ask the supervising user",
-      description: "Ask the supervising user a structured consequential-decision question in Kitten. Use this instead of writing a plain-text question when the user's answer determines the safe next step; wait for its submitted, skipped, timed-out, or cancelled outcome before continuing.",
+      description: "Ask the supervising user a structured consequential-decision question in Kitten. The final field includes a free-form input alongside any choices. Use this instead of writing a plain-text question when the user's answer determines the safe next step; wait for its submitted, skipped, timed-out, or cancelled outcome before continuing.",
       inputSchema: askUserInputSchema,
     }, async (input) => {
       const parsed = askUserInputSchema.safeParse(input)
@@ -304,7 +307,10 @@ export async function runAskUserMcp(
   })
 }
 
-function normalizeField(field: AskUserMcpInput["fields"][number]): ClarificationField {
+function normalizeField(
+  field: AskUserMcpInput["fields"][number],
+  isFinalField: boolean,
+): ClarificationField {
   const label = field.header ?? field.question
   const description = field.header
     ? [field.question, field.context].filter((part): part is string => part !== undefined).join("\n")
@@ -321,7 +327,9 @@ function normalizeField(field: AskUserMcpInput["fields"][number]): Clarification
     ...base,
     mode: field.allows_multiple === true ? "multi" : "single",
     options,
-    allowsCustom: field.allows_custom === true,
+    // Ask User is host-owned: reserve one free-form response at the end of the form
+    // so choices in earlier fields stay structured without limiting the final answer.
+    allowsCustom: isFinalField,
   }
 }
 
