@@ -38,16 +38,60 @@ _Avoid_: Universal engine, shared app controller
 The durable lifecycle that carries one queued task through isolated attempts, verification, review, and final disposition.
 _Avoid_: Run, session, queue row
 
+**Workflow Board**:
+The ordered visual collection of Workflow Stages, bound to one trusted repository, that governs an Orchestrated Work's next intended activity.
+_Avoid_: Task list, project queue
+
+**Workflow Stage**:
+A user-defined ordered column on a Workflow Board that may supply an Orchestrated Work's default Skill and receives successful work from its preceding stage.
+_Avoid_: Status, queue state
+
+**Workflow Skill**:
+A named agent-instruction bundle resolved at Run Attempt start from an Orchestrated Work override or its Workflow Stage's current default.
+_Avoid_: Provider prompt, shell command
+
+**Skill Catalog**:
+The configured local collection of validated Workflow Skills from which stages and work overrides may select.
+_Avoid_: Free-text skill name, remote marketplace
+
+**Runnable Orchestrated Work**:
+An Orchestrated Work permitted to start a new Run Attempt whenever it enters a valid Workflow Stage.
+_Avoid_: Always-on task, background process
+
+**Execution Status**:
+The system-managed operational state of an Orchestrated Work as derived from its current or latest Run Attempt.
+_Avoid_: Column, workflow stage, user-managed status
+
+**Global Execution Limit**:
+The user-configured cap, defaulting to one, on automatically active Orchestrated Work across all Workflow Boards.
+_Avoid_: Per-board limit, unbounded parallelism
+
+**Ready for Review**:
+The terminal Execution Status reached after a successful final Workflow Stage and awaiting explicit human review.
+_Avoid_: Completed, automatically published
+
+**Stage Lock**:
+The temporary prohibition on moving an Orchestrated Work while its Run Attempt is running or awaiting an Attention Blocker outcome.
+_Avoid_: Live drag, implicit cancellation
+
 **Run Attempt**:
 One agent session that acts on an Orchestrated Work's shared worktree using one exact Run Context.
 _Avoid_: Retry of hidden session state, entire task lifecycle
 
+**Run Transcript**:
+The immutable chronological record of one Run Attempt's Run Context, agent conversation, Attention Blockers, and final outcome.
+_Avoid_: Mutable chat, live card state
+
+**Orchestrated Work History**:
+The chronological collection of all Run Transcripts belonging to one Orchestrated Work.
+_Avoid_: Latest chat, run summary
+
 **Attention Blocker**:
-A bounded task or domain clarification that pauses a Run Attempt until the developer answers or the request settles safely.
+A bounded task or domain clarification that places its Orchestrated Work in needs-attention while the same Run Attempt awaits one safely settled outcome.
 _Avoid_: Permission prompt, arbitrary agent question
 
 **Run Context**:
-The immutable, auditable input assembled automatically for one Run Attempt from trusted task, repository, and prior-review evidence.
+The immutable, auditable input assembled automatically for one Run Attempt from the complete effective Orchestrated Work snapshot, its resolved Workflow Skill, and trusted repository and prior-review evidence.
 _Avoid_: Context Pack, hidden prompt, agent-generated plan
 
 **Execution Route**:
@@ -67,8 +111,12 @@ An explicitly reviewed transfer of task, workspace, context, transcript, and evi
 _Avoid_: Live session transfer, shared session control
 
 **Agent Profile Registry**:
-The versioned user-level configuration that both Kitten applications use to resolve certified agent launch recipes and readiness.
+The versioned user-level configuration that both Kitten applications use to resolve certified agent launch recipes, readiness, and new-card provider defaults.
 _Avoid_: Shared application database, provider credential store
+
+**Provider Default**:
+A user-level provider, model, and effort preference that initializes a new Orchestrated Work without altering existing work.
+_Avoid_: Retroactive card setting, Run Context override
 
 **Predecessor Import**:
 The explicit, idempotent copy of Task Orchestrator data into Kitten Orchestrator-owned storage while leaving the source untouched.
@@ -431,7 +479,7 @@ _Avoid_: Open-only explorer command, separate shortcut behavior
 - "grok" could mean the executable or the provider — resolved: **Grok Build** uses the `grok-build` provider identity, while `grok` names only the external CLI.
 - "shared session" was ambiguous between portable context and shared runtime ownership — resolved: applications exchange an explicitly reviewed **Cross-App Handoff**, and the recipient creates a new owned session.
 - "shared core" was ambiguous about a shared database — resolved: the applications share the **Agent Profile Registry** and code contracts, while all product data remains app-owned.
-- "orchestration" did not imply first-release parallelism — resolved: V1 preserves one globally active Orchestrated Work and defers autonomous child delegation.
+- "orchestration" did not imply first-release parallelism — resolved: V1 uses a user-configured **Global Execution Limit**, defaulting to one, rather than autonomous child delegation.
 - "preserve stored data" was ambiguous between schema parity and mutating the predecessor database — resolved: Kitten Orchestrator performs an explicit **Predecessor Import** and retains the original for rollback.
 - "kill the Task Orchestrator repo" was ambiguous between deletion and retirement — resolved: import relevant history into Kitten, then archive the predecessor repository read-only with a relocation notice.
 - "context" was used for both an agent's context window and a curated reusable artifact — resolved: the reusable artifact is a **Context Pack**.

@@ -1,5 +1,9 @@
 # Migrate the desktop product parity-first
 
+## Status
+
+Superseded by [ADR-0022](0022-deliver-kanban-desktop-before-parity-migration.md)
+
 Kitten Orchestrator will begin as a behavior-preserving migration of the existing Task Orchestrator desktop application into the Kitten monorepo. The Electrobun shell, typed RPC boundary, SQLite persistence, trust onboarding, queue/worktree/gate/review governance, security guards, tests, and current React UI establish the parity baseline; agent, session, context, and policy internals move onto Shared Capabilities incrementally after each migrated slice passes its existing contracts.
 
 ## Considered Options
