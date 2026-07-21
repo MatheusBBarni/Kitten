@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Supply focused-session CONTEXT to the saved footer
 type: frontend
 complexity: medium

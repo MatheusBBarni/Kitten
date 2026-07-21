@@ -344,6 +344,7 @@ function resolvedRecipe(
     args: [...identity.args],
     env: { ...identity.env },
     clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+    hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
     steeringCapability: { status: "unavailable" },
     runtimeProfile: { kind: "standard" },
   }

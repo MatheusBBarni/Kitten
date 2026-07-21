@@ -85,7 +85,7 @@ A recognizable external theme lineage whose official variants Kitten curates as 
 _Avoid_: Unrelated color collection, arbitrary user palette
 
 **Curated Theme Catalog**:
-The finite, currently 18-preset set of Theme Families and their Theme Presets that Kitten ships alongside Auto, Light, and Dark selection.
+The finite, currently 18-preset set of Theme Families and their Theme Presets that Kitten ships alongside Auto, Light, and Dark selection; its canonical identity and provenance contract is the [Theme Catalog](docs/theme-catalog.md).
 _Avoid_: Theme marketplace, arbitrary palette collection
 
 **Theme Preference**:

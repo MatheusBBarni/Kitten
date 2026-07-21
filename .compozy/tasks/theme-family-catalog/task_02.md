@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Canonicalize configuration, persistence, and telemetry compatibility
 type: backend
 complexity: high
@@ -29,11 +29,11 @@ Make the configuration boundary accept declared legacy aliases as input while en
 
 ## Subtasks
 
-- [ ] Replace duplicated preset validation with the core catalog's canonical IDs and declared alias map in the config loader.
-- [ ] Canonicalize valid raw theme input at merge/parse time and preserve named errors for malformed, unknown, and inherited values.
-- [ ] Confirm writer, watcher, boot, and store equality paths retain no-startup-rewrite and duplicate-notification behavior.
-- [ ] Tighten type use and telemetry recording so observed values are canonical IDs with no expanded metadata.
-- [ ] Add configuration, persistence, lifecycle, and telemetry regression coverage.
+- [x] Replace duplicated preset validation with the core catalog's canonical IDs and declared alias map in the config loader.
+- [x] Canonicalize valid raw theme input at merge/parse time and preserve named errors for malformed, unknown, and inherited values.
+- [x] Confirm writer, watcher, boot, and store equality paths retain no-startup-rewrite and duplicate-notification behavior.
+- [x] Tighten type use and telemetry recording so observed values are canonical IDs with no expanded metadata.
+- [x] Add configuration, persistence, lifecycle, and telemetry regression coverage.
 
 ## Implementation Details
 
@@ -69,16 +69,18 @@ Make the configuration boundary accept declared legacy aliases as input while en
 ## Tests
 
 - Unit tests:
-  - [ ] Table-test every canonical ID and every declared alias through config loading; aliases resolve to their canonical ID.
-  - [ ] Reject `neon`, `toString`, and `__proto__` with a `ConfigError` naming `theme`.
-  - [ ] Assert config writer output uses canonical IDs and continues to strict-reparse successfully.
-  - [ ] Assert watcher alias reload yields canonical config and an equivalent canonical update causes no duplicate callback.
-  - [ ] Assert `themeSet` records only `type`, `themeId`, `at`, and `sessionRef` without catalog metadata or free text.
+  - [x] Table-test every canonical ID and every declared alias through config loading; aliases resolve to their canonical ID.
+  - [x] Reject `neon`, `toString`, and `__proto__` with a `ConfigError` naming `theme`.
+  - [x] Assert config writer output uses canonical IDs and continues to strict-reparse successfully.
+  - [x] Assert watcher alias reload yields canonical config and an equivalent canonical update causes no duplicate callback.
+  - [x] Assert `themeSet` records only `type`, `themeId`, `at`, and `sessionRef` without catalog metadata or free text.
 - Integration tests:
-  - [ ] Assert alias-loaded config seeds canonical store state with zero scheduled/write calls, then a distinct explicit selection writes one canonical ID.
-  - [ ] Assert the real writer/watcher/restart path leaves alias bytes unchanged at boot and writes a canonical ID only after explicit selection.
+  - [x] Assert alias-loaded config seeds canonical store state with zero scheduled/write calls, then a distinct explicit selection writes one canonical ID.
+  - [x] Assert the real writer/watcher/restart path leaves alias bytes unchanged at boot and writes a canonical ID only after explicit selection.
 - Test coverage target: >=80% for changed config canonicalization and telemetry branches.
 - All targeted tests pass before handoff.
+
+> The initial authoritative catalog declares no historical aliases. Alias tables and watcher coverage therefore enumerate the empty production map without inventing compatibility input; canonical boot/write lifecycle behavior is exercised directly.
 
 ## Success Criteria
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import type { ResolvedSession } from "../core/types.ts"
 import {
+  HARNESS_DELIVERY_CHECKPOINT_SCHEMA,
   PERSISTED_CONTEXT_PACK_SCHEMA,
   PERSISTED_RUN_RECORD_SCHEMA,
   PERSISTED_RUN_RECORD_V4_SCHEMA,
@@ -15,6 +16,33 @@ import {
 } from "./runRecord.ts"
 
 const DIGEST = "a".repeat(64)
+
+describe("persisted harness delivery checkpoint", () => {
+  it("accepts only fixed settled-interrupted metadata", () => {
+    const checkpoint = {
+      version: "v1",
+      generation: 7,
+      state: "settled_interrupted",
+    } as const
+    const parsed = HARNESS_DELIVERY_CHECKPOINT_SCHEMA.parse(checkpoint)
+
+    expect(parsed).toEqual(checkpoint)
+    expect(Object.keys(parsed).sort()).toEqual(["generation", "state", "version"])
+    for (const extra of [
+      { failureCategory: "dispatch_indeterminate" },
+      { blocks: [{ type: "text", text: "DRAFT_SENTINEL" }] },
+      { requestId: "REQUEST_ID_SENTINEL" },
+      { sessionId: "SESSION_ID_SENTINEL" },
+      { acpSessionId: "ACP_SESSION_ID_SENTINEL" },
+      { recovery: "RECOVERY_SENTINEL" },
+      { providerError: "PROVIDER_ERROR_SENTINEL" },
+      { rawError: "RAW_ERROR_SENTINEL" },
+      { unknown: true },
+    ]) {
+      expect(HARNESS_DELIVERY_CHECKPOINT_SCHEMA.safeParse({ ...checkpoint, ...extra }).success).toBe(false)
+    }
+  })
+})
 
 function v2(): PersistedRunRecordV2 {
   return {
@@ -84,6 +112,7 @@ function resolvedOwner(): ResolvedSession {
       args: [],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     },

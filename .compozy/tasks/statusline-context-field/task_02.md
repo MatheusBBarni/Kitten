@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add CONTEXT to pure statusline and proposal contracts
 type: backend
 complexity: medium

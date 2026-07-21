@@ -3,7 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 
+import {
+  THEME_PRESET_ALIASES,
+  THEME_PRESET_IDS,
+  type ThemePresetId,
+} from "../core/themeCatalog.ts"
 import { PROVIDER_KINDS } from "../core/types.ts"
+import type {
+  CertifiedHardStopContinuationRecipe,
+  HardStopContinuationAdapterImplementation,
+} from "./hardStopContinuationCapability.ts"
 
 import {
   CLAUDE_CODE_ACP_PACKAGE,
@@ -79,6 +88,7 @@ describe("defaults", () => {
       args: ["-y", CLAUDE_CODE_ACP_PACKAGE],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
@@ -89,6 +99,7 @@ describe("defaults", () => {
       args: ["-y", CODEX_ACP_PACKAGE],
       env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
       clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
@@ -99,6 +110,7 @@ describe("defaults", () => {
       args: ["acp"],
       env: {},
       clarificationCapability: { status: "unsupported", reason: "unknown_recipe" },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: { kind: "standard" },
     })
@@ -213,14 +225,22 @@ describe("statusline config", () => {
         statusline: {
           llmDisclosureAcknowledged: true,
           separator: " · ",
-          line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+          line: [
+            { kind: "FOLDER", color: "red" },
+            { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12abef" },
+            "MODEL",
+          ],
         },
       })).statusline,
     ).toEqual({
       llmDisclosureAcknowledged: true,
       layout: {
         separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12ABEF" },
+          "MODEL",
+        ],
       },
     })
   })
@@ -231,6 +251,22 @@ describe("statusline config", () => {
     ["line without separator", { llmDisclosureAcknowledged: true, line: ["FOLDER"] }],
     ["unknown nested key", { llmDisclosureAcknowledged: true, request: "show my branch" }],
     ["invalid item", { llmDisclosureAcknowledged: true, separator: " | ", line: ["COST"] }],
+    [
+      "invalid item color",
+      {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "FOLDER", color: "transparent" }],
+      },
+    ],
+    [
+      "unknown colored item key",
+      {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "MODEL", color: "red", background: "#000000" }],
+      },
+    ],
     [
       "unknown item key",
       {
@@ -459,6 +495,65 @@ describe("user overrides", () => {
     expect(findAgentConfig(command, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
     expect(findAgentConfig(args, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
     expect(findAgentConfig(env, "codex")?.steeringCapability).toEqual({ status: "unavailable" })
+    expect(findAgentConfig(command, "codex")?.hardStopContinuationCapability.status).toBe("unavailable")
+    expect(findAgentConfig(args, "codex")?.hardStopContinuationCapability.status).toBe("unavailable")
+    expect(findAgentConfig(env, "codex")?.hardStopContinuationCapability.status).toBe("unavailable")
+  })
+
+  it("Should classify Hard Stop continuation from the fully merged exact recipe", () => {
+    const certification: CertifiedHardStopContinuationRecipe = {
+      implementationId: "codex-acp-hard-stop-v1",
+      providerKind: "codex",
+      command: "npx",
+      args: ["-y", CODEX_ACP_PACKAGE],
+      env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
+      adapterPackage: "@agentclientprotocol/codex-acp",
+      adapterVersion: "1.1.2",
+      reviewed: true,
+    }
+    const implementation: HardStopContinuationAdapterImplementation = {
+      implementationId: certification.implementationId,
+      providerKind: certification.providerKind,
+      adapterPackage: certification.adapterPackage,
+      adapterVersion: certification.adapterVersion,
+      cancellationAccepted: true,
+      terminalSettlement: true,
+    }
+    const evidence = {
+      certifiedHardStopContinuationRecipes: [certification],
+      hardStopContinuationImplementations: [implementation],
+    }
+
+    const production = findAgentConfig(defaultAppConfig(), "codex")!
+    const ordinary = findAgentConfig(defaultAppConfig(), "codex", evidence)!
+    expect(ordinary.hardStopContinuationCapability).toEqual({ status: "supported" })
+    expect(ordinary).toMatchObject({
+      id: "codex",
+      displayName: "Codex",
+      command: "npx",
+      args: ["-y", CODEX_ACP_PACKAGE],
+      env: { INITIAL_AGENT_MODE: CODEX_YOLO_MODE },
+      runtimeProfile: { kind: "standard" },
+    })
+    const { hardStopContinuationCapability: _productionVerdict, ...productionRecipe } = production
+    const { hardStopContinuationCapability: _injectedVerdict, ...injectedRecipe } = ordinary
+    expect(injectedRecipe).toEqual(productionRecipe)
+
+    const driftedConfigs = [
+      parseAppConfig(JSON.stringify({ providers: { codex: { command: "/opt/bin/npx" } } })),
+      parseAppConfig(JSON.stringify({ providers: { codex: { args: [CODEX_ACP_PACKAGE, "-y"] } } })),
+      parseAppConfig(
+        JSON.stringify({ providers: { codex: { args: ["-y", "@agentclientprotocol/codex-acp@1.1.3"] } } }),
+      ),
+      parseAppConfig(JSON.stringify({ providers: { codex: { env: { CODEX_HOME: "/tmp" } } } })),
+    ]
+
+    for (const config of driftedConfigs) {
+      const resolved = findAgentConfig(config, "codex", evidence)!
+      expect(resolved.hardStopContinuationCapability.status).toBe("unavailable")
+      expect(resolved.id).toBe("codex")
+      expect(resolved.displayName).toBe("Codex")
+    }
   })
 
   it("Should shallow-merge a provider env override over the default recipe rather than replacing it", () => {
@@ -847,8 +942,20 @@ describe("theme preference", () => {
     expect(parseAppConfig("{}").theme).toBe("auto")
   })
 
-  it("Should accept a valid named theme preference", () => {
-    expect(parseAppConfig('{"theme":"catppuccin-mocha"}').theme).toBe("catppuccin-mocha")
+  it.each([...THEME_PRESET_IDS])("Should accept canonical catalog theme %s", (theme) => {
+    expect(parseAppConfig(JSON.stringify({ theme })).theme).toBe(theme)
+  })
+
+  it("Should resolve every declared compatibility alias to canonical application state", () => {
+    const aliases = Object.entries(THEME_PRESET_ALIASES) as [string, ThemePresetId][]
+
+    for (const [alias, canonical] of aliases) {
+      expect(parseAppConfig(JSON.stringify({ theme: alias })).theme).toBe(canonical)
+    }
+
+    // The initial catalog intentionally has no historical rename. This assertion
+    // keeps the table authoritative without inventing a compatibility input.
+    expect(aliases).toEqual([])
   })
 
   it("Should load a theme delta from a real config file", async () => {
@@ -900,10 +1007,14 @@ describe("invalid config", () => {
     },
   )
 
-  it("Should reject an invalid theme preference naming the offending field", () => {
-    expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(ConfigError)
-    expect(() => parseAppConfig('{"theme":"neon"}')).toThrow(/theme/)
-  })
+  it.each(["neon", "toString", "__proto__"])(
+    "Should reject invalid or inherited theme value %s naming the offending field",
+    (theme) => {
+      const parse = () => parseAppConfig(JSON.stringify({ theme }))
+      expect(parse).toThrow(ConfigError)
+      expect(parse).toThrow(/theme/)
+    },
+  )
 
   it("Should reject an unknown provider id", () => {
     expect(() => parseAppConfig(JSON.stringify({ providers: { gemini: { command: "gemini" } } }))).toThrow(ConfigError)

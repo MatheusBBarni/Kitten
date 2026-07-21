@@ -14,7 +14,6 @@ import type { StatuslineFlow } from "../app/statuslineFlow.ts"
 import {
   STATUSLINE_RECOVERY_PRESETS,
   renderStatusline,
-  statuslineText,
   type StatuslineContext,
   type StatuslineLayout,
 } from "../core/statusline.ts"
@@ -27,12 +26,14 @@ import {
   selectIsApprovalOpen,
   selectIsClarificationOpen,
   selectSessionBranch,
+  selectSessionHeadroom,
   selectStatuslinePreference,
   selectStatuslineOverlay,
 } from "../store/selectors.ts"
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, matchStatuslineCommand, STATUSLINE_HINT } from "./keymap.ts"
 import { statuslineFooterBudget } from "./StatusStrip.tsx"
+import { StatuslineSegments } from "./statuslineSegments.tsx"
 import { usePalette } from "./theme.ts"
 
 export const STATUSLINE_TITLE = "Personal statusline"
@@ -76,6 +77,7 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
   const model = useAppSelector(useMemo(() => selectAgentModel(sessionId), [sessionId]))
   const effort = useAppSelector(useMemo(() => selectAgentEffort(sessionId), [sessionId]))
   const configOptions = useAppSelector(useMemo(() => selectAgentConfigOptions(sessionId), [sessionId]))
+  const contextHeadroom = useAppSelector(useMemo(() => selectSessionHeadroom(sessionId), [sessionId]))
   const statuslinePreference = useAppSelector(selectStatuslinePreference)
 
   const context = useMemo<StatuslineContext>(() => ({
@@ -85,7 +87,8 @@ function StatuslineDialog({ flow, overlay }: { flow: StatuslineFlow; overlay: St
     model: displayOption(configOptions, MODEL_CATEGORY, model),
     effort: displayOption(configOptions, EFFORT_CATEGORY, effort),
     helpText: KEYMAP_HINT,
-  }), [branch, configOptions, effort, model, runtime])
+    contextHeadroom,
+  }), [branch, configOptions, contextHeadroom, effort, model, runtime])
 
   const fail = useCallback((requestText: string, reason: string): void => {
     setBusy(false)
@@ -365,12 +368,16 @@ function Preview({
   busy: boolean
 }): ReactNode {
   const palette = usePalette()
-  const preview = statuslineText(renderStatusline(layout, context, previewBudget))
+  const segments = renderStatusline(layout, context, previewBudget)
   return (
     <>
       {preset ? <text fg={palette.accent}>{`${preset} recovery layout`}</text> : null}
       <text fg={palette.muted}>{STATUSLINE_PREVIEW_LABEL}</text>
-      <text style={{ flexShrink: 0, overflow: "hidden" }} wrapMode="none" fg={palette.text}>{preview || "(no fields fit)"}</text>
+      <text style={{ flexShrink: 0, overflow: "hidden" }} wrapMode="none" fg={palette.text}>
+        {segments.length > 0
+          ? <StatuslineSegments segments={segments} palette={palette} />
+          : "(no fields fit)"}
+      </text>
       <text style={{ marginTop: 1 }} fg={palette.muted}>{STATUSLINE_CONFIG_LABEL}</text>
       <text fg={palette.text}>{statuslineConfigChange(layout, llmDisclosureAcknowledged)}</text>
       <Choice label={busy ? "Saving…" : STATUSLINE_SAVED_LABEL} selected={selected === 0} />

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Execute fail-closed standalone updates"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ Implement the standalone update transaction for an installer-proven executable. 
 
 ## Subtasks
 
-- [ ] 3.1 Validate installer-created ownership before release retrieval.
-- [ ] 3.2 Resolve and validate the latest stable release candidate.
-- [ ] 3.3 Verify the selected host artifact against one unambiguous manifest checksum.
-- [ ] 3.4 Commit standalone replacement and registry state as one recoverable transaction.
-- [ ] 3.5 Produce already-current, updated, refused, and failed outcomes without channel fallback.
-- [ ] 3.6 Exercise success, no-write, and induced rollback behavior in isolated fixtures.
+- [x] 3.1 Validate installer-created ownership before release retrieval.
+- [x] 3.2 Resolve and validate the latest stable release candidate.
+- [x] 3.3 Verify the selected host artifact against one unambiguous manifest checksum.
+- [x] 3.4 Commit standalone replacement and registry state as one recoverable transaction.
+- [x] 3.5 Produce already-current, updated, refused, and failed outcomes without channel fallback.
+- [x] 3.6 Exercise success, no-write, and induced rollback behavior in isolated fixtures.
 
 ## Implementation Details
 
@@ -73,14 +73,14 @@ Implement TechSpec "Standalone update boundary", "Release boundary", and "Transa
 ## Tests
 
 - Unit tests:
-  - [ ] Missing, malformed, stale, symlink-unsafe, nonregular, version-mismatched, platform-mismatched, or hash-mismatched target records refuse before any release fetch or write seam runs.
-  - [ ] Draft, prerelease, malformed, missing-tag, artifact-fetch, manifest-fetch, duplicate-row, and checksum-mismatch responses leave target and registry bytes unchanged.
-  - [ ] Already-current returns successful standalone output without creating a lock, temporary file, backup, target write, or registry write.
-  - [ ] Lock acquisition, temp write/chmod, backup rename, candidate rename, registry publish, cleanup, and rollback failures each return nonzero and restore original target and registry bytes where recovery is possible.
+  - [x] Missing, malformed, stale, symlink-unsafe, nonregular, version-mismatched, platform-mismatched, or hash-mismatched target records refuse before any release fetch or write seam runs.
+  - [x] Draft, prerelease, malformed, missing-tag, artifact-fetch, manifest-fetch, duplicate-row, and checksum-mismatch responses leave target and registry bytes unchanged.
+  - [x] Already-current returns successful standalone output without creating a lock, temporary file, backup, target write, or registry write.
+  - [x] Lock acquisition, temp write/chmod, backup rename, candidate rename, registry publish, cleanup, and rollback failures each return nonzero and restore original target and registry bytes where recovery is possible.
 - Integration tests:
-  - [ ] A temporary installer-shaped target and registry update from representative local release metadata, artifact bytes, and manifest data, then report the standalone version transition.
-  - [ ] Induced filesystem and registry publication failures in the temporary fixture leave the executable and registry byte-identical to their pre-update snapshots.
-  - [ ] The fixture performs no live HTTP, npm, credential, or candidate-binary execution.
+  - [x] A temporary installer-shaped target and registry update from representative local release metadata, artifact bytes, and manifest data, then report the standalone version transition.
+  - [x] Induced filesystem and registry publication failures in the temporary fixture leave the executable and registry byte-identical to their pre-update snapshots.
+  - [x] The fixture performs no live HTTP, npm, credential, or candidate-binary execution.
 - Test coverage target: >=80%
 - All tests must pass
 

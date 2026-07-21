@@ -87,12 +87,12 @@ function bootRun(cwd: string): PersistedRunRecordV1 {
 
 const SAVED_STATUSLINE: StatuslineLayout = {
   separator: " | ",
-  line: ["FOLDER", "MODEL"],
+  line: [{ kind: "FOLDER", color: "#12ABEF" }, "MODEL"],
 }
 
 const EXTERNAL_STATUSLINE: StatuslineLayout = {
   separator: " · ",
-  line: ["PROVIDER", "EFFORT"],
+  line: [{ kind: "PROVIDER", color: "#FF0000" }, "EFFORT"],
 }
 
 describe("statusline config lifecycle", () => {
@@ -128,8 +128,10 @@ describe("statusline config lifecycle", () => {
         layout: EXTERNAL_STATUSLINE,
         preset: null,
       })
-      session.controller.store.updateStatusline({ phase: "request", requestText: "compact" })
+      expect(session.controller.store.getState().preferences.statusline).toEqual(config.statusline)
+      session.controller.store.closeStatusline()
       expect(writes).toEqual([])
+      expect(session.controller.store.getState().preferences.statusline).toEqual(config.statusline)
 
       const acknowledgement = session.controller.actions.acknowledgeStatuslineDisclosure()
       const confirmation = session.controller.actions.confirmStatusline(EXTERNAL_STATUSLINE)
@@ -157,7 +159,10 @@ describe("statusline config lifecycle", () => {
       expect(await confirmation).toEqual({ outcome: "saved" })
       expect(session.controller.store.getState().preferences.statusline.layout).toBe(EXTERNAL_STATUSLINE)
 
-      const reloadedLayout: StatuslineLayout = { separator: " / ", line: ["FULL_PATH"] }
+      const reloadedLayout: StatuslineLayout = {
+        separator: " / ",
+        line: [{ kind: "FULL_PATH", color: "#0000FF" }],
+      }
       onConfig!({
         ...config,
         statusline: { llmDisclosureAcknowledged: true, layout: reloadedLayout },

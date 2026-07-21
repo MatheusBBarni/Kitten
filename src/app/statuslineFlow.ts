@@ -17,12 +17,17 @@ export const STATUSLINE_PROPOSAL_INSTRUCTION = `Propose one safe Kitten statusli
 
 Your entire reply must be exactly one lowercase-json fenced block with no prose before or after it:
 \`\`\`json
-{"statusline":{"separator":" · ","line":["FOLDER","FULL_PATH","BRANCH",{"kind":"ELLIPSIS_BRANCH","maxChars":24},"PROVIDER","MODEL","EFFORT","HELP_TEXT"]}}
+{"statusline":{"separator":" · ","line":["FOLDER",{"kind":"BRANCH","color":"purple"},{"kind":"ELLIPSIS_BRANCH","maxChars":24,"color":"#0A8BCF"},"MODEL"]}}
 \`\`\`
 
-The example lists the complete permitted schema. Select and order only the fields the request needs. Each field may appear at most once. ELLIPSIS_BRANCH maxChars must be an integer from 4 to 80. The separator must be printable single-line text no longer than 16 grapheme clusters.
+The statusline object must contain exactly "separator" and "line". Select and order only the fields the request needs. Each field may appear at most once. The only permitted line item forms are:
+- Legacy uncolored simple fields are the strings "FOLDER", "FULL_PATH", "BRANCH", "PROVIDER", "MODEL", "EFFORT", "HELP_TEXT", and "CONTEXT".
+- A colored simple field is exactly {"kind":"FOLDER","color":"purple"}, with "kind" set to one of those simple field identifiers. Use the legacy string form when a simple field is uncolored.
+- ELLIPSIS_BRANCH is exactly {"kind":"ELLIPSIS_BRANCH","maxChars":24} with optional "color". maxChars must be an integer from 4 to 80.
 
-Do not emit scripts, commands, templates, ANSI or terminal control sequences, executable output, extra keys, or unsupported fields. Do not resolve or include current folder/path, branch, provider, model, effort, help-text, or transcript values; emit only the declarative field identifiers and formatting choices.`
+Color is either a known CSS color name or exactly six hexadecimal digits in #RRGGBB form. The separator must be printable single-line text no longer than 16 grapheme clusters.
+
+Do not emit scripts, commands, templates, ANSI or terminal control sequences, executable output, extra keys, or unsupported fields. Do not resolve or include current folder/path, branch, provider, model, effort, help-text, context, other runtime session values, or transcript values; emit only the declarative field identifiers and formatting choices.`
 
 export interface StatuslineFlow {
   /** Request and strictly parse one proposal from an explicitly selected ready session. */

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import type { HandoffBundle } from "../core/types.ts"
 import { assembleCandidate, sealCandidate } from "../core/contextPack.ts"
@@ -7,7 +10,7 @@ import { createSecretRedactor } from "../core/secretRedactor.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import type { PersistedRunRecordV4 } from "./runRecord.ts"
 import { createRunWriter } from "./runWriter.ts"
-import type { RunStore } from "./runStore.ts"
+import { createRunStore, encodeProjectDirectory, type RunStore } from "./runStore.ts"
 
 // Suite: run autosave writer
 // Invariant: enabled store state converges to one pointers-only run snapshot and disabled state performs no work.
@@ -251,6 +254,71 @@ describe("createRunWriter", () => {
       expect(serialized).not.toContain(forbidden)
     }
     writer.dispose()
+  })
+
+  it("round-trips settled interruption through the strict run store without continuation state", () => {
+    const base = mkdtempSync(join(tmpdir(), "kitten-settled-interrupted-"))
+    try {
+      const store = seededStore()
+      const runStore = createRunStore({ enabled: true, path: base })
+      const timer = controlledTimer()
+      const writer = createRunWriter({
+        enabled: true,
+        runStore,
+        projectCwd: "/work/kitten",
+        runId: "settled-interrupted",
+        now: () => 2_000,
+        setTimer: timer.setTimer,
+        clearTimer: timer.clearTimer,
+      })
+      writer.watch(store)
+      store.setHarnessDelivery("claude", {
+        version: "v1",
+        generation: 9,
+        state: "settled_interrupted",
+        blocks: [{ type: "text", text: "DRAFT_BLOCK_SENTINEL" }],
+        requestId: "REQUEST_ID_SENTINEL",
+        sessionId: "SESSION_ID_SENTINEL",
+        acpSessionId: "ACP_SESSION_ID_SENTINEL",
+        recovery: "RECOVERY_TEXT_SENTINEL",
+        providerError: "PROVIDER_ERROR_SENTINEL",
+        rawError: "RAW_ERROR_SENTINEL",
+      } as never)
+
+      timer.flush()
+
+      const loaded = runStore.load("/work/kitten", "settled-interrupted")
+      expect(loaded?.version).toBe(4)
+      if (loaded?.version !== 4) throw new Error("expected V4 run record")
+      expect(loaded.harnessDeliveries.claude).toEqual({
+        version: "v1",
+        generation: 9,
+        state: "settled_interrupted",
+      })
+      expect(loaded.conversations.claude).not.toHaveProperty("postInterruptContinuation")
+
+      const path = join(
+        base,
+        "sessions",
+        encodeProjectDirectory("/work/kitten"),
+        "settled-interrupted.json",
+      )
+      const serialized = readFileSync(path, "utf8")
+      for (const sentinel of [
+        "DRAFT_BLOCK_SENTINEL",
+        "REQUEST_ID_SENTINEL",
+        "SESSION_ID_SENTINEL",
+        "ACP_SESSION_ID_SENTINEL",
+        "RECOVERY_TEXT_SENTINEL",
+        "PROVIDER_ERROR_SENTINEL",
+        "RAW_ERROR_SENTINEL",
+      ]) {
+        expect(serialized).not.toContain(sentinel)
+      }
+      writer.dispose()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 
   it("projects only a draft manifest and exact sealed bytes from live Context Pack state", () => {

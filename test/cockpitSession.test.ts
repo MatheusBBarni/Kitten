@@ -36,14 +36,17 @@ function controlledTimer(): {
   clearTimer: (timer: ReturnType<typeof setTimeout>) => void
   flush: () => void
   pending: () => boolean
+  setCalls: () => number
   clearCalls: () => number
 } {
   let callback: (() => void) | undefined
+  let schedules = 0
   let clears = 0
   const handle = 1 as unknown as ReturnType<typeof setTimeout>
   return {
     setTimer(next) {
       callback = next
+      schedules += 1
       return handle
     },
     clearTimer(timer) {
@@ -57,6 +60,7 @@ function controlledTimer(): {
       next?.()
     },
     pending: () => callback !== undefined,
+    setCalls: () => schedules,
     clearCalls: () => clears,
   }
 }
@@ -380,17 +384,31 @@ describe("createCockpitSession", () => {
     await controller.dispose()
   })
 
-  it("seeds the store theme from the loaded config", async () => {
-    const config: AppConfig = { ...defaultAppConfig(), theme: "catppuccin-mocha" }
+  it("seeds canonical store state without a repair write, then persists one distinct canonical selection", async () => {
+    const timer = controlledTimer()
+    const writes: ThemePreference[] = []
+    const config: AppConfig = { ...defaultAppConfig(), theme: "dracula" }
     const session = await createCockpitSession({
       loadConfig: async () => config,
       buildController: async (options) => controllerOver(options.store!),
-      persistConfig: async () => {},
+      persistConfig: async ({ theme }) => {
+        writes.push(theme)
+      },
       watchConfig: () => NOOP_WATCHER,
+      setTimer: timer.setTimer,
+      clearTimer: timer.clearTimer,
     })
 
-    expect(selectThemePreference(session.controller.store.getState())).toBe("catppuccin-mocha")
+    expect(selectThemePreference(session.controller.store.getState())).toBe("dracula")
+    expect(timer.setCalls()).toBe(0)
+    expect(writes).toEqual([])
+
+    session.controller.store.setThemePreference("tokyo-night-storm")
+    expect(timer.setCalls()).toBe(1)
+    timer.flush()
     await session.controller.dispose()
+
+    expect(writes).toEqual(["tokyo-night-storm"])
   })
 
   it("coalesces theme changes into one debounced persist and records success", async () => {

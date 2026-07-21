@@ -93,6 +93,7 @@ function wireAgent(providerKind: ProviderKind, options: MockAgentOptions = {}): 
     id: providerKind,
     ...recipe,
     clarificationCapability: { status: "supported", ...supportedAdapter },
+    hardStopContinuationCapability: { status: "unavailable", reason: "unreviewed_recipe" },
     steeringCapability: { status: "unavailable" },
     runtimeProfile: { kind: "standard" },
   }
@@ -327,11 +328,11 @@ describe("clarification lifecycle integration", () => {
       resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
     })
     controller.store.setThemePreference("dark")
-    controller.store.openSettings()
     let lifecycle: MountedLifecycle | undefined
 
     try {
       lifecycle = await mountLifecycle(controller)
+      await actAsync(() => controller.store.openSettings())
       const settingsOverlay = controller.store.getState().overlays.settings
       const initialSettings = await lifecycle.setup.waitForFrame((frame) => frame.includes(SETTINGS_TITLE))
       expect(initialSettings).toContain(`${THEME_OPTION_MARKER} Dark`)

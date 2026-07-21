@@ -152,6 +152,7 @@ describe("clarification capability classification", () => {
         adapterPackage: "untrusted-display-metadata",
         adapterVersion: "9.9.9",
       },
+      hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
       steeringCapability: { status: "unavailable" },
       runtimeProfile: {
         kind: "cursor-certified",

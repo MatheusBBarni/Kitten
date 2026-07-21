@@ -73,6 +73,23 @@ describe("statusline proposal prompt", () => {
     })
   })
 
+  it("documents only the supported colored and legacy-compatible item grammar", () => {
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain(
+      'Legacy uncolored simple fields are the strings "FOLDER", "FULL_PATH", "BRANCH", "PROVIDER", "MODEL", "EFFORT", "HELP_TEXT", and "CONTEXT".',
+    )
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain(
+      'A colored simple field is exactly {"kind":"FOLDER","color":"purple"}',
+    )
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain(
+      'ELLIPSIS_BRANCH is exactly {"kind":"ELLIPSIS_BRANCH","maxChars":24} with optional "color"',
+    )
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain(
+      'Color is either a known CSS color name or exactly six hexadecimal digits in #RRGGBB form.',
+    )
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(/(?:rgba?|hsla?)\s*\(/iu)
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(/background|palette|theme token/iu)
+  })
+
   it("contains only the declarative schema and excludes resolved session or transcript values", () => {
     const forbiddenValues = [
       "/resolved/private/worktree",
@@ -87,8 +104,71 @@ describe("statusline proposal prompt", () => {
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("FOLDER")
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("ELLIPSIS_BRANCH")
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("HELP_TEXT")
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("CONTEXT")
     expect(STATUSLINE_PROPOSAL_INSTRUCTION).toContain("Do not emit scripts, commands, templates")
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(/\b\d+%/u)
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(/\b(?:used|size)\b/u)
+    expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toMatch(
+      /\b(?:state|config|persistence|ACP|telemetry|UI)\b/iu,
+    )
+    for (const forbiddenDetail of [
+      "contextHeadroom",
+      "usage.used",
+      "usage.size",
+      "SessionState",
+      "config persistence",
+      "ACP",
+      "telemetry",
+      "UI ownership",
+    ]) {
+      expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toContain(forbiddenDetail)
+    }
     for (const value of forbiddenValues) expect(STATUSLINE_PROPOSAL_INSTRUCTION).not.toContain(value)
+  })
+
+  it("does not add selected-session values or prior transcript content to the agent input", async () => {
+    const f = fixture({ onSend: (store) => agent(store, "new", validReply()) })
+    apply(f.store, { kind: "branch", branch: "secret-branch-value" })
+    apply(f.store, { kind: "usage", used: 37, size: 101 })
+    apply(f.store, {
+      kind: "config_options",
+      options: [
+        {
+          id: "model",
+          category: "model",
+          label: "Model",
+          currentValue: "private-model-value",
+          options: [{ value: "private-model-value", name: "Private model" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          label: "Effort",
+          currentValue: "private-effort-value",
+          options: [{ value: "private-effort-value", name: "Private effort" }],
+        },
+      ],
+    })
+    user(f.store, "prior-user", "prior raw transcript value")
+    agent(f.store, "prior-agent", "prior private agent response")
+
+    await f.flow.request("Arrange the fields.", SESSION_ID)
+
+    const input = f.calls[0]?.input
+    expect(input).toBe(buildStatuslineProposalPrompt("Arrange the fields."))
+    for (const value of [
+      "/resolved/private/worktree",
+      "secret-branch-value",
+      "codex",
+      "private-model-value",
+      "private-effort-value",
+      "37",
+      "101",
+      "prior raw transcript value",
+      "prior private agent response",
+    ]) {
+      expect(input).not.toContain(value)
+    }
   })
 })
 
@@ -109,11 +189,50 @@ describe("statusline transcript boundary", () => {
     })
   })
 
+  it("parses a literal CONTEXT proposal through the strict flow", async () => {
+    const f = fixture({ onSend: (store) => agent(store, "new", validReply(["FOLDER", "CONTEXT"])) })
+
+    await expect(f.flow.request("Show folder and context.", SESSION_ID)).resolves.toEqual({
+      kind: "proposal",
+      layout: { separator: " · ", line: ["FOLDER", "CONTEXT"] },
+    })
+  })
+
+  it.each([
+    ["named colors", [{ kind: "BRANCH", color: "purple" } as const], [{ kind: "BRANCH", color: "#800080" } as const]],
+    ["hex colors", [{ kind: "MODEL", color: "#0a8bcf" } as const], [{ kind: "MODEL", color: "#0A8BCF" } as const]],
+    [
+      "colored ellipsis branches",
+      [{ kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "teal" } as const],
+      [{ kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" } as const],
+    ],
+  ])("canonicalizes %s through the strict core proposal boundary", async (_case, proposed, canonical) => {
+    const f = fixture({ onSend: (store) => agent(store, "new", validReply(proposed)) })
+
+    await expect(f.flow.request("Color the important field.", SESSION_ID)).resolves.toEqual({
+      kind: "proposal",
+      layout: { separator: " · ", line: canonical },
+    })
+  })
+
   it.each([
     ["surrounding prose", `Here you go\n${validReply()}`],
     ["multiple fenced blocks", `${validReply()}\n${validReply(["MODEL"])}`],
+    ["unfenced JSON", JSON.stringify({ statusline: { separator: " · ", line: ["MODEL"] } })],
+    ["trailing content", `${validReply()}\nDone.`],
     ["malformed JSON", "```json\n{nope}\n```"],
     ["invalid layout", validReply(["SHELL_COMMAND"])],
+    ["invalid color", validReply([{ kind: "MODEL", color: "#123" }])],
+    ["unsupported transparent color", validReply([{ kind: "MODEL", color: "transparent" }])],
+    ["extra colored item key", validReply([{ kind: "MODEL", color: "purple", background: "black" }])],
+    [
+      "extra response key",
+      `\`\`\`json\n${JSON.stringify({ statusline: { separator: " · ", line: ["MODEL"] }, explanation: "extra" })}\n\`\`\``,
+    ],
+    [
+      "extra layout key",
+      `\`\`\`json\n${JSON.stringify({ statusline: { separator: " · ", line: ["MODEL"], palette: "extra" } })}\n\`\`\``,
+    ],
   ])("returns invalid-response for %s", async (_case, response) => {
     const f = fixture({ onSend: (store) => agent(store, "new", response) })
     expect((await f.flow.request("Customize it.", SESSION_ID)).kind).toBe("invalid-response")
@@ -175,9 +294,12 @@ describe("statusline recovery outcomes", () => {
 })
 
 describe("normal transcript integration", () => {
-  it("yields a preview-ready proposal while changing only the intentional transcript", async () => {
-    const rawRequest = "Use a compact folder and model line."
-    const rawResponse = validReply(["FOLDER", "MODEL"])
+  it("yields a canonical colored preview-ready proposal while changing only the intentional transcript", async () => {
+    const rawRequest = "Use a compact purple folder and blue model line."
+    const rawResponse = validReply([
+      { kind: "FOLDER", color: "purple" },
+      { kind: "MODEL", color: "#0a8bcf" },
+    ])
     const f = fixture({
       onSend: (store) => {
         user(store, "statusline-request", buildStatuslineProposalPrompt(rawRequest))
@@ -190,7 +312,13 @@ describe("normal transcript integration", () => {
 
     await expect(f.flow.request(rawRequest, SESSION_ID)).resolves.toEqual({
       kind: "proposal",
-      layout: { separator: " · ", line: ["FOLDER", "MODEL"] },
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#800080" },
+          { kind: "MODEL", color: "#0A8BCF" },
+        ],
+      },
     })
 
     expect(f.store.getState().preferences).toBe(preferences)

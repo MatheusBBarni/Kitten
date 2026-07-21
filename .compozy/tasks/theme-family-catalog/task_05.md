@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Publish the catalog contract and release evidence
 type: docs
 complexity: medium
@@ -29,11 +29,11 @@ Publish the finished catalog as an accessible, source-attributed product contrac
 
 ## Subtasks
 
-- [ ] Reconcile `docs/theme-catalog.md` with the implemented core catalog, aliases, provenance, accessibility, and compatibility contracts.
-- [ ] Add the user-facing Settings-picker and canonical-persistence behavior to the catalog documentation.
-- [ ] Update the smallest necessary README and context references so the canonical documentation remains discoverable.
-- [ ] Add or extend a documentation-contract test that prevents roster, source, and discoverability drift.
-- [ ] Run targeted documentation tests and the fresh full typecheck/test gate; record any inherited failure separately from feature evidence.
+- [x] Reconcile `docs/theme-catalog.md` with the implemented core catalog, aliases, provenance, accessibility, and compatibility contracts.
+- [x] Add the user-facing Settings-picker and canonical-persistence behavior to the catalog documentation.
+- [x] Update the smallest necessary README and context references so the canonical documentation remains discoverable.
+- [x] Add or extend a documentation-contract test that prevents roster, source, and discoverability drift.
+- [x] Run targeted documentation tests and the fresh full typecheck/test gate; record any inherited failure separately from feature evidence.
 
 ## Implementation Details
 
@@ -69,13 +69,13 @@ Publish the finished catalog as an accessible, source-attributed product contrac
 ## Tests
 
 - Unit tests:
-  - [ ] Assert documentation names all 18 implemented canonical IDs exactly once and does not advertise unsupported custom or downloaded palettes.
-  - [ ] Assert every documented preset has a source URL and attribution/license entry matching the core catalog contract.
-  - [ ] Assert documentation states alias canonicalization, no startup rewrite, explicit canonical persistence, instant Settings application, and bounded keyboard scrolling.
-  - [ ] Assert README and context links point to the canonical theme catalog documentation.
+  - [x] Assert documentation names all 18 implemented canonical IDs exactly once and does not advertise unsupported custom or downloaded palettes.
+  - [x] Assert every documented preset has a source URL and attribution/license entry matching the core catalog contract.
+  - [x] Assert documentation states alias canonicalization, no startup rewrite, explicit canonical persistence, instant Settings application, and bounded keyboard scrolling.
+  - [x] Assert README and context links point to the canonical theme catalog documentation.
 - Integration tests:
-  - [ ] Run the documentation-contract test alongside relevant catalog/config/Settings suites to verify public claims against the implemented interfaces.
-  - [ ] Run `rtk bun run typecheck && rtk bun test` as fresh release evidence; report an inherited unrelated failure without broadening scope.
+  - [x] Run the documentation-contract test alongside relevant catalog/config/Settings suites to verify public claims against the implemented interfaces.
+  - [x] Run `rtk bun run typecheck && rtk bun test` as fresh release evidence; report an inherited unrelated failure without broadening scope.
 - Test coverage target: >=80% for new documentation-contract assertions and changed documentation validation branches.
 - All targeted documentation tests and the fresh project gate pass before release handoff.
 

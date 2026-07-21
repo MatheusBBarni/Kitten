@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Persist installer-owned standalone provenance"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ Make the checksum installer establish durable ownership evidence for each succes
 
 ## Subtasks
 
-- [ ] 2.1 Add the installer-owned provenance-record write path.
-- [ ] 2.2 Validate final executable identity before accepting installer provenance.
-- [ ] 2.3 Preserve atomic registry and multi-installation behavior.
-- [ ] 2.4 Invoke record creation only after the installer reaches a verified target installation.
-- [ ] 2.5 Surface a legible installed-but-not-update-eligible outcome when record creation fails.
-- [ ] 2.6 Cover installer ordering and private record-mode boundaries.
+- [x] 2.1 Add the installer-owned provenance-record write path.
+- [x] 2.2 Validate final executable identity before accepting installer provenance.
+- [x] 2.3 Preserve atomic registry and multi-installation behavior.
+- [x] 2.4 Invoke record creation only after the installer reaches a verified target installation.
+- [x] 2.5 Surface a legible installed-but-not-update-eligible outcome when record creation fails.
+- [x] 2.6 Cover installer ordering and private record-mode boundaries.
 
 ## Implementation Details
 
@@ -72,14 +72,14 @@ Implement the installer/state handoff in TechSpec "System Architecture — Insta
 ## Tests
 
 - Unit tests:
-  - [ ] Registry writing adds or replaces one canonical-path record without deleting a preexisting second record.
-  - [ ] Invalid path type, canonical mismatch, unsupported platform, invalid embedded version, and invalid hash are rejected before registry mutation.
-  - [ ] A simulated atomic registry-write failure preserves the exact prior registry bytes.
-  - [ ] The private record mode exits before self-check, repository validation, renderer creation, agent startup, or network activity.
+  - [x] Registry writing adds or replaces one canonical-path record without deleting a preexisting second record.
+  - [x] Invalid path type, canonical mismatch, unsupported platform, invalid embedded version, and invalid hash are rejected before registry mutation.
+  - [x] A simulated atomic registry-write failure preserves the exact prior registry bytes.
+  - [x] The private record mode exits before self-check, repository validation, renderer creation, agent startup, or network activity.
 - Integration tests:
-  - [ ] A temporary valid artifact and `SHA256SUMS` install a runnable executable and exactly one record with canonical path, platform, embedded version, and verified hash.
-  - [ ] Failed download, missing manifest entry, checksum mismatch, and failed `install` leave no new target or record and do not invoke the record writer.
-  - [ ] A record-writer failure after a successful target install leaves the executable runnable, preserves prior registry bytes, and emits installed-but-not-update-eligible guidance.
+  - [x] A temporary valid artifact and `SHA256SUMS` install a runnable executable and exactly one record with canonical path, platform, embedded version, and verified hash.
+  - [x] Failed download, missing manifest entry, checksum mismatch, and failed `install` leave no new target or record and do not invoke the record writer.
+  - [x] A record-writer failure after a successful target install leaves the executable runnable, preserves prior registry bytes, and emits installed-but-not-update-eligible guidance.
 - Test coverage target: >=80%
 - All tests must pass
 

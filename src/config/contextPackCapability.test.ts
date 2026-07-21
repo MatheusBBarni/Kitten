@@ -25,6 +25,7 @@ const CONFIG: ResolvedAgentConfig = {
   args: ["--profile", "explore-v2"],
   env: { KITTEN_CONTEXT_MODE: "closed", PROVIDER_TOKEN_MODE: "native" },
   clarificationCapability: { status: "unsupported", reason: "unverified_recipe" },
+  hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
   steeringCapability: { status: "unavailable" },
   runtimeProfile: { kind: "standard" },
 }

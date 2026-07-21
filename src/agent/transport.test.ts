@@ -44,6 +44,15 @@ describe("spawnAgentTransport", () => {
     await transport.dispose()
   })
 
+  it("forwards a child stderr diagnostic through the line filter", async () => {
+    const transport = spawnAgentTransport(config("sh", ["-c", "printf 'adapter diagnostic\\n' >&2"]))
+    const code = await new Promise<number | null>((resolve) => transport.onClose((info) => resolve(info.code)))
+
+    expect(code).toBe(0)
+    await Bun.sleep(0)
+    await transport.dispose()
+  })
+
   it("removes only Claude's known bypass warning, even when its line is chunked", async () => {
     const source = new ReadableStream<string>({
       start(controller) {
@@ -82,5 +91,20 @@ describe("spawnAgentTransport", () => {
     }
 
     expect(output).toBe("adapter warning\nadapter failure\n")
+  })
+
+  it("preserves an unterminated diagnostic when the stderr stream closes", async () => {
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("adapter warning without a final newline")
+        controller.close()
+      },
+    })
+    const reader = source.pipeThrough(createAgentStderrFilter()).getReader()
+    const { done, value } = await reader.read()
+
+    expect(done).toBe(false)
+    expect(value).toBe("adapter warning without a final newline")
+    expect((await reader.read()).done).toBe(true)
   })
 })

@@ -5,6 +5,7 @@ export type HarnessDeliveryState =
   | "pending"
   | "in_flight"
   | "delivered"
+  | "settled_interrupted"
   | "failed"
 
 export type HarnessFailureCategory =
@@ -66,6 +67,13 @@ export function restoreHarnessDelivery(
   expectedGeneration: number,
   lifecycle: "fresh" | "loaded",
 ): HarnessDelivery {
+  if (checkpoint?.state === "settled_interrupted") {
+    return {
+      version: checkpoint.version,
+      generation: expectedGeneration,
+      state: "settled_interrupted",
+    }
+  }
   if (checkpoint?.state === "pending" || checkpoint?.state === "in_flight") {
     return terminalFailure(
       { version: checkpoint.version, generation: expectedGeneration, state: "in_flight" },
@@ -101,6 +109,15 @@ export function completeDispatch(
   return transition(delivery, "delivered")
 }
 
+/** Record a confirmed cancellation only after the matching invocation settles. */
+export function settleInterrupted(
+  delivery: HarnessDelivery,
+  expectedGeneration: number,
+): HarnessDelivery {
+  if (!isExpected(delivery, expectedGeneration) || delivery.state !== "in_flight") return delivery
+  return transition(delivery, "settled_interrupted")
+}
+
 /**
  * Classify a failure known to have happened before transport invocation.
  * Retry-safe failures retain the existing opportunity; fixed unsupported or
@@ -131,7 +148,7 @@ function isExpected(delivery: HarnessDelivery, expectedGeneration: number): bool
 
 function transition(
   delivery: HarnessDelivery,
-  state: "in_flight" | "delivered",
+  state: "in_flight" | "delivered" | "settled_interrupted",
 ): HarnessDelivery {
   return { version: delivery.version, generation: delivery.generation, state }
 }

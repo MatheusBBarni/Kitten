@@ -21,6 +21,8 @@ set -euo pipefail
 REPO="${KITTEN_REPO:-MatheusBBarni/Kitten}"
 VERSION="${KITTEN_VERSION:-latest}"
 INSTALL_DIR="${KITTEN_INSTALL_DIR:-$HOME/.local/bin}"
+RECORD_MODE_FLAG="--_kitten-record-standalone-installation"
+INSTALLER_TEMP_DIR=""
 
 # Detect the platform slug used in the artifact name (matches scripts/build.ts).
 detect_platform() {
@@ -98,7 +100,7 @@ checksum_for() {
 }
 
 main() {
-  local platform artifact base tmp bin_path manifest_path expected
+  local platform artifact base tmp bin_path manifest_path expected target
   platform="$(detect_platform)"
   artifact="kitten-${platform}"
 
@@ -111,7 +113,8 @@ main() {
   fi
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  INSTALLER_TEMP_DIR="$tmp"
+  trap 'rm -rf -- "$INSTALLER_TEMP_DIR"' EXIT
   bin_path="${tmp}/${artifact}"
   manifest_path="${tmp}/SHA256SUMS"
 
@@ -123,8 +126,17 @@ main() {
   verify_checksum "$bin_path" "$expected"
 
   mkdir -p "$INSTALL_DIR"
-  install -m 755 "$bin_path" "${INSTALL_DIR}/kitten"
-  echo "kitten: installed to ${INSTALL_DIR}/kitten" >&2
+  target="${INSTALL_DIR}/kitten"
+  install -m 755 "$bin_path" "$target"
+
+  if ! "$target" "$RECORD_MODE_FLAG" "$target" "$platform" "$expected"; then
+    echo "kitten: installed to ${target}, but standalone provenance could not be recorded." >&2
+    echo "kitten: the installed executable is usable but is not eligible for 'kitten --update'." >&2
+    echo "kitten: reinstall with this installer to retry provenance recording." >&2
+    return 1
+  fi
+
+  echo "kitten: installed to ${target}" >&2
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *) echo "kitten: add ${INSTALL_DIR} to your PATH to run 'kitten'." >&2 ;;

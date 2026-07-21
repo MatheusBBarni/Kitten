@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Define Strict Colored Statusline Proposal Grammar
 type: refactor
 complexity: medium
@@ -31,9 +31,9 @@ boundary must continue to apply to every color proposal.
 
 ## Subtasks
 
-- [ ] 3.1 Revise the product-owned proposal instructions to state the supported colored and uncolored layout grammar.
-- [ ] 3.2 Preserve the current response-envelope and privacy constraints for color-bearing proposals.
-- [ ] 3.3 Verify accepted proposals become canonical layouts and invalid proposals take the existing recovery path.
+- [x] 3.1 Revise the product-owned proposal instructions to state the supported colored and uncolored layout grammar.
+- [x] 3.2 Preserve the current response-envelope and privacy constraints for color-bearing proposals.
+- [x] 3.3 Verify accepted proposals become canonical layouts and invalid proposals take the existing recovery path.
 
 ## Implementation Details
 
@@ -66,12 +66,12 @@ limited to declarative field identifiers, separators, and allowed color forms.
 ## Tests
 
 - Unit tests:
-  - [ ] The instruction names the supported structured colored simple and ellipsis forms alongside uncolored forms.
-  - [ ] Valid named and hex color proposals return the canonical core-normalized layout.
-  - [ ] Invalid color forms, extra keys, multiple blocks, unfenced responses, and trailing content retain the invalid-response path.
-  - [ ] Agent input excludes resolved branch, provider, model, context, and other runtime session values.
+  - [x] The instruction names the supported structured colored simple and ellipsis forms alongside uncolored forms.
+  - [x] Valid named and hex color proposals return the canonical core-normalized layout.
+  - [x] Invalid color forms, extra keys, multiple blocks, unfenced responses, and trailing content retain the invalid-response path.
+  - [x] Agent input excludes resolved branch, provider, model, context, and other runtime session values.
 - Integration tests:
-  - [ ] The proposal parsing flow accepts only a complete fenced declarative layout and hands its canonical result to the existing confirmation journey.
+  - [x] The proposal parsing flow accepts only a complete fenced declarative layout and hands its canonical result to the existing confirmation journey.
 - Test coverage target: >=80%
 - All tests must pass
 

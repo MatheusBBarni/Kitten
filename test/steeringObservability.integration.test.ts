@@ -10,11 +10,12 @@ import { createAppStore } from "../src/store/appStore.ts"
 import {
   createJsonlFileSink,
   createTelemetryRecorder,
+  type HardStopOutcomeRecord,
   type SteeringOutcomeRecord,
 } from "../src/telemetry/recorder.ts"
 
-describe("privacy-safe steering observability", () => {
-  it("writes one local content-free outcome while the run snapshot excludes live steering state", () => {
+describe("privacy-safe steering and Hard Stop observability", () => {
+  it("writes closed local outcomes while the run snapshot excludes both live recovery payloads", () => {
     const dir = mkdtempSync(join(tmpdir(), "kitten-steering-observability-"))
     try {
       const telemetryPath = join(dir, "telemetry.jsonl")
@@ -75,32 +76,72 @@ describe("privacy-safe steering observability", () => {
         requestId: "REQUEST_ID_SENTINEL",
         generation: 1,
       })
+      store.applyEvent("codex", {
+        kind: "post_interrupt_continuation_enqueue",
+        interruptedTurnId: "ACP_ID_SENTINEL",
+        requestId: "HARD_STOP_REQUEST_ID_SENTINEL",
+        generation: 1,
+        blocks: [{ type: "text", text: "QUEUED_CONTINUATION_SENTINEL" }],
+      })
+      store.applyEvent("codex", {
+        kind: "post_interrupt_continuation_recover",
+        interruptedTurnId: "ACP_ID_SENTINEL",
+        requestId: "HARD_STOP_REQUEST_ID_SENTINEL",
+        generation: 1,
+      })
+      store.setHarnessDelivery("codex", {
+        version: "v1",
+        generation: 1,
+        state: "settled_interrupted",
+      })
       recorder.steeringOutcome("REQUEST_ID_SENTINEL", "recovered", "fallback")
+      recorder.hardStopOutcome("HARD_STOP_REQUEST_ID_SENTINEL:ACP_ID_SENTINEL", {
+        outcome: "settled_interrupted",
+        provider: "codex",
+        durationMs: 100,
+      })
       flushSnapshot?.()
 
       const telemetryRaw = readFileSync(telemetryPath, "utf8")
-      const telemetry = JSON.parse(telemetryRaw.trim()) as SteeringOutcomeRecord
-      expect(telemetry).toEqual({
+      const telemetry = telemetryRaw.trim().split("\n").map(
+        (line) => JSON.parse(line) as SteeringOutcomeRecord | HardStopOutcomeRecord,
+      )
+      expect(telemetry).toEqual([{
         type: "steering_outcome",
         outcome: "recovered",
         capabilityClass: "fallback",
         durationBucket: "under_5s",
         at: 1_000,
         sessionRef: "safe-run",
-      })
+      }, {
+        type: "hard_stop_outcome",
+        outcome: "settled_interrupted",
+        provider: "codex",
+        durationBucket: "under_5s",
+        at: 1_000,
+        sessionRef: "safe-run",
+      }])
       expect(records).toHaveLength(1)
       expect(records[0]?.version).toBe(4)
+      expect(records[0]?.harnessDeliveries.codex).toEqual({
+        version: "v1",
+        generation: 1,
+        state: "settled_interrupted",
+      })
 
       const persistedRaw = JSON.stringify(records[0])
       for (const sentinel of [
         "PROMPT_AND_RECOVERY_SENTINEL",
+        "QUEUED_CONTINUATION_SENTINEL",
         "REQUEST_ID_SENTINEL",
+        "HARD_STOP_REQUEST_ID_SENTINEL",
         "ACP_ID_SENTINEL",
       ]) {
         expect(telemetryRaw).not.toContain(sentinel)
         expect(persistedRaw).not.toContain(sentinel)
       }
       expect(persistedRaw).not.toContain("steering")
+      expect(persistedRaw).not.toContain("postInterruptContinuation")
       writer.dispose()
     } finally {
       rmSync(dir, { recursive: true, force: true })

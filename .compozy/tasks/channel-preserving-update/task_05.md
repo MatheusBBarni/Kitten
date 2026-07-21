@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Prove and update global npm installations"
 type: backend
 complexity: high
@@ -30,12 +30,12 @@ Add the npm-owned update path at the Node launcher boundary, where package ances
 
 ## Subtasks
 
-- [ ] 5.1 Supply canonical package-location and manifest seams from the Node entrypoint.
-- [ ] 5.2 Classify global npm ownership with canonical root ancestry.
-- [ ] 5.3 Run the exact npm transaction only for a proven global installation.
-- [ ] 5.4 Report npm version outcomes and safe refusals without fallback.
-- [ ] 5.5 Preserve existing non-update platform resolution and binary forwarding.
-- [ ] 5.6 Add deterministic unit and packed-package integration coverage.
+- [x] 5.1 Supply canonical package-location and manifest seams from the Node entrypoint.
+- [x] 5.2 Classify global npm ownership with canonical root ancestry.
+- [x] 5.3 Run the exact npm transaction only for a proven global installation.
+- [x] 5.4 Report npm version outcomes and safe refusals without fallback.
+- [x] 5.5 Preserve existing non-update platform resolution and binary forwarding.
+- [x] 5.6 Add deterministic unit and packed-package integration coverage.
 
 ## Implementation Details
 
@@ -73,16 +73,16 @@ Implement TechSpec "Node npm update boundary" and "Integration Points — npm gl
 ## Tests
 
 - Unit tests:
-  - [ ] Existing platform resolution and binary forwarding remain unchanged for ordinary non-update arguments.
-  - [ ] `--version` and `--help` combined with `--update` forward only to the compiled binary and never query or invoke npm.
-  - [ ] Proven global main and platform roots run `npm root --global` then exactly `npm install --global @matheusbbarni/kitten@latest`.
-  - [ ] Changed post-transaction version reports npm prior/result, while unchanged version reports npm already-current.
-  - [ ] Main-outside-root, platform-outside-root, prefix collision, local path, npx-like path, missing npm, malformed root, failed realpath, missing manifest, and npm nonzero each refuse without npm install or binary spawn.
+  - [x] Existing platform resolution and binary forwarding remain unchanged for ordinary non-update arguments.
+  - [x] `--version` and `--help` combined with `--update` forward only to the compiled binary and never query or invoke npm.
+  - [x] Proven global main and platform roots run `npm root --global` then exactly `npm install --global @matheusbbarni/kitten@latest`.
+  - [x] Changed post-transaction version reports npm prior/result, while unchanged version reports npm already-current.
+  - [x] Main-outside-root, platform-outside-root, prefix collision, local path, npx-like path, missing npm, malformed root, failed realpath, missing manifest, and npm nonzero each refuse without npm install or binary spawn.
 - Integration tests:
-  - [ ] A packed local launcher with a fake npm root refuses `--update` and produces no fake `install --global` log entry.
-  - [ ] An npx-shaped package path outside the fake global root refuses with the same no-mutation behavior.
-  - [ ] A controlled fake global root containing the shim and matching platform package records only the exact npm install argv and emits npm prior/result output.
-  - [ ] A second global fixture whose manifest version remains unchanged emits the already-current result without fallback.
+  - [x] A packed local launcher with a fake npm root refuses `--update` and produces no fake `install --global` log entry.
+  - [x] An npx-shaped package path outside the fake global root refuses with the same no-mutation behavior.
+  - [x] A controlled fake global root containing the shim and matching platform package records only the exact npm install argv and emits npm prior/result output.
+  - [x] A second global fixture whose manifest version remains unchanged emits the already-current result without fallback.
 - Test coverage target: >=80%
 - All tests must pass
 

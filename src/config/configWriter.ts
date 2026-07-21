@@ -11,12 +11,21 @@ import { constants, mkdirSync } from "node:fs"
 import { lstat, open, rename, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 
+import { isThemePresetId } from "../core/themeCatalog.ts"
+import type { ThemePreference } from "../core/types.ts"
 import {
   ConfigError,
   resolveConfigPath,
   USER_CONFIG_SCHEMA,
   type UserConfig,
 } from "./configLoader.ts"
+
+/** Explicit writes accept resolved canonical preferences, never compatibility aliases. */
+export type UserConfigPatch = Omit<Partial<UserConfig>, "theme"> & {
+  readonly theme?: ThemePreference
+}
+
+const BUILTIN_THEME_PREFERENCES = new Set<ThemePreference>(["auto", "light", "dark"])
 
 /** Path-resolution seams for callers and real-filesystem tests. */
 export interface WriteConfigOptions {
@@ -35,12 +44,15 @@ export interface WriteConfigOptions {
  * temp file and leave the previous target untouched.
  */
 export async function persistUserConfig(
-  patch: Partial<UserConfig>,
+  patch: UserConfigPatch,
   options: WriteConfigOptions = {},
 ): Promise<void> {
+  assertCanonicalThemePatch(patch.theme)
   const path = options.path ?? resolveConfigPath(options.env)
   const current = await readUserConfig(path)
-  const serialized = `${JSON.stringify(mergeUserConfig(current, patch), null, 2)}\n`
+  const merged = mergeUserConfig(current, patch)
+  const canonical = validateUserConfig(JSON.stringify(merged), path)
+  const serialized = `${JSON.stringify(canonical, null, 2)}\n`
 
   // Validate the serialized representation itself: these are the exact bytes that
   // will become the next boot's input, not merely the pre-serialization object.
@@ -63,7 +75,7 @@ export async function persistUserConfig(
   }
 }
 
-function mergeUserConfig(current: UserConfig, patch: Partial<UserConfig>): UserConfig {
+function mergeUserConfig(current: UserConfig, patch: UserConfigPatch): UserConfig {
   const merged = { ...current, ...patch }
   if (patch.providerDefaults === undefined) {
     merged.providerDefaults = current.providerDefaults
@@ -91,6 +103,11 @@ function mergeUserConfig(current: UserConfig, patch: Partial<UserConfig>): UserC
       : { ...patch.editor, args: [...patch.editor.args] }
   }
   return merged
+}
+
+function assertCanonicalThemePatch(theme: ThemePreference | undefined): void {
+  if (theme === undefined || BUILTIN_THEME_PREFERENCES.has(theme) || isThemePresetId(theme)) return
+  throw new ConfigError(`theme is not a canonical theme preference`)
 }
 
 async function readUserConfig(path: string): Promise<UserConfig> {

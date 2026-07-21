@@ -7,9 +7,8 @@ import {
   CONFIG_PATH_ENV_VAR,
   loadAppConfig,
   USER_CONFIG_SCHEMA,
-  type UserConfig,
 } from "./configLoader.ts"
-import { persistUserConfig } from "./configWriter.ts"
+import { persistUserConfig, type UserConfigPatch } from "./configWriter.ts"
 
 // Suite: Atomic user-config write-back
 // Invariant: A persist either commits one schema-valid merged delta or leaves the prior target bytes unchanged.
@@ -17,6 +16,17 @@ import { persistUserConfig } from "./configWriter.ts"
 // Boundary OUT: watcher/store persistence wiring, owned by task_09 integration tests.
 
 const tempDirs: string[] = []
+const COLORED_STATUSLINE_PATCH = {
+  statusline: {
+    llmDisclosureAcknowledged: true,
+    separator: " · ",
+    line: [
+      { kind: "FOLDER", color: "red" },
+      { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12abef" },
+      "MODEL",
+    ],
+  },
+} as unknown as UserConfigPatch
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "kitten-config-writer-"))
@@ -109,12 +119,12 @@ describe("persistUserConfig", () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
 
-    await persistUserConfig({ theme: "catppuccin-mocha", telemetryEnabled: true }, { path })
+    await persistUserConfig({ theme: "tokyo-night-storm", telemetryEnabled: true }, { path })
 
     const source = await readFile(path, "utf8")
     expect(USER_CONFIG_SCHEMA.safeParse(JSON.parse(source)).success).toBe(true)
     await expect(loadAppConfig({ path })).resolves.toMatchObject({
-      theme: "catppuccin-mocha",
+      theme: "tokyo-night-storm",
       telemetryEnabled: true,
     })
   })
@@ -124,9 +134,28 @@ describe("persistUserConfig", () => {
     const path = join(dir, "config.json")
     const original = Buffer.from('{\n  "theme": "light",\n  "telemetryEnabled": false\n}\n')
     await writeFile(path, original)
-    const invalidPatch = { theme: "neon" } as unknown as Partial<UserConfig>
+    const invalidPatch = { theme: "neon" } as unknown as UserConfigPatch
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/theme/)
+
+    expect(await readFile(path)).toEqual(original)
+    expect(await readdir(dir)).toEqual(["config.json"])
+  })
+
+  it("rejects an invalid colored statusline patch without changing the original bytes", async () => {
+    const dir = await makeTempDir()
+    const path = join(dir, "config.json")
+    const original = Buffer.from('{\n  "theme": "light",\n  "telemetryEnabled": false\n}\n')
+    await writeFile(path, original)
+    const invalidPatch = {
+      statusline: {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "BRANCH", color: "#1234" }],
+      },
+    } as unknown as UserConfigPatch
+
+    await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/statusline/)
 
     expect(await readFile(path)).toEqual(original)
     expect(await readdir(dir)).toEqual(["config.json"])
@@ -138,7 +167,7 @@ describe("persistUserConfig", () => {
     const path = join(parent, "config.json")
     const invalidPatch = {
       editor: { kind: "custom", executable: "code", args: ["--goto={file}"] },
-    } as unknown as Partial<UserConfig>
+    } as unknown as UserConfigPatch
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/editor\.args/)
 
@@ -151,7 +180,7 @@ describe("persistUserConfig", () => {
     const original = Buffer.from('{\n  "editor": { "kind": "system-default" },\n  "theme": "light"\n}\n')
     const invalidPatch = {
       editor: { kind: "custom", executable: "code", args: ["{file}", "{file}"] },
-    } as unknown as Partial<UserConfig>
+    } as unknown as UserConfigPatch
     await writeFile(path, original)
 
     await expect(persistUserConfig(invalidPatch, { path })).rejects.toThrow(/editor\.args/)
@@ -166,7 +195,7 @@ describe("persistUserConfig", () => {
     const original = Buffer.from('{ "theme": "light"')
     await writeFile(path, original)
 
-    await expect(persistUserConfig({ theme: "dark" }, { path })).rejects.toThrow(/not valid JSON/)
+    await expect(persistUserConfig(COLORED_STATUSLINE_PATCH, { path })).rejects.toThrow(/not valid JSON/)
 
     expect(await readFile(path)).toEqual(original)
     expect(await readdir(dir)).toEqual(["config.json"])
@@ -215,7 +244,7 @@ describe("persistUserConfig", () => {
     await writeFile(referent, original)
     await symlink(referent, path)
 
-    await expect(persistUserConfig({ theme: "dark" }, { path })).rejects.toThrow(/symbolic link/)
+    await expect(persistUserConfig(COLORED_STATUSLINE_PATCH, { path })).rejects.toThrow(/symbolic link/)
 
     expect(await readFile(referent)).toEqual(original)
     expect((await lstat(path)).isSymbolicLink()).toBe(true)
@@ -263,13 +292,13 @@ describe("writer-loader integration", () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
 
-    await persistUserConfig({ theme: "catppuccin-latte" }, { path })
+    await persistUserConfig({ theme: "dracula" }, { path })
     const loaded = await loadAppConfig({ path })
 
-    expect(loaded.theme).toBe("catppuccin-latte")
+    expect(loaded.theme).toBe("dracula")
   })
 
-  it("preserves unrelated settings across acknowledgement-only and complete statusline writes", async () => {
+  it("canonicalizes colored statusline writes while preserving unrelated settings", async () => {
     const dir = await makeTempDir()
     const path = join(dir, "config.json")
     const existing = {
@@ -290,13 +319,7 @@ describe("writer-loader integration", () => {
       statusline: { llmDisclosureAcknowledged: true, layout: null },
     })
 
-    await persistUserConfig({
-      statusline: {
-        llmDisclosureAcknowledged: true,
-        separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
-      },
-    }, { path })
+    await persistUserConfig(COLORED_STATUSLINE_PATCH, { path })
 
     const written = JSON.parse(await readFile(path, "utf8"))
     expect(written).toEqual({
@@ -304,7 +327,11 @@ describe("writer-loader integration", () => {
       statusline: {
         llmDisclosureAcknowledged: true,
         separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12ABEF" },
+          "MODEL",
+        ],
       },
     })
     const loaded = await loadAppConfig({ path })
@@ -312,7 +339,11 @@ describe("writer-loader integration", () => {
       llmDisclosureAcknowledged: true,
       layout: {
         separator: " · ",
-        line: ["FOLDER", { kind: "ELLIPSIS_BRANCH", maxChars: 24 }, "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#12ABEF" },
+          "MODEL",
+        ],
       },
     })
     expect(loaded).toMatchObject({

@@ -28,6 +28,7 @@ import {
   type ContextPackSendHereResult,
   type FileSelectorDiscoveryOutcome,
   type FileSelectorRenderState,
+  type PostInterruptContinuationResult,
   type ExploreAvailabilityResult,
   type ExploreLaunchRequest,
   type ExploreLaunchResult,
@@ -89,6 +90,9 @@ export interface RecordedCalls {
   fileSelectorSelected: { sessionId: SessionId; durationMs: number }[]
   fileSelectorCorrected: SessionId[]
   sendPrompt: { input: PromptInput; sessionId: SessionId | undefined }[]
+  queuePostInterruptContinuation: { input: PromptInput; sessionId: SessionId | undefined }[]
+  recoverPostInterruptContinuation: (SessionId | undefined)[]
+  acknowledgePostInterruptRecovery: { sessionId: SessionId; requestId: string }[]
   steer: { input: PromptInput; sessionId: SessionId | undefined }[]
   acknowledgeSteeringRecovery: { sessionId: SessionId; requestId: string }[]
   recordPromptHistory: { text: string; sessionId: SessionId | undefined }[]
@@ -289,6 +293,9 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     fileSelectorSelected: [],
     fileSelectorCorrected: [],
     sendPrompt: [],
+    queuePostInterruptContinuation: [],
+    recoverPostInterruptContinuation: [],
+    acknowledgePostInterruptRecovery: [],
     steer: [],
     acknowledgeSteeringRecovery: [],
     recordPromptHistory: [],
@@ -314,6 +321,8 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
   const find = (sessionId: SessionId): AgentRuntimeState | undefined => runtimes.find((r) => r.sessionId === sessionId)
   let created = 0
   let steeringRequests = 0
+  let continuationRequests = 0
+  const postInterruptAdmissions = new Map<SessionId, string>()
   const rejectedFreshPrompts = new Map<SessionId, PromptInput>()
 
   async function closeConversation(sessionId: SessionId, choice: CloseChoice): Promise<CloseConversationResult> {
@@ -558,6 +567,62 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
         }
         return result
       },
+      queuePostInterruptContinuation(
+        input: PromptInput,
+        sessionId?: SessionId,
+      ): PostInterruptContinuationResult {
+        calls.queuePostInterruptContinuation.push({ input, sessionId })
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (!target) return { kind: "unavailable", reason: "session" }
+        const blocks = (typeof input === "string" ? [{ type: "text" as const, text: input }] : input)
+          .filter((block) => block.text.trim().length > 0)
+        if (blocks.length === 0) return { kind: "unavailable", reason: "empty" }
+        const interruptedTurnId = postInterruptAdmissions.get(target)
+        if (!interruptedTurnId) return { kind: "unavailable", reason: "inactive" }
+        const session = store.getState().sessions[target]
+        if (!session) return { kind: "unavailable", reason: "session" }
+        if (
+          session.postInterruptContinuation.request !== null ||
+          session.postInterruptContinuation.recovery !== null
+        ) return { kind: "unavailable", reason: "recovering" }
+        continuationRequests += 1
+        const requestId = `fake-continuation-${continuationRequests}`
+        store.applyEvent(target, {
+          kind: "post_interrupt_continuation_enqueue",
+          interruptedTurnId,
+          requestId,
+          generation: 1,
+          blocks,
+        })
+        return { kind: "queued", requestId }
+      },
+      recoverPostInterruptContinuation(sessionId?: SessionId): void {
+        calls.recoverPostInterruptContinuation.push(sessionId)
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (!target) return
+        const continuation = store.getState().sessions[target]?.postInterruptContinuation
+        const request = continuation?.request
+        if (!continuation?.interruptedTurnId || !request) return
+        store.applyEvent(target, {
+          kind: "post_interrupt_continuation_recover",
+          interruptedTurnId: continuation.interruptedTurnId,
+          requestId: request.id,
+          generation: request.generation,
+        })
+      },
+      acknowledgePostInterruptRecovery(sessionId, requestId): void {
+        calls.acknowledgePostInterruptRecovery.push({ sessionId, requestId })
+        const continuation = store.getState().sessions[sessionId]?.postInterruptContinuation
+        const request = continuation?.request
+        if (!continuation?.interruptedTurnId || request?.id !== requestId) return
+        store.applyEvent(sessionId, {
+          kind: "post_interrupt_continuation_acknowledge_recovery",
+          interruptedTurnId: continuation.interruptedTurnId,
+          requestId,
+          generation: request.generation,
+        })
+        postInterruptAdmissions.delete(sessionId)
+      },
       steer(input: PromptInput, sessionId?: SessionId): SteeringResult {
         calls.steer.push({ input, sessionId })
         const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
@@ -609,6 +674,14 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
       },
       async cancel(sessionId?: SessionId): Promise<void> {
         calls.cancel.push(sessionId)
+        const target = sessionId ?? store.getState().workspace.selectedVisibleId ?? undefined
+        if (
+          target &&
+          store.getState().sessions[target]?.status === "working" &&
+          !store.getState().sessions[target]?.postInterruptContinuation.request
+        ) {
+          postInterruptAdmissions.set(target, `fake-interrupted-${calls.cancel.length}`)
+        }
       },
       async setSessionConfigOption(configId: string, value: string, sessionId?: SessionId): Promise<boolean> {
         calls.setSessionConfigOption.push({ configId, value, sessionId })

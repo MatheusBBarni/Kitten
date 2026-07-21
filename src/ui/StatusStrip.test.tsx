@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test"
 import { basename } from "node:path"
 
+import { RGBA } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -15,10 +16,12 @@ import { createAppStore } from "../store/appStore.ts"
 import { actAsync, destroyMounted } from "../../test/reactTui.ts"
 import { CockpitProvider } from "./cockpitContext.tsx"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
+import { DARK_PALETTE } from "./theme.ts"
 import {
   BACKGROUND_STATUS_LABEL,
   CONTEXT_HEADROOM_LABEL,
   EMPTY_WORKSPACE_STATUS_LABEL,
+  FOCUS_MARKER,
   MCP_STATUS_LABEL,
   StatusStrip,
   type StatusSlotSelectors,
@@ -32,6 +35,18 @@ function expectNoOverflow(frame: string, width: number): void {
   expect(rows).toHaveLength(HEIGHT)
   expect([...rows[0]!]).toHaveLength(width)
   expect(frame).not.toContain("਀")
+}
+
+function foregroundOf(setup: TestRendererSetup, text: string): string | undefined {
+  return setup
+    .captureSpans()
+    .lines.flatMap((line) => line.spans)
+    .find((span) => span.text === text)
+    ?.fg.toString()
+}
+
+function paletteColor(hex: string): string {
+  return RGBA.fromHex(hex).toString()
 }
 
 const HIDDEN_SELECTORS: StatusSlotSelectors = {
@@ -319,6 +334,107 @@ describe("StatusStrip", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("renders explicit and theme-default fields with muted separators through the shared presenter", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " | ",
+      line: [{ kind: "FOLDER", color: "#123456" }, "PROVIDER"],
+    })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain(`${PROJECT_FOLDER} | Claude`)
+    expect(foregroundOf(setup, PROJECT_FOLDER)).toBe(paletteColor("#123456"))
+    expect(foregroundOf(setup, " | ")).toBe(paletteColor(DARK_PALETTE.muted))
+    expect(foregroundOf(setup, "Claude")).toBe(paletteColor(DARK_PALETTE.text))
+    expectNoOverflow(setup.captureCharFrame(), 80)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renders saved CONTEXT from the focused session's validated headroom", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, { separator: " · ", line: ["CONTEXT"] })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("ctx 38%")
+    expect(frame).not.toContain("█")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("moves saved CONTEXT with real-store conversation focus without retaining the previous value", async () => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, { separator: " · ", line: ["CONTEXT"] })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    controller.store.applyEvent("codex", { kind: "usage", used: 50_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain("ctx 38%")
+    expect(setup.captureCharFrame()).not.toContain("ctx 75%")
+
+    await actAsync(() => controller.actions.selectConversation("codex"))
+    const codex = await setup.waitForFrame((frame) => frame.includes("ctx 75%"))
+    expect(codex).not.toContain("ctx 38%")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it.each([
+    ["unavailable", null],
+    ["selector-invalid", { used: -10_000, size: 200_000 }],
+  ] as const)("canonically omits %s saved CONTEXT without separator artifacts", async (_case, usage) => {
+    const controller = createFakeController()
+    saveCustomLayout(controller, {
+      separator: " · ",
+      line: ["PROVIDER", { kind: "CONTEXT", color: "#123456" }, "FOLDER"],
+    })
+    if (usage !== null) {
+      controller.store.applyEvent("claude-code", { kind: "usage", ...usage })
+    }
+    const setup = await renderStrip(controller)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`Claude · ${PROJECT_FOLDER}`)
+    expect(frame).not.toContain(CONTEXT_HEADROOM_LABEL)
+    expect(frame).not.toContain("0%")
+    expect(frame).not.toContain(" ·  · ")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("drops trailing saved CONTEXT at a narrow width while retaining FULL_PATH", async () => {
+    const statuslineCwd = "/work/kitten"
+    const controller = createFakeController({
+      runtimes: readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd })),
+    })
+    saveCustomLayout(controller, { separator: " · ", line: ["FULL_PATH", "CONTEXT"] })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller, 40)
+
+    expect(setup.captureCharFrame()).toContain(`${statuslineCwd} · ctx 38%`)
+
+    await actAsync(() => setup.resize(20, HEIGHT))
+    const narrow = await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
+    expect(narrow).not.toContain(CONTEXT_HEADROOM_LABEL)
+    expect(narrow).toContain(KEYMAP_HINT)
+    expectNoOverflow(narrow, 20)
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps the layout-null legacy AgentStatusChip path with valid usage", async () => {
+    const controller = createFakeController()
+    controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
+    controller.store.applyEvent("claude-code", { kind: "usage", used: 124_000, size: 200_000 })
+    const setup = await renderStrip(controller)
+
+    expect(setup.captureCharFrame()).toContain(`${FOCUS_MARKER} Claude:— ctx 38% █░░`)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("uses the core renderer's grapheme-safe branch ellipsis", async () => {
     const controller = createFakeController()
     saveCustomLayout(controller, {
@@ -347,7 +463,7 @@ describe("StatusStrip", () => {
     })
     saveCustomLayout(controller, {
       separator: " · ",
-      line: ["FULL_PATH", "BRANCH", "PROVIDER", "MODEL"],
+      line: [{ kind: "FULL_PATH", color: "#123456" }, "BRANCH", "PROVIDER", "MODEL"],
     })
     controller.store.applyEvent("claude-code", {
       kind: "branch",
@@ -357,6 +473,7 @@ describe("StatusStrip", () => {
 
     const wide = setup.captureCharFrame()
     expect(wide).toContain(statuslineCwd)
+    expect(foregroundOf(setup, statuslineCwd)).toBe(paletteColor("#123456"))
     expect(wide).toContain("feat/statusline-ui")
     expect(wide).toContain("Claude")
     expect(wide).not.toContain("opus")
@@ -367,6 +484,7 @@ describe("StatusStrip", () => {
     expect(narrow).not.toContain("feat/statusline-ui")
     expect(narrow).not.toContain("Claude")
     expect(narrow).not.toContain("opus")
+    expect(foregroundOf(setup, statuslineCwd)).toBe(paletteColor("#123456"))
     expect(narrow).toContain(KEYMAP_HINT)
     expectNoOverflow(narrow, 64)
 

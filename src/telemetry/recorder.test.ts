@@ -8,6 +8,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { THEME_PRESET_IDS } from "../core/themeCatalog.ts"
+import type { ThemePreference } from "../core/types.ts"
 import { bucketChars, CHAR_BUCKETS, REEXPLANATION_CHAR_THRESHOLD } from "../core/telemetryHeuristics.ts"
 import { createAppStore } from "../store/appStore.ts"
 import {
@@ -19,6 +21,7 @@ import {
   bucketTabSwitchLatency,
   bucketAgentRunBatchSize,
   bucketAgentRunDuration,
+  bucketHardStopDuration,
   bucketSteeringDuration,
   logUsageSeen,
   recordReadiness,
@@ -338,6 +341,113 @@ describe("steering outcome telemetry", () => {
     const serialized = JSON.stringify(sink.records)
     expect(sink.records).toHaveLength(1)
     for (const sentinel of lifecycleKey.split(":")) expect(serialized).not.toContain(sentinel)
+  })
+})
+
+describe("Hard Stop outcome telemetry", () => {
+  it("does not access or construct a sink when disabled", () => {
+    const recorder = createTelemetryRecorder({
+      enabled: false,
+      get sink(): TelemetrySink {
+        throw new Error("disabled Hard Stop telemetry must not access a sink")
+      },
+    })
+
+    recorder.hardStopOutcome("private-lifecycle", {
+      outcome: "settled_interrupted",
+      provider: "codex",
+      durationMs: 10,
+    })
+  })
+
+  it("emits the exact fixed-field record and reduces timing to a coarse bucket", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink,
+      now: () => 1_000,
+      sessionRef: "anonymous-run",
+    })
+
+    recorder.hardStopOutcome("private-lifecycle", {
+      outcome: "settled_interrupted",
+      provider: "claude-code",
+      durationMs: 30_000,
+    })
+
+    expect(sink.records).toEqual([{
+      type: "hard_stop_outcome",
+      outcome: "settled_interrupted",
+      provider: "claude-code",
+      durationBucket: "30_to_120s",
+      at: 1_000,
+      sessionRef: "anonymous-run",
+    }])
+    expect(Object.keys(sink.records[0]!)).toEqual([
+      "type",
+      "outcome",
+      "provider",
+      "durationBucket",
+      "at",
+      "sessionRef",
+    ])
+    expect([
+      0,
+      4_999,
+      5_000,
+      29_999,
+      30_000,
+      119_999,
+      120_000,
+    ].map(bucketHardStopDuration)).toEqual([
+      "under_5s",
+      "under_5s",
+      "5_to_30s",
+      "5_to_30s",
+      "30_to_120s",
+      "30_to_120s",
+      "over_120s",
+    ])
+  })
+
+  it("deduplicates privately and rejects non-allowlisted dimensions without serializing sentinels", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, sessionRef: "anonymous-run" })
+    const lifecycleKey = [
+      "CONTINUATION_TEXT_SENTINEL",
+      "BLOCK_CONTENT_SENTINEL",
+      "REQUEST_ID_SENTINEL",
+      "LIFECYCLE_ID_SENTINEL",
+      "RAW_ERROR_SENTINEL",
+      "ROUTE_VALUE_SENTINEL",
+      "CAPABILITY_VALUE_SENTINEL",
+    ].join(":")
+    const valid = {
+      outcome: "settled_interrupted",
+      provider: "cursor",
+      durationMs: 1,
+    } as const
+
+    recorder.hardStopOutcome(lifecycleKey, valid)
+    recorder.hardStopOutcome(lifecycleKey, valid)
+    recorder.hardStopOutcome("invalid-outcome", {
+      ...valid,
+      outcome: "dispatched" as never,
+    })
+    recorder.hardStopOutcome("invalid-provider", {
+      ...valid,
+      provider: "private-provider" as never,
+    })
+    recorder.hardStopOutcome("invalid-duration", { ...valid, durationMs: Number.NaN })
+    recorder.hardStopOutcome("content-bearing", {
+      ...valid,
+      rawError: "RAW_ERROR_SENTINEL",
+    } as never)
+
+    expect(sink.records).toHaveLength(1)
+    const serialized = JSON.stringify(sink.records)
+    for (const sentinel of lifecycleKey.split(":")) expect(serialized).not.toContain(sentinel)
+    expect(serialized).not.toContain("private-provider")
   })
 })
 
@@ -1475,16 +1585,28 @@ describe("settings events", () => {
     expect(sink.records).toEqual([{ type: "settings_opened", at: 42, sessionRef: "run-1" }])
   })
 
-  it("records theme_set with a fixed ThemePreference and no text field", () => {
+  it("records every canonical catalog choice with only fixed theme_set fields", () => {
     const sink = memorySink()
     const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
 
-    recorder.themeSet("catppuccin-mocha")
+    for (const themeId of THEME_PRESET_IDS) recorder.themeSet(themeId)
 
-    expect(sink.records).toEqual([
-      { type: "theme_set", themeId: "catppuccin-mocha", at: 42, sessionRef: "run-1" },
-    ])
-    expect(Object.keys(sink.records[0]!)).not.toContain("text")
+    expect(sink.records.map((record) => record.themeId)).toEqual([...THEME_PRESET_IDS])
+    for (const record of sink.records) {
+      expect(Object.keys(record)).toEqual(["type", "themeId", "at", "sessionRef"])
+      for (const forbidden of ["family", "displayName", "sourceUrl", "licenseAttribution", "text", "content"]) {
+        expect(Object.keys(record)).not.toContain(forbidden)
+      }
+    }
+  })
+
+  it("drops a non-canonical runtime theme value instead of recording arbitrary text", () => {
+    const sink = memorySink()
+    const recorder = createTelemetryRecorder({ enabled: true, sink, now: () => 42, sessionRef: "run-1" })
+
+    recorder.themeSet("PRIVATE_THEME_SENTINEL" as ThemePreference)
+
+    expect(sink.records).toEqual([])
   })
 
   it("records config write outcomes with the fixed modal source", () => {

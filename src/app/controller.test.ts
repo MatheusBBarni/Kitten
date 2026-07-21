@@ -33,6 +33,7 @@ import type {
   ContextBuildAvailability,
   ContextPackMaterializationResult,
   DomainSessionEvent,
+  HardStopContinuationCapability,
   ManagedWorktreeBinding,
   McpServerConfig,
   ProviderKind,
@@ -72,6 +73,7 @@ import {
   createSessionController,
   projectCursorRecovery,
   type ActiveAgentInteraction,
+  type ControllerTelemetry,
   type SessionController,
 } from "./controller.ts"
 import type { RepositoryFileList, RepositoryFileSource } from "./fileDiscovery.ts"
@@ -1818,7 +1820,7 @@ async function controllerWithStubs(
   overrides: {
     config?: AppConfig
     onError?: (sessionId: SessionId, error: unknown) => void
-    recorder?: ActionTelemetry
+    recorder?: ControllerTelemetry
     usageSeenSink?: UsageSeenSink
     readBranch?: (cwd: string) => Promise<string | null>
     createShellRuntime?: ShellRuntimeFactory
@@ -1828,8 +1830,12 @@ async function controllerWithStubs(
     /** Exercise the controller's real default-store construction. */
     useProductionStore?: boolean
     resolveHarnessCapability?: (config: ResolvedAgentConfig) => HarnessCapability
+    resolveHardStopContinuationCapability?: (
+      config: ResolvedAgentConfig,
+    ) => HardStopContinuationCapability
     scheduleClarificationTimeout?: (callback: () => void, timeoutMs: number) => () => void
     scheduleSteeringSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
+    schedulePostInterruptSettlementTimeout?: (callback: () => void, timeoutMs: number) => () => void
     bridge?: RecordingBridge
     newSessionId?: () => SessionId
   } = {},
@@ -1854,8 +1860,10 @@ async function controllerWithStubs(
     readBranch: overrides.readBranch ?? (async () => null),
     createShellRuntime: overrides.createShellRuntime ?? createTestShellFactory(),
     resolveHarnessCapability: overrides.resolveHarnessCapability ?? (() => TEST_HARNESS_CAPABILITY),
+    resolveHardStopContinuationCapability: overrides.resolveHardStopContinuationCapability,
     scheduleClarificationTimeout: overrides.scheduleClarificationTimeout,
     scheduleSteeringSettlementTimeout: overrides.scheduleSteeringSettlementTimeout,
+    schedulePostInterruptSettlementTimeout: overrides.schedulePostInterruptSettlementTimeout,
     createKittenMcpBridge: bridge.factory,
     newSessionId: overrides.newSessionId,
   })
@@ -2314,6 +2322,297 @@ describe("createSessionController - steering orchestration", () => {
       { type: "text", text: "survive replacement" },
     ])
     await controller.dispose()
+  })
+})
+
+describe("createSessionController - confirmed Hard Stop continuation", () => {
+  const SUPPORTED_HARD_STOP: HardStopContinuationCapability = { status: "supported" }
+
+  it("keeps the first harness in flight until both proofs, then sends one ordinary continuation", async () => {
+    const turn = deferred()
+    const cancellation = deferred()
+    const ids = ["turn-1", "continuation-1", "turn-2"]
+    const records: TelemetryRecord[] = []
+    const recorder = createTelemetryRecorder({
+      enabled: true,
+      sink: { write: (record) => records.push(record) },
+      now: () => 1_000,
+      sessionRef: "anonymous-run",
+    })
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { promptWait: turn.promise, cancelWait: cancellation.promise } },
+      {
+        newSteeringId: () => ids.shift()!,
+        resolveHardStopContinuationCapability: () => SUPPORTED_HARD_STOP,
+        recorder,
+      },
+    )
+
+    const original = controller.actions.sendPrompt("original task", "claude-code")
+    await waitFor(() => connections["claude-code"].prompts.length === 1, "first prompt")
+    connections["claude-code"].emit({ kind: "status", status: "working" })
+    await controller.actions.cancel("claude-code")
+    expect(connections["claude-code"].cancels).toEqual(["claude-code-session"])
+    expect(controller.actions.queuePostInterruptContinuation("revised task", "claude-code")).toEqual({
+      kind: "queued",
+      requestId: "continuation-1",
+    })
+    await expect(
+      controller.actions.sendPrompt("competing ordinary prompt", "claude-code"),
+    ).resolves.toBeNull()
+    expect(connections["claude-code"].prompts).toHaveLength(1)
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("in_flight")
+    expect(records.filter((record) => record.type === "hard_stop_outcome")).toEqual([])
+
+    turn.resolve()
+    await original
+    await Bun.sleep(0)
+    connections["claude-code"].emit({ kind: "status", status: "idle" })
+    await expect(
+      controller.actions.sendPrompt("competing after settlement", "claude-code"),
+    ).resolves.toBeNull()
+    expect(connections["claude-code"].prompts).toHaveLength(1)
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("in_flight")
+    expect(records.filter((record) => record.type === "hard_stop_outcome")).toEqual([])
+
+    cancellation.resolve()
+    await waitFor(() => connections["claude-code"].prompts.length === 2, "ordinary continuation")
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("settled_interrupted")
+    expect(connections["claude-code"].prompts[1]?.blocks).toEqual([
+      { type: "text", text: "revised task" },
+    ])
+    expect(connections["claude-code"].promptInputs[1]?.input).toEqual([
+      { type: "text", text: "revised task" },
+    ])
+    expect(controller.store.getState().sessions["claude-code"]?.steering.queue).toEqual([])
+    expect(
+      controller.store.getState().sessions["claude-code"]?.turns.filter((turn) => turn.kind === "user"),
+    ).toHaveLength(2)
+    expect(records.filter((record) => record.type === "hard_stop_outcome")).toEqual([{
+      type: "hard_stop_outcome",
+      outcome: "settled_interrupted",
+      provider: "claude-code",
+      durationBucket: "under_5s",
+      at: 1_000,
+      sessionRef: "anonymous-run",
+    }])
+    await controller.dispose()
+  })
+
+  it("restores a queued draft on second Escape without another provider cancel", async () => {
+    const turn = deferred()
+    const cancellation = deferred()
+    const ids = ["turn-1", "continuation-1"]
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { promptWait: turn.promise, cancelWait: cancellation.promise } },
+      {
+        newSteeringId: () => ids.shift()!,
+        resolveHardStopContinuationCapability: () => SUPPORTED_HARD_STOP,
+      },
+    )
+
+    const original = controller.actions.sendPrompt("original task", "claude-code")
+    await waitFor(() => connections["claude-code"].prompts.length === 1, "first prompt")
+    connections["claude-code"].emit({ kind: "status", status: "working" })
+    await controller.actions.cancel("claude-code")
+    controller.actions.queuePostInterruptContinuation("restore this", "claude-code")
+    await controller.actions.cancel("claude-code")
+
+    expect(connections["claude-code"].cancels).toHaveLength(1)
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toEqual([{ type: "text", text: "restore this" }])
+
+    cancellation.resolve()
+    turn.resolve()
+    await original
+    await Bun.sleep(0)
+    expect(connections["claude-code"].prompts).toHaveLength(1)
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("settled_interrupted")
+    controller.actions.acknowledgePostInterruptRecovery("claude-code", "continuation-1")
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toBeNull()
+    await controller.dispose()
+  })
+
+  it("fails closed for unsupported capability, cancellation failure, timeout, and terminal error", async () => {
+    const cases = ["unsupported", "cancel_failed", "timeout", "terminal_error"] as const
+    for (const failure of cases) {
+      const turn = deferred()
+      const timeout = { fire: null as (() => void) | null }
+      const records: TelemetryRecord[] = []
+      const { controller, connections } = await controllerWithStubs(
+        {
+          "claude-code": {
+            promptWait: turn.promise,
+            ...(failure === "cancel_failed" ? { cancelThrows: new Error("cancel failed") } : {}),
+          },
+        },
+        {
+          newSteeringId: (() => {
+            const ids = ["turn-1", "continuation-1"]
+            return () => ids.shift()!
+          })(),
+          resolveHardStopContinuationCapability: () => failure === "unsupported"
+            ? { status: "unavailable", reason: "missing_implementation" }
+            : SUPPORTED_HARD_STOP,
+          recorder: createTelemetryRecorder({
+            enabled: true,
+            sink: { write: (record) => records.push(record) },
+          }),
+          schedulePostInterruptSettlementTimeout: (callback) => {
+            timeout.fire = callback
+            return () => {
+              timeout.fire = null
+            }
+          },
+        },
+      )
+
+      const original = controller.actions.sendPrompt("original task", "claude-code")
+      await waitFor(() => connections["claude-code"].prompts.length === 1, `${failure} first prompt`)
+      connections["claude-code"].emit({ kind: "status", status: "working" })
+      await controller.actions.cancel("claude-code")
+      controller.actions.queuePostInterruptContinuation("retain locally", "claude-code")
+      if (failure === "timeout") timeout.fire?.()
+      if (failure === "terminal_error") {
+        connections["claude-code"].emit({ kind: "status", status: "error" })
+      }
+      await Bun.sleep(0)
+
+      expect(
+        controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+      ).toEqual([{ type: "text", text: "retain locally" }])
+      expect(connections["claude-code"].prompts).toHaveLength(1)
+      expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("failed")
+      expect(records.filter((record) => record.type === "hard_stop_outcome")).toEqual([])
+
+      turn.resolve()
+      await original
+      await Bun.sleep(0)
+      expect(connections["claude-code"].prompts).toHaveLength(1)
+      await controller.dispose()
+    }
+  })
+
+  it("retains the queued draft when the interrupted first delivery settles with an error", async () => {
+    const turn = deferred()
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { promptWait: turn.promise, promptThrows: new Error("terminal prompt error") } },
+      {
+        newSteeringId: (() => {
+          const ids = ["turn-1", "continuation-1"]
+          return () => ids.shift()!
+        })(),
+        resolveHardStopContinuationCapability: () => SUPPORTED_HARD_STOP,
+      },
+    )
+
+    const original = controller.actions.sendPrompt("original task", "claude-code")
+    await waitFor(() => connections["claude-code"].prompts.length === 1, "erroring first prompt")
+    connections["claude-code"].emit({ kind: "status", status: "working" })
+    await controller.actions.cancel("claude-code")
+    controller.actions.queuePostInterruptContinuation("do not send", "claude-code")
+    turn.resolve()
+    await original
+    await Bun.sleep(0)
+
+    expect(connections["claude-code"].prompts).toHaveLength(1)
+    expect(controller.store.getState().harnessDeliveries["claude-code"]?.state).toBe("failed")
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toEqual([{ type: "text", text: "do not send" }])
+    await controller.dispose()
+  })
+
+  it("carries recovery across generation replacement and fences old cancellation and settlement", async () => {
+    const oldTurn = deferred()
+    const oldCancellation = deferred()
+    const records: TelemetryRecord[] = []
+    const startup = {
+      "claude-code": createStubConnection("claude-code", {
+        promptWait: oldTurn.promise,
+        cancelWait: oldCancellation.promise,
+      }),
+      codex: createStubConnection("codex"),
+    } as Record<ProviderKind, StubConnection>
+    const replacements = {
+      "claude-code": createStubConnection("claude-code"),
+      codex: createStubConnection("codex"),
+    } as Record<ProviderKind, StubConnection>
+    const queues = {
+      "claude-code": [startup["claude-code"], replacements["claude-code"]],
+      codex: [startup.codex, replacements.codex],
+    } as Record<ProviderKind, StubConnection[]>
+    const ids = ["turn-old", "continuation-old"]
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      store: createAppStore({ selectedVisibleId: "claude-code" }),
+      createConnection: (config) => queues[config.id].shift()!,
+      newSteeringId: () => ids.shift()!,
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      resolveHarnessCapability: () => TEST_HARNESS_CAPABILITY,
+      resolveHardStopContinuationCapability: () => SUPPORTED_HARD_STOP,
+      recorder: createTelemetryRecorder({
+        enabled: true,
+        sink: { write: (record) => records.push(record) },
+      }),
+    })
+
+    const original = controller.actions.sendPrompt("old task", "claude-code")
+    await waitFor(() => startup["claude-code"].prompts.length === 1, "old prompt")
+    startup["claude-code"].emit({ kind: "status", status: "working" })
+    await controller.actions.cancel("claude-code")
+    controller.actions.queuePostInterruptContinuation("survive replacement", "claude-code")
+
+    await controller.restore(persistedRunV3({}))
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toEqual([{ type: "text", text: "survive replacement" }])
+
+    oldCancellation.resolve()
+    oldTurn.resolve()
+    await original
+    await Bun.sleep(0)
+    expect(startup["claude-code"].prompts).toHaveLength(1)
+    expect(replacements["claude-code"].prompts).toHaveLength(0)
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toEqual([{ type: "text", text: "survive replacement" }])
+    expect(records.filter((record) => record.type === "hard_stop_outcome")).toEqual([])
+    await controller.dispose()
+  })
+
+  it("recovers a queued draft on controller disposal and leaves late callbacks inert", async () => {
+    const turn = deferred()
+    const cancellation = deferred()
+    const ids = ["turn-1", "continuation-1"]
+    const { controller, connections } = await controllerWithStubs(
+      { "claude-code": { promptWait: turn.promise, cancelWait: cancellation.promise } },
+      {
+        newSteeringId: () => ids.shift()!,
+        resolveHardStopContinuationCapability: () => SUPPORTED_HARD_STOP,
+      },
+    )
+
+    const original = controller.actions.sendPrompt("original task", "claude-code")
+    await waitFor(() => connections["claude-code"].prompts.length === 1, "disposing prompt")
+    connections["claude-code"].emit({ kind: "status", status: "working" })
+    await controller.actions.cancel("claude-code")
+    controller.actions.queuePostInterruptContinuation("recover after disposal", "claude-code")
+    await controller.dispose()
+    expect(
+      controller.store.getState().sessions["claude-code"]?.postInterruptContinuation.recovery,
+    ).toEqual([{ type: "text", text: "recover after disposal" }])
+
+    cancellation.resolve()
+    turn.resolve()
+    await original
+    await Bun.sleep(0)
+    expect(connections["claude-code"].prompts).toHaveLength(1)
   })
 })
 

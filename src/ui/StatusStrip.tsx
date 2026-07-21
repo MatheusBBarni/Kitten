@@ -12,7 +12,6 @@ import { useMemo, type ReactNode } from "react"
 import type { AgentRuntimeState } from "../app/controller.ts"
 import {
   renderStatusline,
-  statuslineText,
   type StatuslineContext,
   type StatuslineLayout,
 } from "../core/statusline.ts"
@@ -40,6 +39,7 @@ import {
 import { useAppSelector, useController } from "./cockpitContext.tsx"
 import { formatHeadroom } from "./headroom.ts"
 import { KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
+import { StatuslineSegments } from "./statuslineSegments.tsx"
 import { usePalette, type StatusTone } from "./theme.ts"
 
 /** User-facing run-state vocabulary for the compact session chips. */
@@ -187,10 +187,15 @@ function CustomStatusline({
     [selectors.effort, sessionId],
   )
   const configOptionsSelector = useMemo(() => selectAgentConfigOptions(sessionId), [sessionId])
+  const headroomSelector = useMemo(
+    () => sessionId === null ? (() => null) : selectSessionHeadroom(sessionId),
+    [sessionId],
+  )
   const branch = useAppSelector(branchSelector)
   const model = useAppSelector(modelSelector)
   const effort = useAppSelector(effortSelector)
   const configOptions = useAppSelector(configOptionsSelector)
+  const contextHeadroom = useAppSelector(headroomSelector)
   const context = useMemo<StatuslineContext>(() => ({
     cwd: runtime?.cwd,
     branch,
@@ -198,12 +203,13 @@ function CustomStatusline({
     model: displayModelName(configOptions, model),
     effort: displayEffortName(configOptions, effort),
     helpText,
-  }), [branch, configOptions, effort, helpText, model, runtime])
-  const text = statuslineText(renderStatusline(layout, context, columnBudget))
+    contextHeadroom,
+  }), [branch, configOptions, contextHeadroom, effort, helpText, model, runtime])
+  const segments = renderStatusline(layout, context, columnBudget)
 
   return (
-    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none" fg={palette.text}>
-      {text}
+    <text style={{ flexShrink: 1, overflow: "hidden" }} wrapMode="none">
+      <StatuslineSegments segments={segments} palette={palette} />
     </text>
   )
 }

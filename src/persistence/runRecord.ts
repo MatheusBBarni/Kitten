@@ -149,6 +149,11 @@ export const HARNESS_DELIVERY_CHECKPOINT_SCHEMA = z.discriminatedUnion("state", 
   z.strictObject({
     version: z.literal("v1"),
     generation: z.number().int().nonnegative(),
+    state: z.literal("settled_interrupted"),
+  }),
+  z.strictObject({
+    version: z.literal("v1"),
+    generation: z.number().int().nonnegative(),
     state: z.literal("failed"),
     failureCategory: z.enum([
       "unsupported_profile",

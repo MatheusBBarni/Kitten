@@ -37,6 +37,7 @@ const CLAUDE: ResolvedAgentConfig = {
   args: ["--stdio"],
   env: {},
   clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
   steeringCapability: { status: "unavailable" },
   runtimeProfile: { kind: "standard" },
 }
@@ -47,6 +48,7 @@ const CODEX: ResolvedAgentConfig = {
   args: [],
   env: {},
   clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
   steeringCapability: { status: "unavailable" },
   runtimeProfile: { kind: "standard" },
 }
@@ -59,6 +61,7 @@ const CURSOR: ResolvedAgentConfig = {
   args: ["acp"],
   env: {},
   clarificationCapability: UNSUPPORTED_CLARIFICATION,
+  hardStopContinuationCapability: { status: "unavailable", reason: "unknown_recipe" },
   steeringCapability: { status: "unavailable" },
   runtimeProfile: {
     kind: "cursor-certified",

@@ -106,6 +106,79 @@ describe("ControllerActions steering boundary", () => {
   })
 })
 
+describe("ControllerActions default fail-closed seams", () => {
+  it("refuses an unmanaged worktree when the controller does not install a cleanup seam", async () => {
+    const store = createAppStore()
+    const actions = createControllerActions({
+      store,
+      getSession: () => undefined,
+      resolvePermission() {},
+    })
+
+    await expect(actions.cleanupManagedWorktree("child")).resolves.toEqual({
+      kind: "refused",
+      reason: "not_managed",
+    })
+  })
+})
+
+describe("ControllerActions Hard Stop continuation boundary", () => {
+  it("queues exact blocks, acknowledges exact recovery, and gives local recovery Escape precedence", async () => {
+    const store = createAppStore({ selectedVisibleId: "alpha" })
+    store.addSession({ id: "alpha", providerKind: "codex", title: "Alpha", cwd: "/repo" }, {
+      availability: { kind: "ready" },
+    })
+    const queued: unknown[] = []
+    const acknowledged: unknown[] = []
+    let recoverLocally = false
+    let hardStops = 0
+    let steeringTerminalizations = 0
+    const actions = createControllerActions({
+      store,
+      getSession: (sessionId) => ({ sessionId, acpSessionId: "acp-alpha", connection }),
+      resolvePermission() {},
+      queuePostInterruptContinuation: (sessionId, blocks) => {
+        queued.push(sessionId, blocks)
+        return { kind: "queued", requestId: "continuation-1" }
+      },
+      acknowledgePostInterruptRecovery: (sessionId, requestId) => {
+        acknowledged.push(sessionId, requestId)
+      },
+      recoverPostInterruptContinuation: () => recoverLocally,
+      beginHardStop: () => {
+        hardStops += 1
+        return true
+      },
+      terminalizeSteering: () => {
+        steeringTerminalizations += 1
+      },
+    })
+
+    expect(actions.queuePostInterruptContinuation("   ", "alpha")).toEqual({
+      kind: "unavailable",
+      reason: "empty",
+    })
+    expect(actions.queuePostInterruptContinuation("continue exactly  ", "alpha")).toEqual({
+      kind: "queued",
+      requestId: "continuation-1",
+    })
+    expect(queued).toEqual([
+      "alpha",
+      [{ type: "text", text: "continue exactly  " }],
+    ])
+    actions.acknowledgePostInterruptRecovery("alpha", "continuation-1")
+    expect(acknowledged).toEqual(["alpha", "continuation-1"])
+
+    await actions.cancel("alpha")
+    expect(hardStops).toBe(1)
+    expect(steeringTerminalizations).toBe(1)
+    recoverLocally = true
+    await actions.cancel("alpha")
+    expect(hardStops).toBe(1)
+    expect(steeringTerminalizations).toBe(1)
+  })
+})
+
 describe("ControllerActions Cursor recheck boundary", () => {
   it("contains a rejected controller seam and reports it only through onError", async () => {
     const store = createAppStore()

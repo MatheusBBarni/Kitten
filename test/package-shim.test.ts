@@ -47,5 +47,14 @@ describe("main npm package shim contract", () => {
     expect(visitorInstallDocs).toContain(
       "curl -fsSL https://raw.githubusercontent.com/MatheusBBarni/Kitten/main/scripts/install.sh | bash",
     )
+    expect(visitorInstallDocs).toContain("kitten --update")
+    expect(visitorInstallDocs).toContain("npm install --global @matheusbbarni/kitten@latest")
+    expect(visitorInstallDocs).toContain("verified global npm installation")
+    expect(visitorInstallDocs).toContain("installer-managed standalone binary")
+    expect(visitorInstallDocs).toContain("Source checkouts, local dependencies, `npx` invocations, copied binaries")
+    expect(visitorInstallDocs).toContain("unknown or uncertain installation contexts remain unchanged")
+    expect(visitorInstallDocs).toContain("There is no channel fallback.")
+    expect(visitorInstallDocs).toContain("release-asset integrity")
+    expect(visitorInstallDocs).toContain("does not protect against a compromised release publisher")
   })
 })

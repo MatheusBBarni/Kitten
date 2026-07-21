@@ -1111,10 +1111,43 @@ describe("harness delivery recovery notice", () => {
     })
     expect(selectFocusedHarnessDeliveryNotice(store.getState())).not.toBeNull()
 
-    for (const state of ["pending", "delivered", "not_required"] as const) {
+    for (const state of ["pending", "delivered", "settled_interrupted", "not_required"] as const) {
       store.setHarnessDelivery("claude-code", { version: "v1", generation: 2, state })
       expect(selectFocusedHarnessDeliveryNotice(store.getState())).toBeNull()
     }
+  })
+
+  it("projects settled interruption as fixed metadata without a notice or unrelated replacement", () => {
+    const store = createAppStore({ selectedVisibleId: "claude-code" })
+    const before = store.getState()
+
+    store.setHarnessDelivery("claude-code", {
+      version: "v1",
+      generation: 8,
+      state: "settled_interrupted",
+      blocks: [{ type: "text", text: "DRAFT_SENTINEL" }],
+      requestId: "REQUEST_ID_SENTINEL",
+      sessionId: "SESSION_ID_SENTINEL",
+      acpSessionId: "ACP_SESSION_ID_SENTINEL",
+      recovery: "RECOVERY_SENTINEL",
+      providerError: "RAW_ERROR_SENTINEL",
+    } as never)
+
+    const after = store.getState()
+    expect(after.harnessDeliveries["claude-code"]).toEqual({
+      version: "v1",
+      generation: 8,
+      state: "settled_interrupted",
+    })
+    expect(selectHarnessDeliveryNotice("claude-code")(after)).toBeNull()
+    expect(selectFocusedHarnessDeliveryNotice(after)).toBeNull()
+    expect(after.sessions).toBe(before.sessions)
+    expect(after.workspace).toBe(before.workspace)
+    expect(after.overlays).toBe(before.overlays)
+    expect(after.preferences).toBe(before.preferences)
+    expect(JSON.stringify(after.harnessDeliveries)).not.toMatch(
+      /DRAFT_SENTINEL|REQUEST_ID_SENTINEL|SESSION_ID_SENTINEL|ACP_SESSION_ID_SENTINEL|RECOVERY_SENTINEL|RAW_ERROR_SENTINEL/u,
+    )
   })
 
   it("accepts only the exact fixed notice fields", () => {
@@ -1246,6 +1279,45 @@ describe("preferences", () => {
 
     expect(store.getState()).toBe(changed)
     expect(notifications).toEqual([SAVED_STATUSLINE])
+  })
+
+  it("compares canonical colors when deciding whether a resolved statusline write is a no-op", () => {
+    const colored: StatuslinePreference = {
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#800080" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" },
+        ],
+      },
+    }
+    const store = createAppStore({ preferences: { statusline: colored } })
+    const before = store.getState()
+
+    store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#800080" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" },
+        ],
+      },
+    })
+    expect(store.getState()).toBe(before)
+
+    store.setStatuslinePreference({
+      llmDisclosureAcknowledged: true,
+      layout: {
+        separator: " · ",
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "ELLIPSIS_BRANCH", maxChars: 24, color: "#008080" },
+        ],
+      },
+    })
+    expect(store.getState()).not.toBe(before)
   })
 
   it("does not notify the saved preference for session, shell, or unrelated overlay updates", () => {

@@ -40,6 +40,13 @@ import type {
   WelcomeBannerPreference,
 } from "../core/types.ts"
 import { DEFAULT_PROVIDER_ORDER, PROVIDER_DISPLAY_NAMES, PROVIDER_KINDS } from "../core/types.ts"
+import {
+  THEME_PRESET_ALIASES,
+  THEME_PRESET_IDS,
+  canonicalThemePresetId,
+  type ThemePresetAlias,
+} from "../core/themeCatalog.ts"
+import { HARD_STOP_CONTINUATION_ADAPTER_IMPLEMENTATIONS } from "../agent/hardStopContinuation.ts"
 import { NATIVE_STEERING_ADAPTER_IMPLEMENTATIONS } from "../agent/nativeSteering.ts"
 import {
   normalizeStatuslineLayout,
@@ -47,6 +54,12 @@ import {
   type StatuslinePreference,
 } from "../core/statusline.ts"
 import { classifyClarificationCapability } from "./clarificationCapability.ts"
+import {
+  CERTIFIED_HARD_STOP_CONTINUATION_RECIPES,
+  classifyHardStopContinuationCapability,
+  type CertifiedHardStopContinuationRecipe,
+  type HardStopContinuationAdapterImplementation,
+} from "./hardStopContinuationCapability.ts"
 import {
   CERTIFIED_NATIVE_STEERING_RECIPES,
   classifySteeringCapability,
@@ -130,7 +143,14 @@ export const DEFAULT_CLARIFICATION_TIMEOUT_SECONDS = 300
 /** V1 never permits a clarification to block an agent for longer than one hour. */
 export const MAX_CLARIFICATION_TIMEOUT_SECONDS = 3_600
 
-const THEME_PREFERENCES = ["auto", "light", "dark", "catppuccin-mocha", "catppuccin-latte"] as const satisfies readonly ThemePreference[]
+const BUILTIN_THEME_PREFERENCES = ["auto", "light", "dark"] as const
+const THEME_PRESET_ALIAS_IDS = Object.keys(THEME_PRESET_ALIASES) as ThemePresetAlias[]
+const THEME_CONFIG_INPUTS = [
+  ...BUILTIN_THEME_PREFERENCES,
+  ...THEME_PRESET_IDS,
+  ...THEME_PRESET_ALIAS_IDS,
+] as const
+const BUILTIN_THEME_PREFERENCE_SET = new Set<string>(BUILTIN_THEME_PREFERENCES)
 const WELCOME_BANNER_PREFERENCES = ["auto", "always", "off"] as const satisfies readonly WelcomeBannerPreference[]
 
 /** A configuration file that is missing, malformed, or fails validation. */
@@ -303,7 +323,7 @@ export const USER_CONFIG_SCHEMA = z
     persistenceEnabled: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
     transcriptWindowingEnabled: z.boolean().optional(),
-    theme: z.enum(THEME_PREFERENCES).optional(),
+    theme: z.enum(THEME_CONFIG_INPUTS).optional(),
     editor: EDITOR_PREFERENCE_SCHEMA.optional(),
     welcomeBanner: z.enum(WELCOME_BANNER_PREFERENCES).optional(),
     providers: PROVIDERS_SCHEMA.optional(),
@@ -393,11 +413,19 @@ export function mergeAppConfig(user: UserConfig): AppConfig {
     persistenceEnabled: user.persistenceEnabled ?? config.persistenceEnabled,
     telemetryEnabled: user.telemetryEnabled ?? config.telemetryEnabled,
     transcriptWindowingEnabled: user.transcriptWindowingEnabled ?? config.transcriptWindowingEnabled,
-    theme: user.theme ?? config.theme,
+    theme: resolveThemePreference(user.theme ?? config.theme),
     editor: mergeEditorPreference(user.editor),
     welcomeBanner: user.welcomeBanner ?? config.welcomeBanner,
     statusline: mergeStatuslinePreference(user.statusline),
   }
+}
+
+/** Resolve accepted compatibility input without allowing an alias into live state. */
+function resolveThemePreference(theme: NonNullable<UserConfig["theme"]>): ThemePreference {
+  if (BUILTIN_THEME_PREFERENCE_SET.has(theme)) return theme as ThemePreference
+  const canonical = canonicalThemePresetId(theme)
+  if (canonical !== null) return canonical
+  throw new ConfigError(`theme is not a recognized built-in, canonical preset, or declared alias`)
 }
 
 function defaultEditorPreference(): EditorPreference {
@@ -519,14 +547,29 @@ export async function loadAppConfig(options: LoadAppConfigOptions = {}): Promise
   return parseAppConfig(source, path)
 }
 
+/** Test-only evidence injection for exact Hard Stop continuation classification. */
+export interface FindAgentConfigOptions {
+  readonly certifiedHardStopContinuationRecipes?: readonly CertifiedHardStopContinuationRecipe[]
+  readonly hardStopContinuationImplementations?: readonly HardStopContinuationAdapterImplementation[]
+}
+
 /** The spawn recipe for one provider, paired with its id. `undefined` when omitted. */
-export function findAgentConfig(config: AppConfig, id: ProviderKind): ResolvedAgentConfig | undefined {
+export function findAgentConfig(
+  config: AppConfig,
+  id: ProviderKind,
+  options: FindAgentConfigOptions = {},
+): ResolvedAgentConfig | undefined {
   const recipe = config.providers[id]
   if (!recipe) return undefined
   const resolved = { id, ...recipe }
   return {
     ...resolved,
     clarificationCapability: classifyClarificationCapability(resolved),
+    hardStopContinuationCapability: classifyHardStopContinuationCapability(
+      resolved,
+      options.certifiedHardStopContinuationRecipes ?? CERTIFIED_HARD_STOP_CONTINUATION_RECIPES,
+      options.hardStopContinuationImplementations ?? HARD_STOP_CONTINUATION_ADAPTER_IMPLEMENTATIONS,
+    ),
     steeringCapability: classifySteeringCapability(
       resolved,
       CERTIFIED_NATIVE_STEERING_RECIPES,

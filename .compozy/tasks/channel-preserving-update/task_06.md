@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: "Align update help and public install recovery guidance"
 type: docs
 complexity: medium

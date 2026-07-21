@@ -50,6 +50,14 @@ import type { ContextPackExportResult } from "./contextPackExport.ts"
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
 
+/** Closed admission result for one live post-interrupt ordinary continuation. */
+export type PostInterruptContinuationResult =
+  | { readonly kind: "queued"; readonly requestId: string }
+  | {
+      readonly kind: "unavailable"
+      readonly reason: "session" | "empty" | "inactive" | "recovering"
+    }
+
 /** Options for one controller-authorized prompt dispatch. */
 export interface PromptSendOptions {
   /** Opt out a controller-owned request from resume persistence while retaining its live transcript turn. */
@@ -363,6 +371,17 @@ export interface ActionDeps {
     sessionId: SessionId,
     blocks: PromptBlock[],
   ) => PreparedPromptDispatch | null
+  /** Capture and begin one eligible explicit Hard Stop before generic terminalization. */
+  beginHardStop?: (sessionId: SessionId) => boolean
+  /** Queue one continuation against the exact controller-captured Hard Stop identity. */
+  queuePostInterruptContinuation?: (
+    sessionId: SessionId,
+    blocks: readonly PromptBlock[],
+  ) => PostInterruptContinuationResult
+  /** Restore one queued continuation locally; true means Escape is fully handled. */
+  recoverPostInterruptContinuation?: (sessionId: SessionId) => boolean
+  /** Clear only the exact recovery payload the composer already copied. */
+  acknowledgePostInterruptRecovery?: (sessionId: SessionId, requestId: string) => void
   /** Settle a possibly invoked first delivery before cancellation reaches transport. */
   terminalizePromptDispatch?: (sessionId: SessionId) => void
   /** Enqueue against one controller-captured active turn and start its coordinator. */
@@ -511,6 +530,15 @@ export interface ControllerActions {
    * when nothing was sent (no live session, empty prompt) or the connection failed.
    */
   sendPrompt(input: PromptInput, sessionId?: SessionId, options?: PromptSendOptions): Promise<PromptResult | null>
+  /** Queue one ordinary continuation for the controller-captured explicit Hard Stop. */
+  queuePostInterruptContinuation(
+    input: PromptInput,
+    sessionId?: SessionId,
+  ): PostInterruptContinuationResult
+  /** Restore one queued continuation locally without another provider cancellation. */
+  recoverPostInterruptContinuation(sessionId?: SessionId): void
+  /** Clear one exact recovered continuation after the composer copied it. */
+  acknowledgePostInterruptRecovery(sessionId: SessionId, requestId: string): void
   /** Queue non-empty direction for the captured active turn without creating a prompt. */
   steer(input: PromptInput, sessionId?: SessionId): SteeringResult
   /** Clear one exact recovery payload only after the composer has copied it. */
@@ -1116,6 +1144,41 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
 
     sendPrompt,
 
+    queuePostInterruptContinuation(input, requestedSessionId): PostInterruptContinuationResult {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return { kind: "unavailable", reason: "session" }
+      const blocks = composePromptBlocks(input)
+      if (blocks.length === 0) return { kind: "unavailable", reason: "empty" }
+      if (!getSession(sessionId)) return { kind: "unavailable", reason: "session" }
+      try {
+        return deps.queuePostInterruptContinuation?.(sessionId, blocks) ?? {
+          kind: "unavailable",
+          reason: "inactive",
+        }
+      } catch (error) {
+        onError(sessionId, error)
+        return { kind: "unavailable", reason: "inactive" }
+      }
+    },
+
+    recoverPostInterruptContinuation(requestedSessionId): void {
+      const sessionId = requestedSessionId ?? focused()
+      if (!sessionId) return
+      try {
+        deps.recoverPostInterruptContinuation?.(sessionId)
+      } catch (error) {
+        onError(sessionId, error)
+      }
+    },
+
+    acknowledgePostInterruptRecovery(sessionId, requestId): void {
+      try {
+        deps.acknowledgePostInterruptRecovery?.(sessionId, requestId)
+      } catch {
+        // Composer acknowledgement is fail-soft and identity-fenced by the controller.
+      }
+    },
+
     steer(input, requestedSessionId): SteeringResult {
       const sessionId = requestedSessionId ?? focused()
       if (!sessionId) return { kind: "unavailable", reason: "session" }
@@ -1146,10 +1209,17 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
     async cancel(requestedSessionId?: SessionId): Promise<void> {
       const sessionId = requestedSessionId ?? focused()
       if (!sessionId) return
+      try {
+        if (deps.recoverPostInterruptContinuation?.(sessionId)) return
+      } catch (error) {
+        onError(sessionId, error)
+        return
+      }
       const session = getSession(sessionId)
       if (!session) return
       try {
         deps.terminalizeSteering?.(sessionId)
+        if (deps.beginHardStop?.(sessionId)) return
         deps.terminalizePromptDispatch?.(sessionId)
         await session.connection.cancel(session.acpSessionId)
       } catch (error) {

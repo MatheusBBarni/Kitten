@@ -13,6 +13,7 @@ import { createControllerActions } from "../src/app/actions.ts"
 import type { SessionController } from "../src/app/controller.ts"
 import type { AgentConnection } from "../src/agent/agentConnection.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../src/core/types.ts"
+import { normalizeStatuslineLayout } from "../src/core/statusline.ts"
 import { readyRuntimes } from "./fakeController.ts"
 
 const tempDirs: string[] = []
@@ -169,7 +170,12 @@ describe("boot config persistence integration", () => {
       telemetryEnabled: true,
       welcomeBanner: "always",
     }))
-    const layout = { separator: " | ", line: ["FOLDER", "MODEL"] } as const
+    const normalized = normalizeStatuslineLayout({
+      separator: " | ",
+      line: [{ kind: "FOLDER", color: "red" }, { kind: "MODEL", color: "#12abef" }],
+    })
+    if (normalized.kind === "invalid") throw new Error(normalized.reason)
+    const layout = normalized.layout
 
     const first = await createCockpitSession({
       loadConfig: () => loadAppConfig({ path }),
@@ -189,7 +195,10 @@ describe("boot config persistence integration", () => {
       statusline: {
         llmDisclosureAcknowledged: false,
         separator: " | ",
-        line: ["FOLDER", "MODEL"],
+        line: [
+          { kind: "FOLDER", color: "#FF0000" },
+          { kind: "MODEL", color: "#12ABEF" },
+        ],
       },
     })
 
@@ -211,11 +220,87 @@ describe("boot config persistence integration", () => {
     }
   })
 
-  it("round-trips a store theme to disk and ignores the following self-write reload", async () => {
+  it("seeds and reloads canonical colored statuslines without writing back invalid or external edits", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kitten-statusline-watcher-"))
+    tempDirs.push(dir)
+    const path = join(dir, "config.json")
+    await writeFile(path, JSON.stringify({
+      theme: "light",
+      statusline: {
+        llmDisclosureAcknowledged: true,
+        separator: " | ",
+        line: [{ kind: "BRANCH", color: "#FF0000" }],
+      },
+    }))
+
+    let statuslineWrites = 0
+    let watchEvents = 0
+    const session = await createCockpitSession({
+      loadConfig: () => loadAppConfig({ path }),
+      buildController: async (options) => controllerOver(options.store!),
+      persistStatuslineConfig: async (statusline) => {
+        statuslineWrites += 1
+        await persistUserConfig({ statusline }, { path })
+      },
+      watchConfig: (onConfig) => watchUserConfig((config) => {
+        watchEvents += 1
+        onConfig(config)
+      }, { path, debounceMs: 20 }),
+    })
+
+    try {
+      expect(selectStatuslinePreference(session.controller.store.getState())).toEqual({
+        llmDisclosureAcknowledged: true,
+        layout: {
+          separator: " | ",
+          line: [{ kind: "BRANCH", color: "#FF0000" }],
+        },
+      })
+      expect(statuslineWrites).toBe(0)
+
+      await writeFile(path, JSON.stringify({
+        statusline: {
+          llmDisclosureAcknowledged: true,
+          separator: " | ",
+          line: [{ kind: "BRANCH", color: "transparent" }],
+        },
+      }))
+      await Bun.sleep(150)
+      expect(watchEvents).toBe(0)
+      expect(selectStatuslinePreference(session.controller.store.getState()).layout?.line).toEqual([
+        { kind: "BRANCH", color: "#FF0000" },
+      ])
+
+      await writeFile(path, JSON.stringify({
+        statusline: {
+          llmDisclosureAcknowledged: true,
+          separator: " / ",
+          line: [{ kind: "BRANCH", color: "blue" }],
+        },
+      }))
+      await waitUntil(async () => {
+        const preference = selectStatuslinePreference(session.controller.store.getState())
+        const item = preference.layout?.line[0]
+        return typeof item === "object" && item.color === "#0000FF"
+      })
+      await Bun.sleep(100)
+
+      expect(watchEvents).toBe(1)
+      expect(statuslineWrites).toBe(0)
+      expect(JSON.parse(await readFile(path, "utf8")).statusline.line).toEqual([
+        { kind: "BRANCH", color: "blue" },
+      ])
+    } finally {
+      await session.controller.dispose()
+    }
+  })
+
+  it("leaves boot bytes unchanged, then round-trips one explicit canonical theme and ignores its self-write", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kitten-boot-config-"))
     tempDirs.push(dir)
     const path = join(dir, "config.json")
-    await writeFile(path, JSON.stringify({ theme: "light" }))
+    const bootBytes = Buffer.from('{\n  "theme": "dracula"\n}\n')
+    await writeFile(path, bootBytes)
 
     let writeCalls = 0
     let watchEvents = 0
@@ -234,14 +319,16 @@ describe("boot config persistence integration", () => {
     })
 
     try {
-      expect(selectThemePreference(session.controller.store.getState())).toBe("light")
-      session.controller.store.setThemePreference("catppuccin-mocha")
+      expect(selectThemePreference(session.controller.store.getState())).toBe("dracula")
+      expect(await readFile(path)).toEqual(bootBytes)
+      expect(writeCalls).toBe(0)
+      session.controller.store.setThemePreference("one-dark")
 
-      await waitUntil(async () => JSON.parse(await readFile(path, "utf8")).theme === "catppuccin-mocha")
+      await waitUntil(async () => JSON.parse(await readFile(path, "utf8")).theme === "one-dark")
       await waitUntil(async () => watchEvents >= 1)
       await Bun.sleep(100)
 
-      expect(selectThemePreference(session.controller.store.getState())).toBe("catppuccin-mocha")
+      expect(selectThemePreference(session.controller.store.getState())).toBe("one-dark")
       expect(writeCalls).toBe(1)
     } finally {
       await session.controller.dispose()
