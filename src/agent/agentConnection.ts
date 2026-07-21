@@ -369,7 +369,7 @@ class AgentConnectionImpl implements AgentConnection {
     // empty set - never fabricate options the agent did not advertise (ADR-003/ADR-004).
     const configOptions = await this.enforceClaudeApprovalBoundary(result.sessionId, result.configOptions)
     if (configOptions != null) {
-      this.emit({ kind: "config_options", options: translateConfigOptions(configOptions) })
+      this.emit({ kind: "config_options", options: translateConfigOptions(configOptions, this.id) })
     }
     this.activeSessionId = result.sessionId
     this.askUserMcpAttached = hasAskUserMcp(mcpServers)
@@ -384,7 +384,7 @@ class AgentConnectionImpl implements AgentConnection {
     // Preserve it so model and reasoning selectors retain their confirmed state.
     const configOptions = await this.enforceClaudeApprovalBoundary(sessionId, result.configOptions)
     if (configOptions != null) {
-      this.emit({ kind: "config_options", options: translateConfigOptions(configOptions) })
+      this.emit({ kind: "config_options", options: translateConfigOptions(configOptions, this.id) })
     }
     this.activeSessionId = sessionId
     this.askUserMcpAttached = hasAskUserMcp(mcpServers)
@@ -502,7 +502,7 @@ class AgentConnectionImpl implements AgentConnection {
     // through `onError`; it is deliberately not caught here, so the caller can keep
     // showing its last confirmed value and mark the option `unverified` (ADR-004).
     const result = await connection.setSessionConfigOption({ sessionId, configId, value })
-    return translateConfigOptions(result.configOptions)
+    return translateConfigOptions(result.configOptions, this.id)
   }
 
   onUpdate(cb: (event: DomainSessionEvent) => void): Unsubscribe {
@@ -574,7 +574,7 @@ class AgentConnectionImpl implements AgentConnection {
       ? classifyBundledMcpFailure(update.content)
       : undefined
 
-    const event = translateSessionUpdate(update, failureKind)
+    const event = translateSessionUpdate(update, failureKind, this.id)
     if (
       isToolCallUpdate
       && (update.status === "completed" || update.status === "failed")

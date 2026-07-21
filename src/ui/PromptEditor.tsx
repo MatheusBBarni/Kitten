@@ -409,7 +409,7 @@ function SelectedPromptEditor({
 
   const syncRows = useCallback((editor = textarea.current): void => {
     if (!editor) return
-    const next = editorRows(Math.max(editor.lineCount, editor.virtualLineCount))
+    const next = editorRows(Math.max(editor.lineCount, editor.editorView.getTotalVirtualLineCount()))
     setRows((current) => (current === next ? current : next))
   }, [])
 
@@ -1100,7 +1100,7 @@ function SelectedPromptEditor({
 
   const onSizeChange = useCallback(
     function onSizeChange(this: EditBufferRenderable): void {
-      const next = editorRows(Math.max(this.lineCount, this.virtualLineCount))
+      const next = editorRows(Math.max(this.lineCount, this.editorView.getTotalVirtualLineCount()))
       setRows((current) => (current === next ? current : next))
     },
     [syncRows],

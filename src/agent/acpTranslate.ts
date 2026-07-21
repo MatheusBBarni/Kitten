@@ -46,7 +46,8 @@ import type {
   ToolCallKind,
   ToolCallUpdate,
 } from "../core/types.ts"
-import { CLARIFICATION_LIMITS } from "../core/types.ts"
+import { CLARIFICATION_LIMITS, MODEL_CATEGORY } from "../core/types.ts"
+import type { ProviderKind } from "../core/types.ts"
 
 /**
  * Normalize the narrow ACP form subset Kitten can faithfully present in V1.
@@ -273,6 +274,7 @@ export function toAcpMcpServers(servers: McpServerConfig[]): McpServer[] {
 export function translateSessionUpdate(
   update: SessionUpdate,
   failureKind?: ToolCallFailureKind,
+  providerKind?: ProviderKind,
 ): DomainSessionEvent | null {
   switch (update.sessionUpdate) {
     case "user_message_chunk": {
@@ -293,7 +295,7 @@ export function translateSessionUpdate(
     case "config_option_update":
       // The agent advertises the full option set; translate the select options
       // and drop booleans (V1 renders select categories only, ADR-003/ADR-004).
-      return { kind: "config_options", options: translateConfigOptions(update.configOptions) }
+      return { kind: "config_options", options: translateConfigOptions(update.configOptions, providerKind) }
     case "available_commands_update":
       return { kind: "commands", commands: update.availableCommands.map(translateCommand) }
     case "usage_update":
@@ -406,23 +408,41 @@ function translateUsage(update: UsageUpdate): Extract<DomainSessionEvent, { kind
  * Translate an ACP `SessionConfigOption[]` into the domain {@link ConfigOption[]}.
  *
  * V1 models select options only (ADR-003): a boolean option (e.g. Fast mode) is
- * skipped, never crashed on. `category` is passed through verbatim and kept opaque
- * (an absent category becomes `""`); the visible-category allowlist lives above the
- * adapter (ADR-004), so no filtering happens here.
+ * skipped, never crashed on. Categories stay opaque for every provider except Cursor's
+ * exact `model` select: ACP makes `category` optional, and Cursor Agent may omit it
+ * even while advertising the complete live model list. Normalize only that exact,
+ * agent-confirmed option to the established model category; every other option keeps its
+ * original category (or `""` when absent), and the visible-category allowlist still
+ * lives above the adapter (ADR-004).
  */
-export function translateConfigOptions(options: SessionConfigOption[]): ConfigOption[] {
+export function translateConfigOptions(
+  options: SessionConfigOption[],
+  providerKind?: ProviderKind,
+): ConfigOption[] {
   const translated: ConfigOption[] = []
   for (const option of options) {
     if (option.type !== "select") continue // skip boolean (and any future non-select) options
     translated.push({
       id: option.id,
-      category: option.category ?? "",
+      category: configOptionCategory(option, providerKind),
       label: option.name,
       currentValue: option.currentValue,
       options: flattenSelectOptions(option.options),
     })
   }
   return translated
+}
+
+/**
+ * Cursor's `/model` list is represented by the standard ACP `model` config id, but
+ * Cursor Agent versions may omit ACP's optional presentation category. Scope this
+ * compatibility normalization to Cursor and the exact id so an unrelated provider's
+ * unclassified select — especially an execution-mode or permission control — remains
+ * fail-closed outside the picker.
+ */
+function configOptionCategory(option: SessionConfigOption, providerKind: ProviderKind | undefined): string {
+  if (providerKind === "cursor" && option.id === "model") return MODEL_CATEGORY
+  return option.category ?? ""
 }
 
 /**

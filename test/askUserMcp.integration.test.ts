@@ -299,7 +299,9 @@ describe("ask_user same-binary child", () => {
           "real child clarification",
         )
       })
-      await setup.waitForFrame((frame) => frame.includes("Which deployment strategy should this turn use?"))
+      const clarificationFrame = await setup.waitForFrame((frame) => frame.includes("Which deployment strategy should this turn use?"))
+      expect(clarificationFrame).toContain("Custom answer:")
+      expect(clarificationFrame).toContain("Type a custom answer")
       await actAsync(() => {
         setup.mockInput.pressEnter()
       })
