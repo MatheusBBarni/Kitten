@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import pkg from "../package.json" with { type: "json" }
+import pkg from "../packages/tui/package.json" with { type: "json" }
 import { CLAUDE_CODE_ACP_PACKAGE, CODEX_ACP_PACKAGE } from "../src/config/configLoader.ts"
 
 /**

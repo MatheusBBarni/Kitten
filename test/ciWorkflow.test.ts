@@ -16,7 +16,7 @@ type Workflow = {
 
 const source = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text()
 const workflow = Bun.YAML.parse(source) as Workflow
-const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json() as {
+const packageJson = await Bun.file(new URL("../packages/tui/package.json", import.meta.url)).json() as {
   scripts: Record<string, string | undefined>
 }
 
@@ -49,6 +49,8 @@ describe("CI workflow", () => {
   })
 
   it("isolates coverage test files so native OpenTUI state cannot leak between them", () => {
-    expect(packageJson.scripts["test:coverage"]).toBe("bun test --coverage --isolate")
+    expect(packageJson.scripts["test:coverage"]).toBe(
+      "bun test --cwd ../.. src test packages/tui/test --coverage --isolate",
+    )
   })
 })

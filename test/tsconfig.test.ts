@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import tsconfig from "../tsconfig.json" with { type: "json" }
+import tsconfig from "../packages/tui/tsconfig.json" with { type: "json" }
 
 /**
  * ADR-004 mandates the `@opentui/react` JSX runtime. These assertions guard the

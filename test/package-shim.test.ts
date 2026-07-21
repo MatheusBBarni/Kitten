@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { readFileSync } from "node:fs"
 
-import pkg from "../package.json" with { type: "json" }
+import pkg from "../packages/tui/package.json" with { type: "json" }
 const README = readFileSync(new URL("../README.md", import.meta.url), "utf8")
 
 const PLATFORM_PACKAGES = [

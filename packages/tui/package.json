@@ -6,10 +6,6 @@
     "type": "git",
     "url": "https://github.com/MatheusBBarni/Kitten"
   },
-  "private": true,
-  "workspaces": [
-    "packages/*"
-  ],
   "type": "module",
   "bin": {
     "kitten": "bin/kitten.mjs"
@@ -27,15 +23,15 @@
     "@matheusbbarni/kitten-linux-x64": "0.6.1"
   },
   "scripts": {
-    "start": "bun run --filter @matheusbbarni/kitten start",
-    "dev": "bun run --filter @matheusbbarni/kitten dev",
-    "typecheck": "bun run --filter @matheusbbarni/kitten typecheck",
-    "test": "bun run --filter @matheusbbarni/kitten test",
-    "test:coverage": "bun run --filter @matheusbbarni/kitten test:coverage",
-    "selfcheck": "bun run --filter @matheusbbarni/kitten selfcheck",
-    "selfcheck:reload": "bun run --filter @matheusbbarni/kitten selfcheck:reload",
-    "build": "bun run --filter @matheusbbarni/kitten build",
-    "build:local": "bun run --filter @matheusbbarni/kitten build:local"
+    "start": "bun run --cwd ../.. src/index.ts",
+    "dev": "bun run --cwd ../.. src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test --cwd ../.. src test packages/tui/test",
+    "test:coverage": "bun test --cwd ../.. src test packages/tui/test --coverage --isolate",
+    "selfcheck": "bun run --cwd ../.. src/index.ts --self-check",
+    "selfcheck:reload": "bun run --cwd ../.. src/index.ts --self-check --reload-probe",
+    "build": "bun run --cwd ../.. scripts/build.ts",
+    "build:local": "bun run --cwd ../.. scripts/build.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.2.1",

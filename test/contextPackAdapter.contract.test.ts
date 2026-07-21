@@ -24,7 +24,7 @@ import {
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
-import pkg from "../package.json" with { type: "json" }
+import pkg from "../packages/tui/package.json" with { type: "json" }
 import { ASK_USER_MCP_TOOL_NAME } from "../src/agent/askUserMcp.ts"
 import {
   CONTEXT_PACK_MUTATE_DRAFT_TOOL_NAME,

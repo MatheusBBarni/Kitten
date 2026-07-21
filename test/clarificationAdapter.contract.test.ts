@@ -16,7 +16,7 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
 
-import pkg from "../package.json" with { type: "json" }
+import pkg from "../packages/tui/package.json" with { type: "json" }
 import { spawnAgentTransport, type AgentTransport } from "../src/agent/transport.ts"
 import {
   CLAUDE_CODE_ACP_PACKAGE,
