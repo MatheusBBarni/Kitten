@@ -1,1 +1,0 @@
-../../packages/tui/src/app/externalEditor.ts

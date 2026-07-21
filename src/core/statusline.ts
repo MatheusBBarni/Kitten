@@ -1,1 +1,0 @@
-../../packages/tui/src/core/statusline.ts

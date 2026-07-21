@@ -1,1 +1,0 @@
-../../../../packages/tui/src/ui/syntax-assets/python/highlights.scm

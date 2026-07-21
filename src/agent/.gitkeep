@@ -1,1 +1,0 @@
-Agent Adapter Layer (imperative shell): AgentConnection wraps each agent as a Bun.spawn subprocess behind an ACP ClientSideConnection and translates SessionNotification into DomainSessionEvent. ACP SDK is imported nowhere above this layer.

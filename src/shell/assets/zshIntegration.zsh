@@ -1,1 +1,0 @@
-../../../packages/tui/src/shell/assets/zshIntegration.zsh

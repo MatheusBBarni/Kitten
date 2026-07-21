@@ -1,1 +1,0 @@
-Reactive Store: AppStore holds per-agent SessionState, focus, status, overlay state; exposes narrow selectors for localized React subscriptions (ADR-004).

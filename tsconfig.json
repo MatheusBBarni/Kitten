@@ -2,9 +2,6 @@
   "extends": "./packages/tui/tsconfig.json",
   "include": [
     "packages/tui/src",
-    "src/**/*.test.ts",
-    "src/**/*.test.tsx",
-    "test",
     "packages/tui/test"
   ]
 }

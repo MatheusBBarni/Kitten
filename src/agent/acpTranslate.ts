@@ -1,1 +1,0 @@
-../../packages/tui/src/agent/acpTranslate.ts

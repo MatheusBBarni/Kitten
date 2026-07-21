@@ -1,1 +1,0 @@
-../../packages/tui/src/shell/shellRuntime.ts

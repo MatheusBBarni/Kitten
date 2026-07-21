@@ -1,1 +1,0 @@
-../../packages/tui/src/core/transcriptProjection.ts

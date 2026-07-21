@@ -1,1 +1,0 @@
-../../packages/tui/src/telemetry/recorder.ts

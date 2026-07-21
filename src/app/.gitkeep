@@ -1,1 +1,0 @@
-UI Shell composition/bootstrap: CockpitApp app root wires the store to the OpenTUI/React view tree.

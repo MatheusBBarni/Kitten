@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Relocate Cockpit contract suite and remove source/test compatibility bridges
 type: refactor
 complexity: critical
@@ -31,12 +31,12 @@ staged relocation into an independently verifiable package-local Cockpit suite.
 
 ## Subtasks
 
-- [ ] 3.1 Relocate colocated source tests with their production modules.
-- [ ] 3.2 Relocate contract tests and shared fixtures into packages/tui/test.
-- [ ] 3.3 Make package-local typecheck, test, coverage, and self-check authoritative.
-- [ ] 3.4 Add the root-ownership regression contract.
-- [ ] 3.5 Remove temporary source/test bridges and stale configuration.
-- [ ] 3.6 Run the preserved Cockpit contract suite from the workspace.
+- [x] 3.1 Relocate colocated source tests with their production modules.
+- [x] 3.2 Relocate contract tests and shared fixtures into packages/tui/test.
+- [x] 3.3 Make package-local typecheck, test, coverage, and self-check authoritative.
+- [x] 3.4 Add the root-ownership regression contract.
+- [x] 3.5 Remove temporary source/test bridges and stale configuration.
+- [x] 3.6 Run the preserved Cockpit contract suite from the workspace.
 
 ## Implementation Details
 
@@ -74,12 +74,12 @@ relocation, not an ACP, UI, or controller behavior rewrite.
 ## Tests
 
 - Unit tests:
-  - [ ] Preserve relocated ACP, controller, renderer, and build test assertions.
-  - [ ] Reject root application source/test ownership in the workspace-boundary contract.
-  - [ ] Verify package-local TypeScript discovery excludes removed bridges.
+  - [x] Preserve relocated ACP, controller, renderer, and build test assertions.
+  - [x] Reject root application source/test ownership in the workspace-boundary contract.
+  - [x] Verify package-local TypeScript discovery excludes removed bridges.
 - Integration tests:
-  - [ ] Run package-local typecheck, complete test suite, coverage, and self-check.
-  - [ ] Verify package-local boot resolves the real Cockpit tree.
+  - [x] Run package-local typecheck, complete test suite, coverage, and self-check.
+  - [x] Verify package-local boot resolves the real Cockpit tree.
 - Test coverage target: >=80%
 - All tests must pass
 

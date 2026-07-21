@@ -40,9 +40,8 @@ describe("package-local build ownership", () => {
     )
   })
 
-  it("keeps root source, build, and bin surfaces as symlink-only bridges", () => {
+  it("keeps the remaining root build and bin surfaces as symlink-only bridges", () => {
     const bridges = [
-      [join(WORKSPACE_ROOT, "src", "index.ts"), join(TUI_ROOT, "src", "index.ts")],
       [join(WORKSPACE_ROOT, "scripts", "build.ts"), join(TUI_ROOT, "scripts", "build.ts")],
       [join(WORKSPACE_ROOT, "bin", "kitten.mjs"), join(TUI_ROOT, "bin", "kitten.mjs")],
       [join(WORKSPACE_ROOT, "bin", "launcher.mjs"), join(TUI_ROOT, "bin", "launcher.mjs")],

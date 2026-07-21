@@ -1,1 +1,0 @@
-../../packages/tui/src/config/readiness.ts
