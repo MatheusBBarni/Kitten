@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.5.0...kitten-v0.6.0) (2026-07-21)
+
+
+### Features
+
+* add update safety and UI recovery controls ([#37](https://github.com/MatheusBBarni/Kitten/issues/37)) ([b769e8f](https://github.com/MatheusBBarni/Kitten/commit/b769e8f585a56fa00f68262effcbc56bb2c07a61))
+
 ## [0.5.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.4.0...kitten-v0.5.0) (2026-07-17)
 
 
