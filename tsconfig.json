@@ -1,4 +1,10 @@
 {
   "extends": "./packages/tui/tsconfig.json",
-  "include": ["src", "test", "packages/tui/test"]
+  "include": [
+    "packages/tui/src",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "test",
+    "packages/tui/test"
+  ]
 }

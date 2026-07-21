@@ -77,10 +77,10 @@ describe("workspace ownership boundary", () => {
   })
 
   it("keeps lifecycle authority in the TUI package during the source bridge", () => {
-    expect(tuiPackage.scripts.start).toBe("bun run --cwd ../.. src/index.ts")
+    expect(tuiPackage.scripts.start).toBe("bun run --cwd ../.. packages/tui/src/index.ts")
     expect(tuiPackage.scripts.typecheck).toBe("tsc --noEmit -p tsconfig.json")
-    expect(tuiPackage.scripts.test).toBe("bun test --cwd ../.. src test packages/tui/test")
-    expect(tuiPackage.scripts.selfcheck).toBe("bun run --cwd ../.. src/index.ts --self-check")
-    expect(tuiPackage.scripts.build).toBe("bun run --cwd ../.. scripts/build.ts")
+    expect(tuiPackage.scripts.test).toBe("bun test --cwd ../.. packages/tui/src src test packages/tui/test")
+    expect(tuiPackage.scripts.selfcheck).toBe("bun run --cwd ../.. packages/tui/src/index.ts --self-check")
+    expect(tuiPackage.scripts.build).toBe("bun run --cwd ../.. packages/tui/scripts/build.ts")
   })
 })

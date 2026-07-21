@@ -1,16 +1,1 @@
-(pair
-  key: (_) @string.special.key)
-
-(string) @string
-
-(number) @number
-
-[
-  (null)
-  (true)
-  (false)
-] @constant.builtin
-
-(escape_sequence) @escape
-
-(comment) @comment
+../../../../packages/tui/src/ui/syntax-assets/json/highlights.scm

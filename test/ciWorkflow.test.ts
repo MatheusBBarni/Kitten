@@ -50,7 +50,7 @@ describe("CI workflow", () => {
 
   it("isolates coverage test files so native OpenTUI state cannot leak between them", () => {
     expect(packageJson.scripts["test:coverage"]).toBe(
-      "bun test --cwd ../.. src test packages/tui/test --coverage --isolate",
+      "bun test --cwd ../.. packages/tui/src src test packages/tui/test --coverage --isolate",
     )
   })
 })
