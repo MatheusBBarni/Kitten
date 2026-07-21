@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 
+import type { ScrollBoxRenderable } from "@opentui/core"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { testRender } from "@opentui/react/test-utils"
 
@@ -35,6 +36,7 @@ import {
   ROW_MARKER,
   TAB_MARKER,
   UNVERIFIED_LABEL,
+  MODEL_SELECT_HIGHLIGHTED_ROW_ID,
   MODEL_SELECT_SCROLLBOX_ID,
 } from "./ModelSelect.tsx"
 import { APPROVAL_HINT, MODEL_SELECT_CONFIRM_HINT, MODEL_SELECT_HINT } from "./keymap.ts"
@@ -335,23 +337,28 @@ describe("ModelSelect visibility and content", () => {
     seedOptions(controller, "cursor", options)
     controller.actions.selectConversation("cursor")
     const setup = await renderWithSelector(controller)
-    const list = setup.renderer.root.findDescendantById(MODEL_SELECT_SCROLLBOX_ID)
+    const list = setup.renderer.root.findDescendantById(MODEL_SELECT_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
 
     expect(list).toBeDefined()
+    await setup.waitFor(() => list!.scrollHeight > list!.viewport.height)
     expect(setup.captureCharFrame()).not.toContain("Cursor model 30")
+    const scrollChildIntoView = spyOn(list!, "scrollChildIntoView")
 
-    await actAsync(async () => {
-      for (let index = 1; index < 30; index += 1) setup.mockInput.pressArrow("down")
+    for (let index = 1; index < 30; index += 1) {
+      await actAsync(() => setup.mockInput.pressArrow("down"))
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    })
+    }
     const frame = await setup.waitForFrame((value) => value.includes("Cursor model 30"))
     expect(frame).toContain(`${ROW_MARKER} ${OTHER_MARK} Cursor model 30`)
+    expect(scrollChildIntoView).toHaveBeenLastCalledWith(MODEL_SELECT_HIGHLIGHTED_ROW_ID)
+    expect(list!.scrollTop).toBeGreaterThan(0)
 
     await actAsync(() => setup.mockInput.pressEnter())
     expect(controller.calls.setSessionConfigOption).toEqual([
       { configId: "model", value: "cursor-model-30", sessionId: "cursor" },
     ])
 
+    scrollChildIntoView.mockRestore()
     await destroyMounted(setup.renderer)
   })
 
