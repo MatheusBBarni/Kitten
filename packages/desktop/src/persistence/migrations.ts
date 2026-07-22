@@ -291,6 +291,30 @@ const FOLLOW_UP_QUEUE_SCHEMA_SQL = `
     ON follow_up_queue_projections(card_id, generation);
 `;
 
+const ATTENTION_BLOCKER_SCHEMA_SQL = `
+  CREATE TABLE attention_blocker_projections (
+    blocker_id TEXT PRIMARY KEY,
+    attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id) ON DELETE CASCADE,
+    board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+    card_id TEXT NOT NULL REFERENCES cards(card_id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    active INTEGER NOT NULL CHECK (active IN (0, 1)),
+    projection_json TEXT NOT NULL CHECK (json_valid(projection_json)),
+    notification_state TEXT NOT NULL CHECK (notification_state IN ('pending', 'delivered', 'failed')),
+    version INTEGER NOT NULL CHECK (version > 0),
+    UNIQUE (attempt_id, call_id),
+    UNIQUE (card_id, generation, blocker_id)
+  ) STRICT;
+
+  CREATE UNIQUE INDEX attention_one_active_per_attempt
+    ON attention_blocker_projections(attempt_id)
+    WHERE active = 1;
+
+  CREATE INDEX attention_card_generation
+    ON attention_blocker_projections(card_id, generation, blocker_id);
+`;
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -332,6 +356,13 @@ export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
     name: "durable_confirmable_follow_up_queue",
     up(database) {
       database.run(FOLLOW_UP_QUEUE_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 7,
+    name: "durable_attention_blockers_and_notification_results",
+    up(database) {
+      database.run(ATTENTION_BLOCKER_SCHEMA_SQL);
     },
   },
 ];

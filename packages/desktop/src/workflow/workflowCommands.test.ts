@@ -297,6 +297,14 @@ describe("governed card progression", () => {
         expectedCardVersion: 3,
         targetStageId: DOING_ID,
       })).toMatchObject({ status: "rejected", rejection: { kind: "stage_locked" } });
+      expect(harness.commands.execute({
+        kind: "record_agent_success",
+        mutationId: mutation("agent-move-while-attention"),
+        boardId: BOARD_ID,
+        expectedWorkflowVersion: workflowVersion,
+        cardId: CARD_ID,
+        expectedCardVersion: 3,
+      })).toMatchObject({ status: "rejected", rejection: { kind: "stage_locked" } });
       expect(harness.journal.snapshot().cards[0]).toMatchObject({
         stageId: BACKLOG_ID,
         executionStatus: "needs_attention",

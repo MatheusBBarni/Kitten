@@ -46,6 +46,8 @@ import type {
   FollowUpQueueProjection,
 } from "../attempts/followUpQueue.ts";
 import { validateFollowUpQueueProjection } from "../attempts/followUpQueue.ts";
+import type { AttentionBlockerProjection } from "../attention/contracts.ts";
+import { validateAttentionBlockerProjection } from "../attention/contracts.ts";
 
 export type {
   BoardProjection,
@@ -119,6 +121,11 @@ export type JournalEvent =
       readonly kind: "follow_up_queue_committed";
       readonly cardId: CardId;
       readonly payload: FollowUpQueueEventPayload;
+    })
+  | (JournalEventBase & {
+      readonly kind: "attention_blocker_committed";
+      readonly cardId: CardId;
+      readonly payload: AttentionBlockerEventPayload;
     });
 
 export interface CatalogProjection {
@@ -151,6 +158,13 @@ export interface FollowUpQueueEventPayload {
   readonly queue: FollowUpQueueProjection;
 }
 
+export type AttentionBlockerOperation = "raised" | "notification_recorded" | "resolved";
+
+export interface AttentionBlockerEventPayload {
+  readonly operation: AttentionBlockerOperation;
+  readonly changes: readonly ProjectionChange[];
+}
+
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
@@ -163,7 +177,8 @@ export type ProjectionChange =
   | { readonly entity: "attempt"; readonly operation: "upsert"; readonly value: AttemptProjection }
   | { readonly entity: "run_context"; readonly operation: "insert"; readonly value: RunContext }
   | { readonly entity: "attempt_inspector"; readonly operation: "upsert"; readonly value: AttemptInspectorProjection }
-  | { readonly entity: "follow_up_queue"; readonly operation: "upsert"; readonly value: FollowUpQueueProjection };
+  | { readonly entity: "follow_up_queue"; readonly operation: "upsert"; readonly value: FollowUpQueueProjection }
+  | { readonly entity: "attention_blocker"; readonly operation: "upsert"; readonly value: AttentionBlockerProjection };
 
 export interface WorkflowCommandEventPayload {
   readonly mutationId: string;
@@ -196,6 +211,7 @@ export interface PersistenceSnapshot {
   readonly runContexts: readonly RunContext[];
   readonly attemptInspectors: readonly AttemptInspectorProjection[];
   readonly followUpQueues: readonly FollowUpQueueProjection[];
+  readonly attentionBlockers: readonly AttentionBlockerProjection[];
 }
 
 export interface EventJournal {
@@ -212,7 +228,8 @@ export interface JournalAppendOptions {
 export type ProjectionVersionPrecondition =
   | { readonly entity: "board"; readonly id: BoardId; readonly expectedVersion: number }
   | { readonly entity: "card"; readonly id: CardId; readonly expectedVersion: number }
-  | { readonly entity: "follow_up_queue"; readonly id: string; readonly expectedVersion: number };
+  | { readonly entity: "follow_up_queue"; readonly id: string; readonly expectedVersion: number }
+  | { readonly entity: "attention_blocker"; readonly id: string; readonly expectedVersion: number };
 
 export class JournalValidationError extends Error {
   constructor(message: string) {
@@ -673,6 +690,13 @@ function parseProjectionChange(value: unknown): ProjectionChange {
       } catch (error) {
         throw new JournalValidationError(error instanceof Error ? error.message : "follow-up queue is invalid");
       }
+    case "attention_blocker":
+      if (operation !== "upsert") throw new JournalValidationError("Attention Blocker changes must upsert");
+      try {
+        return { entity, operation, value: validateAttentionBlockerProjection(value.value) };
+      } catch (error) {
+        throw new JournalValidationError(error instanceof Error ? error.message : "Attention Blocker is invalid");
+      }
     default:
       throw new JournalValidationError("projection change entity is unsupported");
   }
@@ -690,6 +714,36 @@ function parseFollowUpQueuePayload(value: unknown): FollowUpQueueEventPayload {
   } catch (error) {
     throw new JournalValidationError(error instanceof Error ? error.message : "follow-up queue is invalid");
   }
+}
+
+function parseAttentionBlockerPayload(value: unknown): AttentionBlockerEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["operation", "changes"]);
+  const operation = stringField(value.operation, "payload.operation") as AttentionBlockerOperation;
+  if (operation !== "raised" && operation !== "notification_recorded" && operation !== "resolved") {
+    throw new JournalValidationError("Attention Blocker operation is unsupported");
+  }
+  if (!Array.isArray(value.changes) || value.changes.length === 0) {
+    throw new JournalValidationError("Attention Blocker changes must be a non-empty array");
+  }
+  const changes = value.changes.map(parseProjectionChange);
+  const blockers = changes.filter((change) => change.entity === "attention_blocker");
+  const cards = changes.filter((change) => change.entity === "card");
+  const attempts = changes.filter((change) => change.entity === "attempt");
+  if (blockers.length !== 1) throw new JournalValidationError("Attention Blocker event requires one blocker change");
+  const blocker = blockers[0]!.value;
+  if (operation === "raised") {
+    if (changes.length !== 3 || cards.length !== 1 || attempts.length !== 1 || !blocker.active) {
+      throw new JournalValidationError("Attention Blocker raise requires active blocker, card, and attempt changes");
+    }
+  } else if (operation === "notification_recorded") {
+    if (changes.length !== 1 || blocker.notification.state === "pending") {
+      throw new JournalValidationError("Attention notification result requires one attempted blocker change");
+    }
+  } else if (changes.length !== 3 || cards.length !== 1 || attempts.length !== 1 || blocker.active) {
+    throw new JournalValidationError("Attention Blocker resolution requires terminal blocker, card, and attempt changes");
+  }
+  return { operation, changes };
 }
 
 function parseAttemptActivityPayload(value: unknown): AttemptActivityEventPayload {
@@ -942,6 +996,34 @@ export function validateJournalEvent(input: unknown): JournalEvent {
       }
       if (actor !== "operator" && actor !== "system") {
         throw new JournalValidationError("follow-up queue actor is unsupported");
+      }
+      return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
+    }
+    case "attention_blocker_committed": {
+      const payload = parseAttentionBlockerPayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      if (Object.hasOwn(input, "attemptId") || Object.hasOwn(input, "attemptSequence")) {
+        throw new JournalValidationError("Attention Blocker events use blocker versioning, not activity sequence");
+      }
+      const blocker = payload.changes.find((change) => change.entity === "attention_blocker")!.value;
+      if (blocker.boardId !== boardId || blocker.cardId !== cardId) {
+        throw new JournalValidationError("Attention Blocker event identity does not match projection");
+      }
+      const card = payload.changes.find((change) => change.entity === "card")?.value;
+      const attempt = payload.changes.find((change) => change.entity === "attempt")?.value;
+      if (card !== undefined && (card.boardId !== boardId || card.cardId !== cardId || card.stageId === undefined)) {
+        throw new JournalValidationError("Attention Blocker card identity does not match projection");
+      }
+      if (attempt !== undefined && (
+        attempt.boardId !== boardId
+        || attempt.cardId !== cardId
+        || attempt.attemptId !== blocker.attemptId
+        || attempt.generation !== blocker.generation
+      )) {
+        throw new JournalValidationError("Attention Blocker attempt identity does not match projection");
+      }
+      if (actor !== "agent" && actor !== "operator" && actor !== "system") {
+        throw new JournalValidationError("Attention Blocker actor is unsupported");
       }
       return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
     }
@@ -1379,6 +1461,59 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
       upsert.finalize();
       return;
     }
+    case "attention_blocker": {
+      const value = change.value;
+      const existingStatement = database.query<{
+        readonly attemptId: string;
+        readonly boardId: string;
+        readonly cardId: string;
+        readonly callId: string;
+        readonly generation: number;
+      }, [string]>(`
+        SELECT attempt_id AS attemptId, board_id AS boardId, card_id AS cardId,
+          call_id AS callId, generation
+        FROM attention_blocker_projections WHERE blocker_id = ?
+      `);
+      const existing = existingStatement.get(value.blockerId);
+      existingStatement.finalize();
+      if (existing !== null && JSON.stringify(existing) !== JSON.stringify({
+        attemptId: value.attemptId,
+        boardId: value.boardId,
+        cardId: value.cardId,
+        callId: value.callId,
+        generation: value.generation,
+      })) {
+        throw new Error(`Attention Blocker identity conflict: ${value.blockerId}`);
+      }
+      const serialized = JSON.stringify(value);
+      const upsert = database.query<void, [
+        string, string, string, string, string, number, number, string, string, number,
+      ]>(`
+        INSERT INTO attention_blocker_projections(
+          blocker_id, attempt_id, board_id, card_id, call_id, generation,
+          active, projection_json, notification_state, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(blocker_id) DO UPDATE SET
+          active = excluded.active,
+          projection_json = excluded.projection_json,
+          notification_state = excluded.notification_state,
+          version = excluded.version
+      `);
+      upsert.run(
+        value.blockerId,
+        value.attemptId,
+        value.boardId,
+        value.cardId,
+        value.callId,
+        value.generation,
+        value.active ? 1 : 0,
+        serialized,
+        value.notification.state,
+        value.version,
+      );
+      upsert.finalize();
+      return;
+    }
   }
 }
 
@@ -1514,6 +1649,8 @@ export function applyProjectionEvent(
             ? applyAttemptActivityProjection(database, event)
             : event.kind === "follow_up_queue_committed"
               ? [{ entity: "follow_up_queue", operation: "upsert", value: event.payload.queue }]
+              : event.kind === "attention_blocker_committed"
+                ? event.payload.changes
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -1628,6 +1765,10 @@ interface AttemptInspectorRow {
 }
 
 interface FollowUpQueueRow {
+  readonly projectionJson: string;
+}
+
+interface AttentionBlockerRow {
   readonly projectionJson: string;
 }
 
@@ -1808,6 +1949,15 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
   const followUpQueues = followUpQueueRows.map((row) => validateFollowUpQueueProjection(
     parsePersistedJson(row.projectionJson, "persisted follow-up queue projection"),
   ));
+  const attentionBlockersStatement = database.query<AttentionBlockerRow, []>(`
+    SELECT projection_json AS projectionJson
+    FROM attention_blocker_projections ORDER BY board_id, card_id, generation, blocker_id
+  `);
+  const attentionBlockerRows = attentionBlockersStatement.all();
+  attentionBlockersStatement.finalize();
+  const attentionBlockers = attentionBlockerRows.map((row) => validateAttentionBlockerProjection(
+    parsePersistedJson(row.projectionJson, "persisted Attention Blocker projection"),
+  ));
 
   return {
     schemaVersion: 1,
@@ -1826,6 +1976,7 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     runContexts,
     attemptInspectors,
     followUpQueues,
+    attentionBlockers,
   };
 }
 
@@ -1886,9 +2037,13 @@ function assertProjectionPreconditions(
         ? database.query<{ readonly version: number }, [string]>(
             "SELECT version FROM cards WHERE card_id = ?",
           ).get(precondition.id)?.version ?? 0
-        : database.query<{ readonly version: number }, [string]>(
-            "SELECT version FROM follow_up_queue_projections WHERE attempt_id = ?",
-          ).get(precondition.id)?.version ?? 0;
+        : precondition.entity === "follow_up_queue"
+          ? database.query<{ readonly version: number }, [string]>(
+              "SELECT version FROM follow_up_queue_projections WHERE attempt_id = ?",
+            ).get(precondition.id)?.version ?? 0
+          : database.query<{ readonly version: number }, [string]>(
+              "SELECT version FROM attention_blocker_projections WHERE blocker_id = ?",
+            ).get(precondition.id)?.version ?? 0;
     if (actualVersion !== precondition.expectedVersion) {
       throw new ProjectionVersionConflictError(
         precondition.entity,

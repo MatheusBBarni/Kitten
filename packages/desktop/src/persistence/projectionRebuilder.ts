@@ -19,6 +19,7 @@ export function rebuildProjections(database: Database): PersistenceSnapshot {
       throw new Error("Journal order metadata does not match persisted events");
     }
 
+    database.run("DELETE FROM attention_blocker_projections");
     database.run("DELETE FROM follow_up_queue_projections");
     database.run("DELETE FROM attempt_inspector_projections");
     database.run("DELETE FROM attempts");

@@ -12,6 +12,10 @@ import type { CertifiedDirectAcpProfile } from "./contracts.ts";
 import { createDirectAcpAttemptStarter, type DirectAcpConnectionFactory } from "./directAcpAttempt.ts";
 import { createGlobalAttemptScheduler } from "./scheduler.ts";
 import type { FollowUpQueueId } from "./followUpQueue.ts";
+import { createAttentionCoordinator } from "../attention/attentionCoordinator.ts";
+import { createAttemptAskUserBridge, type AttemptAskUserBridge } from "../attention/attemptAskUserBridge.ts";
+import type { AttentionForm } from "../attention/contracts.ts";
+import { createCardNotificationService } from "../notifications/cardNotificationService.ts";
 
 const databases: ReturnType<typeof openSqliteDatabase>[] = [];
 afterEach(() => {
@@ -312,6 +316,100 @@ describe("confirmable non-cancelling follow-ups", () => {
       expect(promptCalls).toBe(0);
     }
   });
+
+  test("runs fake ACP through durable blocker, committed answer, same-attempt resume, and queue release", async () => {
+    const fixture = createFixture([CARD_ONE]);
+    const delivered: unknown[] = [];
+    let attentionEvent = 0;
+    const attention = createAttentionCoordinator({
+      journal: fixture.journal,
+      notifications: createCardNotificationService({
+        now: () => 205,
+        deliver(payload) { delivered.push(payload); },
+      }),
+      now: () => 200 + attentionEvent,
+      createBlockerId: () => "blocker-integrated",
+      createEventId: (operation) => `attention-integrated-${operation}-${++attentionEvent}`,
+    });
+    const bridge = createAttemptAskUserBridge({
+      journal: fixture.journal,
+      attention,
+      createCapability: () => "d".repeat(43),
+    });
+    let capability: string | undefined;
+    const prompts: string[] = [];
+    const coordinator = fixture.coordinator({
+      async connect() {
+        return {
+          async newSession(input) {
+            capability = input.askUserRoute?.capability;
+            return { sessionId: "session-attention-integrated" };
+          },
+          async prompt({ prompt }) { prompts.push(prompt); return { stopReason: "end_turn" }; },
+          subscribeActivity() { return () => {}; },
+          close() {},
+        };
+      },
+    }, createGlobalAttemptScheduler(), fixture.journal, {
+      hasActiveAttention: (attemptId) => attention.hasActive(attemptId),
+      askUserBridge: bridge,
+    });
+    const started = await coordinator.start(CARD_ONE);
+    if (started.status !== "started" || capability === undefined) throw new Error("expected scoped started attempt");
+    const fence = { attemptId: started.attempt.attemptId, generation: started.attempt.generation };
+    expect(coordinator.queueFollowUp({
+      ...fence,
+      expectedQueueVersion: 0,
+      queueId: "queue-attention" as FollowUpQueueId,
+      text: "dispatch after answer",
+    }).status).toBe("ok");
+    expect(coordinator.settleTurn(fence)).toMatchObject({ status: "ok", projection: { version: 2 } });
+
+    const form: AttentionForm = {
+      prompt: "Choose",
+      fields: [{
+        id: "choice", label: "Choice", required: true, mode: "single",
+        options: [{ id: "safe", label: "Safe" }], allowsCustom: true,
+      }],
+    };
+    let observedCommittedBeforeResume = false;
+    const forwarded = bridge.forward({ capability, callId: "fake-acp-call", form }).then((outcome) => {
+      observedCommittedBeforeResume = fixture.journal.snapshot().attentionBlockers[0]?.active === false;
+      return outcome;
+    });
+    const blocker = await waitForAttentionBlocker(fixture.journal);
+    expect(fixture.journal.snapshot().cards[0]).toMatchObject({
+      stageId: STAGE_ID,
+      executionStatus: "needs_attention",
+    });
+    expect(await coordinator.confirmQueuedFollowUp({
+      ...fence,
+      expectedQueueVersion: 2,
+      queueId: "queue-attention" as FollowUpQueueId,
+    })).toMatchObject({ status: "rejected", reason: { code: "blocker_active" } });
+    expect(prompts).toEqual([]);
+
+    attention.resolve({
+      ...fence,
+      blockerId: blocker.blockerId,
+      expectedVersion: blocker.version,
+      outcome: { kind: "submitted", answers: { choice: { selectedOptionIds: ["safe"] } } },
+    });
+    expect(await forwarded).toEqual({
+      kind: "submitted",
+      answers: { choice: { selectedOptionIds: ["safe"] } },
+    });
+    expect(observedCommittedBeforeResume).toBeTrue();
+    expect(fixture.journal.snapshot().attempts[0]?.state).toBe("running");
+    expect(await coordinator.confirmQueuedFollowUp({
+      ...fence,
+      expectedQueueVersion: 2,
+      queueId: "queue-attention" as FollowUpQueueId,
+    })).toMatchObject({ status: "ok", projection: { turnState: "settled" } });
+    expect(prompts).toEqual(["dispatch after answer"]);
+    expect(delivered).toHaveLength(1);
+    await coordinator.release(fence.attemptId);
+  });
 });
 
 function createFixture(cardIds: readonly CardId[]) {
@@ -345,6 +443,7 @@ function createFixture(cardIds: readonly CardId[]) {
       followUpOptions: {
         readonly hasActiveAttention?: (attemptId: AttemptId) => boolean;
         readonly telemetry?: ContentFreeFollowUpTelemetry;
+        readonly askUserBridge?: Pick<AttemptAskUserBridge, "register" | "revoke">;
       } = {},
     ) {
       return createAttemptCoordinator({
@@ -375,6 +474,15 @@ function createFixture(cardIds: readonly CardId[]) {
       });
     },
   };
+}
+
+async function waitForAttentionBlocker(journal: EventJournal) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const blocker = journal.snapshot().attentionBlockers[0];
+    if (blocker !== undefined && blocker.notification.state !== "pending") return blocker;
+    await Promise.resolve();
+  }
+  throw new Error("Attention Blocker was not committed");
 }
 
 function seed(journal: EventJournal, cardIds: readonly CardId[]): void {

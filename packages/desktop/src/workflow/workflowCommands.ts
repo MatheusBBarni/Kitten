@@ -8,6 +8,7 @@ import {
   type ProjectionVersionPrecondition,
   type WorkflowCommandEventPayload,
 } from "../persistence/eventJournal.ts";
+import { isCardStageLocked } from "../board/cardTransitionCoordinator.ts";
 import {
   type BoardProjection,
   type CardProjection,
@@ -449,7 +450,7 @@ export function createWorkflowCommandHandler(
           const successor = immediateSuccessor(card.stageId, state.edges);
           let value: CardProjection;
           if (command.kind === "move_card") {
-            if (card.executionStatus === "running" || card.executionStatus === "needs_attention") {
+            if (isCardStageLocked(card)) {
               return reject(command, "stage_locked", `Card ${card.cardId} is stage-locked while ${card.executionStatus}`);
             }
             if (successor !== command.targetStageId) {
@@ -458,6 +459,9 @@ export function createWorkflowCommandHandler(
             value = { ...card, stageId: command.targetStageId, version: card.version + 1, updatedAt: occurredAt };
           } else {
             actor = "agent";
+            if (card.executionStatus === "needs_attention") {
+              return reject(command, "stage_locked", `Card ${card.cardId} is stage-locked while needs_attention`);
+            }
             if (card.executionStatus !== "running") {
               return reject(command, "invalid_execution_status", "Agent success requires a running card");
             }

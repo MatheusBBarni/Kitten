@@ -26,6 +26,7 @@ import { safeClose } from "./directAcpAttempt.ts";
 import { validateRunnable, type RunnableFailure, type RunnableValidationInput } from "./runnableValidator.ts";
 import type { GlobalAttemptScheduler, SchedulerReservation } from "./scheduler.ts";
 import type { AttemptActivityIngestor } from "./activityIngestor.ts";
+import type { AttemptAskUserBridge, AttemptAskUserRoute } from "../attention/attemptAskUserBridge.ts";
 import {
   awaitingConfirmationHead,
   confirmFollowUpHead,
@@ -127,6 +128,7 @@ export interface CreateAttemptCoordinatorOptions {
   readonly telemetry?: ContentFreeFollowUpTelemetry;
   readonly createQueueId?: () => string;
   readonly createFollowUpEventId?: (operation: FollowUpQueueOperation) => string;
+  readonly askUserBridge?: Pick<AttemptAskUserBridge, "register" | "revoke">;
 }
 
 interface ResolvedAdmission {
@@ -145,6 +147,7 @@ interface ActiveAttempt {
   readonly session: FreshDirectAcpSession;
   unsubscribeActivity: () => void;
   turnState: FollowUpTurnState;
+  revokeAskUser: () => void;
 }
 
 function defaultAttemptId(): string {
@@ -320,6 +323,31 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
         };
       }
 
+      let askUserRoute: AttemptAskUserRoute | undefined;
+      try {
+        askUserRoute = options.askUserBridge?.register({ attemptId, generation });
+      } catch (error) {
+        const failure: AttemptStartupFailure = {
+          code: "connection_failed",
+          message: legibleError(error, "Attempt ask_user route registration failed"),
+          occurredAt: Math.max(createdAt, now()),
+        };
+        let failedAttempt: AttemptProjection;
+        try {
+          failedAttempt = persistStartupFailure(
+            options.journal,
+            createEventId("startup_failed"),
+            board,
+            startingAttempt,
+            runningCard,
+            failure,
+          );
+        } finally {
+          options.scheduler.release(reserved.reservation);
+        }
+        return { status: "failed", attempt: failedAttempt, failure };
+      }
+
       const started = await options.directAcp.start({
         attemptId,
         generation,
@@ -328,11 +356,13 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
         effort: context.profile.effort,
         skillContent: context.skill.content,
         profile,
+        ...(askUserRoute === undefined ? {} : { askUserRoute: { capability: askUserRoute.capability } }),
       });
       if (started.status === "failed") {
         const failure: AttemptStartupFailure = { ...started.failure, occurredAt: Math.max(createdAt, now()) };
         let failedAttempt: AttemptProjection;
         try {
+          if (askUserRoute !== undefined) options.askUserBridge?.revoke(askUserRoute);
           failedAttempt = persistStartupFailure(
             options.journal,
             createEventId("startup_failed"),
@@ -366,6 +396,7 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
           changes: [{ entity: "attempt", operation: "upsert", value: runningAttempt }],
         });
       } catch (error) {
+        if (askUserRoute !== undefined) options.askUserBridge?.revoke(askUserRoute);
         await safeClose(started.session.connection);
         const failure: AttemptStartupFailure = {
           code: "startup_commit_failed",
@@ -392,6 +423,9 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
         session: started.session,
         unsubscribeActivity: () => {},
         turnState: "active",
+        revokeAskUser: () => {
+          if (askUserRoute !== undefined) options.askUserBridge?.revoke(askUserRoute);
+        },
       };
       active.set(attemptId, activeAttempt);
       if (options.activityIngestor !== undefined) {
@@ -640,6 +674,7 @@ async function releaseActive(
   const value = active.get(attemptId);
   if (value === undefined) return false;
   active.delete(attemptId);
+  value.revokeAskUser();
   value.unsubscribeActivity();
   await safeClose(value.session.connection);
   return scheduler.release(value.reservation);

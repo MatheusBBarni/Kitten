@@ -8,6 +8,9 @@ export interface FreshDirectAcpSessionInput {
   readonly model: string;
   readonly effort: string;
   readonly skillContent: string;
+  readonly askUserRoute?: {
+    readonly capability: string;
+  };
 }
 
 export interface DirectAcpConnection {
@@ -73,6 +76,7 @@ export function createDirectAcpAttemptStarter(
           model: input.model,
           effort: input.effort,
           skillContent: input.skillContent,
+          ...(input.askUserRoute === undefined ? {} : { askUserRoute: input.askUserRoute }),
         });
         if (session.sessionId.trim().length === 0) throw new Error("Agent returned an empty session identity");
         return { status: "started", session: { sessionId: session.sessionId, connection } };
