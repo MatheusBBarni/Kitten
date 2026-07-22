@@ -1,65 +1,33 @@
 import type { Database } from "bun:sqlite";
+import type {
+  BoardId,
+  BoardProjection,
+  CardId,
+  CardProjection,
+  EdgeProjection,
+  ExecutionStatus,
+  SkillId,
+  StageId,
+  StageProjection,
+  WorkflowCommandKind,
+} from "../workflow/workflowTypes.ts";
+
+export type {
+  BoardProjection,
+  CardProjection,
+  EdgeProjection,
+  ExecutionStatus,
+  StageProjection,
+} from "../workflow/workflowTypes.ts";
 
 export type JournalActor = "agent" | "operator" | "system";
-export type ExecutionStatus =
-  | "idle"
-  | "running"
-  | "needs_attention"
-  | "ready_for_review"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
 interface JournalEventBase {
   readonly eventId: string;
-  readonly boardId: string;
+  readonly boardId: BoardId;
   readonly actor: JournalActor;
   readonly occurredAt: number;
   readonly attemptId?: string;
   readonly attemptSequence?: number;
-}
-
-export interface BoardProjection {
-  readonly boardId: string;
-  readonly repositoryPath: string;
-  readonly workflowVersion: number;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-export interface StageProjection {
-  readonly stageId: string;
-  readonly boardId: string;
-  readonly label: string;
-  readonly position: number;
-  readonly defaultSkillId: string | null;
-  readonly configured: boolean;
-  readonly workflowVersion: number;
-  readonly updatedAt: number;
-}
-
-export interface EdgeProjection {
-  readonly boardId: string;
-  readonly sourceStageId: string;
-  readonly targetStageId: string;
-  readonly workflowVersion: number;
-}
-
-export interface CardProjection {
-  readonly cardId: string;
-  readonly boardId: string;
-  readonly stageId: string;
-  readonly title: string;
-  readonly description: string;
-  readonly provider: string;
-  readonly model: string;
-  readonly effort: string;
-  readonly skillOverrideId: string | null;
-  readonly runnable: boolean;
-  readonly executionStatus: ExecutionStatus;
-  readonly version: number;
-  readonly createdAt: number;
-  readonly updatedAt: number;
 }
 
 export type JournalEvent =
@@ -77,21 +45,34 @@ export type JournalEvent =
     })
   | (JournalEventBase & {
       readonly kind: "card_upserted";
-      readonly cardId: string;
+      readonly cardId: CardId;
       readonly payload: CardProjection;
+    })
+  | (JournalEventBase & {
+      readonly kind: "workflow_command_committed";
+      readonly cardId?: CardId;
+      readonly payload: WorkflowCommandEventPayload;
     });
 
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
   | { readonly entity: "edge"; readonly operation: "upsert"; readonly value: EdgeProjection }
+  | { readonly entity: "edge"; readonly operation: "delete"; readonly value: EdgeProjection }
   | { readonly entity: "card"; readonly operation: "upsert"; readonly value: CardProjection };
+
+export interface WorkflowCommandEventPayload {
+  readonly mutationId: string;
+  readonly commandKind: WorkflowCommandKind;
+  readonly commandFingerprint: string;
+  readonly changes: readonly ProjectionChange[];
+}
 
 export interface ProjectionDelta {
   readonly eventId: string;
   readonly journalOrder: number;
   readonly revision: number;
-  readonly changes: readonly [ProjectionChange];
+  readonly changes: readonly ProjectionChange[];
 }
 
 export interface PersistenceSnapshot {
@@ -105,10 +86,19 @@ export interface PersistenceSnapshot {
 }
 
 export interface EventJournal {
-  append(input: unknown): ProjectionDelta;
+  append(input: unknown, options?: JournalAppendOptions): ProjectionDelta;
   snapshot(): PersistenceSnapshot;
   events(): readonly JournalEvent[];
+  eventById(eventId: string): JournalEvent | null;
 }
+
+export interface JournalAppendOptions {
+  readonly preconditions?: readonly ProjectionVersionPrecondition[];
+}
+
+export type ProjectionVersionPrecondition =
+  | { readonly entity: "board"; readonly id: BoardId; readonly expectedVersion: number }
+  | { readonly entity: "card"; readonly id: CardId; readonly expectedVersion: number };
 
 export class JournalValidationError extends Error {
   constructor(message: string) {
@@ -132,6 +122,18 @@ export class AttemptSequenceError extends Error {
         : `Attempt ${attemptId} sequence ${received} is not greater than ${latest}`,
     );
     this.name = "AttemptSequenceError";
+  }
+}
+
+export class ProjectionVersionConflictError extends Error {
+  constructor(
+    readonly entity: ProjectionVersionPrecondition["entity"],
+    readonly id: BoardId | CardId,
+    readonly expectedVersion: number,
+    readonly actualVersion: number,
+  ) {
+    super(`Stale ${entity} projection ${id}: expected ${expectedVersion}, actual ${actualVersion}`);
+    this.name = "ProjectionVersionConflictError";
   }
 }
 
@@ -191,7 +193,7 @@ function parseBoardProjection(value: unknown): BoardProjection {
   const updatedAt = integerField(value.updatedAt, "payload.updatedAt");
   if (updatedAt < createdAt) throw new JournalValidationError("payload.updatedAt precedes createdAt");
   return {
-    boardId: stringField(value.boardId, "payload.boardId"),
+    boardId: stringField(value.boardId, "payload.boardId") as BoardId,
     repositoryPath: stringField(value.repositoryPath, "payload.repositoryPath"),
     workflowVersion: integerField(value.workflowVersion, "payload.workflowVersion"),
     createdAt,
@@ -206,11 +208,11 @@ function parseStageProjection(value: unknown): StageProjection {
     "workflowVersion", "updatedAt",
   ]);
   return {
-    stageId: stringField(value.stageId, "payload.stageId"),
-    boardId: stringField(value.boardId, "payload.boardId"),
+    stageId: stringField(value.stageId, "payload.stageId") as StageId,
+    boardId: stringField(value.boardId, "payload.boardId") as BoardId,
     label: stringField(value.label, "payload.label"),
     position: integerField(value.position, "payload.position"),
-    defaultSkillId: optionalStringField(value.defaultSkillId, "payload.defaultSkillId"),
+    defaultSkillId: optionalStringField(value.defaultSkillId, "payload.defaultSkillId") as SkillId | null,
     configured: booleanField(value.configured, "payload.configured"),
     workflowVersion: integerField(value.workflowVersion, "payload.workflowVersion"),
     updatedAt: integerField(value.updatedAt, "payload.updatedAt"),
@@ -220,13 +222,13 @@ function parseStageProjection(value: unknown): StageProjection {
 function parseEdgeProjection(value: unknown): EdgeProjection {
   assertRecord(value, "payload");
   assertExactKeys(value, ["boardId", "sourceStageId", "targetStageId", "workflowVersion"]);
-  const sourceStageId = stringField(value.sourceStageId, "payload.sourceStageId");
-  const targetStageId = stringField(value.targetStageId, "payload.targetStageId");
+  const sourceStageId = stringField(value.sourceStageId, "payload.sourceStageId") as StageId;
+  const targetStageId = stringField(value.targetStageId, "payload.targetStageId") as StageId;
   if (sourceStageId === targetStageId) {
     throw new JournalValidationError("an edge cannot target its source stage");
   }
   return {
-    boardId: stringField(value.boardId, "payload.boardId"),
+    boardId: stringField(value.boardId, "payload.boardId") as BoardId,
     sourceStageId,
     targetStageId,
     workflowVersion: integerField(value.workflowVersion, "payload.workflowVersion"),
@@ -251,20 +253,77 @@ function parseCardProjection(value: unknown): CardProjection {
   const updatedAt = integerField(value.updatedAt, "payload.updatedAt");
   if (updatedAt < createdAt) throw new JournalValidationError("payload.updatedAt precedes createdAt");
   return {
-    cardId: stringField(value.cardId, "payload.cardId"),
-    boardId: stringField(value.boardId, "payload.boardId"),
-    stageId: stringField(value.stageId, "payload.stageId"),
+    cardId: stringField(value.cardId, "payload.cardId") as CardId,
+    boardId: stringField(value.boardId, "payload.boardId") as BoardId,
+    stageId: stringField(value.stageId, "payload.stageId") as StageId,
     title: stringField(value.title, "payload.title"),
     description: stringField(value.description, "payload.description", true),
     provider: stringField(value.provider, "payload.provider"),
     model: stringField(value.model, "payload.model"),
     effort: stringField(value.effort, "payload.effort"),
-    skillOverrideId: optionalStringField(value.skillOverrideId, "payload.skillOverrideId"),
+    skillOverrideId: optionalStringField(value.skillOverrideId, "payload.skillOverrideId") as SkillId | null,
     runnable: booleanField(value.runnable, "payload.runnable"),
     executionStatus: executionStatus as ExecutionStatus,
     version: integerField(value.version, "payload.version"),
     createdAt,
     updatedAt,
+  };
+}
+
+const WORKFLOW_COMMAND_KINDS: readonly WorkflowCommandKind[] = [
+  "bind_repository",
+  "create_stage",
+  "update_stage",
+  "assign_stage_skill",
+  "connect_stages",
+  "reorder_stages",
+  "create_card",
+  "update_card",
+  "set_card_execution_status",
+  "move_card",
+  "record_agent_success",
+];
+
+function parseProjectionChange(value: unknown): ProjectionChange {
+  assertRecord(value, "payload.changes[]");
+  assertExactKeys(value, ["entity", "operation", "value"]);
+  const entity = stringField(value.entity, "payload.changes[].entity");
+  const operation = stringField(value.operation, "payload.changes[].operation");
+  switch (entity) {
+    case "board":
+      if (operation !== "upsert") throw new JournalValidationError("board changes must be upserts");
+      return { entity, operation, value: parseBoardProjection(value.value) };
+    case "stage":
+      if (operation !== "upsert") throw new JournalValidationError("stage changes must be upserts");
+      return { entity, operation, value: parseStageProjection(value.value) };
+    case "edge":
+      if (operation !== "upsert" && operation !== "delete") {
+        throw new JournalValidationError("edge change operation is unsupported");
+      }
+      return { entity, operation, value: parseEdgeProjection(value.value) };
+    case "card":
+      if (operation !== "upsert") throw new JournalValidationError("card changes must be upserts");
+      return { entity, operation, value: parseCardProjection(value.value) };
+    default:
+      throw new JournalValidationError("projection change entity is unsupported");
+  }
+}
+
+function parseWorkflowCommandPayload(value: unknown): WorkflowCommandEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["mutationId", "commandKind", "commandFingerprint", "changes"]);
+  const commandKind = stringField(value.commandKind, "payload.commandKind");
+  if (!WORKFLOW_COMMAND_KINDS.includes(commandKind as WorkflowCommandKind)) {
+    throw new JournalValidationError("payload.commandKind is unsupported");
+  }
+  if (!Array.isArray(value.changes) || value.changes.length === 0) {
+    throw new JournalValidationError("payload.changes must be a non-empty array");
+  }
+  return {
+    mutationId: stringField(value.mutationId, "payload.mutationId"),
+    commandKind: commandKind as WorkflowCommandKind,
+    commandFingerprint: stringField(value.commandFingerprint, "payload.commandFingerprint"),
+    changes: value.changes.map(parseProjectionChange),
   };
 }
 
@@ -277,7 +336,7 @@ export function validateJournalEvent(input: unknown): JournalEvent {
   );
 
   const eventId = stringField(input.eventId, "eventId");
-  const boardId = stringField(input.boardId, "boardId");
+  const boardId = stringField(input.boardId, "boardId") as BoardId;
   const actor = stringField(input.actor, "actor");
   if (actor !== "agent" && actor !== "operator" && actor !== "system") {
     throw new JournalValidationError("actor is unsupported");
@@ -316,11 +375,37 @@ export function validateJournalEvent(input: unknown): JournalEvent {
     }
     case "card_upserted": {
       const payload = parseCardProjection(input.payload);
-      const cardId = stringField(input.cardId, "cardId");
+      const cardId = stringField(input.cardId, "cardId") as CardId;
       if (payload.boardId !== boardId || payload.cardId !== cardId) {
         throw new JournalValidationError("event identity does not match payload");
       }
       return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload, ...attempt };
+    }
+    case "workflow_command_committed": {
+      const payload = parseWorkflowCommandPayload(input.payload);
+      const mismatchedChange = payload.changes.find((change) => change.value.boardId !== boardId);
+      if (mismatchedChange !== undefined) {
+        throw new JournalValidationError("boardId does not match a workflow command change");
+      }
+      const cardId = Object.hasOwn(input, "cardId")
+        ? stringField(input.cardId, "cardId") as CardId
+        : undefined;
+      if (cardId !== undefined) {
+        const cardChanges = payload.changes.filter((change) => change.entity === "card");
+        if (cardChanges.length === 0 || cardChanges.some((change) => change.value.cardId !== cardId)) {
+          throw new JournalValidationError("cardId does not match workflow command changes");
+        }
+      }
+      return {
+        eventId,
+        boardId,
+        actor,
+        kind: input.kind,
+        occurredAt,
+        payload,
+        ...(cardId === undefined ? {} : { cardId }),
+        ...attempt,
+      };
     }
     default:
       throw new JournalValidationError("kind is unsupported");
@@ -336,10 +421,10 @@ function assertStageBelongsToBoard(database: Database, boardId: string, stageId:
   }
 }
 
-export function applyProjectionEvent(database: Database, event: JournalEvent): ProjectionChange {
-  switch (event.kind) {
-    case "board_upserted": {
-      const value = event.payload;
+export function applyProjectionChange(database: Database, change: ProjectionChange): void {
+  switch (change.entity) {
+    case "board": {
+      const value = change.value;
       database.query<void, [string, string, number, number, number]>(`
         INSERT INTO boards(board_id, repository_path, workflow_version, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
@@ -349,10 +434,10 @@ export function applyProjectionEvent(database: Database, event: JournalEvent): P
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
       `).run(value.boardId, value.repositoryPath, value.workflowVersion, value.createdAt, value.updatedAt);
-      return { entity: "board", operation: "upsert", value };
+      return;
     }
-    case "stage_upserted": {
-      const value = event.payload;
+    case "stage": {
+      const value = change.value;
       database.query<void, [string, string, string, number, string | null, number, number, number]>(`
         INSERT INTO workflow_stages(
           stage_id, board_id, label, position, default_skill_id, configured, workflow_version, updated_at
@@ -369,10 +454,17 @@ export function applyProjectionEvent(database: Database, event: JournalEvent): P
         value.stageId, value.boardId, value.label, value.position, value.defaultSkillId,
         value.configured ? 1 : 0, value.workflowVersion, value.updatedAt,
       );
-      return { entity: "stage", operation: "upsert", value };
+      return;
     }
-    case "edge_upserted": {
-      const value = event.payload;
+    case "edge": {
+      const value = change.value;
+      if (change.operation === "delete") {
+        database.query<void, [string, string, string]>(`
+          DELETE FROM workflow_edges
+          WHERE board_id = ? AND source_stage_id = ? AND target_stage_id = ?
+        `).run(value.boardId, value.sourceStageId, value.targetStageId);
+        return;
+      }
       assertStageBelongsToBoard(database, value.boardId, value.sourceStageId);
       assertStageBelongsToBoard(database, value.boardId, value.targetStageId);
       database.query<void, [string, string, string, number]>(`
@@ -381,10 +473,10 @@ export function applyProjectionEvent(database: Database, event: JournalEvent): P
         ON CONFLICT(board_id, source_stage_id, target_stage_id) DO UPDATE SET
           workflow_version = excluded.workflow_version
       `).run(value.boardId, value.sourceStageId, value.targetStageId, value.workflowVersion);
-      return { entity: "edge", operation: "upsert", value };
+      return;
     }
-    case "card_upserted": {
-      const value = event.payload;
+    case "card": {
+      const value = change.value;
       assertStageBelongsToBoard(database, value.boardId, value.stageId);
       database.query<void, [
         string, string, string, string, string, string, string, string, string | null,
@@ -413,9 +505,26 @@ export function applyProjectionEvent(database: Database, event: JournalEvent): P
         value.provider, value.model, value.effort, value.skillOverrideId,
         value.runnable ? 1 : 0, value.executionStatus, value.version, value.createdAt, value.updatedAt,
       );
-      return { entity: "card", operation: "upsert", value };
+      return;
     }
   }
+}
+
+export function applyProjectionEvent(
+  database: Database,
+  event: JournalEvent,
+): readonly ProjectionChange[] {
+  const changes: readonly ProjectionChange[] = event.kind === "workflow_command_committed"
+    ? event.payload.changes
+    : event.kind === "board_upserted"
+      ? [{ entity: "board", operation: "upsert", value: event.payload }]
+      : event.kind === "stage_upserted"
+        ? [{ entity: "stage", operation: "upsert", value: event.payload }]
+        : event.kind === "edge_upserted"
+          ? [{ entity: "edge", operation: "upsert", value: event.payload }]
+          : [{ entity: "card", operation: "upsert", value: event.payload }];
+  changes.forEach((change) => applyProjectionChange(database, change));
+  return changes;
 }
 
 interface MetadataRow {
@@ -424,7 +533,7 @@ interface MetadataRow {
 }
 
 interface BoardRow {
-  readonly boardId: string;
+  readonly boardId: BoardId;
   readonly repositoryPath: string;
   readonly workflowVersion: number;
   readonly createdAt: number;
@@ -522,9 +631,32 @@ export function readOrderedJournalEvents(database: Database): readonly JournalEv
   });
 }
 
+function assertProjectionPreconditions(
+  database: Database,
+  preconditions: readonly ProjectionVersionPrecondition[],
+): void {
+  for (const precondition of preconditions) {
+    const actualVersion = precondition.entity === "board"
+      ? database.query<{ readonly version: number }, [string]>(
+          "SELECT workflow_version AS version FROM boards WHERE board_id = ?",
+        ).get(precondition.id)?.version ?? 0
+      : database.query<{ readonly version: number }, [string]>(
+          "SELECT version FROM cards WHERE card_id = ?",
+        ).get(precondition.id)?.version ?? 0;
+    if (actualVersion !== precondition.expectedVersion) {
+      throw new ProjectionVersionConflictError(
+        precondition.entity,
+        precondition.id,
+        precondition.expectedVersion,
+        actualVersion,
+      );
+    }
+  }
+}
+
 export function createEventJournal(database: Database): EventJournal {
   return {
-    append(input) {
+    append(input, options = {}) {
       const event = validateJournalEvent(input);
       let delta: ProjectionDelta | undefined;
       const appendTransaction = database.transaction(() => {
@@ -532,6 +664,8 @@ export function createEventJournal(database: Database): EventJournal {
           "SELECT 1 AS present FROM journal_events WHERE event_id = ?",
         ).get(event.eventId);
         if (duplicate !== null) throw new DuplicateJournalEventError(event.eventId);
+
+        assertProjectionPreconditions(database, options.preconditions ?? []);
 
         if (event.attemptId !== undefined && event.attemptSequence !== undefined) {
           const latest = database.query<{ readonly sequence: number }, [string]>(`
@@ -553,7 +687,7 @@ export function createEventJournal(database: Database): EventJournal {
         `).run(
           event.eventId,
           event.boardId,
-          "cardId" in event ? event.cardId : null,
+          "cardId" in event && event.cardId !== undefined ? event.cardId : null,
           event.attemptId ?? null,
           event.attemptSequence ?? null,
           event.actor,
@@ -562,7 +696,7 @@ export function createEventJournal(database: Database): EventJournal {
           JSON.stringify(event.payload),
         );
         const journalOrder = Number(inserted.lastInsertRowid);
-        const change = applyProjectionEvent(database, event);
+        const changes = applyProjectionEvent(database, event);
         database.query<void, [number]>(`
           UPDATE projection_metadata
           SET revision = revision + 1, last_journal_order = ?
@@ -572,7 +706,7 @@ export function createEventJournal(database: Database): EventJournal {
           "SELECT revision FROM projection_metadata WHERE singleton = 1",
         ).get()?.revision;
         if (revision === undefined) throw new Error("Projection metadata is missing");
-        delta = { eventId: event.eventId, journalOrder, revision, changes: [change] };
+        delta = { eventId: event.eventId, journalOrder, revision, changes };
       });
 
       appendTransaction.immediate();
@@ -584,6 +718,9 @@ export function createEventJournal(database: Database): EventJournal {
     },
     events() {
       return readOrderedJournalEvents(database);
+    },
+    eventById(eventId) {
+      return readOrderedJournalEvents(database).find((event) => event.eventId === eventId) ?? null;
     },
   };
 }

@@ -21,9 +21,10 @@ import {
 } from "./migrations.ts";
 import { rebuildProjections } from "./projectionRebuilder.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "./sqliteDatabase.ts";
+import { workflowIds } from "../workflow/workflowTypes.ts";
 
 const BOARD: BoardProjection = {
-  boardId: "board-1",
+  boardId: workflowIds.board("board-1"),
   repositoryPath: "/tmp/trusted-repository",
   workflowVersion: 1,
   createdAt: 100,
@@ -31,11 +32,11 @@ const BOARD: BoardProjection = {
 };
 
 const BACKLOG: StageProjection = {
-  stageId: "stage-backlog",
+  stageId: workflowIds.stage("stage-backlog"),
   boardId: BOARD.boardId,
   label: "Backlog",
   position: 0,
-  defaultSkillId: "skill-refine",
+  defaultSkillId: workflowIds.skill("skill-refine"),
   configured: true,
   workflowVersion: 1,
   updatedAt: 110,
@@ -43,10 +44,10 @@ const BACKLOG: StageProjection = {
 
 const DOING: StageProjection = {
   ...BACKLOG,
-  stageId: "stage-doing",
+  stageId: workflowIds.stage("stage-doing"),
   label: "Doing",
   position: 1,
-  defaultSkillId: "skill-execute",
+  defaultSkillId: workflowIds.skill("skill-execute"),
 };
 
 const EDGE: EdgeProjection = {
@@ -57,7 +58,7 @@ const EDGE: EdgeProjection = {
 };
 
 const CARD: CardProjection = {
-  cardId: "card-1",
+  cardId: workflowIds.card("card-1"),
   boardId: BOARD.boardId,
   stageId: BACKLOG.stageId,
   title: "Build persistence",
@@ -73,11 +74,13 @@ const CARD: CardProjection = {
   updatedAt: 120,
 };
 
-function event<TKind extends JournalEvent["kind"]>(
+type ProjectionJournalEvent = Exclude<JournalEvent, { kind: "workflow_command_committed" }>;
+
+function event<TKind extends ProjectionJournalEvent["kind"]>(
   kind: TKind,
-  payload: Extract<JournalEvent, { kind: TKind }>["payload"],
-  overrides: Partial<Extract<JournalEvent, { kind: TKind }>> = {},
-): Extract<JournalEvent, { kind: TKind }> {
+  payload: Extract<ProjectionJournalEvent, { kind: TKind }>["payload"],
+  overrides: Partial<Extract<ProjectionJournalEvent, { kind: TKind }>> = {},
+): Extract<ProjectionJournalEvent, { kind: TKind }> {
   const cardIdentity = kind === "card_upserted"
     ? { cardId: (payload as CardProjection).cardId }
     : {};
@@ -90,7 +93,7 @@ function event<TKind extends JournalEvent["kind"]>(
     payload,
     ...cardIdentity,
     ...overrides,
-  } as Extract<JournalEvent, { kind: TKind }>;
+  } as Extract<ProjectionJournalEvent, { kind: TKind }>;
 }
 
 function migratedMemoryDatabase(): Database {
