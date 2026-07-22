@@ -13,12 +13,12 @@ const TUI_PACKAGE_NAME = "@matheusbbarni/kitten"
 const DESKTOP_PACKAGE_NAME = "@kitten/desktop"
 const ENGINE_PACKAGE_NAME = "@kitten/engine"
 const TUI_ONLY_LIFECYCLE = [
-  "start",
-  "dev",
-  "selfcheck",
-  "selfcheck:reload",
-  "build",
-  "build:local",
+  ["start", "start"],
+  ["dev:tui", "dev"],
+  ["selfcheck", "selfcheck"],
+  ["selfcheck:reload", "selfcheck:reload"],
+  ["build", "build"],
+  ["build:local", "build:local"],
 ] as const
 const SHARED_GATES = ["typecheck", "test", "test:coverage"] as const
 
@@ -70,9 +70,14 @@ describe("workspace ownership boundary", () => {
   })
 
   it("keeps every root lifecycle script forwarding-only", () => {
-    for (const lifecycle of TUI_ONLY_LIFECYCLE) {
-      expect(rootPackage.scripts[lifecycle]).toBe(`bun run --filter ${TUI_PACKAGE_NAME} ${lifecycle}`)
+    for (const [rootLifecycle, tuiLifecycle] of TUI_ONLY_LIFECYCLE) {
+      expect(rootPackage.scripts[rootLifecycle]).toBe(
+        `bun run --filter ${TUI_PACKAGE_NAME} ${tuiLifecycle}`,
+      )
     }
+    expect(rootPackage.scripts["dev:desktop"]).toBe(
+      `bun run --filter ${DESKTOP_PACKAGE_NAME} dev`,
+    )
     for (const lifecycle of SHARED_GATES) {
       expect(rootPackage.scripts[lifecycle]).toBe(
         `bun run --filter ${ENGINE_PACKAGE_NAME} ${lifecycle} && bun run --filter ${DESKTOP_PACKAGE_NAME} ${lifecycle} && bun run --filter ${TUI_PACKAGE_NAME} ${lifecycle}`,

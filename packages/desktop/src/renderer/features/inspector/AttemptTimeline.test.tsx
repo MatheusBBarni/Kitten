@@ -44,8 +44,9 @@ describe("AttemptTimeline", () => {
     const projection = { ...newest, attempts: [older, newest.attempts[0]!] };
     const markup = renderToStaticMarkup(<AttemptTimeline projection={projection} />);
 
-    expect(markup.match(/<details/g)).toHaveLength(2);
-    expect(markup.match(/<details[^>]* open=""/g)).toHaveLength(1);
+    expect(markup.match(/data-slot="accordion-item"/g)).toHaveLength(2);
+    expect(markup.match(/aria-expanded="true"/g)).toHaveLength(1);
+    expect(markup.match(/aria-expanded="false"/g)).toHaveLength(1);
     expect(markup.indexOf("Attempt 1")).toBeLessThan(markup.indexOf("Attempt 2"));
   });
 });

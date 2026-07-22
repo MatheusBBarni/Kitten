@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Button, Chip, Drawer } from "@heroui/react";
 import type { AttentionOutcome } from "../../../attention/contracts.ts";
 import type { FollowUpQueueId } from "../../../attempts/followUpQueue.ts";
 import type { CardInspectorProjection } from "../../../attempts/inspectorProjection.ts";
@@ -10,6 +11,9 @@ import { AttentionBlockerPanel } from "./AttentionBlockerPanel.tsx";
 import { AttemptTimeline } from "./AttemptTimeline.tsx";
 import { PersistentComposer } from "./PersistentComposer.tsx";
 import { answerAttentionThroughRpc } from "./inspectorCommands.ts";
+import { TaskEditModal } from "./TaskEditModal.tsx";
+import type { CardEditInput } from "../board/boardInteractions.ts";
+import { EditIcon } from "../../components/Icons.tsx";
 
 export interface DraftStore {
   read(cardId: string): string;
@@ -52,16 +56,25 @@ export function CardInspector({
   client,
   card,
   draftStore = browserDraftStore,
+  isOpen = true,
+  taskBusy = false,
+  onOpenChange = () => {},
+  onSaveTask,
 }: {
   readonly client: DesktopRpcClient;
   readonly card: CardProjection;
   readonly draftStore?: DraftStore;
+  readonly isOpen?: boolean;
+  readonly taskBusy?: boolean;
+  readonly onOpenChange?: (open: boolean) => void;
+  readonly onSaveTask?: (input: CardEditInput) => Promise<boolean>;
 }) {
   const [projection, setProjection] = useState<CardInspectorProjection | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [draft, setDraft] = useState(() => draftStore.read(card.cardId));
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   const inFlight = useRef(new Set<string>());
   const historyRef = useRef<HTMLDivElement>(null);
   const bindingRef = useRef<ReturnType<typeof bindCardInspectorRenderer> | null>(null);
@@ -198,62 +211,104 @@ export function CardInspector({
     });
   }
 
+  const status = projectedCard.executionStatus.replaceAll("_", " ");
+
   return (
-    <aside className="card-inspector" aria-labelledby="card-inspector-title">
-      <header className="inspector-header">
-        <div>
-          <p className="eyebrow">Selected card</p>
-          <h2 id="card-inspector-title">{projectedCard.title}</h2>
-        </div>
-        <dl className="inspector-status">
-          <div><dt>Workflow Stage</dt><dd>{projection?.attempts.at(-1)?.context.stage.label ?? "Current board stage"}</dd></div>
-          <div><dt>Execution Status</dt><dd>{projectedCard.executionStatus.replaceAll("_", " ")}</dd></div>
-        </dl>
-      </header>
+    <>
+      <Drawer.Backdrop isOpen={isOpen} onOpenChange={onOpenChange} isDismissable={!editing}>
+        <Drawer.Content placement="right" className="task-drawer-content">
+          <Drawer.Dialog className="task-drawer-dialog" aria-labelledby="card-inspector-title">
+            <Drawer.CloseTrigger />
+            <Drawer.Header className="task-drawer-header">
+              <div className="task-drawer-heading-row">
+                <div className="task-drawer-heading">
+                  <p className="eyebrow">Task details</p>
+                  <Drawer.Heading id="card-inspector-title">{projectedCard.title}</Drawer.Heading>
+                </div>
+                {onSaveTask === undefined ? null : (
+                  <Button variant="secondary" size="sm" onPress={() => setEditing(true)} isDisabled={taskBusy}>
+                    <EditIcon />Edit task
+                  </Button>
+                )}
+              </div>
+              <dl className="inspector-status">
+                <div><dt>Stage</dt><dd>{projection?.attempts.at(-1)?.context.stage.label ?? "Current board stage"}</dd></div>
+                <div><dt>Status</dt><dd><Chip size="sm" variant="soft">{status}</Chip></dd></div>
+                <div><dt>Provider</dt><dd>{projectedCard.provider}</dd></div>
+                <div><dt>Model</dt><dd>{projectedCard.model}</dd></div>
+              </dl>
+              {projectedCard.description.trim().length === 0 ? null : (
+                <p className="m-0 text-sm text-muted">{projectedCard.description}</p>
+              )}
+            </Drawer.Header>
 
-      {feedback === null ? null : (
-        <p id={feedbackId} className={feedback.tone === "error" ? "notice notice-error" : "notice"} role={feedback.tone === "error" ? "alert" : "status"}>
-          {feedback.message}
-        </p>
-      )}
+            <Drawer.Body className="task-drawer-body">
+              <div className="inspector-history-scroll" ref={historyRef}>
+                {feedback === null ? null : (
+                  <Alert id={feedbackId} status={feedback.tone === "error" ? "danger" : "success"} className="mb-3" role={feedback.tone === "error" ? "alert" : "status"}>
+                    <Alert.Content><Alert.Description>{feedback.message}</Alert.Description></Alert.Content>
+                  </Alert>
+                )}
 
-      {blocker === null ? null : (
-        <AttentionBlockerPanel
-          key={blocker.blockerId}
-          blocker={blocker}
-          busy={busy}
-          onOutcome={answerAttention}
-          onValidationError={(message) => setFeedback({ tone: "error", message })}
+                {blocker === null ? null : (
+                  <AttentionBlockerPanel
+                    key={blocker.blockerId}
+                    blocker={blocker}
+                    busy={busy}
+                    onOutcome={answerAttention}
+                    onValidationError={(message) => setFeedback({ tone: "error", message })}
+                  />
+                )}
+
+                {projection === null ? (
+                  <section className="attempt-timeline" aria-labelledby="work-history-title">
+                    <h3 id="work-history-title">Work history</h3>
+                    <Alert status={unavailable ? "danger" : "default"} aria-busy={!unavailable}>
+                      <Alert.Content>
+                        <Alert.Description>
+                          {unavailable ? "History is unavailable until the desktop host reconnects." : "Loading durable card history…"}
+                        </Alert.Description>
+                      </Alert.Content>
+                    </Alert>
+                  </section>
+                ) : <AttemptTimeline projection={projection} />}
+              </div>
+
+              <PersistentComposer
+                status={projectedCard.executionStatus}
+                attemptId={latestAttempt?.attemptId ?? null}
+                generation={latestAttempt?.generation ?? null}
+                queue={queue}
+                draft={draft}
+                blockerActive={blocker !== null}
+                busy={busy}
+                unavailable={unavailable}
+                feedbackId={feedback === null ? undefined : feedbackId}
+                onDraftChange={setDraft}
+                onStartAttempt={startAttempt}
+                onQueueFollowUp={queueFollowUp}
+                onRemoveQueuedFollowUp={removeQueuedFollowUp}
+                onConfirmQueuedFollowUp={confirmQueuedFollowUp}
+              />
+            </Drawer.Body>
+          </Drawer.Dialog>
+        </Drawer.Content>
+      </Drawer.Backdrop>
+
+      {onSaveTask === undefined ? null : (
+        <TaskEditModal
+          card={projectedCard}
+          isOpen={editing}
+          busy={taskBusy}
+          onOpenChange={setEditing}
+          onSave={(input) => {
+            void (async () => {
+              const saved = await onSaveTask(input);
+              if (saved) setEditing(false);
+            })();
+          }}
         />
       )}
-
-      <div className="inspector-history-scroll" ref={historyRef}>
-        {projection === null ? (
-          <section className="attempt-timeline" aria-labelledby="work-history-title">
-            <h3 id="work-history-title">Orchestrated Work History</h3>
-            <p className={unavailable ? "notice notice-error" : "notice"} aria-busy={!unavailable}>
-              {unavailable ? "History is unavailable until the desktop host reconnects." : "Loading durable card history…"}
-            </p>
-          </section>
-        ) : <AttemptTimeline projection={projection} />}
-      </div>
-
-      <PersistentComposer
-        status={projectedCard.executionStatus}
-        attemptId={latestAttempt?.attemptId ?? null}
-        generation={latestAttempt?.generation ?? null}
-        queue={queue}
-        draft={draft}
-        blockerActive={blocker !== null}
-        busy={busy}
-        unavailable={unavailable}
-        feedbackId={feedback === null ? undefined : feedbackId}
-        onDraftChange={setDraft}
-        onStartAttempt={startAttempt}
-        onQueueFollowUp={queueFollowUp}
-        onRemoveQueuedFollowUp={removeQueuedFollowUp}
-        onConfirmQueuedFollowUp={confirmQueuedFollowUp}
-      />
-    </aside>
+    </>
   );
 }

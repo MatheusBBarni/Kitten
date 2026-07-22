@@ -13,7 +13,7 @@ export default {
   build: {
     targets: "current",
     bun: {
-      entrypoint: "src/main.ts",
+      entrypoint: "src/index.ts",
     },
     views: {
       main: {
@@ -22,10 +22,12 @@ export default {
     },
     copy: {
       "src/renderer/index.html": "views/main/index.html",
+      "src/renderer/generated.css": "views/main/styles.css",
     },
     mac: {
       codesign: false,
       createDmg: false,
+      icons: "assets/kitten-icon.iconset",
     },
   },
 } satisfies ElectrobunConfig;

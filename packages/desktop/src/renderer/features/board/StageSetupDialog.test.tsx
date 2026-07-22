@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import "../../settings/testDom.ts";
+import { cleanup, render } from "@testing-library/react";
 import type { WorkflowCatalogProjection } from "../../../shared/rpc.ts";
 import { workflowIds } from "../../../workflow/workflowTypes.ts";
 import { StageSetupDialog } from "./StageSetupDialog.tsx";
@@ -55,15 +56,23 @@ const catalog: WorkflowCatalogProjection = {
 
 const noop = () => {};
 
+afterEach(cleanup);
+
 function descendants(node: ReactNode, type: string): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(node)) return node.flatMap((child) => descendants(child, type));
   if (!isValidElement<Record<string, unknown>>(node)) return [];
   return (node.type === type ? [node] : []).concat(descendants(node.props.children as ReactNode, type));
 }
 
+function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  return [node].concat(elements(node.props.children as ReactNode));
+}
+
 describe("StageSetupDialog", () => {
   test("offers only validated catalog identities and exposes collision diagnostics", () => {
-    const markup = renderToStaticMarkup(
+    render(
       <StageSetupDialog
         catalog={catalog}
         label="Doing"
@@ -76,13 +85,14 @@ describe("StageSetupDialog", () => {
       />,
     );
 
-    expect(markup).toContain("Default Workflow Skill");
+    const markup = document.body.innerHTML;
+    expect(document.body.textContent).toContain("Default Workflow Skill");
     expect(markup).toContain(`value="${validSkillId}"`);
     expect(markup).not.toContain(`value="${collisionSkillId}"`);
-    expect(markup).toContain("Name collision:");
-    expect(markup).toContain("Two catalog roots expose the name execute.");
-    expect(markup).toContain("Add unconfigured stage");
-    expect(markup).toContain("Add configured stage");
+    expect(document.body.textContent).toContain("Name collision:");
+    expect(document.body.textContent).toContain("Two catalog roots expose the name execute.");
+    expect(document.body.textContent).toContain("Add unconfigured stage");
+    expect(document.body.textContent).toContain("Add configured stage");
     expect(markup).not.toContain("type=\"text\" name=\"skill");
   });
 
@@ -91,7 +101,7 @@ describe("StageSetupDialog", () => {
       ...catalog,
       catalog: { ...catalog.catalog, entries: [], diagnostics: [diagnostic] },
     };
-    const markup = renderToStaticMarkup(
+    const view = render(
       <StageSetupDialog
         mode="configure"
         catalog={invalidCatalog}
@@ -105,10 +115,10 @@ describe("StageSetupDialog", () => {
       />,
     );
 
-    expect(markup).toContain("Fix the catalog diagnostics before configuring this stage.");
-    expect(markup).toContain("Save stage Skill");
-    expect(markup).toContain("disabled=\"\"");
-    expect(markup).not.toContain("Add unconfigured stage");
+    expect(document.body.textContent).toContain("Fix the catalog diagnostics before configuring this stage.");
+    const save = view.getByRole("button", { name: "Save stage Skill" });
+    expect(save.hasAttribute("disabled")).toBeTrue();
+    expect(document.body.textContent).not.toContain("Add unconfigured stage");
   });
 
   test("routes form, catalog selection, close, and unconfigured actions through semantic controls", () => {
@@ -130,21 +140,20 @@ describe("StageSetupDialog", () => {
     const form = descendants(view, "form")[0]!;
     let prevented = 0;
     (form.props.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault: () => prevented += 1 });
-    const dialog = descendants(view, "dialog")[0]!;
-    (dialog.props.onCancel as (event: { preventDefault(): void }) => void)({ preventDefault: () => prevented += 1 });
+    (view.props.onOpenChange as (open: boolean) => void)(false);
 
-    const inputs = descendants(view, "input");
-    (inputs[0]!.props.onChange as (event: { currentTarget: { value: string } }) => void)({ currentTarget: { value: "Review" } });
-    const select = descendants(view, "select")[0]!;
-    const selectChange = select.props.onChange as (event: { currentTarget: { value: string } }) => void;
-    selectChange({ currentTarget: { value: "" } });
-    selectChange({ currentTarget: { value: validSkillId } });
+    const input = elements(view).find(({ props }) => props.value === "Doing" && typeof props.onChange === "function")!;
+    (input.props.onChange as (value: string) => void)("Review");
+    const select = elements(view).find(({ props }) => props.label === "Default Workflow Skill")!;
+    const selectChange = select.props.onChange as (value: string) => void;
+    selectChange("");
+    selectChange(validSkillId);
 
-    const buttons = descendants(view, "button");
-    (buttons[0]!.props.onClick as () => void)();
-    (buttons[1]!.props.onClick as () => void)();
+    const buttons = elements(view).filter(({ props }) => typeof props.onPress === "function");
+    (buttons.find(({ props }) => props.children === "Cancel")!.props.onPress as () => void)();
+    (buttons.find(({ props }) => props.children === "Add unconfigured stage")!.props.onPress as () => void)();
 
-    expect(prevented).toBe(2);
+    expect(prevented).toBe(1);
     expect(labels).toEqual(["Review"]);
     expect(skills).toEqual([null, validSkillId]);
     expect(creations).toEqual([true, false]);
@@ -164,7 +173,7 @@ describe("StageSetupDialog", () => {
       onClose: () => called += 1,
     });
     (descendants(view, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault: noop });
-    (descendants(view, "dialog")[0]!.props.onCancel as (event: { preventDefault(): void }) => void)({ preventDefault: noop });
+    (view.props.onOpenChange as (open: boolean) => void)(false);
     expect(called).toBe(0);
   });
 });

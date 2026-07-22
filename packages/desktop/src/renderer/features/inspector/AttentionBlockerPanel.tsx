@@ -1,4 +1,5 @@
 import type { FormEvent } from "react";
+import { Button, Checkbox, Input, Label, Radio, RadioGroup, TextArea, TextField } from "@heroui/react";
 import type {
   AttentionAnswer,
   AttentionBlockerProjection,
@@ -77,43 +78,55 @@ export function AttentionBlockerPanel({
             <legend>{field.label}{field.required ? " (required)" : " (optional)"}</legend>
             {field.description === undefined ? null : <p>{field.description}</p>}
             {field.mode === "text" ? (
-              <label className="field">
-                <span>Answer</span>
-                <textarea
+              <TextField className="field" isRequired={field.required} isDisabled={busy}>
+                <Label>Answer</Label>
+                <TextArea
                   name={customName(field.id)}
                   rows={4}
-                  required={field.required}
+                  variant="secondary"
                   autoFocus={fieldIndex === 0}
-                  disabled={busy}
                 />
-              </label>
+              </TextField>
             ) : (
               <>
-                <div className="attention-options">
-                  {field.options.map((option, optionIndex) => (
-                    <label key={option.id} className="attention-option">
-                      <input
-                        type={field.mode === "single" ? "radio" : "checkbox"}
+                {field.mode === "single" ? (
+                  <RadioGroup className="attention-options" name={fieldName(field.id)} isRequired={field.required && !field.allowsCustom} isDisabled={busy}>
+                    {field.options.map((option, optionIndex) => (
+                      <Radio key={option.id} value={option.id} autoFocus={fieldIndex === 0 && optionIndex === 0}>
+                        <Radio.Content>
+                          <Radio.Control><Radio.Indicator /></Radio.Control>
+                          <span><strong>{option.label}</strong>{option.description === undefined ? null : <small>{option.description}</small>}</span>
+                        </Radio.Content>
+                      </Radio>
+                    ))}
+                  </RadioGroup>
+                ) : (
+                  <div className="attention-options">
+                    {field.options.map((option, optionIndex) => (
+                      <Checkbox
+                        key={option.id}
                         name={fieldName(field.id)}
                         value={option.id}
-                        required={field.mode === "single" && field.required && !field.allowsCustom}
                         autoFocus={fieldIndex === 0 && optionIndex === 0}
-                        disabled={busy}
-                      />
-                      <span><strong>{option.label}</strong>{option.description === undefined ? null : <small>{option.description}</small>}</span>
-                    </label>
-                  ))}
-                </div>
+                        isDisabled={busy}
+                      >
+                        <Checkbox.Content>
+                          <Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
+                          <span><strong>{option.label}</strong>{option.description === undefined ? null : <small>{option.description}</small>}</span>
+                        </Checkbox.Content>
+                      </Checkbox>
+                    ))}
+                  </div>
+                )}
                 {field.allowsCustom ? (
-                  <label className="field">
-                    <span>Custom answer {field.required && field.options.length === 0 ? "(required)" : "(optional)"}</span>
-                    <input
+                  <TextField className="field" isRequired={field.required && field.options.length === 0} isDisabled={busy}>
+                    <Label>Custom answer {field.required && field.options.length === 0 ? "(required)" : "(optional)"}</Label>
+                    <Input
                       name={customName(field.id)}
-                      required={field.required && field.options.length === 0}
+                      variant="secondary"
                       autoFocus={fieldIndex === 0 && field.options.length === 0}
-                      disabled={busy}
                     />
-                  </label>
+                  </TextField>
                 ) : null}
               </>
             )}
@@ -121,15 +134,13 @@ export function AttentionBlockerPanel({
         ))}
 
         <footer className="attention-actions">
-          <button type="button" className="button button-secondary" disabled={busy} onClick={() => onOutcome({ kind: "skipped" })}>
+          <Button type="button" variant="secondary" isDisabled={busy} onPress={() => onOutcome({ kind: "skipped" })}>
             Skip question
-          </button>
-          <button type="button" className="button button-secondary" disabled={busy} onClick={() => onOutcome({ kind: "cancelled" })}>
+          </Button>
+          <Button type="button" variant="secondary" isDisabled={busy} onPress={() => onOutcome({ kind: "cancelled" })}>
             Cancel question
-          </button>
-          <button type="submit" className="button button-primary" disabled={busy}>
-            {busy ? "Recording answer…" : "Submit answer"}
-          </button>
+          </Button>
+          <Button type="submit" isDisabled={busy} isPending={busy}>Submit answer</Button>
         </footer>
       </form>
     </section>

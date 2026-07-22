@@ -5,9 +5,12 @@ import {
   createEmptyDesktopSnapshot,
   createEmptyWorkflowBoardProjection,
   createEmptyWorkflowCatalogProjection,
+  createEmptyWorkspaceProjection,
+  createRepositoryDirectoryPickerEnvelope,
   createWorkflowBoardEnvelope,
   createWorkflowCatalogEnvelope,
   createWorkflowCommandEnvelope,
+  createWorkspaceEnvelope,
   type BootstrapEnvelope,
   type CardInspectorEnvelope,
   type DesktopSnapshot,
@@ -15,6 +18,8 @@ import {
   type WorkflowBoardEnvelope,
   type WorkflowCatalogEnvelope,
   type WorkflowCommandEnvelope,
+  type WorkspaceEnvelope,
+  type RepositoryDirectoryPickerEnvelope,
   type SettingsCommandEnvelope,
   type SettingsEnvelope,
 } from "./shared/rpc.ts";
@@ -43,6 +48,13 @@ import type {
   UpdatePreferencesInput,
   UpdateProfileDefaultsInput,
 } from "./shared/desktopRpc.ts";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { createDesktopBoardRpc } from "./host/boardRpc.ts";
+import { createEventJournal } from "./persistence/eventJournal.ts";
+import { migrateDatabase } from "./persistence/migrations.ts";
+import { closeSqliteDatabase, openSqliteDatabase } from "./persistence/sqliteDatabase.ts";
+import { createWorkflowCommandHandler } from "./workflow/workflowCommands.ts";
 
 export interface DesktopWindowPort {
   sendHostMessage(message: HostMessageEnvelope): void;
@@ -54,8 +66,10 @@ export interface DesktopWindowFactory {
   open(options: {
     onGetDesktopSnapshot(params: { readonly knownRevision?: number }): Promise<BootstrapEnvelope>;
     onGetCardInspector(params: { readonly cardId: string }): Promise<CardInspectorEnvelope>;
-    onGetBoard(params: { readonly boardId?: string }): Promise<WorkflowBoardEnvelope>;
+    onGetBoard(params: { readonly boardId?: string; readonly mode?: "active" | "new" }): Promise<WorkflowBoardEnvelope>;
+    onGetWorkspace(params: { readonly knownRevision?: number }): Promise<WorkspaceEnvelope>;
     onGetCatalog(params: { readonly catalogId?: string }): Promise<WorkflowCatalogEnvelope>;
+    onPickRepositoryDirectory(params: Record<never, never>): Promise<RepositoryDirectoryPickerEnvelope>;
     onExecuteWorkflowCommand(params: {
       readonly commandId: string;
       readonly command: WorkflowCommand;
@@ -88,6 +102,7 @@ export function startDesktopShell(options: {
   readonly reviewRpc?: DesktopReviewRpc;
   readonly boardRpc?: DesktopBoardRpc;
   readonly settingsRpc?: DesktopSettingsRpc;
+  readonly pickRepositoryDirectory?: () => Promise<RepositoryDirectoryPickerEnvelope>;
 }): DesktopShell {
   let stopped = false;
   const settingsRpc = options.settingsRpc ?? createDesktopSettingsRpc();
@@ -174,6 +189,28 @@ export function startDesktopShell(options: {
         });
       }
     },
+    async onGetWorkspace() {
+      if (stopped) {
+        return createWorkspaceEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "desktop_host", reason: "host_stopped" },
+        });
+      }
+      if (options.boardRpc?.getWorkspace === undefined) {
+        return createWorkspaceEnvelope({
+          status: "ok",
+          projection: createEmptyWorkspaceProjection(),
+        });
+      }
+      try {
+        return await options.boardRpc.getWorkspace({});
+      } catch {
+        return createWorkspaceEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "workflow_board", reason: "projection_rejected" },
+        });
+      }
+    },
     async onGetCatalog(params) {
       if (stopped) {
         return createWorkflowCatalogEnvelope({
@@ -193,6 +230,28 @@ export function startDesktopShell(options: {
         return createWorkflowCatalogEnvelope({
           status: "unavailable",
           unavailable: { resource: "workflow_catalog", reason: "projection_rejected" },
+        });
+      }
+    },
+    async onPickRepositoryDirectory() {
+      if (stopped) {
+        return createRepositoryDirectoryPickerEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "repository_picker", reason: "host_stopped" },
+        });
+      }
+      if (options.pickRepositoryDirectory === undefined) {
+        return createRepositoryDirectoryPickerEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "repository_picker", reason: "not_ready" },
+        });
+      }
+      try {
+        return await options.pickRepositoryDirectory();
+      } catch {
+        return createRepositoryDirectoryPickerEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "repository_picker", reason: "projection_rejected" },
         });
       }
     },
@@ -403,8 +462,58 @@ function unavailableFollowUp(commandId: string): FollowUpRpcResultEnvelope {
 }
 
 export async function main(): Promise<DesktopShell> {
-  const { createElectrobunWindowFactory } = await import("./host/electrobunWindow.ts");
-  return startDesktopShell({ windowFactory: await createElectrobunWindowFactory() });
+  const [{ createElectrobunWindowFactory }, { Utils }] = await Promise.all([
+    import("./host/electrobunWindow.ts"),
+    import("electrobun/bun"),
+  ]);
+  mkdirSync(Utils.paths.userData, { recursive: true });
+  const database = openSqliteDatabase({ filename: join(Utils.paths.userData, "workflow.sqlite") });
+  migrateDatabase(database);
+
+  const journal = createEventJournal(database);
+  const boardRpc = createDesktopBoardRpc(journal, createWorkflowCommandHandler(journal));
+  const shell = startDesktopShell({
+    windowFactory: await createElectrobunWindowFactory(),
+    boardRpc,
+    async getSnapshot() {
+      const snapshot = journal.snapshot();
+      return {
+        kind: "desktop_snapshot",
+        schemaVersion: 1,
+        revision: snapshot.revision,
+        workspace: {
+          status: snapshot.boards.length === 0 ? "unbound" : "bound",
+          boardCount: snapshot.boards.length,
+        },
+        settings: { theme: "system", executionLimit: 1 },
+      };
+    },
+    async pickRepositoryDirectory() {
+      const chosenPaths = await Utils.openFileDialog({
+        startingFolder: Utils.paths.home,
+        allowedFileTypes: "*",
+        canChooseFiles: false,
+        canChooseDirectory: true,
+        allowsMultipleSelection: false,
+      });
+      const path = chosenPaths.find((candidate) => candidate.trim().length > 0);
+      return path === undefined
+        ? createRepositoryDirectoryPickerEnvelope({ status: "cancelled" })
+        : createRepositoryDirectoryPickerEnvelope({ status: "selected", path });
+    },
+  });
+
+  let databaseClosed = false;
+  return {
+    publish: shell.publish,
+    stop() {
+      shell.stop();
+      if (!databaseClosed) {
+        databaseClosed = true;
+        closeSqliteDatabase(database);
+      }
+    },
+  };
 }
 
 if (import.meta.main) {

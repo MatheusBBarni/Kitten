@@ -1,4 +1,5 @@
 import type { AttemptId } from "@kitten/engine";
+import { Accordion } from "@heroui/react";
 import type {
   AttemptInspectorProjection,
   CardInspectorProjection,
@@ -6,6 +7,7 @@ import type {
 } from "../../../attempts/inspectorProjection.ts";
 import type { AttentionBlockerProjection, AttentionOutcome } from "../../../attention/contracts.ts";
 import type { FollowUpDraft, FollowUpQueueProjection } from "../../../attempts/followUpQueue.ts";
+import { ChevronDownIcon } from "../../components/Icons.tsx";
 
 interface AttemptTimelineProps {
   readonly projection: CardInspectorProjection;
@@ -146,11 +148,9 @@ function itemsForAttempt(
 function AttemptHistory({
   attempt,
   projection,
-  newest,
 }: {
   readonly attempt: AttemptInspectorProjection;
   readonly projection: CardInspectorProjection;
-  readonly newest: boolean;
 }) {
   const queue = projection.followUpQueues.find(({ attemptId }) => attemptId === attempt.attemptId);
   const blockers = projection.attentionBlockers.filter(({ attemptId }) => attemptId === attempt.attemptId);
@@ -158,39 +158,44 @@ function AttemptHistory({
   const title = `Attempt ${Number(attempt.generation)}`;
 
   return (
-    <li>
-      <details className="attempt-transcript" open={newest}>
-        <summary>
+    <Accordion.Item id={attempt.attemptId} className="attempt-transcript">
+      <Accordion.Heading>
+        <Accordion.Trigger className="attempt-transcript-trigger">
           <span>{title}</span>
           <span className="event-state">{attempt.terminalOutcome ?? "In progress"}</span>
-        </summary>
-        <section className="run-context" aria-labelledby={`run-context-${attempt.attemptId}`}>
-          <h4 id={`run-context-${attempt.attemptId}`}>Immutable Run Context</h4>
-          <dl className="run-context-facts">
-            <div><dt>Card</dt><dd>{attempt.context.card.title}</dd></div>
-            <div><dt>Workflow Stage</dt><dd>{attempt.context.stage.label}</dd></div>
-            <div><dt>Workflow version</dt><dd>{attempt.context.workflow.version}</dd></div>
-            <div><dt>Workflow Skill</dt><dd>{attempt.context.skill.name}</dd></div>
-            <div><dt>Provider</dt><dd>{attempt.context.profile.provider}</dd></div>
-            <div><dt>Model</dt><dd>{attempt.context.profile.model}</dd></div>
-            <div><dt>Effort</dt><dd>{attempt.context.profile.effort}</dd></div>
-            <div><dt>Execution binding</dt><dd>{attempt.context.executionBindingId}</dd></div>
-          </dl>
-        </section>
-        {items.length === 0 ? (
-          <p className="notice">This attempt has a Run Context but no recorded activity yet.</p>
-        ) : (
-          <ol className="timeline-events" aria-label={`${title} chronological events`}>
-            {items.map((item) => (
-              <li key={item.key} className="timeline-event">
-                <time dateTime={new Date(item.occurredAt).toISOString()}>{new Date(item.occurredAt).toLocaleString()}</time>
-                <div>{item.content}</div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </details>
-    </li>
+          <Accordion.Indicator><ChevronDownIcon /></Accordion.Indicator>
+        </Accordion.Trigger>
+      </Accordion.Heading>
+      <Accordion.Panel>
+        <Accordion.Body className="attempt-transcript-body">
+          <section className="run-context" aria-labelledby={`run-context-${attempt.attemptId}`}>
+            <h4 id={`run-context-${attempt.attemptId}`}>Immutable Run Context</h4>
+            <dl className="run-context-facts">
+              <div><dt>Card</dt><dd>{attempt.context.card.title}</dd></div>
+              <div><dt>Workflow Stage</dt><dd>{attempt.context.stage.label}</dd></div>
+              <div><dt>Workflow version</dt><dd>{attempt.context.workflow.version}</dd></div>
+              <div><dt>Workflow Skill</dt><dd>{attempt.context.skill.name}</dd></div>
+              <div><dt>Provider</dt><dd>{attempt.context.profile.provider}</dd></div>
+              <div><dt>Model</dt><dd>{attempt.context.profile.model}</dd></div>
+              <div><dt>Effort</dt><dd>{attempt.context.profile.effort}</dd></div>
+              <div><dt>Execution binding</dt><dd>{attempt.context.executionBindingId}</dd></div>
+            </dl>
+          </section>
+          {items.length === 0 ? (
+            <p className="notice">This attempt has a Run Context but no recorded activity yet.</p>
+          ) : (
+            <ol className="timeline-events" aria-label={`${title} chronological events`}>
+              {items.map((item) => (
+                <li key={item.key} className="timeline-event">
+                  <time dateTime={new Date(item.occurredAt).toISOString()}>{new Date(item.occurredAt).toLocaleString()}</time>
+                  <div>{item.content}</div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </Accordion.Body>
+      </Accordion.Panel>
+    </Accordion.Item>
   );
 }
 
@@ -205,16 +210,20 @@ export function AttemptTimeline({ projection }: AttemptTimelineProps) {
       {attempts.length === 0 ? (
         <p className="notice">No Run Attempts yet. Use the composer to start this card in its current Workflow Stage.</p>
       ) : (
-        <ol className="attempt-list">
+        <Accordion
+          className="attempt-list"
+          defaultExpandedKeys={[attempts.at(-1)!.attemptId]}
+          allowsMultipleExpanded
+          variant="surface"
+        >
           {attempts.map((attempt, index) => (
             <AttemptHistory
               key={attempt.attemptId as AttemptId}
               attempt={attempt}
               projection={projection}
-              newest={index === attempts.length - 1}
             />
           ))}
-        </ol>
+        </Accordion>
       )}
     </section>
   );

@@ -27,6 +27,7 @@ import {
   reorderStagesCommand,
   selectableCatalogEntries,
   stageConfigurationReason,
+  updateCardCommand,
   type IdentityFactory,
 } from "./boardInteractions.ts";
 
@@ -239,6 +240,38 @@ describe("board interactions", () => {
     expect(moveCardCommand(projection, card("idle"), firstStageId, identities)).toBeNull();
     expect(moveCardCommand(projection, card("idle"), secondStageId, identities)).toMatchObject({ kind: "move_card" });
     expect(await executeBoardCommand(new QueueClient([ok(projection)]), reorder, identities)).toMatchObject({ status: "ok" });
+  });
+
+  test("builds version-fenced task edits without changing the persisted Skill identity", () => {
+    const task = { ...card("idle"), skillOverrideId: skillId };
+    expect(updateCardCommand(task, {
+      title: "  Refined task  ",
+      description: "  Preserve the durable history  ",
+      provider: " codex ",
+      model: " gpt-5.6 ",
+      effort: " high ",
+      runnable: false,
+    }, new Identities())).toMatchObject({
+      kind: "update_card",
+      boardId,
+      cardId: task.cardId,
+      expectedCardVersion: 2,
+      title: "Refined task",
+      description: "Preserve the durable history",
+      provider: "codex",
+      model: "gpt-5.6",
+      effort: "high",
+      skillOverrideId: skillId,
+      runnable: false,
+    });
+    expect(updateCardCommand(task, {
+      title: " ",
+      description: "",
+      provider: "codex",
+      model: "gpt-5",
+      effort: "high",
+      runnable: true,
+    }, new Identities())).toBeNull();
   });
 
   test("maps typed results to accessible recovery messages", () => {

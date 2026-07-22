@@ -32,7 +32,9 @@ class FakeWindowFactory implements DesktopWindowFactory {
   handler?: (params: { readonly knownRevision?: number }) => Promise<BootstrapEnvelope>;
   inspectorHandler?: (params: { readonly cardId: string }) => Promise<CardInspectorEnvelope>;
   boardHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onGetBoard"];
+  workspaceHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onGetWorkspace"];
   catalogHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onGetCatalog"];
+  repositoryPickerHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onPickRepositoryDirectory"];
   workflowCommandHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onExecuteWorkflowCommand"];
   queueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onQueueFollowUp"];
   removeQueueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onRemoveQueuedFollowUp"];
@@ -45,7 +47,9 @@ class FakeWindowFactory implements DesktopWindowFactory {
     onGetDesktopSnapshot,
     onGetCardInspector,
     onGetBoard,
+    onGetWorkspace,
     onGetCatalog,
+    onPickRepositoryDirectory,
     onExecuteWorkflowCommand,
     onQueueFollowUp,
     onRemoveQueuedFollowUp,
@@ -54,7 +58,9 @@ class FakeWindowFactory implements DesktopWindowFactory {
     this.handler = onGetDesktopSnapshot;
     this.inspectorHandler = onGetCardInspector;
     this.boardHandler = onGetBoard;
+    this.workspaceHandler = onGetWorkspace;
     this.catalogHandler = onGetCatalog;
+    this.repositoryPickerHandler = onPickRepositoryDirectory;
     this.workflowCommandHandler = onExecuteWorkflowCommand;
     this.queueHandler = onQueueFollowUp;
     this.removeQueueHandler = onRemoveQueuedFollowUp;
@@ -65,7 +71,9 @@ class FakeWindowFactory implements DesktopWindowFactory {
         this.handler = undefined;
         this.inspectorHandler = undefined;
         this.boardHandler = undefined;
+        this.workspaceHandler = undefined;
         this.catalogHandler = undefined;
+        this.repositoryPickerHandler = undefined;
         this.workflowCommandHandler = undefined;
         this.queueHandler = undefined;
         this.removeQueueHandler = undefined;
@@ -149,6 +157,12 @@ describe("desktop host lifecycle", () => {
     expect(await defaultFactory.catalogHandler?.({})).toMatchObject({
       result: { status: "ok", projection: { catalog: { catalogId: "default" } } },
     });
+    expect(await defaultFactory.workspaceHandler?.({})).toMatchObject({
+      result: { status: "ok", projection: { boards: [] } },
+    });
+    expect(await defaultFactory.repositoryPickerHandler?.({})).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "repository_picker", reason: "not_ready" } },
+    });
     expect(await defaultFactory.workflowCommandHandler?.({ commandId: "command-default", command })).toMatchObject({
       result: { status: "unavailable", unavailable: { resource: "workflow_command", reason: "not_ready" } },
     });
@@ -193,6 +207,20 @@ describe("desktop host lifecycle", () => {
     outcome = "idempotent";
     await factory.workflowCommandHandler?.({ commandId: "command-idempotent", command });
     expect(factory.messages).toHaveLength(1);
+
+    const pickerFactory = new FakeWindowFactory();
+    startDesktopShell({
+      windowFactory: pickerFactory,
+      async pickRepositoryDirectory() {
+        return {
+          kind: "repository_directory_picker",
+          result: { status: "selected", path: "/Users/name/projects/kitten" },
+        };
+      },
+    });
+    expect(await pickerFactory.repositoryPickerHandler?.({})).toMatchObject({
+      result: { status: "selected", path: "/Users/name/projects/kitten" },
+    });
   });
 
   test("fails board RPC closed when the host adapter throws", async () => {

@@ -75,9 +75,10 @@ describe("settings renderer states", () => {
     );
     expect(markup).toContain("Future-card profile default");
     expect(markup).toContain("Existing card configuration and recorded Run Contexts stay unchanged");
-    expect(markup).toContain("Ready (protocol 1)");
-    expect(markup).toContain("Unavailable: Sign in to Claude.");
-    expect(markup).toContain("disabled=\"\"");
+    expect(markup).toContain("Ready · protocol 1");
+    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("Sign in to Claude.");
+    expect(markup).toContain("Claude — unavailable");
   });
 
   test("renders canonicalization, collision, invalid-root diagnostics, and no free-text Skill selector", () => {
@@ -86,8 +87,8 @@ describe("settings renderer states", () => {
     expect(markup).toContain("/missing — invalid");
     expect(markup).toContain("verify");
     expect(markup).toContain("name collision");
-    expect(markup).toContain("missing root:");
-    expect(markup).toContain("never by free-text name");
+    expect(markup).toContain("missing root");
+    expect(markup).toContain("never a typed name");
     expect(markup.match(/<textarea/g)).toHaveLength(2);
     expect(markup).not.toContain("Skill name<input");
   });

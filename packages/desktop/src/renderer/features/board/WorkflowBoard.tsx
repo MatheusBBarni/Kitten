@@ -1,4 +1,5 @@
 import type { DragEvent, FormEvent } from "react";
+import { Alert, Button, Card, Chip, Input, Label, TextField } from "@heroui/react";
 import type {
   WorkflowBoardProjection,
   WorkflowCatalogProjection,
@@ -9,6 +10,7 @@ import type {
   StageId,
   StageProjection,
 } from "../../../workflow/workflowTypes.ts";
+import { AlertIcon, ArrowLeftIcon, ArrowRightIcon, PlayIcon, SettingsIcon } from "../../components/Icons.tsx";
 import {
   cardMovementAffordance,
   stageConfigurationReason,
@@ -30,7 +32,7 @@ interface BlankBoardSetupProps {
   readonly starterLabels: readonly string[];
   readonly busy: boolean;
   readonly onModeChange: (mode: SetupMode) => void;
-  readonly onRepositoryPathChange: (path: string) => void;
+  readonly onChooseRepository: () => void;
   readonly onStarterLabelChange: (index: number, label: string) => void;
   readonly onApplyStarter: () => void;
   readonly onCreateManual: () => void;
@@ -42,96 +44,109 @@ export function BlankBoardSetup({
   starterLabels,
   busy,
   onModeChange,
-  onRepositoryPathChange,
+  onChooseRepository,
   onStarterLabelChange,
   onApplyStarter,
   onCreateManual,
 }: BlankBoardSetupProps) {
+  const repositorySelected = repositoryPath.trim().length > 0;
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!repositorySelected) return;
     if (mode === "starter") onApplyStarter();
     if (mode === "manual") onCreateManual();
   }
 
   return (
-    <section className="blank-board" aria-labelledby="blank-board-title">
-      <p className="eyebrow">Blank Workflow Board</p>
-      <h2 id="blank-board-title">Choose how to set up the workflow</h2>
-      <p>
-        Nothing is added until you choose a setup path. Existing workflows are never replaced by this screen.
-      </p>
+    <Card className="blank-board" aria-labelledby="blank-board-title">
+      <Card.Header>
+        <div>
+          <p className="eyebrow">New project</p>
+          <Card.Title id="blank-board-title">Set up this workflow board</Card.Title>
+          <Card.Description>Choose a repository and start from an editable workflow or an empty board.</Card.Description>
+        </div>
+      </Card.Header>
+      <Card.Content className="blank-board-content">
+        <div className="setup-choice" role="group" aria-label="Workflow setup path">
+          <Button
+            variant={mode === "starter" ? "primary" : "secondary"}
+            aria-pressed={mode === "starter"}
+            onPress={() => onModeChange("starter")}
+            isDisabled={busy}
+          >
+            Edit starter workflow
+          </Button>
+          <Button
+            variant={mode === "manual" ? "primary" : "secondary"}
+            aria-pressed={mode === "manual"}
+            onPress={() => onModeChange("manual")}
+            isDisabled={busy}
+          >
+            Start empty
+          </Button>
+        </div>
 
-      <div className="setup-choice" role="group" aria-label="Workflow setup path">
-        <button
-          type="button"
-          className="button button-primary"
-          aria-pressed={mode === "starter"}
-          onClick={() => onModeChange("starter")}
-          disabled={busy}
-        >
-          Edit starter template
-        </button>
-        <button
-          type="button"
-          className="button button-secondary"
-          aria-pressed={mode === "manual"}
-          onClick={() => onModeChange("manual")}
-          disabled={busy}
-        >
-          Set up manually
-        </button>
-      </div>
-
-      {mode === "choice" ? (
-        <p className="notice">Choose a path to bind one trusted repository and create the first stages.</p>
-      ) : (
-        <form className="setup-form" onSubmit={submit} aria-busy={busy}>
-          <label className="field">
-            <span>Trusted repository path</span>
-            <input
-              required
-              value={repositoryPath}
-              onChange={(event) => onRepositoryPathChange(event.currentTarget.value)}
-              placeholder="/Users/name/projects/repository"
-              disabled={busy}
-            />
-            <small>One board binds to one local repository.</small>
-          </label>
-
-          {mode === "starter" ? (
-            <fieldset>
-              <legend>Editable starter stages</legend>
-              <p>Stages are created unconfigured. Assign each stage a validated Workflow Skill before running work.</p>
-              <ol className="starter-stages">
-                {starterLabels.map((label, index) => (
-                  <li key={index}>
-                    <label>
-                      <span className="sr-only">Stage {index + 1}</span>
-                      <input
-                        required
-                        value={label}
-                        onChange={(event) => onStarterLabelChange(index, event.currentTarget.value)}
-                        disabled={busy}
-                      />
-                    </label>
-                  </li>
-                ))}
-              </ol>
-              <button type="submit" className="button button-primary" disabled={busy}>
-                {busy ? "Creating starter workflow…" : "Create starter workflow"}
-              </button>
-            </fieldset>
-          ) : (
-            <div>
-              <p>The board opens with no stages. Stage setup opens immediately after the repository is bound.</p>
-              <button type="submit" className="button button-primary" disabled={busy}>
-                {busy ? "Creating blank board…" : "Create blank board"}
-              </button>
+        {mode === "choice" ? (
+          <Alert status="default" className="notice">
+            <Alert.Content>
+              <Alert.Title>Choose a setup path</Alert.Title>
+              <Alert.Description>The board will not change until you confirm its repository and stages.</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        ) : (
+          <form className="setup-form" onSubmit={submit} aria-busy={busy}>
+            <div className="field">
+              <Label id="repository-path-label">Trusted repository</Label>
+              <div className="repository-picker" aria-busy={busy}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="repository-picker-value"
+                  aria-labelledby="repository-path-label"
+                  aria-describedby="repository-picker-help"
+                  onPress={onChooseRepository}
+                  isDisabled={busy}
+                >
+                  {repositoryPath.length === 0 ? "No folder selected" : repositoryPath}
+                </Button>
+                <Button type="button" variant="secondary" onPress={onChooseRepository} isDisabled={busy}>
+                  {repositoryPath.length === 0 ? "Choose folder" : "Change folder"}
+                </Button>
+              </div>
+              <p id="repository-picker-help" className="field-help">One repository owns one local workflow board.</p>
             </div>
-          )}
-        </form>
-      )}
-    </section>
+
+            {mode === "starter" ? (
+              <fieldset className="rounded-lg border border-separator p-4">
+                <legend className="px-2 font-semibold">Starter stages</legend>
+                <p className="field-help">Rename the stages now. Assign a validated Workflow Skill before starting work.</p>
+                <ol className="starter-stages">
+                  {starterLabels.map((label, index) => (
+                    <li key={index}>
+                      <TextField value={label} onChange={(value) => onStarterLabelChange(index, value)} isRequired isDisabled={busy}>
+                        <Label className="sr-only">Stage {index + 1}</Label>
+                        <Input variant="secondary" />
+                      </TextField>
+                    </li>
+                  ))}
+                </ol>
+                <Button type="submit" className="mt-4" isDisabled={busy || !repositorySelected} isPending={busy}>
+                  Create starter workflow
+                </Button>
+              </fieldset>
+            ) : (
+              <div className="grid gap-3">
+                <p className="field-help">The board opens with no stages and immediately asks for the first stage.</p>
+                <Button type="submit" className="justify-self-start" isDisabled={busy || !repositorySelected} isPending={busy}>
+                  Create empty board
+                </Button>
+              </div>
+            )}
+          </form>
+        )}
+      </Card.Content>
+    </Card>
   );
 }
 
@@ -151,6 +166,19 @@ interface BoardCanvasProps {
 
 function statusLabel(status: CardProjection["executionStatus"]): string {
   return status.replaceAll("_", " ");
+}
+
+function statusColor(status: CardProjection["executionStatus"]): "default" | "accent" | "success" | "warning" | "danger" {
+  if (status === "completed") return "success";
+  if (status === "running") return "accent";
+  if (status === "needs_attention" || status === "ready_for_review") return "warning";
+  if (status === "failed" || status === "cancelled") return "danger";
+  return "default";
+}
+
+function cardKey(cardId: string): string {
+  const tail = cardId.split(":").at(-1) ?? cardId;
+  return tail.slice(0, 10).toLocaleUpperCase();
 }
 
 export function BoardCanvas({
@@ -180,30 +208,25 @@ export function BoardCanvas({
   return (
     <section className="board-canvas" aria-labelledby="workflow-canvas-title">
       <header className="canvas-header">
-        <div>
-          <p className="eyebrow">Trusted repository</p>
-          <h2 id="workflow-canvas-title">Workflow canvas</h2>
-          <p className="repository-path">{board.repositoryPath}</p>
-        </div>
-        <div className="canvas-actions">
-          {!isCommittedOrderedPath(board, stages, projection.edges) && stages.length >= 2 ? (
-            <button type="button" className="button button-secondary" onClick={onConnect} disabled={busy}>
-              Connect ordered path
-            </button>
-          ) : (
-            <span className="path-status">Ordered path connected</span>
-          )}
-        </div>
+        <h2 id="workflow-canvas-title">Workflow board</h2>
       </header>
 
-      <p className="canvas-help">
-        Drag a stage column to reorder it, or use Move earlier and Move later. Only committed immediate-successor arrows are shown.
-      </p>
+      {!isCommittedOrderedPath(board, stages, projection.edges) && stages.length >= 2 ? (
+        <Alert status="warning" className="mx-4 mb-2">
+          <Alert.Indicator><AlertIcon /></Alert.Indicator>
+          <Alert.Content>
+            <Alert.Title>The stage path is not connected</Alert.Title>
+            <Alert.Description>Connect the ordered path before running cards.</Alert.Description>
+          </Alert.Content>
+          <Button size="sm" variant="secondary" onPress={onConnect} isDisabled={busy}>Connect path</Button>
+        </Alert>
+      ) : null}
 
-      <ol className="stage-list" aria-label="Ordered Workflow Stages">
+      <ol className="stage-list" aria-label="Ordered workflow stages">
         {stages.map((stage, index) => {
           const configurationReason = stageConfigurationReason(stage, catalog);
           const nextArrow = arrows.find(({ sourceStageId }) => sourceStageId === stage.stageId);
+          const stageCards = cardsByStage.get(stage.stageId) ?? [];
           return (
             <li
               key={stage.stageId}
@@ -222,104 +245,106 @@ export function BoardCanvas({
               }}
             >
               <header className="stage-header">
-                <div>
-                  <p className="stage-position">Stage {index + 1}</p>
+                <div className="stage-header-title">
                   <h3>{stage.label}</h3>
+                  <span className="stage-count" aria-label={`${stageCards.length} cards`}>{stageCards.length}</span>
                 </div>
-                <div className="reorder-controls" aria-label={`Reorder ${stage.label}`}>
-                  <button
-                    type="button"
-                    className="button button-ghost"
-                    disabled={busy || index === 0}
-                    onClick={() => {
+                <div className="flex items-center gap-1" aria-label={`Reorder ${stage.label}`}>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Move ${stage.label} earlier`}
+                    isDisabled={busy || index === 0}
+                    onPress={() => {
                       const intent = keyboardStageReorderIntent(board, stages, stage.stageId, "previous");
                       if (intent !== null) onReorder(intent);
                     }}
                   >
-                    Move earlier
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-ghost"
-                    disabled={busy || index === stages.length - 1}
-                    onClick={() => {
+                    <ArrowLeftIcon />
+                  </Button>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Move ${stage.label} later`}
+                    isDisabled={busy || index === stages.length - 1}
+                    onPress={() => {
                       const intent = keyboardStageReorderIntent(board, stages, stage.stageId, "next");
                       if (intent !== null) onReorder(intent);
                     }}
                   >
-                    Move later
-                  </button>
+                    <ArrowRightIcon />
+                  </Button>
                 </div>
               </header>
 
-              {configurationReason === null ? (
-                <p className="stage-configured">Configured Workflow Skill</p>
-              ) : (
-                <div className="notice notice-warning">
-                  <strong>Stage not runnable:</strong> {configurationReason}
-                  <button
-                    type="button"
-                    className="button button-secondary"
-                    onClick={() => onConfigureStage(stage)}
-                    disabled={busy}
+              {configurationReason === null ? null : (
+                <div className="stage-settings">
+                  <Button
+                    size="sm"
+                    variant="danger-soft"
+                    fullWidth
+                    onPress={() => onConfigureStage(stage)}
+                    isDisabled={busy}
+                    aria-label={`Configure ${stage.label}: ${configurationReason}`}
                   >
-                    Configure stage Skill
-                  </button>
+                    <SettingsIcon />Configure stage
+                  </Button>
                 </div>
               )}
 
               <ul className="card-list" aria-label={`${stage.label} cards`}>
-                {(cardsByStage.get(stage.stageId) ?? []).map((card) => {
+                {stageCards.map((card) => {
                   const movement = cardMovementAffordance(projection, card);
                   const selected = selectedCardId === card.cardId;
                   return (
                     <li key={card.cardId}>
-                      <article
+                      <Card
                         id={`card-${card.cardId}`}
                         tabIndex={-1}
                         className={`workflow-card${selected ? " is-selected" : ""}${card.executionStatus === "needs_attention" ? " needs-attention" : ""}`}
                         aria-label={`${card.title}, ${statusLabel(card.executionStatus)}`}
                       >
-                        {card.executionStatus === "needs_attention" ? (
-                          <p className="attention-label"><strong>Attention required</strong></p>
-                        ) : null}
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
                           className="card-title-button"
                           aria-pressed={selected}
-                          onClick={() => onSelectCard(card)}
+                          onPress={() => onSelectCard(card)}
                         >
-                          Open {card.title} inspector
-                        </button>
-                        <dl className="card-facts">
-                          <div><dt>Workflow Stage</dt><dd>{stage.label}</dd></div>
-                          <div><dt>Execution Status</dt><dd>{statusLabel(card.executionStatus)}</dd></div>
-                        </dl>
-                        {!card.runnable ? <p><strong>Not runnable:</strong> Card configuration is disabled.</p> : null}
-                        {!movement.allowed ? <p className="stage-lock">{movement.reason}</p> : null}
-                        {movement.targetStageId !== null ? (
-                          <button
-                            type="button"
-                            className="button button-secondary"
-                            disabled={busy || !movement.allowed}
-                            aria-describedby={`movement-${card.cardId}`}
-                            onClick={() => onMoveCard(card, movement.targetStageId!)}
-                          >
-                            Move to next stage
-                          </button>
-                        ) : null}
-                        <span id={`movement-${card.cardId}`} className="sr-only">{movement.reason}</span>
-                      </article>
+                          <span className="card-title">{card.title}</span>
+                        </Button>
+                        {card.description.trim().length === 0 ? null : <p className="card-description">{card.description}</p>}
+                        <div className="card-meta">
+                          <span className="card-key">{cardKey(card.cardId)}</span>
+                          <Chip size="sm" variant="soft" color={statusColor(card.executionStatus)}>
+                            {statusLabel(card.executionStatus)}
+                          </Chip>
+                        </div>
+                        <div className="card-actions">
+                          <span className="truncate text-xs text-muted">{card.provider} · {card.model}</span>
+                          {movement.targetStageId === null ? null : (
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                              isDisabled={busy || !movement.allowed}
+                              aria-label={movement.allowed ? `Move ${card.title} to next stage` : movement.reason}
+                              onPress={() => onMoveCard(card, movement.targetStageId!)}
+                            >
+                              <PlayIcon />
+                            </Button>
+                          )}
+                        </div>
+                      </Card>
                     </li>
                   );
                 })}
               </ul>
 
-              {nextArrow !== undefined ? (
-                <p className="stage-arrow" aria-label={`Next stage: ${stages[index + 1]!.label}`}>
-                  <span aria-hidden="true">→</span> {stages[index + 1]!.label}
-                </p>
-              ) : null}
+              {nextArrow === undefined ? null : (
+                <span className="stage-arrow sr-only">Next stage: {stages[index + 1]!.label}</span>
+              )}
             </li>
           );
         })}

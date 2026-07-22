@@ -49,7 +49,7 @@ function textContent(node: ReactNode): string {
   return "";
 }
 
-function findButton(node: ReactNode, label: string): ReactElement<{ onClick?: () => void }> | null {
+function findButton(node: ReactNode, label: string): ReactElement<{ onPress?: () => void; "aria-label"?: string }> | null {
   if (Array.isArray(node)) {
     for (const child of node) {
       const found = findButton(child, label);
@@ -58,8 +58,10 @@ function findButton(node: ReactNode, label: string): ReactElement<{ onClick?: ()
     return null;
   }
   if (node === null || typeof node !== "object" || !("type" in node) || !("props" in node)) return null;
-  const element = node as ReactElement<{ children?: ReactNode; onClick?: () => void }>;
-  if (element.type === "button" && textContent(element.props.children).trim() === label) return element;
+  const element = node as ReactElement<{ children?: ReactNode; onPress?: () => void; "aria-label"?: string }>;
+  if (typeof element.props.onPress === "function" && (
+    textContent(element.props.children).trim() === label || element.props["aria-label"] === label
+  )) return element;
   return findButton(element.props.children, label);
 }
 
@@ -230,9 +232,9 @@ describe("Workflow Board fake typed RPC", () => {
         onSelectCard() {},
         onDragStart() {},
       });
-      const moveLater = findButton(canvas, "Move later");
+      const moveLater = findButton(canvas, "Move Backlog later");
       expect(moveLater).not.toBeNull();
-      moveLater?.props.onClick?.();
+      moveLater?.props.onPress?.();
       expect(keyboardIntent).not.toBeNull();
       const reordered = await executeBoardCommand(
         client,

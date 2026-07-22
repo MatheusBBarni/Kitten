@@ -11,6 +11,29 @@ function descendants(node: ReactNode, type: string): ReactElement<Record<string,
   return (node.type === type ? [node] : []).concat(descendants(node.props.children as ReactNode, type));
 }
 
+function action(node: ReactNode, label: string): ReactElement<Record<string, unknown>> {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = actionOrNull(child, label);
+      if (match !== null) return match;
+    }
+  }
+  return actionOrNull(node, label)!;
+}
+
+function actionOrNull(node: ReactNode, label: string): ReactElement<Record<string, unknown>> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = actionOrNull(child, label);
+      if (match !== null) return match;
+    }
+    return null;
+  }
+  if (!isValidElement<Record<string, unknown>>(node)) return null;
+  if (typeof node.props.onPress === "function" && node.props.children === label) return node;
+  return actionOrNull(node.props.children as ReactNode, label);
+}
+
 function composer(input: Partial<Parameters<typeof PersistentComposer>[0]> = {}) {
   return PersistentComposer({
     status: "idle",
@@ -72,9 +95,8 @@ describe("PersistentComposer", () => {
     expect(markup).toContain("Send confirmed follow-up");
     expect(confirmed).toEqual([]);
 
-    const buttons = descendants(view, "button");
-    (buttons.find(({ props }) => props.children === "Remove draft")!.props.onClick as () => void)();
-    (buttons.find(({ props }) => props.children === "Send confirmed follow-up")!.props.onClick as () => void)();
+    (action(view, "Remove draft").props.onPress as () => void)();
+    (action(view, "Send confirmed follow-up").props.onPress as () => void)();
     expect(removed).toEqual([TEST_QUEUE_ID]);
     expect(confirmed).toEqual([TEST_QUEUE_ID]);
   });

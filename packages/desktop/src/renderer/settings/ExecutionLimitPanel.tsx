@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { Button, Card, Description, FieldError, Input, Label, TextField } from "@heroui/react";
 
 interface ExecutionLimitPanelProps {
   readonly limit: number;
@@ -34,28 +35,26 @@ export function ExecutionLimitPanel({ limit, activeCount, busy, onSave }: Execut
   }
 
   return (
-    <section className="settings-panel" aria-labelledby="execution-limit-title">
-      <h2 id="execution-limit-title">Automatic execution limit</h2>
-      <p>At most this many cards may run automatically across all boards. Active now: {activeCount}.</p>
+    <Card className="settings-panel" aria-labelledby="execution-limit-title">
+      <Card.Header><div><Card.Title id="execution-limit-title">Automatic execution limit</Card.Title><Card.Description>At most this many cards may run automatically across all boards. Active now: {activeCount}.</Card.Description></div></Card.Header>
+      <Card.Content>
       <form className="settings-form" onSubmit={submit} aria-busy={busy}>
-        <div className="field">
-          <label htmlFor="automatic-execution-limit">Automatically active cards</label>
-          <input
+        <TextField className="field" isDisabled={busy} isInvalid={error !== null}>
+          <Label>Automatically active cards</Label>
+          <Input
             id="automatic-execution-limit"
             inputMode="numeric"
             value={value}
-            disabled={busy}
-            aria-invalid={error !== null}
-            aria-describedby={error === null ? "execution-limit-help" : "execution-limit-help execution-limit-error"}
             onChange={(event) => setValue(event.currentTarget.value)}
+            aria-describedby={error === null ? "execution-limit-help" : "execution-limit-help execution-limit-error"}
+            variant="secondary"
           />
-          <small id="execution-limit-help">Fresh installations start at 1.</small>
-          {error !== null ? <span id="execution-limit-error" className="field-error" role="alert">{error}</span> : null}
-        </div>
-        <button type="submit" className="button button-primary" disabled={busy}>
-          {busy ? "Saving execution limit…" : "Save execution limit"}
-        </button>
+          <Description id="execution-limit-help">Fresh installations start at 1.</Description>
+          {error !== null ? <FieldError id="execution-limit-error">{error}</FieldError> : null}
+        </TextField>
+        <Button type="submit" isDisabled={busy} isPending={busy}>Save execution limit</Button>
       </form>
-    </section>
+      </Card.Content>
+    </Card>
   );
 }

@@ -132,9 +132,14 @@ describe("settings renderer interactions", () => {
       </>,
     );
 
-    fireEvent.change(view.getByLabelText("Default profile for future cards"), { target: { value: PROFILE_ID } });
-    fireEvent.change(view.getByLabelText("Default model for future cards"), { target: { value: "gpt-5-mini" } });
-    fireEvent.change(view.getByLabelText("Default effort for future cards"), { target: { value: "high" } });
+    const choose = async (label: string, option: string) => {
+      await user.click(view.getByRole("button", { name: new RegExp(label) }));
+      await user.click(await view.findByRole("option", { name: option }));
+      await user.keyboard("{Escape}");
+    };
+    await choose("Default profile for future cards", "Codex");
+    await choose("Default model for future cards", "gpt-5-mini");
+    await choose("Default effort for future cards", "high");
     fireEvent.submit(view.getByRole("button", { name: "Save profile default" }).closest("form")!);
     expect(saves[0]).toEqual({ profileId: PROFILE_ID, model: "gpt-5-mini", effort: "high" });
 
@@ -143,14 +148,14 @@ describe("settings renderer interactions", () => {
     fireEvent.submit(view.getByRole("button", { name: "Save and scan roots" }).closest("form")!);
     expect(saves[1]).toEqual({ projectRoots: ["/repo/a", "/repo/b"], userRoots: ["/user/a"] });
 
+    view.rerender(<ExecutionLimitPanel limit={1} activeCount={0} busy={false} onSave={(value) => saves.push(value)} />);
     const input = view.getByLabelText("Automatically active cards");
-    await user.clear(input);
-    await user.type(input, "0");
+    await user.click(input);
+    await user.keyboard("{Backspace}0");
     fireEvent.submit(view.getByRole("button", { name: "Save execution limit" }).closest("form")!);
-    expect(view.getByRole("alert").textContent).toContain("The value was not changed");
+    expect(view.getByText(/The value was not changed/).textContent).toContain("The value was not changed");
     expect(saves).toHaveLength(2);
-    await user.clear(input);
-    await user.type(input, "3");
+    await user.keyboard("{Backspace}3");
     fireEvent.submit(view.getByRole("button", { name: "Save execution limit" }).closest("form")!);
     expect(saves[2]).toBe(3);
   });
@@ -159,14 +164,18 @@ describe("settings renderer interactions", () => {
     const fake = fakeClient();
     const user = userEvent.setup();
     const view = render(<SettingsView client={fake.client} />);
-    await view.findByText("Settings revision 0");
+    await view.findByText("Revision 0");
 
-    const theme = () => view.getByLabelText("Theme");
-    fireEvent.change(theme(), { target: { value: "dark" } });
+    const choose = async (label: string, option: string) => {
+      await user.click(view.getByRole("button", { name: new RegExp(label) }));
+      await user.click(await view.findByRole("option", { name: option }));
+      await user.keyboard("{Escape}");
+    };
+    await choose("Theme", "Dark");
     await view.findByText("Theme preference saved.");
     expect(fake.calls[0]).toMatchObject({ method: "preferences", input: { expectedRevision: 0, theme: "dark" } });
 
-    fireEvent.change(view.getByLabelText("Default profile for future cards"), { target: { value: PROFILE_ID } });
+    await choose("Default profile for future cards", "Codex");
     fireEvent.submit(view.getByRole("button", { name: "Save profile default" }).closest("form")!);
     await view.findByText("Future-card profile default saved.");
     expect(fake.calls.some(({ method }) => method === "profile")).toBeTrue();
@@ -176,8 +185,7 @@ describe("settings renderer interactions", () => {
     await view.findByText("Catalog roots saved and scanned.");
     expect(fake.calls.some(({ method }) => method === "catalog")).toBeTrue();
 
-    await user.clear(view.getByLabelText("Automatically active cards"));
-    await user.type(view.getByLabelText("Automatically active cards"), "2");
+    fireEvent.input(view.getByLabelText("Automatically active cards"), { target: { value: "2" } });
     fireEvent.submit(view.getByRole("button", { name: "Save execution limit" }).closest("form")!);
     await view.findByText("Automatic execution limit saved.");
     expect(fake.calls.some(({ method }) => method === "limit")).toBeTrue();
@@ -186,23 +194,23 @@ describe("settings renderer interactions", () => {
       status: "conflict",
       conflict: { kind: "stale_settings", expectedRevision: 0, actualRevision: 2 },
     });
-    fireEvent.change(theme(), { target: { value: "light" } });
+    await choose("Theme", "Light");
     await view.findByText(/Expected revision 0, now 2/);
 
     fake.setCommandResult({ status: "rejected", rejection: { code: "invalid_theme", message: "Theme rejected." } });
-    fireEvent.change(theme(), { target: { value: "system" } });
+    await choose("Theme", "System");
     await view.findByText("Theme rejected.");
 
     fake.setCommandResult({
       status: "unavailable",
       unavailable: { resource: "settings_command", reason: "projection_rejected" },
     });
-    fireEvent.change(theme(), { target: { value: "dark" } });
+    await choose("Theme", "Light");
     await view.findByText(/Settings are unavailable from the desktop host/);
 
     fake.setCommandResult(null);
     fake.failNextCommand();
-    fireEvent.change(theme(), { target: { value: "light" } });
+    await choose("Theme", "System");
     await waitFor(() => expect(view.container.textContent).not.toContain("host details must not reach the renderer"));
   });
 
@@ -213,6 +221,6 @@ describe("settings renderer interactions", () => {
     await view.findByText("Settings unavailable");
     fake.setGetSettingsUnavailable(false);
     fireEvent.click(view.getByRole("button", { name: "Retry settings" }));
-    await view.findByText("Settings revision 0");
+    await view.findByText("Revision 0");
   });
 });

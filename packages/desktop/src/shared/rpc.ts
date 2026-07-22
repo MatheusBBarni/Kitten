@@ -83,8 +83,8 @@ export interface DesktopSnapshot {
   readonly schemaVersion: 1;
   readonly revision: number;
   readonly workspace: {
-    readonly status: "unbound";
-    readonly boardCount: 0;
+    readonly status: "unbound" | "bound";
+    readonly boardCount: number;
   };
   readonly settings: {
     readonly theme: SettingsTheme;
@@ -105,6 +105,19 @@ export interface WorkflowCatalogProjection {
   readonly kind: "workflow_catalog_projection";
   readonly revision: number;
   readonly catalog: CatalogProjection;
+}
+
+export interface WorkspaceBoardSummary {
+  readonly boardId: BoardId;
+  readonly repositoryPath: string;
+  readonly updatedAt: number;
+  readonly workflowVersion: number;
+}
+
+export interface WorkspaceProjection {
+  readonly kind: "workspace_projection";
+  readonly revision: number;
+  readonly boards: readonly WorkspaceBoardSummary[];
 }
 
 export interface RpcSuccess<TProjection> {
@@ -161,6 +174,27 @@ export interface WorkflowBoardEnvelope {
 export interface WorkflowCatalogEnvelope {
   readonly kind: "workflow_catalog";
   readonly result: DesktopQueryResult<WorkflowCatalogProjection>;
+}
+
+export interface WorkspaceEnvelope {
+  readonly kind: "workspace";
+  readonly result: DesktopQueryResult<WorkspaceProjection>;
+}
+
+export type RepositoryDirectoryPickerResult =
+  | { readonly status: "selected"; readonly path: string }
+  | { readonly status: "cancelled" }
+  | {
+      readonly status: "unavailable";
+      readonly unavailable: {
+        readonly resource: "repository_picker";
+        readonly reason: "host_stopped" | "projection_rejected" | "not_ready";
+      };
+    };
+
+export interface RepositoryDirectoryPickerEnvelope {
+  readonly kind: "repository_directory_picker";
+  readonly result: RepositoryDirectoryPickerResult;
 }
 
 export interface WorkflowCommandEnvelope {
@@ -242,12 +276,20 @@ export type DesktopRpcSchema = {
         response: CardInspectorEnvelope;
       };
       getBoard: {
-        params: { readonly boardId?: string };
+        params: { readonly boardId?: string; readonly mode?: "active" | "new" };
         response: WorkflowBoardEnvelope;
+      };
+      getWorkspace: {
+        params: { readonly knownRevision?: number };
+        response: WorkspaceEnvelope;
       };
       getCatalog: {
         params: { readonly catalogId?: string };
         response: WorkflowCatalogEnvelope;
+      };
+      pickRepositoryDirectory: {
+        params: Record<never, never>;
+        response: RepositoryDirectoryPickerEnvelope;
       };
       executeWorkflowCommand: {
         params: { readonly commandId: string; readonly command: WorkflowCommand };
@@ -393,6 +435,14 @@ export function createEmptyDesktopSnapshot(): DesktopSnapshot {
   };
 }
 
+export function createEmptyWorkspaceProjection(revision = 0): WorkspaceProjection {
+  return {
+    kind: "workspace_projection",
+    revision,
+    boards: [],
+  };
+}
+
 export function createEmptyWorkflowBoardProjection(revision = 0): WorkflowBoardProjection {
   return {
     kind: "workflow_board_projection",
@@ -434,6 +484,18 @@ export function createWorkflowCatalogEnvelope(
   result: DesktopQueryResult<WorkflowCatalogProjection>,
 ): WorkflowCatalogEnvelope {
   return assertProjectionPayload({ kind: "workflow_catalog", result });
+}
+
+export function createWorkspaceEnvelope(
+  result: DesktopQueryResult<WorkspaceProjection>,
+): WorkspaceEnvelope {
+  return assertProjectionPayload({ kind: "workspace", result });
+}
+
+export function createRepositoryDirectoryPickerEnvelope(
+  result: RepositoryDirectoryPickerResult,
+): RepositoryDirectoryPickerEnvelope {
+  return assertProjectionPayload({ kind: "repository_directory_picker", result });
 }
 
 export function createWorkflowCommandEnvelope(

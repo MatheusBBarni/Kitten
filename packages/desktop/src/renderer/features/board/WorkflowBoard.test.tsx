@@ -5,6 +5,7 @@ import type { WorkflowBoardProjection, WorkflowCatalogProjection } from "../../.
 import { workflowIds, type CardProjection, type StageProjection } from "../../../workflow/workflowTypes.ts";
 import { boardInteractionMessage } from "./boardInteractions.ts";
 import { BlankBoardSetup, BoardCanvas } from "./WorkflowBoard.tsx";
+import { ProjectSidebar, projectName } from "./ProjectSidebar.tsx";
 
 const boardId = workflowIds.board("board-render");
 const backlogId = workflowIds.stage("stage-backlog");
@@ -77,8 +78,36 @@ function descendants(node: ReactNode, type: string): ReactElement<Record<string,
   return (node.type === type ? [node] : []).concat(descendants(node.props.children as ReactNode, type));
 }
 
+function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  return [node].concat(elements(node.props.children as ReactNode));
+}
+
+function textContent(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textContent).join("");
+  if (!isValidElement<Record<string, unknown>>(node)) return "";
+  return textContent(node.props.children as ReactNode);
+}
+
 function button(view: ReactNode, label: string): ReactElement<Record<string, unknown>> {
-  return descendants(view, "button").find(({ props }) => props.children === label)!;
+  const matches = (node: ReactNode): ReactElement<Record<string, unknown>> | null => {
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const match = matches(child);
+        if (match !== null) return match;
+      }
+      return null;
+    }
+    if (!isValidElement<Record<string, unknown>>(node)) return null;
+    const isAction = typeof node.props.onPress === "function" || node.props.type === "submit";
+    if (isAction && (textContent(node.props.children as ReactNode).trim() === label || node.props["aria-label"] === label)) {
+      return node;
+    }
+    return matches(node.props.children as ReactNode);
+  };
+  return matches(view)!;
 }
 
 describe("WorkflowBoard", () => {
@@ -90,19 +119,46 @@ describe("WorkflowBoard", () => {
         starterLabels={["Backlog", "Doing"]}
         busy={false}
         onModeChange={noop}
-        onRepositoryPathChange={noop}
+        onChooseRepository={noop}
         onStarterLabelChange={noop}
         onApplyStarter={noop}
         onCreateManual={noop}
       />,
     );
 
-    expect(markup).toContain("Edit starter template");
-    expect(markup).toContain("Set up manually");
-    expect(markup).toContain("Existing workflows are never replaced");
+    expect(markup).toContain("Edit starter workflow");
+    expect(markup).toContain("Start empty");
+    expect(markup).toContain("Rename the stages now");
     expect(markup).toContain("value=\"Backlog\"");
     expect(markup).toContain("value=\"Doing\"");
     expect(markup).toContain("Create starter workflow");
+  });
+
+  test("renders each persisted board as an accessible project session", () => {
+    const markup = renderToStaticMarkup(
+      <ProjectSidebar
+        workspace={{
+          kind: "workspace_projection",
+          revision: 9,
+          boards: [{
+            boardId,
+            repositoryPath: "/Users/name/projects/kitten",
+            updatedAt: 9,
+            workflowVersion: 5,
+          }],
+        }}
+        activeBoardId={boardId}
+        busy={false}
+        onOpenProject={noop}
+        onSelectBoard={noop}
+      />,
+    );
+
+    expect(projectName("C:\\Projects\\kitten")).toBe("kitten");
+    expect(markup).toContain("Open project");
+    expect(markup).toContain("kitten");
+    expect(markup).toContain('aria-current="page"');
+    expect(markup).toContain("Project actions for kitten");
   });
 
   test("separates stage and execution labels and locks active or attention movement", () => {
@@ -122,14 +178,15 @@ describe("WorkflowBoard", () => {
       />,
     );
 
-    expect(markup.match(/<dt>Workflow Stage<\/dt>/g)).toHaveLength(3);
-    expect(markup.match(/<dt>Execution Status<\/dt>/g)).toHaveLength(3);
+    expect(markup).toContain("Running task");
+    expect(markup).toContain("Blocked task");
+    expect(markup).toContain("Ready task");
     expect(markup).toContain("Stage Lock: movement is disabled while Execution Status is running.");
     expect(markup).toContain("Stage Lock: movement is disabled while Execution Status is needs_attention.");
-    expect(markup).toContain("Attention required");
+    expect(markup).toContain("needs attention");
     expect(markup).toContain("aria-pressed=\"true\"");
-    expect(markup).toContain("Move earlier");
-    expect(markup).toContain("Move later");
+    expect(markup).toContain("Move Backlog earlier");
+    expect(markup).toContain("Move Backlog later");
     expect(markup).toContain("Next stage: Doing");
     expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(4);
   });
@@ -149,30 +206,30 @@ describe("WorkflowBoard", () => {
 
   test("routes editable starter and manual forms through their keyboard-operable controls", () => {
     const modes: string[] = [];
-    const paths: string[] = [];
     const labels: Array<[number, string]> = [];
     let starterCreates = 0;
     let manualCreates = 0;
+    let folderPickerRequests = 0;
     const starter = BlankBoardSetup({
       mode: "starter",
       repositoryPath: "/repo",
       starterLabels: ["Backlog", "Doing"],
       busy: false,
       onModeChange: (mode) => modes.push(mode),
-      onRepositoryPathChange: (path) => paths.push(path),
+      onChooseRepository: () => folderPickerRequests += 1,
       onStarterLabelChange: (index, label) => labels.push([index, label]),
       onApplyStarter: () => starterCreates += 1,
       onCreateManual: () => manualCreates += 1,
     });
 
-    (button(starter, "Edit starter template").props.onClick as () => void)();
-    (button(starter, "Set up manually").props.onClick as () => void)();
-    const inputs = descendants(starter, "input");
+    (button(starter, "Edit starter workflow").props.onPress as () => void)();
+    (button(starter, "Start empty").props.onPress as () => void)();
+    (button(starter, "Change folder").props.onPress as () => void)();
+    const inputs = elements(starter).filter(({ props }) => typeof props.onChange === "function" && typeof props.value === "string");
     const change = (element: ReactElement<Record<string, unknown>>, value: string) => (
-      element.props.onChange as (event: { currentTarget: { value: string } }) => void
-    )({ currentTarget: { value } });
-    change(inputs[0]!, "/next-repo");
-    change(inputs[1]!, "Inbox");
+      element.props.onChange as (value: string) => void
+    )(value);
+    change(inputs[0]!, "Inbox");
     let prevented = 0;
     (descendants(starter, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void)({
       preventDefault: () => prevented += 1,
@@ -184,7 +241,7 @@ describe("WorkflowBoard", () => {
       starterLabels: [],
       busy: false,
       onModeChange: noop,
-      onRepositoryPathChange: noop,
+      onChooseRepository: noop,
       onStarterLabelChange: noop,
       onApplyStarter: () => starterCreates += 1,
       onCreateManual: () => manualCreates += 1,
@@ -194,11 +251,35 @@ describe("WorkflowBoard", () => {
     });
 
     expect(modes).toEqual(["starter", "manual"]);
-    expect(paths).toEqual(["/next-repo"]);
     expect(labels).toEqual([[0, "Inbox"]]);
+    expect(folderPickerRequests).toBe(1);
     expect(starterCreates).toBe(1);
     expect(manualCreates).toBe(1);
     expect(prevented).toBe(2);
+  });
+
+  test("makes the repository surface itself open the picker and blocks board creation until a folder is selected", () => {
+    let pickerRequests = 0;
+    let manualCreates = 0;
+    const empty = BlankBoardSetup({
+      mode: "manual",
+      repositoryPath: "",
+      starterLabels: [],
+      busy: false,
+      onModeChange: noop,
+      onChooseRepository: () => pickerRequests += 1,
+      onStarterLabelChange: noop,
+      onApplyStarter: noop,
+      onCreateManual: () => manualCreates += 1,
+    });
+
+    (button(empty, "No folder selected").props.onPress as () => void)();
+    expect(button(empty, "Create empty board").props.isDisabled).toBe(true);
+    (descendants(empty, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void)({
+      preventDefault() {},
+    });
+    expect(pickerRequests).toBe(1);
+    expect(manualCreates).toBe(0);
   });
 
   test("proposes only stable reorder, connect, configure, movement, and inspector intents", () => {
@@ -242,12 +323,11 @@ describe("WorkflowBoard", () => {
     });
     const view = createView(null);
 
-    (button(view, "Connect ordered path").props.onClick as () => void)();
-    (button(view, "Configure stage Skill").props.onClick as () => void)();
-    (button(view, "Move later").props.onClick as () => void)();
-    (button(view, "Move earlier").props.onClick as () => void)();
-    const cards = descendants(view, "button").filter(({ props }) => props.className === "card-title-button");
-    (cards[0]!.props.onClick as () => void)();
+    (button(view, "Connect path").props.onPress as () => void)();
+    (button(view, "Configure Backlog: Default Workflow Skill not selected. This stage cannot launch work.").props.onPress as () => void)();
+    (button(view, "Move Backlog later").props.onPress as () => void)();
+    (button(view, "Move Backlog earlier").props.onPress as () => void)();
+    (button(view, "Running task").props.onPress as () => void)();
     const connectedView = BoardCanvas({
       projection: { ...projection, stages: unconfiguredStages },
       catalog,
@@ -261,8 +341,7 @@ describe("WorkflowBoard", () => {
       onSelectCard: noop,
       onDragStart: noop,
     });
-    const moveButtons = descendants(connectedView, "button").filter(({ props }) => props.children === "Move to next stage");
-    (moveButtons.at(-1)!.props.onClick as () => void)();
+    (button(connectedView, "Move Ready task to next stage").props.onPress as () => void)();
 
     const stageColumn = descendants(view, "li").find(({ props }) => props.draggable === true)!;
     (stageColumn.props.onDragStart as () => void)();

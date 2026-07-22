@@ -1,4 +1,5 @@
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
+import { Alert, Button, Card, Label, TextArea, TextField } from "@heroui/react";
 import type { CatalogProjection } from "../../persistence/eventJournal.ts";
 
 interface CatalogRootsPanelProps {
@@ -30,49 +31,35 @@ export function CatalogRootsPanel({ catalog, busy, onSave }: CatalogRootsPanelPr
     onSave({ projectRoots: rootLines(projectRoots), userRoots: rootLines(userRoots) });
   }
 
-  function changeRoots(event: ChangeEvent<HTMLTextAreaElement>) {
-    if (event.currentTarget.name === "projectRoots") {
-      setProjectRoots(event.currentTarget.value);
-    } else {
-      setUserRoots(event.currentTarget.value);
-    }
-  }
-
   return (
-    <section className="settings-panel" aria-labelledby="catalog-roots-title">
-      <h2 id="catalog-roots-title">Skill Catalog roots</h2>
-      <p>Project roots take precedence over user roots. Skills are selected from validated catalog entries, never by free-text name.</p>
+    <Card className="settings-panel" aria-labelledby="catalog-roots-title">
+      <Card.Header><div><Card.Title id="catalog-roots-title">Skill Catalog roots</Card.Title><Card.Description>Project roots take precedence over user roots. Skills come from validated catalog entries, never a typed name.</Card.Description></div></Card.Header>
+      <Card.Content className="grid gap-4">
 
       <form className="settings-form" onSubmit={submit} aria-busy={busy}>
-        <div className="field">
-          <label htmlFor="catalog-project-roots">Project roots</label>
-          <textarea
+        <TextField className="field" value={projectRoots} onChange={setProjectRoots} isDisabled={busy}>
+          <Label>Project roots</Label>
+          <TextArea
             id="catalog-project-roots"
             name="projectRoots"
             rows={3}
-            value={projectRoots}
-            disabled={busy}
-            onChange={changeRoots}
             aria-describedby="project-roots-help"
+            variant="secondary"
           />
-          <small id="project-roots-help">One local directory per line.</small>
-        </div>
-        <div className="field">
-          <label htmlFor="catalog-user-roots">User roots</label>
-          <textarea
+          <p id="project-roots-help" className="field-help">One local directory per line.</p>
+        </TextField>
+        <TextField className="field" value={userRoots} onChange={setUserRoots} isDisabled={busy}>
+          <Label>User roots</Label>
+          <TextArea
             id="catalog-user-roots"
             name="userRoots"
             rows={3}
-            value={userRoots}
-            disabled={busy}
-            onChange={changeRoots}
             aria-describedby="user-roots-help"
+            variant="secondary"
           />
-          <small id="user-roots-help">One local directory per line.</small>
-        </div>
-        <button type="submit" className="button button-primary" disabled={busy}>
-          {busy ? "Scanning catalog roots…" : "Save and scan roots"}
-        </button>
+          <p id="user-roots-help" className="field-help">One local directory per line.</p>
+        </TextField>
+        <Button type="submit" isDisabled={busy} isPending={busy}>Save and scan roots</Button>
       </form>
 
       <div className="catalog-diagnostics-grid">
@@ -113,13 +100,16 @@ export function CatalogRootsPanel({ catalog, busy, onSave }: CatalogRootsPanelPr
         {catalog.diagnostics.length === 0 ? <p>No catalog diagnostics.</p> : (
           <ul className="diagnostic-list">
             {catalog.diagnostics.map((diagnostic) => (
-              <li key={diagnostic.diagnosticId} className={diagnostic.severity === "error" ? "notice notice-error" : "notice notice-warning"}>
-                <strong>{diagnostic.code.replaceAll("_", " ")}:</strong> {diagnostic.message}
+              <li key={diagnostic.diagnosticId}>
+                <Alert status={diagnostic.severity === "error" ? "danger" : "warning"}>
+                  <Alert.Content><Alert.Title>{diagnostic.code.replaceAll("_", " ")}</Alert.Title><Alert.Description>{diagnostic.message}</Alert.Description></Alert.Content>
+                </Alert>
               </li>
             ))}
           </ul>
         )}
       </div>
-    </section>
+      </Card.Content>
+    </Card>
   );
 }

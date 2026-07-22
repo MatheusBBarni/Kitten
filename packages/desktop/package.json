@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "styles:build": "tailwindcss -i src/renderer/styles.css -o src/renderer/generated.css --minify",
+    "predev": "bun run styles:build",
     "dev": "electrobun dev",
+    "prebuild": "bun run styles:build",
     "build": "electrobun build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test src test",
@@ -19,12 +22,16 @@
     "verify": "bun run typecheck && bun run test:acceptance && bun run test:coverage"
   },
   "dependencies": {
+    "@heroui/react": "3.2.2",
+    "@heroui/styles": "3.2.2",
     "@kitten/engine": "workspace:*",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "tailwindcss": "4.3.2"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "20.10.6",
+    "@tailwindcss/cli": "4.3.2",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
     "@types/bun": "1.3.14",

@@ -1,6 +1,9 @@
-import type { FormEvent, RefObject } from "react";
+import type { FormEvent } from "react";
+import { Alert, Button, Input, Label, Modal, TextField } from "@heroui/react";
 import type { WorkflowCatalogProjection } from "../../../shared/rpc.ts";
 import type { SkillId } from "../../../workflow/workflowTypes.ts";
+import { AlertIcon } from "../../components/Icons.tsx";
+import { SelectField } from "../../components/SelectField.tsx";
 import { selectableCatalogEntries } from "./boardInteractions.ts";
 
 export interface StageSetupDialogProps {
@@ -13,7 +16,6 @@ export interface StageSetupDialogProps {
   readonly onSkillChange: (skillId: SkillId | null) => void;
   readonly onCreate: (configured: boolean) => void;
   readonly onClose: () => void;
-  readonly dialogRef?: RefObject<HTMLDialogElement | null>;
 }
 
 export function StageSetupDialog({
@@ -25,7 +27,6 @@ export function StageSetupDialog({
   onSkillChange,
   onCreate,
   onClose,
-  dialogRef,
   mode = "create",
 }: StageSetupDialogProps) {
   const entries = selectableCatalogEntries(catalog);
@@ -40,117 +41,96 @@ export function StageSetupDialog({
   }
 
   return (
-    <dialog
-      ref={dialogRef}
-      className="stage-dialog"
-      aria-labelledby="stage-dialog-title"
-      aria-describedby="stage-dialog-description"
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!busy) onClose();
-      }}
-    >
-      <form onSubmit={submit} aria-busy={busy}>
-        <header className="dialog-header">
-          <div>
-            <h2 id="stage-dialog-title">
-              {mode === "create" ? "Add Workflow Stage" : `Configure ${label}`}
-            </h2>
-            <p id="stage-dialog-description">
-              {mode === "create" ? "Name the stage and choose" : "Choose"} its default validated Workflow Skill.
-              Skill names cannot be typed manually.
-            </p>
-          </div>
-          <button type="button" className="button button-ghost" onClick={onClose} disabled={busy}>
-            Close stage setup
-          </button>
-        </header>
+    <Modal.Backdrop isOpen onOpenChange={(open) => !open && !busy && onClose()}>
+      <Modal.Container size="md">
+        <Modal.Dialog aria-label={mode === "create" ? "Add workflow stage" : `Configure ${label}`}>
+          <form onSubmit={submit} aria-busy={busy}>
+            <Modal.CloseTrigger isDisabled={busy} />
+            <Modal.Header>
+              <Modal.Heading>
+                {mode === "create" ? "Add workflow stage" : `Configure ${label}`}
+              </Modal.Heading>
+            </Modal.Header>
+            <Modal.Body className="grid gap-4">
+              <p className="field-help">
+                {mode === "create" ? "Name the stage and choose" : "Choose"} its default validated Workflow Skill.
+                Skill names cannot be typed manually.
+              </p>
 
-        {mode === "create" ? (
-          <label className="field">
-            <span>Stage name</span>
-            <input
-              autoFocus
-              required
-              value={label}
-              onChange={(event) => onLabelChange(event.currentTarget.value)}
-              disabled={busy}
-            />
-          </label>
-        ) : null}
+              {mode === "create" ? (
+                <TextField value={label} onChange={onLabelChange} autoFocus isRequired isDisabled={busy}>
+                  <Label>Stage name</Label>
+                  <Input variant="secondary" />
+                </TextField>
+              ) : null}
 
-        <label className="field">
-          <span>Default Workflow Skill</span>
-          <select
-            autoFocus={mode === "configure"}
-            required
-            value={selectedSkillId ?? ""}
-            aria-describedby="stage-skill-help"
-            onChange={(event) => onSkillChange(
-              event.currentTarget.value.length === 0
-                ? null
-                : event.currentTarget.value as SkillId,
-            )}
-            disabled={busy || entries.length === 0}
-          >
-            <option value="">Select a validated Skill</option>
-            {entries.map((entry) => (
-              <option key={entry.skillId} value={entry.skillId}>
-                {entry.metadata.name} ({entry.rootClass})
-              </option>
-            ))}
-          </select>
-          <small id="stage-skill-help">
-            The host catalog supplies stable Skill identities. Catalog changes affect future attempts only.
-          </small>
-        </label>
+              <SelectField
+                label="Default Workflow Skill"
+                value={selectedSkillId ?? ""}
+                options={[
+                  { value: "", label: "Select a validated Skill" },
+                  ...entries.map((entry) => ({
+                    value: entry.skillId,
+                    label: `${entry.metadata.name} (${entry.rootClass})`,
+                  })),
+                ]}
+                onChange={(value) => onSkillChange(value.length === 0 ? null : value as SkillId)}
+                disabled={busy || entries.length === 0}
+                description="The host catalog supplies stable Skill identities. Catalog changes affect future attempts only."
+              />
 
-        {entries.length === 0 ? (
-          <p role="alert" className="notice notice-warning">
-            {mode === "create"
-              ? "No valid Workflow Skills are available. You can add the stage as unconfigured, but it cannot launch work."
-              : "No valid Workflow Skills are available. Fix the catalog diagnostics before configuring this stage."}
-          </p>
-        ) : null}
+              {entries.length === 0 ? (
+                <Alert status="warning">
+                  <Alert.Indicator><AlertIcon /></Alert.Indicator>
+                  <Alert.Content>
+                    <Alert.Title>No valid Workflow Skills</Alert.Title>
+                    <Alert.Description>
+                      {mode === "create"
+                        ? "You can add the stage as unconfigured, but it cannot launch work."
+                        : "Fix the catalog diagnostics before configuring this stage."}
+                    </Alert.Description>
+                  </Alert.Content>
+                </Alert>
+              ) : null}
 
-        {diagnostics.length > 0 ? (
-          <section className="catalog-diagnostics" aria-labelledby="catalog-diagnostics-title">
-            <h3 id="catalog-diagnostics-title">Catalog diagnostics</h3>
-            <ul>
-              {diagnostics.map((diagnostic) => (
-                <li key={diagnostic.diagnosticId}>
-                  <strong>{diagnostic.code === "name_collision" ? "Name collision" : "Invalid catalog entry"}:</strong>{" "}
-                  {diagnostic.message}
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
-        <footer className="dialog-actions">
-          {mode === "create" ? (
-            <>
-              <button
-                type="button"
-                className="button button-secondary"
-                disabled={busy || label.trim().length === 0}
-                aria-describedby="unconfigured-stage-help"
-                onClick={() => onCreate(false)}
-              >
-                Add unconfigured stage
-              </button>
+              {diagnostics.length > 0 ? (
+                <section className="catalog-diagnostics" aria-labelledby="catalog-diagnostics-title">
+                  <h3 id="catalog-diagnostics-title">Catalog diagnostics</h3>
+                  <ul>
+                    {diagnostics.map((diagnostic) => (
+                      <li key={diagnostic.diagnosticId}>
+                        <strong>{diagnostic.code === "name_collision" ? "Name collision" : "Invalid catalog entry"}:</strong>{" "}
+                        {diagnostic.message}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="secondary" onPress={onClose} isDisabled={busy}>Cancel</Button>
+              {mode === "create" ? (
+                <Button
+                  variant="secondary"
+                  isDisabled={busy || label.trim().length === 0}
+                  aria-describedby="unconfigured-stage-help"
+                  onPress={() => onCreate(false)}
+                >
+                  Add unconfigured stage
+                </Button>
+              ) : null}
               <span id="unconfigured-stage-help" className="sr-only">
                 The stage will be visible but cannot launch work until a valid default Workflow Skill is assigned.
               </span>
-            </>
-          ) : null}
-          <button type="submit" className="button button-primary" disabled={busy || !canConfigure}>
-            {busy
-              ? mode === "create" ? "Adding stage…" : "Saving Skill…"
-              : mode === "create" ? "Add configured stage" : "Save stage Skill"}
-          </button>
-        </footer>
-      </form>
-    </dialog>
+              <Button type="submit" isDisabled={busy || !canConfigure} isPending={busy}>
+                {busy
+                  ? mode === "create" ? "Adding stage…" : "Saving Skill…"
+                  : mode === "create" ? "Add configured stage" : "Save stage Skill"}
+              </Button>
+            </Modal.Footer>
+          </form>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

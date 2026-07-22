@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import "../../settings/testDom.ts";
+import { cleanup, render } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ActivitySequence } from "@kitten/engine";
 import type { AttemptGeneration, AttemptId } from "@kitten/engine";
 import { getCardInspectorProjection } from "../../../attempts/activityIngestor.ts";
@@ -7,7 +10,10 @@ import type { HostMessageEnvelope } from "../../../shared/rpc.ts";
 import { createCardInspectorEnvelope } from "../../../shared/rpc.ts";
 import type { DesktopRpcClient } from "../../client.ts";
 import { bindCardInspectorRenderer } from "../../client.ts";
-import { inspectorProjection, TEST_CARD_ID } from "./testSupport.ts";
+import { inspectorCard, inspectorProjection, TEST_CARD_ID } from "./testSupport.ts";
+import { CardInspector } from "./CardInspector.tsx";
+
+afterEach(cleanup);
 
 function fakeClient() {
   let subscriber: ((message: HostMessageEnvelope) => void) | undefined;
@@ -49,6 +55,31 @@ function fakeClient() {
 }
 
 describe("selected-card inspector binding", () => {
+  test("opens a task side sheet with metadata, history, composer, and edit controls", async () => {
+    const fake = fakeClient();
+    const user = userEvent.setup();
+    const view = render(
+      <CardInspector
+        client={fake.client}
+        card={inspectorCard()}
+        isOpen
+        onSaveTask={async () => true}
+      />,
+    );
+
+    expect(await view.findByRole("dialog", { name: "Implement supervision surface" })).toBeDefined();
+    expect(view.getByText("Keep durable evidence visible")).toBeDefined();
+    expect(view.getAllByText("codex").length).toBeGreaterThan(0);
+    expect(view.getAllByText("gpt-5").length).toBeGreaterThan(0);
+    expect(view.getByText("Persistent composer")).toBeDefined();
+    expect(await view.findByText("Orchestrated Work History")).toBeDefined();
+
+    await user.click(view.getByRole("button", { name: "Edit task" }));
+    expect(await view.findByRole("dialog", { name: "Edit task" })).toBeDefined();
+    expect((view.getByLabelText("Title") as HTMLInputElement).value).toBe("Implement supervision surface");
+    expect(view.getByRole("button", { name: "Save task" })).toBeDefined();
+  });
+
   test("composes sorted attempt, queue, and blocker projections for one card", () => {
     const latest = inspectorProjection({ queue: "active", blocker: "active" });
     const olderAttemptId = "attempt-older-renderer" as AttemptId;

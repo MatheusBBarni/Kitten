@@ -6,15 +6,19 @@ import {
   createWorkflowBoardEnvelope,
   createWorkflowCatalogEnvelope,
   createWorkflowCommandEnvelope,
+  createWorkspaceEnvelope,
   type WorkflowBoardEnvelope,
   type WorkflowBoardProjection,
   type WorkflowCatalogEnvelope,
   type WorkflowCatalogProjection,
   type WorkflowCommandEnvelope,
+  type WorkspaceEnvelope,
+  type WorkspaceProjection,
 } from "../shared/rpc.ts";
 
 export interface DesktopBoardRpc {
-  getBoard(params: { readonly boardId?: string }): Promise<WorkflowBoardEnvelope>;
+  getBoard(params: { readonly boardId?: string; readonly mode?: "active" | "new" }): Promise<WorkflowBoardEnvelope>;
+  getWorkspace?(params: { readonly knownRevision?: number }): Promise<WorkspaceEnvelope>;
   getCatalog(params: { readonly catalogId?: string }): Promise<WorkflowCatalogEnvelope>;
   executeWorkflowCommand(params: {
     readonly commandId: string;
@@ -31,7 +35,18 @@ function selectBoard(snapshot: PersistenceSnapshot, requestedBoardId?: string) {
 export function projectWorkflowBoard(
   snapshot: PersistenceSnapshot,
   requestedBoardId?: string,
+  mode: "active" | "new" = "active",
 ): WorkflowBoardProjection {
+  if (mode === "new") {
+    return {
+      kind: "workflow_board_projection",
+      revision: snapshot.revision,
+      board: null,
+      stages: [],
+      edges: [],
+      cards: [],
+    };
+  }
   const board = selectBoard(snapshot, requestedBoardId);
   if (board === null) {
     return {
@@ -56,6 +71,21 @@ export function projectWorkflowBoard(
   };
 }
 
+export function projectWorkspace(snapshot: PersistenceSnapshot): WorkspaceProjection {
+  return {
+    kind: "workspace_projection",
+    revision: snapshot.revision,
+    boards: [...snapshot.boards]
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.boardId.localeCompare(right.boardId))
+      .map(({ boardId, repositoryPath, updatedAt, workflowVersion }) => ({
+        boardId,
+        repositoryPath,
+        updatedAt,
+        workflowVersion,
+      })),
+  };
+}
+
 export function projectWorkflowCatalog(
   snapshot: PersistenceSnapshot,
   catalogId = "default",
@@ -72,10 +102,16 @@ export function createDesktopBoardRpc(
   commands: WorkflowCommandHandler,
 ): DesktopBoardRpc {
   return {
-    async getBoard({ boardId }) {
+    async getBoard({ boardId, mode }) {
       return createWorkflowBoardEnvelope({
         status: "ok",
-        projection: projectWorkflowBoard(journal.snapshot(), boardId),
+        projection: projectWorkflowBoard(journal.snapshot(), boardId, mode),
+      });
+    },
+    async getWorkspace() {
+      return createWorkspaceEnvelope({
+        status: "ok",
+        projection: projectWorkspace(journal.snapshot()),
       });
     },
     async getCatalog({ catalogId }) {

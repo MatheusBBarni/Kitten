@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, Chip, Skeleton } from "@heroui/react";
 import type { DesktopRpcClient } from "../client.ts";
 import type {
   DesktopSettingsProjection,
@@ -9,6 +10,7 @@ import { bindSettingsQuery, settingsUnavailableMessage, type SettingsQueryBindin
 import { ProfileDefaultsPanel } from "./ProfileDefaultsPanel.tsx";
 import { CatalogRootsPanel } from "./CatalogRootsPanel.tsx";
 import { ExecutionLimitPanel } from "./ExecutionLimitPanel.tsx";
+import { SelectField } from "../components/SelectField.tsx";
 
 export interface SettingsFeedbackValue {
   readonly tone: "status" | "error";
@@ -17,17 +19,17 @@ export interface SettingsFeedbackValue {
 
 export function SettingsFeedback({ feedback }: { readonly feedback: SettingsFeedbackValue }) {
   return (
-    <p
-      className={feedback.tone === "error" ? "notice notice-error" : "notice"}
+    <Alert
+      status={feedback.tone === "error" ? "danger" : "success"}
       role={feedback.tone === "error" ? "alert" : "status"}
     >
-      {feedback.message}
-    </p>
+      <Alert.Content><Alert.Description>{feedback.message}</Alert.Description></Alert.Content>
+    </Alert>
   );
 }
 
 export function SettingsLoadingState() {
-  return <main className="app-shell settings-shell" aria-busy="true"><h1>Settings</h1><p>Loading settings…</p></main>;
+  return <main className="app-shell settings-shell" aria-busy="true"><div className="settings-content"><h1>Settings</h1>{[0, 1, 2].map((item) => <Skeleton key={item} className="h-40 rounded-lg" />)}<span className="sr-only">Loading settings…</span></div></main>;
 }
 
 export function SettingsUnavailableState({ retry }: { readonly retry: () => void }) {
@@ -35,7 +37,7 @@ export function SettingsUnavailableState({ retry }: { readonly retry: () => void
     <main className="app-shell settings-shell" role="alert">
       <h1>Settings unavailable</h1>
       <p>{settingsUnavailableMessage()}</p>
-      <button type="button" className="button button-primary" onClick={retry}>Retry settings</button>
+      <Button onPress={retry}>Retry settings</Button>
     </main>
   );
 }
@@ -107,28 +109,35 @@ export function SettingsView({ client }: { readonly client: DesktopRpcClient }) 
   const current = projection;
   return (
     <main className="app-shell settings-shell">
+      <div className="settings-content">
       <header className="app-header">
-        <div>
-          <p className="eyebrow">Host-owned configuration</p>
+        <div className="app-header-copy">
+          <p className="eyebrow">Local configuration</p>
           <h1>Settings</h1>
-          <p>Defaults apply to future cards only. Recorded cards, attempts, and Run Contexts are not rewritten.</p>
         </div>
-        <p className="revision">Settings revision {current.revision}</p>
+        <Chip size="sm" variant="soft">Revision {current.revision}</Chip>
       </header>
+
+      <p className="m-0 text-sm text-muted">Defaults apply to future cards only. Recorded tasks, attempts, and run contexts are never rewritten.</p>
 
       {feedback !== null ? (
         <SettingsFeedback feedback={feedback} />
       ) : null}
 
-      <section className="settings-panel" aria-labelledby="theme-title">
-        <h2 id="theme-title">Theme preference</h2>
-        <label className="field">
-          <span>Theme</span>
-          <select
-            value={current.preferences.theme}
-            disabled={busySection !== null}
-            onChange={(event) => {
-              const theme = event.currentTarget.value as typeof current.preferences.theme;
+      <Card className="settings-panel" aria-labelledby="theme-title">
+        <Card.Header><div><Card.Title id="theme-title">Theme preference</Card.Title><Card.Description>Choose how Kitten follows the desktop appearance.</Card.Description></div></Card.Header>
+        <Card.Content>
+        <SelectField
+          label="Theme"
+          value={current.preferences.theme}
+          disabled={busySection !== null}
+          options={[
+            { value: "system", label: "System" },
+            { value: "light", label: "Light" },
+            { value: "dark", label: "Dark" },
+          ]}
+          onChange={(value) => {
+              const theme = value as typeof current.preferences.theme;
               void run(
                 "preferences",
                 () => client.updatePreferences(commandId("preferences"), {
@@ -137,14 +146,10 @@ export function SettingsView({ client }: { readonly client: DesktopRpcClient }) 
                 }),
                 "Theme preference saved.",
               );
-            }}
-          >
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
-      </section>
+          }}
+        />
+        </Card.Content>
+      </Card>
 
       <ProfileDefaultsPanel
         key={`${current.profileDefaults.profileId}:${current.profileDefaults.model}:${current.profileDefaults.effort}`}
@@ -189,6 +194,7 @@ export function SettingsView({ client }: { readonly client: DesktopRpcClient }) 
           "Automatic execution limit saved.",
         )}
       />
+      </div>
     </main>
   );
 }

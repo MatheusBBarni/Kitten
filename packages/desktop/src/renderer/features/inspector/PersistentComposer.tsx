@@ -1,4 +1,5 @@
 import type { FormEvent } from "react";
+import { Alert, Button, Label, TextArea, TextField } from "@heroui/react";
 import type { AttemptGeneration, AttemptId } from "@kitten/engine";
 import type { FollowUpDraft, FollowUpQueueId, FollowUpQueueProjection } from "../../../attempts/followUpQueue.ts";
 import type { ExecutionStatus } from "../../../workflow/workflowTypes.ts";
@@ -87,28 +88,29 @@ export function PersistentComposer({
                 </div>
                 <div className="queue-actions">
                   {queued.state === "queued" || queued.state === "awaiting_confirmation" ? (
-                    <button
+                    <Button
                       type="button"
-                      className="button button-secondary"
-                      disabled={busy}
-                      onClick={() => {
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={busy}
+                      onPress={() => {
                         if (!busy) onRemoveQueuedFollowUp(queued.queueId);
                       }}
                     >
                       Remove draft
-                    </button>
+                    </Button>
                   ) : null}
                   {queued.state === "awaiting_confirmation" ? (
-                    <button
+                    <Button
                       type="button"
-                      className="button button-primary"
-                      disabled={busy || blocked}
-                      onClick={() => {
+                      size="sm"
+                      isDisabled={busy || blocked}
+                      onPress={() => {
                         if (!busy && !blocked) onConfirmQueuedFollowUp(queued.queueId);
                       }}
                     >
                       Send confirmed follow-up
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
               </li>
@@ -118,27 +120,36 @@ export function PersistentComposer({
       )}
 
       <form onSubmit={submit} aria-busy={busy}>
-        <label className="field" htmlFor="card-composer-draft">
-          <span>Message</span>
-          <textarea
+        <TextField
+          className="field"
+          value={draft}
+          onChange={onDraftChange}
+          isDisabled={unavailable}
+        >
+          <Label>Message</Label>
+          <TextArea
             id="card-composer-draft"
-            rows={5}
-            value={draft}
+            rows={4}
+            variant="secondary"
             aria-describedby={["composer-help", feedbackId].filter(Boolean).join(" ") || undefined}
-            onChange={(event) => onDraftChange(event.currentTarget.value)}
-            disabled={unavailable}
           />
-        </label>
-        <p id="composer-help" className={blocked ? "notice notice-warning" : "composer-help"}>
-          {blocked
-            ? "Answer the active Attention Blocker before submitting an ordinary message. This draft is saved."
-            : running
-              ? "This message will enter the FIFO queue. It will not cancel or steer the active turn and requires confirmation after settlement."
-              : "This message becomes the initial prompt for a fresh Run Attempt in the card's current Workflow Stage."}
-        </p>
-        <button type="submit" className="button button-primary" disabled={disabled || draft.trim().length === 0}>
-          {busy ? "Committing message…" : running ? "Queue follow-up" : "Start Run Attempt"}
-        </button>
+        </TextField>
+        {blocked ? (
+          <Alert id="composer-help" status="warning">
+            <Alert.Content>
+              <Alert.Description>Answer the active question before sending this message. Your draft is saved.</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        ) : (
+          <p id="composer-help" className="composer-help">
+            {running
+              ? "Queued messages wait for the active turn to settle and require confirmation before dispatch."
+              : "This message starts a fresh run in the task's current stage."}
+          </p>
+        )}
+        <Button type="submit" isDisabled={disabled || draft.trim().length === 0} isPending={busy}>
+          {running ? "Queue follow-up" : "Start run"}
+        </Button>
       </form>
     </section>
   );

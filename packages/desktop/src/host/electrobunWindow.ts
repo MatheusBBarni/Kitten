@@ -1,5 +1,40 @@
 import type { DesktopWindowFactory } from "../main.ts";
-import type { DesktopRpcSchema } from "../shared/rpc.ts";
+import type { DesktopRpcSchema, HostMessageEnvelope } from "../shared/rpc.ts";
+
+export interface ElectrobunDesktopWindow {
+  readonly webview: {
+    readonly rpc?: {
+      readonly send: {
+        hostMessage(message: HostMessageEnvelope): void;
+      };
+    };
+    remove(): void;
+  };
+  show(): void;
+  close(): void;
+}
+
+export function createElectrobunDesktopWindowPort(window: ElectrobunDesktopWindow): ReturnType<DesktopWindowFactory["open"]> {
+  // Constructing a native window and revealing it are separate host actions.
+  // Reveal it before the shell begins serving renderer RPC.
+  window.show();
+  let handlersRemoved = false;
+
+  return {
+    sendHostMessage(message) {
+      if (handlersRemoved) return;
+      window.webview.rpc?.send.hostMessage(message);
+    },
+    removeHandlers() {
+      if (handlersRemoved) return;
+      handlersRemoved = true;
+      window.webview.remove();
+    },
+    close() {
+      window.close();
+    },
+  };
+}
 
 export async function createElectrobunWindowFactory(): Promise<DesktopWindowFactory> {
   const { BrowserView, BrowserWindow } = await import("electrobun/bun");
@@ -9,7 +44,9 @@ export async function createElectrobunWindowFactory(): Promise<DesktopWindowFact
       onGetDesktopSnapshot,
       onGetCardInspector,
       onGetBoard,
+      onGetWorkspace,
       onGetCatalog,
+      onPickRepositoryDirectory,
       onExecuteWorkflowCommand,
       onQueueFollowUp,
       onRemoveQueuedFollowUp,
@@ -30,7 +67,9 @@ export async function createElectrobunWindowFactory(): Promise<DesktopWindowFact
             getDesktopSnapshot: onGetDesktopSnapshot,
             getCardInspector: onGetCardInspector,
             getBoard: onGetBoard,
+            getWorkspace: onGetWorkspace,
             getCatalog: onGetCatalog,
+            pickRepositoryDirectory: onPickRepositoryDirectory,
             executeWorkflowCommand: onExecuteWorkflowCommand,
             queueFollowUp: onQueueFollowUp,
             removeQueuedFollowUp: onRemoveQueuedFollowUp,
@@ -52,22 +91,7 @@ export async function createElectrobunWindowFactory(): Promise<DesktopWindowFact
         frame: { width: 1280, height: 800, x: 80, y: 80 },
         rpc,
       });
-      let handlersRemoved = false;
-
-      return {
-        sendHostMessage(message) {
-          if (handlersRemoved) return;
-          window.webview.rpc?.send.hostMessage(message);
-        },
-        removeHandlers() {
-          if (handlersRemoved) return;
-          handlersRemoved = true;
-          window.webview.remove();
-        },
-        close() {
-          window.close();
-        },
-      };
+      return createElectrobunDesktopWindowPort(window);
     },
   };
 }

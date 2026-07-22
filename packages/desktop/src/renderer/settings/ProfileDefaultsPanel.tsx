@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react";
+import { Button, Card, Chip } from "@heroui/react";
 import type {
   FutureCardProfileDefaults,
   SettingsProfileProjection,
 } from "../../shared/desktopRpc.ts";
 import type { ProfileId } from "@kitten/engine";
+import { SelectField } from "../components/SelectField.tsx";
 
 interface ProfileDefaultsPanelProps {
   readonly profiles: readonly SettingsProfileProjection[];
@@ -35,72 +37,69 @@ export function ProfileDefaultsPanel({
   }
 
   return (
-    <section className="settings-panel" aria-labelledby="profile-defaults-title">
-      <h2 id="profile-defaults-title">Future-card profile default</h2>
-      <p>
+    <Card className="settings-panel" aria-labelledby="profile-defaults-title">
+      <Card.Header>
+        <div>
+        <Card.Title id="profile-defaults-title">Future-card profile default</Card.Title>
+        <Card.Description>
         This seeds new cards only. Existing card configuration and recorded Run Contexts stay unchanged.
-      </p>
+        </Card.Description>
+        </div>
+      </Card.Header>
+      <Card.Content className="grid gap-4">
 
       <ul className="profile-readiness-list" aria-label="Certified profile readiness">
         {profiles.length === 0 ? <li>No certified profiles are available.</li> : profiles.map((profile) => (
           <li key={profile.profileId}>
             <strong>{profile.provider}</strong>{" "}
-            {profile.readiness.ready
-              ? `Ready (protocol ${profile.readiness.protocolVersion})`
-              : `Unavailable: ${profile.readiness.message}`}
+            <Chip size="sm" variant="soft" color={profile.readiness.ready ? "success" : "danger"}>
+              {profile.readiness.ready ? `Ready · protocol ${profile.readiness.protocolVersion}` : "Unavailable"}
+            </Chip>
+            {profile.readiness.ready ? null : <span className="ml-2 text-muted">{profile.readiness.message}</span>}
           </li>
         ))}
       </ul>
 
       <form className="settings-form" onSubmit={submit} aria-busy={busy}>
-        <label className="field">
-          <span>Default profile for future cards</span>
-          <select
-            value={profileId}
-            disabled={busy}
-            onChange={(event) => {
-              const nextId = event.currentTarget.value;
+        <SelectField
+          label="Default profile for future cards"
+          value={profileId}
+          disabled={busy}
+          options={[
+            { value: "", label: "No default profile" },
+            ...profiles.map((profile) => ({
+              value: profile.profileId,
+              label: `${profile.provider}${profile.readiness.ready ? "" : " — unavailable"}`,
+              disabled: !profile.readiness.ready,
+            })),
+          ]}
+          onChange={(nextId) => {
               const next = profiles.find((profile) => profile.profileId === nextId);
               setProfileId(nextId);
               setModel(next?.models[0] ?? "");
               setEffort(next?.efforts[0] ?? "");
-            }}
-          >
-            <option value="">No default profile</option>
-            {profiles.map((profile) => (
-              <option key={profile.profileId} value={profile.profileId} disabled={!profile.readiness.ready}>
-                {profile.provider}{profile.readiness.ready ? "" : " — unavailable"}
-              </option>
-            ))}
-          </select>
-        </label>
+          }}
+        />
 
-        <label className="field">
-          <span>Default model for future cards</span>
-          <select
-            value={model}
-            disabled={busy || selected === null || !selected.readiness.ready}
-            onChange={(event) => setModel(event.currentTarget.value)}
-          >
-            {(selected?.models ?? []).map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-        </label>
+        <SelectField
+          label="Default model for future cards"
+          value={model}
+          disabled={busy || selected === null || !selected.readiness.ready}
+          options={(selected?.models ?? []).map((value) => ({ value, label: value }))}
+          onChange={setModel}
+        />
 
-        <label className="field">
-          <span>Default effort for future cards</span>
-          <select
-            value={effort}
-            disabled={busy || selected === null || !selected.readiness.ready}
-            onChange={(event) => setEffort(event.currentTarget.value)}
-          >
-            {(selected?.efforts ?? []).map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-        </label>
+        <SelectField
+          label="Default effort for future cards"
+          value={effort}
+          disabled={busy || selected === null || !selected.readiness.ready}
+          options={(selected?.efforts ?? []).map((value) => ({ value, label: value }))}
+          onChange={setEffort}
+        />
 
-        <button type="submit" className="button button-primary" disabled={busy}>
-          {busy ? "Saving profile default…" : "Save profile default"}
-        </button>
+        <Button type="submit" isDisabled={busy} isPending={busy}>Save profile default</Button>
       </form>
-    </section>
+      </Card.Content>
+    </Card>
   );
 }

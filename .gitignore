@@ -6,6 +6,7 @@ node_modules/
 /dist/
 /packages/desktop/artifacts/
 /packages/desktop/build/
+/packages/desktop/src/renderer/generated.css
 *.tgz
 
 # Local Compozy release archives

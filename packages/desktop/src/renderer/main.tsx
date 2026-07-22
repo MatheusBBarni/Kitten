@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { Button } from "@heroui/react";
 import type {
   BootstrapEnvelope,
   DesktopRpcSchema,
@@ -12,14 +13,18 @@ import {
 import { WorkflowBoard } from "./features/board/WorkflowBoardContainer.tsx";
 import { SettingsView } from "./settings/SettingsView.tsx";
 import type { SettingsTheme } from "../shared/desktopRpc.ts";
+import { BoardIcon, SettingsIcon } from "./components/Icons.tsx";
 
 export type { DesktopRpcClient } from "./client.ts";
 export { bindDesktopRenderer } from "./client.ts";
 
 export function applyThemePreference(theme: SettingsTheme): void {
   if (theme === "system") {
-    document.documentElement.removeAttribute("data-theme");
-    document.documentElement.style.colorScheme = "light dark";
+    const systemDark = typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = systemDark ? "dark" : "light";
+    document.documentElement.style.colorScheme = systemDark ? "dark" : "light";
     return;
   }
   document.documentElement.dataset.theme = theme;
@@ -50,11 +55,20 @@ export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient>
     getCardInspector(cardId) {
       return rpc.request.getCardInspector({ cardId });
     },
-    getBoard(boardId) {
-      return rpc.request.getBoard(boardId === undefined ? {} : { boardId });
+    getBoard(boardId, mode) {
+      return rpc.request.getBoard({
+        ...(boardId === undefined ? {} : { boardId }),
+        ...(mode === undefined ? {} : { mode }),
+      });
+    },
+    getWorkspace() {
+      return rpc.request.getWorkspace({});
     },
     getCatalog(catalogId) {
       return rpc.request.getCatalog(catalogId === undefined ? {} : { catalogId });
+    },
+    pickRepositoryDirectory() {
+      return rpc.request.pickRepositoryDirectory({});
     },
     executeWorkflowCommand(commandId, command) {
       return rpc.request.executeWorkflowCommand({ commandId, command });
@@ -129,24 +143,26 @@ export function DesktopApp({ client }: { readonly client: DesktopRpcClient }) {
   return (
     <>
       <nav className="app-route-nav" aria-label="Application views">
-        <button
-          type="button"
-          className="button button-ghost"
+        <Button
+          size="sm"
+          variant={route === "board" ? "secondary" : "ghost"}
           aria-current={route === "board" ? "page" : undefined}
-          onClick={() => setRoute("board")}
+          onPress={() => setRoute("board")}
         >
-          Workflow Board
-        </button>
-        <button
-          type="button"
-          className="button button-ghost"
+          <BoardIcon />Board
+        </Button>
+        <Button
+          size="sm"
+          variant={route === "settings" ? "secondary" : "ghost"}
           aria-current={route === "settings" ? "page" : undefined}
-          onClick={() => setRoute("settings")}
+          onPress={() => setRoute("settings")}
         >
-          Settings
-        </button>
+          <SettingsIcon />Settings
+        </Button>
       </nav>
-      {route === "board" ? <WorkflowBoard client={client} /> : <SettingsView client={client} />}
+      {route === "board"
+        ? <WorkflowBoard client={client} onOpenSettings={() => setRoute("settings")} />
+        : <SettingsView client={client} />}
     </>
   );
 }

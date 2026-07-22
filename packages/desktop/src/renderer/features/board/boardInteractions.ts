@@ -291,6 +291,42 @@ export function moveCardCommand(
   };
 }
 
+export interface CardEditInput {
+  readonly title: string;
+  readonly description: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly effort: string;
+  readonly runnable: boolean;
+}
+
+export function updateCardCommand(
+  card: CardProjection,
+  input: CardEditInput,
+  identities: IdentityFactory,
+): WorkflowCommand | null {
+  if (
+    input.title.trim().length === 0
+    || input.provider.trim().length === 0
+    || input.model.trim().length === 0
+    || input.effort.trim().length === 0
+  ) return null;
+  return {
+    kind: "update_card",
+    mutationId: mutationId(identities),
+    boardId: card.boardId,
+    cardId: card.cardId,
+    expectedCardVersion: card.version,
+    title: input.title.trim(),
+    description: input.description.trim(),
+    provider: input.provider.trim(),
+    model: input.model.trim(),
+    effort: input.effort.trim(),
+    skillOverrideId: card.skillOverrideId,
+    runnable: input.runnable,
+  };
+}
+
 export function boardInteractionMessage(result: BoardInteractionResult): string | null {
   switch (result.status) {
     case "ok":

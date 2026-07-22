@@ -10,7 +10,9 @@ import type {
   StartAttemptRpcInput,
   WorkflowBoardEnvelope,
   WorkflowCatalogEnvelope,
+  WorkspaceEnvelope,
   WorkflowCommandEnvelope,
+  RepositoryDirectoryPickerEnvelope,
   SettingsCommandEnvelope,
   SettingsEnvelope,
   SetExecutionLimitInput,
@@ -28,8 +30,10 @@ import type {
 export interface DesktopRpcClient {
   getDesktopSnapshot(): Promise<BootstrapEnvelope>;
   getCardInspector(cardId: string): Promise<CardInspectorEnvelope>;
-  getBoard(boardId?: string): Promise<WorkflowBoardEnvelope>;
+  getBoard(boardId?: string, mode?: "active" | "new"): Promise<WorkflowBoardEnvelope>;
+  getWorkspace?(): Promise<WorkspaceEnvelope>;
   getCatalog(catalogId?: string): Promise<WorkflowCatalogEnvelope>;
+  pickRepositoryDirectory?(): Promise<RepositoryDirectoryPickerEnvelope>;
   executeWorkflowCommand(commandId: string, command: WorkflowCommand): Promise<WorkflowCommandEnvelope>;
   startAttempt(commandId: string, input: StartAttemptRpcInput): Promise<InspectorCommandResultEnvelope>;
   queueFollowUp(commandId: string, input: QueueFollowUpInput): Promise<FollowUpRpcResultEnvelope>;
@@ -85,17 +89,24 @@ export function bindWorkflowBoardRenderer(
   callbacks: {
     readonly onBoard: (envelope: WorkflowBoardEnvelope) => void;
     readonly onCatalog: (envelope: WorkflowCatalogEnvelope) => void;
+    readonly onWorkspace?: (envelope: WorkspaceEnvelope) => void;
   },
+  options: { readonly boardId?: string; readonly mode?: "active" | "new" } = {},
 ): { readonly ready: Promise<void>; dispose(): void } {
   let active = true;
   let refreshSequence = 0;
 
   const refresh = async () => {
     const sequence = ++refreshSequence;
-    const [board, catalog] = await Promise.all([client.getBoard(), client.getCatalog()]);
+    const [board, catalog, workspace] = await Promise.all([
+      client.getBoard(options.boardId, options.mode),
+      client.getCatalog(),
+      client.getWorkspace?.(),
+    ]);
     if (!active || sequence !== refreshSequence) return;
     callbacks.onBoard(board);
     callbacks.onCatalog(catalog);
+    if (workspace !== undefined) callbacks.onWorkspace?.(workspace);
   };
   const unsubscribe = client.subscribe((message) => {
     if (
@@ -132,6 +143,7 @@ export function bindDesktopRenderer(
     if (
       message.kind === "projection_committed"
       || message.kind === "attempt_activity"
+      || message.kind === "settings_committed"
       || message.kind === "host_unavailable"
     ) {
       void refresh();
