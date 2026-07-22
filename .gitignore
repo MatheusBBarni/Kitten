@@ -4,6 +4,8 @@ node_modules/
 # Build output (bun build --compile artifacts)
 /kitten
 /dist/
+/packages/desktop/artifacts/
+/packages/desktop/build/
 *.tgz
 
 # Local Compozy release archives

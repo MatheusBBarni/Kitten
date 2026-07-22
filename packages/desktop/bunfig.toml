@@ -1,0 +1,4 @@
+[test]
+coverageThreshold = 0.8
+coverageReporter = ["text"]
+coverageSkipTestFiles = true

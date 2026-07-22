@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import rootPackage from "../../../package.json" with { type: "json" }
+import desktopPackage from "../../desktop/package.json" with { type: "json" }
 import enginePackage from "../../engine/package.json" with { type: "json" }
 import tuiPackage from "../package.json" with { type: "json" }
 
@@ -9,6 +10,7 @@ const lockfile = Bun.JSONC.parse(
 ) as { workspaces: Record<string, { name?: string }> }
 
 const TUI_PACKAGE_NAME = "@matheusbbarni/kitten"
+const DESKTOP_PACKAGE_NAME = "@kitten/desktop"
 const ENGINE_PACKAGE_NAME = "@kitten/engine"
 const TUI_ONLY_LIFECYCLE = [
   "start",
@@ -63,6 +65,7 @@ describe("workspace ownership boundary", () => {
     expect(rootPackage).not.toHaveProperty("optionalDependencies")
     expect(lockfile.workspaces[""]?.name).toBe("kitten-workspace")
     expect(lockfile.workspaces["packages/tui"]?.name).toBe(TUI_PACKAGE_NAME)
+    expect(lockfile.workspaces["packages/desktop"]?.name).toBe(DESKTOP_PACKAGE_NAME)
     expect(lockfile.workspaces["packages/engine"]?.name).toBe(ENGINE_PACKAGE_NAME)
   })
 
@@ -72,7 +75,7 @@ describe("workspace ownership boundary", () => {
     }
     for (const lifecycle of SHARED_GATES) {
       expect(rootPackage.scripts[lifecycle]).toBe(
-        `bun run --filter ${ENGINE_PACKAGE_NAME} ${lifecycle} && bun run --filter ${TUI_PACKAGE_NAME} ${lifecycle}`,
+        `bun run --filter ${ENGINE_PACKAGE_NAME} ${lifecycle} && bun run --filter ${DESKTOP_PACKAGE_NAME} ${lifecycle} && bun run --filter ${TUI_PACKAGE_NAME} ${lifecycle}`,
       )
     }
 
@@ -99,11 +102,13 @@ describe("workspace ownership boundary", () => {
     expect(enginePackage).not.toHaveProperty("dependencies")
   })
 
-  it("keeps dependency ownership exclusively in the TUI package", () => {
+  it("keeps dependency ownership inside workspace packages", () => {
     expect(rootPackage).not.toHaveProperty("dependencies")
     expect(rootPackage).not.toHaveProperty("devDependencies")
     expect(tuiPackage.dependencies).toEqual(EXPECTED_DEPENDENCIES)
     expect(tuiPackage.devDependencies).toEqual(EXPECTED_DEV_DEPENDENCIES)
+    expect(desktopPackage.dependencies).toBeDefined()
+    expect(desktopPackage.devDependencies).toBeDefined()
   })
 
   it("keeps lifecycle authority in the TUI package", () => {
