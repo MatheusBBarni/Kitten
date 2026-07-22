@@ -9,9 +9,22 @@ import {
   bindDesktopRenderer,
   type DesktopRpcClient,
 } from "./client.ts";
+import { WorkflowBoard } from "./features/board/WorkflowBoardContainer.tsx";
+import { SettingsView } from "./settings/SettingsView.tsx";
+import type { SettingsTheme } from "../shared/desktopRpc.ts";
 
 export type { DesktopRpcClient } from "./client.ts";
 export { bindDesktopRenderer } from "./client.ts";
+
+export function applyThemePreference(theme: SettingsTheme): void {
+  if (theme === "system") {
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.style.colorScheme = "light dark";
+    return;
+  }
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+}
 
 export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient> {
   const { Electroview } = await import("electrobun/view");
@@ -37,8 +50,47 @@ export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient>
     getCardInspector(cardId) {
       return rpc.request.getCardInspector({ cardId });
     },
+    getBoard(boardId) {
+      return rpc.request.getBoard(boardId === undefined ? {} : { boardId });
+    },
+    getCatalog(catalogId) {
+      return rpc.request.getCatalog(catalogId === undefined ? {} : { catalogId });
+    },
+    executeWorkflowCommand(commandId, command) {
+      return rpc.request.executeWorkflowCommand({ commandId, command });
+    },
+    startAttempt(commandId, input) {
+      return rpc.request.startAttempt({ commandId, input });
+    },
+    queueFollowUp(commandId, input) {
+      return rpc.request.queueFollowUp({ commandId, input });
+    },
+    removeQueuedFollowUp(commandId, input) {
+      return rpc.request.removeQueuedFollowUp({ commandId, input });
+    },
+    confirmQueuedFollowUp(commandId, input) {
+      return rpc.request.confirmQueuedFollowUp({ commandId, input });
+    },
+    answerAttention(commandId, input) {
+      return rpc.request.answerAttention({ commandId, input });
+    },
     reviewCard(commandId, input) {
       return rpc.request.reviewCard({ commandId, input });
+    },
+    getSettings() {
+      return rpc.request.getSettings({});
+    },
+    updatePreferences(commandId, input) {
+      return rpc.request.updatePreferences({ commandId, input });
+    },
+    updateProfileDefaults(commandId, input) {
+      return rpc.request.updateProfileDefaults({ commandId, input });
+    },
+    updateCatalogRoots(commandId, input) {
+      return rpc.request.updateCatalogRoots({ commandId, input });
+    },
+    setExecutionLimit(commandId, input) {
+      return rpc.request.setExecutionLimit({ commandId, input });
     },
     subscribe(listener) {
       if (disposed) return () => {};
@@ -57,11 +109,17 @@ export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient>
 
 export function DesktopApp({ client }: { readonly client: DesktopRpcClient }) {
   const [bootstrap, setBootstrap] = useState<BootstrapEnvelope | null>(null);
+  const [route, setRoute] = useState<"board" | "settings">("board");
 
   useEffect(() => {
     const lifecycle = bindDesktopRenderer(client, setBootstrap);
     return () => lifecycle.dispose();
   }, [client]);
+
+  useEffect(() => {
+    if (bootstrap?.result.status !== "ok") return;
+    applyThemePreference(bootstrap.result.projection.settings.theme);
+  }, [bootstrap]);
 
   if (bootstrap === null) return <main aria-busy="true">Loading Kitten Orchestrator…</main>;
   if (bootstrap.result.status === "unavailable") {
@@ -69,11 +127,27 @@ export function DesktopApp({ client }: { readonly client: DesktopRpcClient }) {
   }
 
   return (
-    <main>
-      <h1>Kitten Orchestrator</h1>
-      <p>The local Workflow Board is ready for setup.</p>
-      <small>Projection revision {bootstrap.result.projection.revision}</small>
-    </main>
+    <>
+      <nav className="app-route-nav" aria-label="Application views">
+        <button
+          type="button"
+          className="button button-ghost"
+          aria-current={route === "board" ? "page" : undefined}
+          onClick={() => setRoute("board")}
+        >
+          Workflow Board
+        </button>
+        <button
+          type="button"
+          className="button button-ghost"
+          aria-current={route === "settings" ? "page" : undefined}
+          onClick={() => setRoute("settings")}
+        >
+          Settings
+        </button>
+      </nav>
+      {route === "board" ? <WorkflowBoard client={client} /> : <SettingsView client={client} />}
+    </>
   );
 }
 

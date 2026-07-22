@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add card-owned managed worktrees
 type: backend
 complexity: high
@@ -32,12 +32,12 @@ principles but owns a new card model and refuses unverified or unsafe cleanup.
 
 ## Subtasks
 
-- [ ] 10.1 Define card binding, lifecycle, and bounded-unavailable contracts.
-- [ ] 10.2 Verify trusted repository identity and managed-root containment.
-- [ ] 10.3 Provision a new verified branch and worktree with a persisted baseline.
-- [ ] 10.4 Reconcile and reuse existing card bindings across fresh attempts.
-- [ ] 10.5 Persist binding lifecycle and implement refusal-first explicit cleanup.
-- [ ] 10.6 Add temporary-repository safety and persistence coverage.
+- [x] 10.1 Define card binding, lifecycle, and bounded-unavailable contracts.
+- [x] 10.2 Verify trusted repository identity and managed-root containment.
+- [x] 10.3 Provision a new verified branch and worktree with a persisted baseline.
+- [x] 10.4 Reconcile and reuse existing card bindings across fresh attempts.
+- [x] 10.5 Persist binding lifecycle and implement refusal-first explicit cleanup.
+- [x] 10.6 Add temporary-repository safety and persistence coverage.
 
 ## Implementation Details
 
@@ -77,12 +77,12 @@ model or ownership source for desktop.
 ## Tests
 
 - Unit tests:
-  - [ ] Verify canonical contained worktree, unique branch, and parent checkout invariants.
-  - [ ] Reject symlink, external, dirty, divergent, unmerged, gitlink, detached, and mismatched bindings.
-  - [ ] Verify rollback removes only clean artifacts created by the failing provision.
+  - [x] Verify canonical contained worktree, unique branch, and parent checkout invariants.
+  - [x] Reject symlink, external, dirty, divergent, unmerged, gitlink, detached, and mismatched bindings.
+  - [x] Verify rollback removes only clean artifacts created by the failing provision.
 - Integration tests:
-  - [ ] Reopen a temporary SQLite projection and reuse the exact card binding on a fresh attempt.
-  - [ ] Verify cleanup refuses live, dirty, unmerged, external, and unverified bindings.
+  - [x] Reopen a temporary SQLite projection and reuse the exact card binding on a fresh attempt.
+  - [x] Verify cleanup refuses live, dirty, unmerged, external, and unverified bindings.
 - Test coverage target: >=80%
 - All tests must pass
 

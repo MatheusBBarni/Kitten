@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Relocate Cockpit runtime, launcher, and build surface into packages/tui
 type: refactor
 complexity: critical
@@ -32,12 +32,12 @@ make packages-only application boundaries real.
 
 ## Subtasks
 
-- [ ] 2.1 Relocate the preserved Cockpit source tree into the TUI package.
-- [ ] 2.2 Establish the narrowly scoped source compatibility bridge.
-- [ ] 2.3 Relocate the compile surface and package-local entrypoint resolution.
-- [ ] 2.4 Establish the temporary build compatibility bridge.
-- [ ] 2.5 Relocate bin surfaces while preserving shim behavior.
-- [ ] 2.6 Prove package-local build, launcher, and self-check compatibility.
+- [x] 2.1 Relocate the preserved Cockpit source tree into the TUI package.
+- [x] 2.2 Establish the narrowly scoped source compatibility bridge.
+- [x] 2.3 Relocate the compile surface and package-local entrypoint resolution.
+- [x] 2.4 Establish the temporary build compatibility bridge.
+- [x] 2.5 Relocate bin surfaces while preserving shim behavior.
+- [x] 2.6 Prove package-local build, launcher, and self-check compatibility.
 
 ## Implementation Details
 
@@ -77,13 +77,13 @@ relative imports and defer contract-suite relocation to its own task.
 ## Tests
 
 - Unit tests:
-  - [ ] Import the package-local build module and assert package-local entrypoint resolution.
-  - [ ] Preserve artifact-name, worker-embedding, platform-package, and version lookup behavior.
-  - [ ] Exercise package-local and bridge resolution branches.
+  - [x] Import the package-local build module and assert package-local entrypoint resolution.
+  - [x] Preserve artifact-name, worker-embedding, platform-package, and version lookup behavior.
+  - [x] Exercise package-local and bridge resolution branches.
 - Integration tests:
-  - [ ] Run the package-local self-check and host-local compile.
-  - [ ] Run the published launcher fixture against the package-local bin.
-  - [ ] Verify compiled output retains self-check and provenance behavior.
+  - [x] Run the package-local self-check and host-local compile.
+  - [x] Run the published launcher fixture against the package-local bin.
+  - [x] Verify compiled output retains self-check and provenance behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

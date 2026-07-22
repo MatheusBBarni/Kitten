@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build settings for profiles, catalog roots, defaults, and execution limit
 type: frontend
 complexity: medium

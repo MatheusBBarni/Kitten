@@ -160,16 +160,37 @@ export function getCardInspectorProjection(
   cardId: CardId,
 ): CardInspectorProjection | null {
   const snapshot = journal.snapshot();
-  if (!snapshot.cards.some((card) => card.cardId === cardId)) return null;
+  const card = snapshot.cards.find((candidate) => candidate.cardId === cardId);
+  if (card === undefined) return null;
   const stored = new Map(snapshot.attemptInspectors.map((inspector) => [inspector.attemptId, inspector]));
   const attempts = snapshot.runContexts
     .filter((context) => context.card.cardId === cardId)
     .sort((left, right) => Number(left.generation) - Number(right.generation))
     .map((context) => stored.get(context.attemptId) ?? createAttemptInspectorProjection(context));
+  const attemptIds = new Set(attempts.map(({ attemptId }) => attemptId));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     cardId,
     revision: snapshot.revision,
+    card,
     attempts,
+    attemptStates: snapshot.attempts
+      .filter(({ attemptId }) => attemptIds.has(attemptId))
+      .sort((left, right) => Number(left.generation) - Number(right.generation))
+      .map(({ attemptId, generation, state, failure, createdAt, startedAt, terminalAt }) => ({
+        attemptId,
+        generation,
+        state,
+        failure,
+        createdAt,
+        startedAt,
+        terminalAt,
+      })),
+    followUpQueues: snapshot.followUpQueues
+      .filter(({ attemptId }) => attemptIds.has(attemptId))
+      .sort((left, right) => Number(left.generation) - Number(right.generation)),
+    attentionBlockers: snapshot.attentionBlockers
+      .filter(({ attemptId }) => attemptIds.has(attemptId))
+      .sort((left, right) => left.createdAt - right.createdAt || left.blockerId.localeCompare(right.blockerId)),
   };
 }

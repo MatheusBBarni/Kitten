@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add readiness, runnable validation, global scheduler, Run Context, and fresh ACP startup
 type: backend
 complexity: critical
@@ -33,12 +33,12 @@ attempt state before external agent work.
 
 ## Subtasks
 
-- [ ] 11.1 Define runnable result and immutable Run Context contracts.
-- [ ] 11.2 Validate card, board, Skill, worktree, profile, and capacity preconditions.
-- [ ] 11.3 Implement global scheduler reservation and release behavior.
-- [ ] 11.4 Commit attempt creation and immutable context before external ACP startup.
-- [ ] 11.5 Bind fresh Direct ACP sessions to generations and certified readiness.
-- [ ] 11.6 Add validation, scheduler, context, and fresh-start evidence.
+- [x] 11.1 Define runnable result and immutable Run Context contracts.
+- [x] 11.2 Validate card, board, Skill, worktree, profile, and capacity preconditions.
+- [x] 11.3 Implement global scheduler reservation and release behavior.
+- [x] 11.4 Commit attempt creation and immutable context before external ACP startup.
+- [x] 11.5 Bind fresh Direct ACP sessions to generations and certified readiness.
+- [x] 11.6 Add validation, scheduler, context, and fresh-start evidence.
 
 ## Implementation Details
 
@@ -78,13 +78,13 @@ owner.
 ## Tests
 
 - Unit tests:
-  - [ ] Return distinct reasons for invalid Skill, unavailable profile, untrusted repository, unavailable worktree, invalid override, and exhausted capacity.
-  - [ ] Admit exactly one default-capacity attempt across boards and release it without leaks.
-  - [ ] Prove catalog/default/card changes cannot rewrite a stored Run Context.
+  - [x] Return distinct reasons for invalid Skill, unavailable profile, untrusted repository, unavailable worktree, invalid override, and exhausted capacity.
+  - [x] Admit exactly one default-capacity attempt across boards and release it without leaks.
+  - [x] Prove catalog/default/card changes cannot rewrite a stored Run Context.
 - Integration tests:
-  - [ ] With fake Direct ACP, assert journaled attempt/context precede newSession.
-  - [ ] Assert each new attempt gets a distinct session and generation with no loadSession call.
-  - [ ] Verify handshake or startup failure persists an isolated legible result.
+  - [x] With fake Direct ACP, assert journaled attempt/context precede newSession.
+  - [x] Assert each new attempt gets a distinct session and generation with no loadSession call.
+  - [x] Verify handshake or startup failure persists an isolated legible result.
 - Test coverage target: >=80%
 - All tests must pass
 

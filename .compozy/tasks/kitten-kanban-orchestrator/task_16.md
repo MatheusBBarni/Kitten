@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build inspector, persistent composer, queue, and attention presentation
 type: frontend
 complexity: high
@@ -33,12 +33,12 @@ renderer-side ACP, persistence, or cancellation behavior.
 
 ## Subtasks
 
-- [ ] 16.1 Build selected-card query/event wiring and chronological attempt timeline.
-- [ ] 16.2 Build always-mounted composer with distinct idle and active typed commands.
-- [ ] 16.3 Render queue states, removal, and explicit post-terminal confirmation.
-- [ ] 16.4 Build focused structured Attention Blocker presentation and outcome controls.
-- [ ] 16.5 Handle projection/activity/conflict refresh with draft, scroll, and focus safety.
-- [ ] 16.6 Add fake-RPC renderer and accessibility coverage.
+- [x] 16.1 Build selected-card query/event wiring and chronological attempt timeline.
+- [x] 16.2 Build always-mounted composer with distinct idle and active typed commands.
+- [x] 16.3 Render queue states, removal, and explicit post-terminal confirmation.
+- [x] 16.4 Build focused structured Attention Blocker presentation and outcome controls.
+- [x] 16.5 Handle projection/activity/conflict refresh with draft, scroll, and focus safety.
+- [x] 16.6 Add fake-RPC renderer and accessibility coverage.
 
 ## Implementation Details
 
@@ -79,14 +79,14 @@ active steering behavior is not a desktop implementation source.
 ## Tests
 
 - Unit tests:
-  - [ ] Render newest transcript expanded with Run Context, activity, question/outcome, operator, and terminal/interrupted evidence.
-  - [ ] Keep composer rendered for idle, running, needs_attention, failed, cancelled, interrupted, ready_for_review, and completed states.
-  - [ ] Assert idle submit calls startAttempt while active submit calls only queueFollowUp.
-  - [ ] Verify queue removal and head confirmation; confirm calls once and never auto-sends.
-  - [ ] Verify a blocker focuses a labeled form, announces status, and blocks ordinary submit while retaining history/composer.
+  - [x] Render newest transcript expanded with Run Context, activity, question/outcome, operator, and terminal/interrupted evidence.
+  - [x] Keep composer rendered for idle, running, needs_attention, failed, cancelled, interrupted, ready_for_review, and completed states.
+  - [x] Assert idle submit calls startAttempt while active submit calls only queueFollowUp.
+  - [x] Verify queue removal and head confirmation; confirm calls once and never auto-sends.
+  - [x] Verify a blocker focuses a labeled form, announces status, and blocks ordinary submit while retaining history/composer.
 - Integration tests:
-  - [ ] Refresh one selected card from fake activity/projection events without stale-card contamination.
-  - [ ] Route each terminal blocker outcome through answerAttention with stable identity.
+  - [x] Refresh one selected card from fake activity/projection events without stale-card contamination.
+  - [x] Route each terminal blocker outcome through answerAttention with stable identity.
 - Test coverage target: >=80%
 - All tests must pass
 

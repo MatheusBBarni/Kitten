@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Rebase CLI, CI, release, installer, and docs on packages/tui
 type: infra
 complexity: high
@@ -32,12 +32,12 @@ packages-only architecture.
 
 ## Subtasks
 
-- [ ] 4.1 Finalize workspace-only and package-local public metadata ownership.
-- [ ] 4.2 Rebase CI validation commands to the TUI package.
-- [ ] 4.3 Re-scope release-please, workflow, build, and publication metadata.
-- [ ] 4.4 Rebase installer, launcher, checksum, and provenance delivery paths.
-- [ ] 4.5 Update README and release documentation.
-- [ ] 4.6 Run delivery contracts and remove the final compatibility bridges.
+- [x] 4.1 Finalize workspace-only and package-local public metadata ownership.
+- [x] 4.2 Rebase CI validation commands to the TUI package.
+- [x] 4.3 Re-scope release-please, workflow, build, and publication metadata.
+- [x] 4.4 Rebase installer, launcher, checksum, and provenance delivery paths.
+- [x] 4.5 Update README and release documentation.
+- [x] 4.6 Run delivery contracts and remove the final compatibility bridges.
 
 ## Implementation Details
 
@@ -76,13 +76,13 @@ behavior; do not use this migration work to expand desktop product scope.
 ## Tests
 
 - Unit tests:
-  - [ ] Assert CI and release workflows reference package-local commands and preserve the native matrix.
-  - [ ] Assert release-please and README paths target the TUI package.
-  - [ ] Preserve build, installer, launcher, and package-shim contract branches.
+  - [x] Assert CI and release workflows reference package-local commands and preserve the native matrix.
+  - [x] Assert release-please and README paths target the TUI package.
+  - [x] Preserve build, installer, launcher, and package-shim contract branches.
 - Integration tests:
-  - [ ] Run compiled artifact self-check, version, help, and safe update-refusal checks.
-  - [ ] Install a packed local npm package under Node without Bun.
-  - [ ] Verify installer checksum and provenance behavior.
+  - [x] Run compiled artifact self-check, version, help, and safe update-refusal checks.
+  - [x] Install a packed local npm package under Node without Bun.
+  - [x] Verify installer checksum and provenance behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

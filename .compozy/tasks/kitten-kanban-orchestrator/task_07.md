@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build SQLite migrations, immutable journal, and projection rebuild
 type: backend
 complexity: high
@@ -33,11 +33,11 @@ desktop persistence.
 
 ## Subtasks
 
-- [ ] 7.1 Create an injectable package-local SQLite factory and migration runner.
-- [ ] 7.2 Define validated journal event, snapshot, and projection-delta contracts.
-- [ ] 7.3 Implement atomic append, idempotency checks, and projection writes.
-- [ ] 7.4 Implement deterministic rebuild and comparison-friendly reads.
-- [ ] 7.5 Add migration, transaction, duplicate, and rebuild-equivalence evidence.
+- [x] 7.1 Create an injectable package-local SQLite factory and migration runner.
+- [x] 7.2 Define validated journal event, snapshot, and projection-delta contracts.
+- [x] 7.3 Implement atomic append, idempotency checks, and projection writes.
+- [x] 7.4 Implement deterministic rebuild and comparison-friendly reads.
+- [x] 7.5 Add migration, transaction, duplicate, and rebuild-equivalence evidence.
 
 ## Implementation Details
 
@@ -75,12 +75,12 @@ store only as a reference for strict schemas and injectable atomicity tests.
 ## Tests
 
 - Unit tests:
-  - [ ] Verify ordered migrations, current-version no-op, and failed-migration rollback.
-  - [ ] Reject malformed events, duplicate IDs, and duplicate or non-monotonic attempt sequences.
-  - [ ] Verify failed projection writes roll back their paired journal event.
+  - [x] Verify ordered migrations, current-version no-op, and failed-migration rollback.
+  - [x] Reject malformed events, duplicate IDs, and duplicate or non-monotonic attempt sequences.
+  - [x] Verify failed projection writes roll back their paired journal event.
 - Integration tests:
-  - [ ] Append, reopen, and snapshot a temporary database with deltas only after commit.
-  - [ ] Replay persisted ordered events and assert rebuild equals live projections.
+  - [x] Append, reopen, and snapshot a temporary database with deltas only after commit.
+  - [x] Replay persisted ordered events and assert rebuild equals live projections.
 - Test coverage target: >=80%
 - All tests must pass
 

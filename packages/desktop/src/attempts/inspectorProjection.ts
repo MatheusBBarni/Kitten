@@ -12,6 +12,10 @@ import type {
 } from "@kitten/engine";
 import { isDirectAcpTerminalState, validateNormalizedAttemptActivity } from "@kitten/engine";
 import type { BoardId, CardId, StageId } from "../workflow/workflowTypes.ts";
+import type { CardProjection } from "../workflow/workflowTypes.ts";
+import type { AttentionBlockerProjection } from "../attention/contracts.ts";
+import type { AttemptProjection } from "./contracts.ts";
+import type { FollowUpQueueProjection } from "./followUpQueue.ts";
 import { deepFreeze, type RunContext } from "./contracts.ts";
 
 export interface InspectorRunContextEvidence {
@@ -100,10 +104,24 @@ export interface AttemptInspectorProjection {
 }
 
 export interface CardInspectorProjection {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly cardId: CardId;
   readonly revision: number;
+  readonly card: CardProjection;
   readonly attempts: readonly AttemptInspectorProjection[];
+  readonly attemptStates: readonly InspectorAttemptState[];
+  readonly followUpQueues: readonly FollowUpQueueProjection[];
+  readonly attentionBlockers: readonly AttentionBlockerProjection[];
+}
+
+export interface InspectorAttemptState {
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+  readonly state: AttemptProjection["state"];
+  readonly failure: AttemptProjection["failure"];
+  readonly createdAt: number;
+  readonly startedAt: number | null;
+  readonly terminalAt: number | null;
 }
 
 function evidence(event: NormalizedAttemptEvent): InspectorEntryEvidence {

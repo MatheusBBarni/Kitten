@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build accessible canvas, stage setup, and board card interactions
 type: frontend
 complexity: high

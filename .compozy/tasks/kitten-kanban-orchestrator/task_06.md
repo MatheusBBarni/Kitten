@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Scaffold Electrobun desktop host, typed RPC, renderer, and test harness
 type: infra
 complexity: high
@@ -32,11 +32,11 @@ worktree, catalog, or attempt implementation yet.
 
 ## Subtasks
 
-- [ ] 6.1 Add desktop package metadata, pinned dependencies, and Electrobun configuration.
-- [ ] 6.2 Define shared RPC commands, results, and host messages.
-- [ ] 6.3 Create Bun host window and RPC lifecycle registration.
-- [ ] 6.4 Create minimal React renderer bootstrap from a safe snapshot.
-- [ ] 6.5 Add fake-window harness and typed host/renderer contract coverage.
+- [x] 6.1 Add desktop package metadata, pinned dependencies, and Electrobun configuration.
+- [x] 6.2 Define shared RPC commands, results, and host messages.
+- [x] 6.3 Create Bun host window and RPC lifecycle registration.
+- [x] 6.4 Create minimal React renderer bootstrap from a safe snapshot.
+- [x] 6.5 Add fake-window harness and typed host/renderer contract coverage.
 
 ## Implementation Details
 
@@ -76,12 +76,12 @@ HTTP API.
 ## Tests
 
 - Unit tests:
-  - [ ] Discriminate typed bootstrap, conflict, and unavailable RPC results.
-  - [ ] Reject RPC payloads that expose privileged resources.
-  - [ ] Verify renderer imports no host implementation.
+  - [x] Discriminate typed bootstrap, conflict, and unavailable RPC results.
+  - [x] Reject RPC payloads that expose privileged resources.
+  - [x] Verify renderer imports no host implementation.
 - Integration tests:
-  - [ ] Use a fake window to prove handler registration, bootstrap response, host message delivery, and teardown removal.
-  - [ ] Verify no HTTP listener is registered.
+  - [x] Use a fake window to prove handler registration, bootstrap response, host message delivery, and teardown removal.
+  - [x] Verify no HTTP listener is registered.
 - Test coverage target: >=80%
 - All tests must pass
 

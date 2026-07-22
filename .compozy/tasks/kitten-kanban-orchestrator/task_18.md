@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add interrupted-attempt recovery, review disposition, and layered acceptance gates
 type: backend
 complexity: high
@@ -33,12 +33,12 @@ coverage; it never presents a live ACP session as restored.
 
 ## Subtasks
 
-- [ ] 18.1 Add transactional startup recovery for unclosed attempt projections.
-- [ ] 18.2 Expose honest interruption history and new-attempt eligibility.
-- [ ] 18.3 Persist version-fenced human review disposition and completion semantics.
-- [ ] 18.4 Add content-free recovery and review diagnostics.
-- [ ] 18.5 Add SQLite, fake-ACP, ask_user, and worktree recovery/review coverage.
-- [ ] 18.6 Add desktop smoke and CI/package layered acceptance gates.
+- [x] 18.1 Add transactional startup recovery for unclosed attempt projections.
+- [x] 18.2 Expose honest interruption history and new-attempt eligibility.
+- [x] 18.3 Persist version-fenced human review disposition and completion semantics.
+- [x] 18.4 Add content-free recovery and review diagnostics.
+- [x] 18.5 Add SQLite, fake-ACP, ask_user, and worktree recovery/review coverage.
+- [x] 18.6 Add desktop smoke and CI/package layered acceptance gates.
 
 ## Implementation Details
 
@@ -81,15 +81,15 @@ session restoration or publishing work.
 ## Tests
 
 - Unit tests:
-  - [ ] Interrupt only non-terminal attempts exactly once and preserve stage without auto-completion.
-  - [ ] Reject stale/wrong-state review and require an explicit review disposition for completion.
-  - [ ] Assert recovery/review diagnostics contain no prompt, transcript, Skill, path, or credential content.
+  - [x] Interrupt only non-terminal attempts exactly once and preserve stage without auto-completion.
+  - [x] Reject stale/wrong-state review and require an explicit review disposition for completion.
+  - [x] Assert recovery/review diagnostics contain no prompt, transcript, Skill, path, or credential content.
 - Integration tests:
-  - [ ] Restart running and needs-attention fixtures, retain context/transcript/blocker/queue evidence, clear live lock, and start no ACP work.
-  - [ ] Start a later attempt and prove distinct session plus retained card worktree.
-  - [ ] Reject stale blocker route after recovery and dispatch neither answer nor queued follow-up automatically.
-  - [ ] Prove final success reaches ready_for_review and only reviewCard completes without Git publication/removal operations.
-  - [ ] Run blank board through configured Skill, blocker outcome, confirmed follow-up, review, and no-publication desktop smoke.
+  - [x] Restart running and needs-attention fixtures, retain context/transcript/blocker/queue evidence, clear live lock, and start no ACP work.
+  - [x] Start a later attempt and prove distinct session plus retained card worktree.
+  - [x] Reject stale blocker route after recovery and dispatch neither answer nor queued follow-up automatically.
+  - [x] Prove final success reaches ready_for_review and only reviewCard completes without Git publication/removal operations.
+  - [x] Run blank board through configured Skill, blocker outcome, confirmed follow-up, review, and no-publication desktop smoke.
 - Test coverage target: >=80%
 - All tests must pass
 

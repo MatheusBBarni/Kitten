@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Bind scoped ask_user, Attention Blockers, stage lock, and notifications
 type: backend
 complexity: high
@@ -33,12 +33,12 @@ one content-minimized card-scoped notification.
 
 ## Subtasks
 
-- [ ] 14.1 Register, forward, revoke, and reject stale attempt-generation routes.
-- [ ] 14.2 Persist Attention Blocker creation, outcome, and one-active-blocker enforcement.
-- [ ] 14.3 Apply needs_attention status and Stage Lock through card authority.
-- [ ] 14.4 Persist outcome before same-attempt resume and queue release.
-- [ ] 14.5 Add idempotent card-safe notification diagnostics.
-- [ ] 14.6 Prove bridge, persistence, lock, and notification behavior.
+- [x] 14.1 Register, forward, revoke, and reject stale attempt-generation routes.
+- [x] 14.2 Persist Attention Blocker creation, outcome, and one-active-blocker enforcement.
+- [x] 14.3 Apply needs_attention status and Stage Lock through card authority.
+- [x] 14.4 Persist outcome before same-attempt resume and queue release.
+- [x] 14.5 Add idempotent card-safe notification diagnostics.
+- [x] 14.6 Prove bridge, persistence, lock, and notification behavior.
 
 ## Implementation Details
 
@@ -79,13 +79,13 @@ lifecycle, durable audit state, and notification policy.
 ## Tests
 
 - Unit tests:
-  - [ ] Persist submitted, skipped, timed-out, and cancelled outcomes exactly once.
-  - [ ] Reject stale generation, duplicate call ID, invalid capability, closed attempt, and second active blocker.
-  - [ ] Verify blocker changes Execution Status only and rejects every stage movement.
-  - [ ] Verify notification fires once with only card/action metadata and failure leaves blocker unchanged.
+  - [x] Persist submitted, skipped, timed-out, and cancelled outcomes exactly once.
+  - [x] Reject stale generation, duplicate call ID, invalid capability, closed attempt, and second active blocker.
+  - [x] Verify blocker changes Execution Status only and rejects every stage movement.
+  - [x] Verify notification fires once with only card/action metadata and failure leaves blocker unchanged.
 - Integration tests:
-  - [ ] Run a fake ACP scoped route through blocker form, needs_attention, committed outcome, and same-attempt resume.
-  - [ ] Assert ordinary queue confirmation/submission is unavailable until blocker outcome commits.
+  - [x] Run a fake ACP scoped route through blocker form, needs_attention, committed outcome, and same-attempt resume.
+  - [x] Assert ordinary queue confirmation/submission is unavailable until blocker outcome commits.
 - Test coverage target: >=80%
 - All tests must pass
 

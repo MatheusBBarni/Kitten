@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add deterministic project-plus-user Skill Catalog and snapshots
 type: backend
 complexity: high
@@ -33,12 +33,12 @@ selectable identities rather than free-text instructions.
 
 ## Subtasks
 
-- [ ] 9.1 Define catalog root, entry, diagnostic, and snapshot contracts.
-- [ ] 9.2 Resolve and canonicalize project and user roots deterministically.
-- [ ] 9.3 Validate Skill files, digest content, and deduplicate aliases.
-- [ ] 9.4 Surface collision and invalid-root diagnostics with stable selection identity.
-- [ ] 9.5 Persist/rebuild catalog projections and immutable snapshots.
-- [ ] 9.6 Add isolated filesystem and temporary-SQLite coverage.
+- [x] 9.1 Define catalog root, entry, diagnostic, and snapshot contracts.
+- [x] 9.2 Resolve and canonicalize project and user roots deterministically.
+- [x] 9.3 Validate Skill files, digest content, and deduplicate aliases.
+- [x] 9.4 Surface collision and invalid-root diagnostics with stable selection identity.
+- [x] 9.5 Persist/rebuild catalog projections and immutable snapshots.
+- [x] 9.6 Add isolated filesystem and temporary-SQLite coverage.
 
 ## Implementation Details
 
@@ -78,12 +78,12 @@ implicit selection rule.
 ## Tests
 
 - Unit tests:
-  - [ ] Verify a project entry orders before a user entry and distinct same-name paths surface a collision.
-  - [ ] Deduplicate two symlink aliases resolving to one Skill location.
-  - [ ] Diagnose missing, unreadable, malformed, non-UTF8, and empty Skill files.
-  - [ ] Verify changed bytes change digest/identity while an earlier snapshot remains exact.
+  - [x] Verify a project entry orders before a user entry and distinct same-name paths surface a collision.
+  - [x] Deduplicate two symlink aliases resolving to one Skill location.
+  - [x] Diagnose missing, unreadable, malformed, non-UTF8, and empty Skill files.
+  - [x] Verify changed bytes change digest/identity while an earlier snapshot remains exact.
 - Integration tests:
-  - [ ] Reopen and rebuild persisted catalog entries and diagnostics without changing ordering or identity.
+  - [x] Reopen and rebuild persisted catalog entries and diagnostics without changing ordering or identity.
 - Test coverage target: >=80%
 - All tests must pass
 

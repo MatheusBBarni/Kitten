@@ -6,6 +6,9 @@ import type {
   QueueFollowUpInput,
   RemoveQueuedFollowUpInput,
 } from "../attempts/attemptCoordinator.ts";
+import type { AttemptGeneration, AttemptId, QuestionId } from "@kitten/engine";
+import type { AttentionOutcome } from "../attention/contracts.ts";
+import type { CardId } from "../workflow/workflowTypes.ts";
 import type {
   ReviewCardInput,
   ReviewCardResult,
@@ -41,9 +44,57 @@ export interface DesktopFollowUpRpc {
   confirmQueuedFollowUp(request: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
 }
 
+export interface StartAttemptRpcInput {
+  readonly cardId: CardId;
+  readonly expectedCardVersion: number;
+  readonly initialPrompt: string;
+}
+
+export interface AnswerAttentionRpcInput {
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+  readonly blockerId: QuestionId;
+  readonly expectedVersion: number;
+  readonly outcome: AttentionOutcome;
+}
+
+export interface InspectorRpcRequest<Input> {
+  readonly commandId: string;
+  readonly input: Input;
+}
+
 export interface ReviewRpcRequest<Input> {
   readonly commandId: string;
   readonly input: Input;
+}
+
+export type InspectorCommandResult =
+  | { readonly status: "ok" }
+  | {
+      readonly status: "conflict";
+      readonly conflict: {
+        readonly kind: "inspector_command";
+        readonly code: "stale_card" | "stale_attempt" | "stale_generation" | "stale_version";
+        readonly message: string;
+      };
+    }
+  | {
+      readonly status: "rejected";
+      readonly reason: {
+        readonly code: string;
+        readonly message: string;
+      };
+    };
+
+export interface InspectorCommandResultEnvelope {
+  readonly kind: "inspector_command_result";
+  readonly commandId: string;
+  readonly result: InspectorCommandResult;
+}
+
+export interface DesktopInspectorRpc {
+  startAttempt(request: InspectorRpcRequest<StartAttemptRpcInput>): Promise<InspectorCommandResultEnvelope>;
+  answerAttention(request: InspectorRpcRequest<AnswerAttentionRpcInput>): Promise<InspectorCommandResultEnvelope>;
 }
 
 export type ReviewCardRpcResult = ReviewCardResult | {

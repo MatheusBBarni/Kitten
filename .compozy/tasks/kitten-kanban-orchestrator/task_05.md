@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Extract minimal protocol-free engine contracts
 type: refactor
 complexity: high
@@ -32,11 +32,11 @@ or ACP-wire ownership.
 
 ## Subtasks
 
-- [ ] 5.1 Create the engine package and constrained export boundary.
-- [ ] 5.2 Define opaque IDs and protocol-free readiness and attempt contracts.
-- [ ] 5.3 Define normalized activity and scoped-question outcome contracts.
-- [ ] 5.4 Adapt the TUI seam to consume minimal shared contracts.
-- [ ] 5.5 Prove forbidden imports and contract behavior with focused tests.
+- [x] 5.1 Create the engine package and constrained export boundary.
+- [x] 5.2 Define opaque IDs and protocol-free readiness and attempt contracts.
+- [x] 5.3 Define normalized activity and scoped-question outcome contracts.
+- [x] 5.4 Adapt the TUI seam to consume minimal shared contracts.
+- [x] 5.5 Prove forbidden imports and contract behavior with focused tests.
 
 ## Implementation Details
 
@@ -75,12 +75,12 @@ that both applications can consume without lifecycle ownership.
 ## Tests
 
 - Unit tests:
-  - [ ] Preserve activity ordering metadata without importing ACP values.
-  - [ ] Classify ready and not-ready profile outcomes.
-  - [ ] Reject stale generation and non-terminal question outcomes.
+  - [x] Preserve activity ordering metadata without importing ACP values.
+  - [x] Classify ready and not-ready profile outcomes.
+  - [x] Reject stale generation and non-terminal question outcomes.
 - Integration tests:
-  - [ ] Run existing TUI AgentConnection and readiness contracts through the adaptation.
-  - [ ] Assert engine imports no TUI or desktop application surface.
+  - [x] Run existing TUI AgentConnection and readiness contracts through the adaptation.
+  - [x] Assert engine imports no TUI or desktop application surface.
 - Test coverage target: >=80%
 - All tests must pass
 

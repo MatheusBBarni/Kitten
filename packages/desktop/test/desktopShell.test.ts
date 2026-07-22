@@ -11,6 +11,11 @@ import {
   createBootstrapEnvelope,
   createCommandResultEnvelope,
   createEmptyDesktopSnapshot,
+  createEmptyWorkflowBoardProjection,
+  createEmptyWorkflowCatalogProjection,
+  createWorkflowBoardEnvelope,
+  createWorkflowCatalogEnvelope,
+  createWorkflowCommandEnvelope,
   type BootstrapEnvelope,
   type CardInspectorEnvelope,
   type HostMessageEnvelope,
@@ -20,10 +25,15 @@ import {
   type DesktopRpcClient,
 } from "../src/renderer/client.ts";
 import type { DesktopFollowUpRpc } from "../src/host/desktopRpc.ts";
+import type { DesktopBoardRpc } from "../src/host/boardRpc.ts";
+import { workflowIds, type WorkflowCommand } from "../src/workflow/workflowTypes.ts";
 
 class FakeWindowFactory implements DesktopWindowFactory {
   handler?: (params: { readonly knownRevision?: number }) => Promise<BootstrapEnvelope>;
   inspectorHandler?: (params: { readonly cardId: string }) => Promise<CardInspectorEnvelope>;
+  boardHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onGetBoard"];
+  catalogHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onGetCatalog"];
+  workflowCommandHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onExecuteWorkflowCommand"];
   queueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onQueueFollowUp"];
   removeQueueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onRemoveQueuedFollowUp"];
   confirmQueueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onConfirmQueuedFollowUp"];
@@ -34,12 +44,18 @@ class FakeWindowFactory implements DesktopWindowFactory {
   open({
     onGetDesktopSnapshot,
     onGetCardInspector,
+    onGetBoard,
+    onGetCatalog,
+    onExecuteWorkflowCommand,
     onQueueFollowUp,
     onRemoveQueuedFollowUp,
     onConfirmQueuedFollowUp,
   }: Parameters<DesktopWindowFactory["open"]>[0]) {
     this.handler = onGetDesktopSnapshot;
     this.inspectorHandler = onGetCardInspector;
+    this.boardHandler = onGetBoard;
+    this.catalogHandler = onGetCatalog;
+    this.workflowCommandHandler = onExecuteWorkflowCommand;
     this.queueHandler = onQueueFollowUp;
     this.removeQueueHandler = onRemoveQueuedFollowUp;
     this.confirmQueueHandler = onConfirmQueuedFollowUp;
@@ -48,6 +64,9 @@ class FakeWindowFactory implements DesktopWindowFactory {
       removeHandlers: () => {
         this.handler = undefined;
         this.inspectorHandler = undefined;
+        this.boardHandler = undefined;
+        this.catalogHandler = undefined;
+        this.workflowCommandHandler = undefined;
         this.queueHandler = undefined;
         this.removeQueueHandler = undefined;
         this.confirmQueueHandler = undefined;
@@ -115,6 +134,93 @@ describe("typed desktop RPC contract", () => {
 });
 
 describe("desktop host lifecycle", () => {
+  test("serves typed board defaults and publishes only committed host projections", async () => {
+    const command: WorkflowCommand = {
+      kind: "bind_repository",
+      mutationId: workflowIds.mutation("mutation-shell-board"),
+      boardId: workflowIds.board("board-shell"),
+      repositoryPath: "/repo",
+    };
+    const defaultFactory = new FakeWindowFactory();
+    const defaultShell = startDesktopShell({ windowFactory: defaultFactory });
+    expect(await defaultFactory.boardHandler?.({})).toMatchObject({
+      result: { status: "ok", projection: { board: null } },
+    });
+    expect(await defaultFactory.catalogHandler?.({})).toMatchObject({
+      result: { status: "ok", projection: { catalog: { catalogId: "default" } } },
+    });
+    expect(await defaultFactory.workflowCommandHandler?.({ commandId: "command-default", command })).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "workflow_command", reason: "not_ready" } },
+    });
+    const stoppedBoard = defaultFactory.boardHandler;
+    const stoppedCatalog = defaultFactory.catalogHandler;
+    const stoppedCommand = defaultFactory.workflowCommandHandler;
+    defaultShell.stop();
+    expect(await stoppedBoard?.({})).toMatchObject({ result: { status: "unavailable", unavailable: { reason: "host_stopped" } } });
+    expect(await stoppedCatalog?.({})).toMatchObject({ result: { status: "unavailable", unavailable: { reason: "host_stopped" } } });
+    expect(await stoppedCommand?.({ commandId: "command-stopped", command })).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "desktop_host", reason: "host_stopped" } },
+    });
+
+    const projected = {
+      ...createEmptyWorkflowBoardProjection(7),
+      board: { boardId: command.boardId, repositoryPath: "/repo", workflowVersion: 1, createdAt: 1, updatedAt: 1 },
+    };
+    let outcome: "committed" | "idempotent" = "committed";
+    const boardRpc: DesktopBoardRpc = {
+      async getBoard() {
+        return createWorkflowBoardEnvelope({ status: "ok", projection: projected });
+      },
+      async getCatalog() {
+        return createWorkflowCatalogEnvelope({ status: "ok", projection: createEmptyWorkflowCatalogProjection(7) });
+      },
+      async executeWorkflowCommand({ commandId }) {
+        return createWorkflowCommandEnvelope(commandId, { status: "ok", outcome, projection: projected });
+      },
+    };
+    const factory = new FakeWindowFactory();
+    startDesktopShell({ windowFactory: factory, boardRpc });
+    expect(await factory.boardHandler?.({})).toMatchObject({ result: { status: "ok", projection: { revision: 7 } } });
+    expect(await factory.catalogHandler?.({})).toMatchObject({ result: { status: "ok", projection: { revision: 7 } } });
+    expect(await factory.workflowCommandHandler?.({ commandId: "command-committed", command })).toMatchObject({
+      result: { status: "ok", outcome: "committed" },
+    });
+    expect(factory.messages).toEqual([{
+      kind: "projection_committed",
+      messageId: "workflow:command-committed",
+      revision: 7,
+    }]);
+    outcome = "idempotent";
+    await factory.workflowCommandHandler?.({ commandId: "command-idempotent", command });
+    expect(factory.messages).toHaveLength(1);
+  });
+
+  test("fails board RPC closed when the host adapter throws", async () => {
+    const failure = async (): Promise<never> => { throw new Error("unsafe projection"); };
+    const boardRpc: DesktopBoardRpc = {
+      getBoard: failure,
+      getCatalog: failure,
+      executeWorkflowCommand: failure,
+    };
+    const command: WorkflowCommand = {
+      kind: "bind_repository",
+      mutationId: workflowIds.mutation("mutation-board-failure"),
+      boardId: workflowIds.board("board-failure"),
+      repositoryPath: "/repo",
+    };
+    const factory = new FakeWindowFactory();
+    startDesktopShell({ windowFactory: factory, boardRpc });
+    expect(await factory.boardHandler?.({})).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "workflow_board", reason: "projection_rejected" } },
+    });
+    expect(await factory.catalogHandler?.({})).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "workflow_catalog", reason: "projection_rejected" } },
+    });
+    expect(await factory.workflowCommandHandler?.({ commandId: "command-failure", command })).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "workflow_command", reason: "projection_rejected" } },
+    });
+  });
+
   test("registers and forwards typed follow-up queue operations with a not-ready fallback", async () => {
     const unavailableFactory = new FakeWindowFactory();
     startDesktopShell({ windowFactory: unavailableFactory });
@@ -261,6 +367,25 @@ describe("renderer lifecycle", () => {
       async getCardInspector() {
         throw new Error("not used by bootstrap lifecycle");
       },
+      async getBoard() {
+        throw new Error("not used by bootstrap lifecycle");
+      },
+      async getCatalog() {
+        throw new Error("not used by bootstrap lifecycle");
+      },
+      async executeWorkflowCommand() {
+        throw new Error("not used by bootstrap lifecycle");
+      },
+      async startAttempt() { throw new Error("not used by bootstrap lifecycle"); },
+      async queueFollowUp() { throw new Error("not used by bootstrap lifecycle"); },
+      async removeQueuedFollowUp() { throw new Error("not used by bootstrap lifecycle"); },
+      async confirmQueuedFollowUp() { throw new Error("not used by bootstrap lifecycle"); },
+      async answerAttention() { throw new Error("not used by bootstrap lifecycle"); },
+      async getSettings() { throw new Error("not used by bootstrap lifecycle"); },
+      async updatePreferences() { throw new Error("not used by bootstrap lifecycle"); },
+      async updateProfileDefaults() { throw new Error("not used by bootstrap lifecycle"); },
+      async updateCatalogRoots() { throw new Error("not used by bootstrap lifecycle"); },
+      async setExecutionLimit() { throw new Error("not used by bootstrap lifecycle"); },
       subscribe(listener) {
         subscriber = listener;
         return () => {

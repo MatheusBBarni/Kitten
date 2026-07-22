@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Persist normalized ACP activity and expose inspector/transcript projections
 type: backend
 complexity: high
@@ -32,11 +32,11 @@ has committed.
 
 ## Subtasks
 
-- [ ] 12.1 Define validated attempt-activity envelope and sequence policy.
-- [ ] 12.2 Bind Direct ACP activity subscription to attempt ID and generation.
-- [ ] 12.3 Append accepted activity and update inspector/transcript projections atomically.
-- [ ] 12.4 Publish typed inspector query and committed-activity messages.
-- [ ] 12.5 Add replay, stale, duplicate, terminal, and RPC evidence.
+- [x] 12.1 Define validated attempt-activity envelope and sequence policy.
+- [x] 12.2 Bind Direct ACP activity subscription to attempt ID and generation.
+- [x] 12.3 Append accepted activity and update inspector/transcript projections atomically.
+- [x] 12.4 Publish typed inspector query and committed-activity messages.
+- [x] 12.5 Add replay, stale, duplicate, terminal, and RPC evidence.
 
 ## Implementation Details
 
@@ -75,13 +75,13 @@ durable authority.
 ## Tests
 
 - Unit tests:
-  - [ ] Reject duplicate event ID, sequence gap/regression, stale generation, malformed payload, and post-terminal activity without a journal/projection change.
-  - [ ] Coalesce chunks and tool updates into one chronological transcript with a correct terminal outcome.
-  - [ ] Prove linked Run Context remains immutable during projection rebuild.
+  - [x] Reject duplicate event ID, sequence gap/regression, stale generation, malformed payload, and post-terminal activity without a journal/projection change.
+  - [x] Coalesce chunks and tool updates into one chronological transcript with a correct terminal outcome.
+  - [x] Prove linked Run Context remains immutable during projection rebuild.
 - Integration tests:
-  - [ ] Assert event commit precedes typed activity/projection notification.
-  - [ ] Rebuild after reopen and compare inspector history to the live projection.
-  - [ ] Verify one attempt cannot appear in another card inspector or expose privileged handles.
+  - [x] Assert event commit precedes typed activity/projection notification.
+  - [x] Rebuild after reopen and compare inspector history to the live projection.
+  - [x] Verify one attempt cannot appear in another card inspector or expose privileged handles.
 - Test coverage target: >=80%
 - All tests must pass
 

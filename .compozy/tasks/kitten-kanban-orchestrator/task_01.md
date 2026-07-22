@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Establish private workspace and TUI package boundary
 type: infra
 complexity: high
@@ -31,12 +31,12 @@ the migration-safe ownership model without changing Cockpit behavior.
 
 ## Subtasks
 
-- [ ] 1.1 Convert root metadata into workspace-only coordination.
-- [ ] 1.2 Create the TUI manifest with the preserved published Cockpit contract.
-- [ ] 1.3 Establish package-local TypeScript configuration with the existing compiler policy.
-- [ ] 1.4 Adjust root TypeScript discovery for the temporary package boundary.
-- [ ] 1.5 Add workspace ownership and forwarding contract coverage.
-- [ ] 1.6 Regenerate and inspect the lockfile without unrelated upgrades.
+- [x] 1.1 Convert root metadata into workspace-only coordination.
+- [x] 1.2 Create the TUI manifest with the preserved published Cockpit contract.
+- [x] 1.3 Establish package-local TypeScript configuration with the existing compiler policy.
+- [x] 1.4 Adjust root TypeScript discovery for the temporary package boundary.
+- [x] 1.5 Add workspace ownership and forwarding contract coverage.
+- [x] 1.6 Regenerate and inspect the lockfile without unrelated upgrades.
 
 ## Implementation Details
 
@@ -75,12 +75,12 @@ migration slice.
 ## Tests
 
 - Unit tests:
-  - [ ] Parse both manifests and reject non-private root ownership or missing packages/* membership.
-  - [ ] Assert the TUI package owns bin and runtime scripts with exact dependency versions.
-  - [ ] Reject a root script that directly selects the Cockpit source entrypoint.
+  - [x] Parse both manifests and reject non-private root ownership or missing packages/* membership.
+  - [x] Assert the TUI package owns bin and runtime scripts with exact dependency versions.
+  - [x] Reject a root script that directly selects the Cockpit source entrypoint.
 - Integration tests:
-  - [ ] Run TUI typecheck through the temporary boundary.
-  - [ ] Verify a root forwarding command invokes the same TUI lifecycle.
+  - [x] Run TUI typecheck through the temporary boundary.
+  - [x] Verify a root forwarding command invokes the same TUI lifecycle.
 - Test coverage target: >=80%
 - All tests must pass
 

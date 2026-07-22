@@ -189,7 +189,16 @@ describe("fake ACP to durable inspector and typed RPC", () => {
     const isolatedEnvelope = await factory.inspectorHandler?.({ cardId: OTHER_CARD_ID });
     expect(isolatedEnvelope?.result).toEqual({
       status: "ok",
-      projection: { schemaVersion: 1, cardId: OTHER_CARD_ID, revision: journal.snapshot().revision, attempts: [] },
+      projection: {
+        schemaVersion: 2,
+        cardId: OTHER_CARD_ID,
+        revision: journal.snapshot().revision,
+        card: card(OTHER_CARD_ID, 4),
+        attempts: [],
+        attemptStates: [],
+        followUpQueues: [],
+        attentionBlockers: [],
+      },
     });
 
     const live = journal.snapshot();

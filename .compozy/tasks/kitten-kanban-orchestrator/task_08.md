@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add workflow board, stage, edge, and card projections/commands
 type: backend
 complexity: high
@@ -33,11 +33,11 @@ from Execution Status.
 
 ## Subtasks
 
-- [ ] 8.1 Define immutable workflow IDs, projections, commands, and conflict results.
-- [ ] 8.2 Implement linear-path validation, stage ordering, and successor calculation.
-- [ ] 8.3 Implement version-fenced board, stage, and card command handling.
-- [ ] 8.4 Materialize committed workflow and card projections.
-- [ ] 8.5 Add domain and temporary-SQLite workflow command evidence.
+- [x] 8.1 Define immutable workflow IDs, projections, commands, and conflict results.
+- [x] 8.2 Implement linear-path validation, stage ordering, and successor calculation.
+- [x] 8.3 Implement version-fenced board, stage, and card command handling.
+- [x] 8.4 Materialize committed workflow and card projections.
+- [x] 8.5 Add domain and temporary-SQLite workflow command evidence.
 
 ## Implementation Details
 
@@ -77,13 +77,13 @@ identity validation is supplied by its dedicated task.
 ## Tests
 
 - Unit tests:
-  - [ ] Accept editable starter and custom linear paths and reject disconnected, branched, joined, or cyclic edges.
-  - [ ] Verify deterministic stage reordering and stage/execution-status separation.
-  - [ ] Reject stale versions and stage movement while a card is locked.
-  - [ ] Verify immediate-successor progression and final ready_for_review outcome without completion.
+  - [x] Accept editable starter and custom linear paths and reject disconnected, branched, joined, or cyclic edges.
+  - [x] Verify deterministic stage reordering and stage/execution-status separation.
+  - [x] Reject stale versions and stage movement while a card is locked.
+  - [x] Verify immediate-successor progression and final ready_for_review outcome without completion.
 - Integration tests:
-  - [ ] Assert command event and projection commit atomically in temporary SQLite.
-  - [ ] Reopen and rebuild a board/card view with unchanged ordering and versions.
+  - [x] Assert command event and projection commit atomically in temporary SQLite.
+  - [x] Reopen and rebuild a board/card view with unchanged ordering and versions.
 - Test coverage target: >=80%
 - All tests must pass
 

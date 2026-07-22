@@ -17,6 +17,7 @@ export type ReserveResult =
 export interface GlobalAttemptScheduler {
   readonly limit: number;
   readonly activeCount: number;
+  setLimit(limit: number): void;
   inspect(cardId: CardId): SchedulerAdmission;
   reserve(cardId: CardId): ReserveResult;
   release(reservation: SchedulerReservation): boolean;
@@ -30,7 +31,7 @@ export interface CreateGlobalAttemptSchedulerOptions {
 export function createGlobalAttemptScheduler(
   options: CreateGlobalAttemptSchedulerOptions = {},
 ): GlobalAttemptScheduler {
-  const limit = options.limit ?? 1;
+  let limit = options.limit ?? 1;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Global execution limit must be a positive integer");
   const createReservationId = options.createReservationId ?? (() => crypto.randomUUID());
   const byCard = new Map<CardId, SchedulerReservation>();
@@ -43,9 +44,17 @@ export function createGlobalAttemptScheduler(
   };
 
   return {
-    limit,
+    get limit() {
+      return limit;
+    },
     get activeCount() {
       return byId.size;
+    },
+    setLimit(nextLimit) {
+      if (!Number.isSafeInteger(nextLimit) || nextLimit < 1) {
+        throw new Error("Global execution limit must be a positive integer");
+      }
+      limit = nextLimit;
     },
     inspect,
     reserve(cardId) {

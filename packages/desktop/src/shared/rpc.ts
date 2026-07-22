@@ -6,19 +6,71 @@ import type {
 } from "../attempts/inspectorProjection.ts";
 import type { BoardId, CardId } from "../workflow/workflowTypes.ts";
 import type {
+  BoardProjection,
+  CardProjection,
+  EdgeProjection,
+  StageProjection,
+  WorkflowCommand,
+  WorkflowConflict,
+  WorkflowRejection,
+} from "../workflow/workflowTypes.ts";
+import type { CatalogProjection } from "../persistence/eventJournal.ts";
+import type {
   ConfirmQueuedFollowUpInput,
   QueueFollowUpInput,
   RemoveQueuedFollowUpInput,
 } from "../attempts/attemptCoordinator.ts";
 import type {
+  AnswerAttentionRpcInput,
   FollowUpRpcRequest,
   FollowUpRpcResultEnvelope,
+  InspectorCommandResultEnvelope,
+  InspectorRpcRequest,
   ReviewCardRpcEnvelope,
   ReviewRpcRequest,
+  StartAttemptRpcInput,
 } from "../host/desktopRpc.ts";
 import type { ReviewCardInput } from "../host/reviewDisposition.ts";
-export type { ReviewCardRpcEnvelope } from "../host/desktopRpc.ts";
+import type {
+  DesktopSettingsProjection,
+  SetExecutionLimitInput,
+  SettingsCommandEnvelope,
+  SettingsCommandRequest,
+  SettingsCommandResult,
+  SettingsEnvelope,
+  SettingsQueryResult,
+  SettingsSection,
+  SettingsTheme,
+  UpdateCatalogRootsInput,
+  UpdatePreferencesInput,
+  UpdateProfileDefaultsInput,
+} from "./desktopRpc.ts";
+export type {
+  AnswerAttentionRpcInput,
+  FollowUpRpcResultEnvelope,
+  InspectorCommandResultEnvelope,
+  ReviewCardRpcEnvelope,
+  StartAttemptRpcInput,
+} from "../host/desktopRpc.ts";
 export type { ReviewCardInput } from "../host/reviewDisposition.ts";
+export type {
+  DesktopSettingsProjection,
+  DesktopSettingsRpc,
+  FutureCardProfileDefaults,
+  SetExecutionLimitInput,
+  SettingsCommandEnvelope,
+  SettingsCommandRequest,
+  SettingsCommandResult,
+  SettingsEnvelope,
+  SettingsProfileProjection,
+  SettingsQueryResult,
+  SettingsSection,
+  SettingsTheme,
+  SettingsUnavailable,
+  UpdateCatalogRootsInput,
+  UpdatePreferencesInput,
+  UpdateProfileDefaultsInput,
+} from "./desktopRpc.ts";
 
 export type JsonPrimitive = boolean | number | string | null;
 export type ProjectionValue =
@@ -35,9 +87,24 @@ export interface DesktopSnapshot {
     readonly boardCount: 0;
   };
   readonly settings: {
-    readonly theme: "system";
-    readonly executionLimit: 1;
+    readonly theme: SettingsTheme;
+    readonly executionLimit: number;
   };
+}
+
+export interface WorkflowBoardProjection {
+  readonly kind: "workflow_board_projection";
+  readonly revision: number;
+  readonly board: BoardProjection | null;
+  readonly stages: readonly StageProjection[];
+  readonly edges: readonly EdgeProjection[];
+  readonly cards: readonly CardProjection[];
+}
+
+export interface WorkflowCatalogProjection {
+  readonly kind: "workflow_catalog_projection";
+  readonly revision: number;
+  readonly catalog: CatalogProjection;
 }
 
 export interface RpcSuccess<TProjection> {
@@ -57,9 +124,49 @@ export interface RpcConflict {
 export interface RpcUnavailable {
   readonly status: "unavailable";
   readonly unavailable: {
-    readonly resource: "desktop_host" | "desktop_snapshot" | "card_inspector";
+    readonly resource:
+      | "desktop_host"
+      | "desktop_snapshot"
+      | "workflow_board"
+      | "workflow_catalog"
+      | "workflow_command"
+      | "card_inspector"
+      | "desktop_settings"
+      | "settings_command";
     readonly reason: "host_stopped" | "projection_rejected" | "not_ready";
   };
+}
+
+export type WorkflowCommandRpcResult =
+  | {
+      readonly status: "ok";
+      readonly outcome: "committed" | "idempotent";
+      readonly projection: WorkflowBoardProjection;
+    }
+  | {
+      readonly status: "conflict";
+      readonly conflict: WorkflowConflict;
+    }
+  | {
+      readonly status: "rejected";
+      readonly rejection: WorkflowRejection;
+    }
+  | RpcUnavailable;
+
+export interface WorkflowBoardEnvelope {
+  readonly kind: "workflow_board";
+  readonly result: DesktopQueryResult<WorkflowBoardProjection>;
+}
+
+export interface WorkflowCatalogEnvelope {
+  readonly kind: "workflow_catalog";
+  readonly result: DesktopQueryResult<WorkflowCatalogProjection>;
+}
+
+export interface WorkflowCommandEnvelope {
+  readonly kind: "workflow_command_result";
+  readonly commandId: string;
+  readonly result: WorkflowCommandRpcResult;
 }
 
 export type DesktopQueryResult<TProjection> =
@@ -101,6 +208,12 @@ export type HostMessageEnvelope =
       readonly revision: number;
     }
   | {
+      readonly kind: "settings_committed";
+      readonly messageId: string;
+      readonly revision: number;
+      readonly changedSections: readonly SettingsSection[];
+    }
+  | {
       readonly kind: "host_unavailable";
       readonly messageId: string;
       readonly reason: RpcUnavailable["unavailable"]["reason"];
@@ -128,6 +241,18 @@ export type DesktopRpcSchema = {
         params: { readonly cardId: string };
         response: CardInspectorEnvelope;
       };
+      getBoard: {
+        params: { readonly boardId?: string };
+        response: WorkflowBoardEnvelope;
+      };
+      getCatalog: {
+        params: { readonly catalogId?: string };
+        response: WorkflowCatalogEnvelope;
+      };
+      executeWorkflowCommand: {
+        params: { readonly commandId: string; readonly command: WorkflowCommand };
+        response: WorkflowCommandEnvelope;
+      };
       queueFollowUp: {
         params: FollowUpRpcRequest<QueueFollowUpInput>;
         response: FollowUpRpcResultEnvelope;
@@ -140,9 +265,37 @@ export type DesktopRpcSchema = {
         params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>;
         response: FollowUpRpcResultEnvelope;
       };
+      startAttempt: {
+        params: InspectorRpcRequest<StartAttemptRpcInput>;
+        response: InspectorCommandResultEnvelope;
+      };
+      answerAttention: {
+        params: InspectorRpcRequest<AnswerAttentionRpcInput>;
+        response: InspectorCommandResultEnvelope;
+      };
       reviewCard: {
         params: ReviewRpcRequest<ReviewCardInput>;
         response: ReviewCardRpcEnvelope;
+      };
+      getSettings: {
+        params: { readonly knownRevision?: number };
+        response: SettingsEnvelope;
+      };
+      updatePreferences: {
+        params: SettingsCommandRequest<UpdatePreferencesInput>;
+        response: SettingsCommandEnvelope;
+      };
+      updateProfileDefaults: {
+        params: SettingsCommandRequest<UpdateProfileDefaultsInput>;
+        response: SettingsCommandEnvelope;
+      };
+      updateCatalogRoots: {
+        params: SettingsCommandRequest<UpdateCatalogRootsInput>;
+        response: SettingsCommandEnvelope;
+      };
+      setExecutionLimit: {
+        params: SettingsCommandRequest<SetExecutionLimitInput>;
+        response: SettingsCommandEnvelope;
       };
     };
     messages: Record<never, never>;
@@ -240,6 +393,25 @@ export function createEmptyDesktopSnapshot(): DesktopSnapshot {
   };
 }
 
+export function createEmptyWorkflowBoardProjection(revision = 0): WorkflowBoardProjection {
+  return {
+    kind: "workflow_board_projection",
+    revision,
+    board: null,
+    stages: [],
+    edges: [],
+    cards: [],
+  };
+}
+
+export function createEmptyWorkflowCatalogProjection(revision = 0): WorkflowCatalogProjection {
+  return {
+    kind: "workflow_catalog_projection",
+    revision,
+    catalog: { catalogId: "default", roots: [], entries: [], diagnostics: [] },
+  };
+}
+
 export function createBootstrapEnvelope(
   result: DesktopQueryResult<DesktopSnapshot>,
 ): BootstrapEnvelope {
@@ -250,6 +422,38 @@ export function createCardInspectorEnvelope(
   result: DesktopQueryResult<CardInspectorProjection>,
 ): CardInspectorEnvelope {
   return assertProjectionPayload({ kind: "card_inspector", result });
+}
+
+export function createWorkflowBoardEnvelope(
+  result: DesktopQueryResult<WorkflowBoardProjection>,
+): WorkflowBoardEnvelope {
+  return assertProjectionPayload({ kind: "workflow_board", result });
+}
+
+export function createWorkflowCatalogEnvelope(
+  result: DesktopQueryResult<WorkflowCatalogProjection>,
+): WorkflowCatalogEnvelope {
+  return assertProjectionPayload({ kind: "workflow_catalog", result });
+}
+
+export function createWorkflowCommandEnvelope(
+  commandId: string,
+  result: WorkflowCommandRpcResult,
+): WorkflowCommandEnvelope {
+  if (commandId.trim().length === 0) throw new Error("Workflow commandId must be non-empty");
+  return assertProjectionPayload({ kind: "workflow_command_result", commandId, result });
+}
+
+export function createSettingsEnvelope(result: SettingsQueryResult): SettingsEnvelope {
+  return assertProjectionPayload({ kind: "desktop_settings", result });
+}
+
+export function createSettingsCommandEnvelope(
+  commandId: string,
+  result: SettingsCommandResult,
+): SettingsCommandEnvelope {
+  if (commandId.trim().length === 0) throw new Error("Settings commandId must be non-empty");
+  return assertProjectionPayload({ kind: "settings_command_result", commandId, result });
 }
 
 export function createCommandResultEnvelope<TProjection>(
