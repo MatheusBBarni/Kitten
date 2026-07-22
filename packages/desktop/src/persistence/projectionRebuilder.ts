@@ -22,6 +22,7 @@ export function rebuildProjections(database: Database): PersistenceSnapshot {
     database.run("DELETE FROM attention_blocker_projections");
     database.run("DELETE FROM follow_up_queue_projections");
     database.run("DELETE FROM attempt_inspector_projections");
+    database.run("DELETE FROM review_dispositions");
     database.run("DELETE FROM attempts");
     database.run("DELETE FROM card_worktrees");
     database.run("DELETE FROM cards");

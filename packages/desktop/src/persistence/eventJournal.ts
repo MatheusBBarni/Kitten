@@ -126,6 +126,18 @@ export type JournalEvent =
       readonly kind: "attention_blocker_committed";
       readonly cardId: CardId;
       readonly payload: AttentionBlockerEventPayload;
+    })
+  | (JournalEventBase & {
+      readonly kind: "attempt_interrupted";
+      readonly cardId: CardId;
+      readonly attemptId: string;
+      readonly attemptSequence: number;
+      readonly payload: AttemptInterruptedEventPayload;
+    })
+  | (JournalEventBase & {
+      readonly kind: "review_disposition_committed";
+      readonly cardId: CardId;
+      readonly payload: ReviewDispositionEventPayload;
     });
 
 export interface CatalogProjection {
@@ -165,6 +177,25 @@ export interface AttentionBlockerEventPayload {
   readonly changes: readonly ProjectionChange[];
 }
 
+export interface AttemptInterruptedEventPayload {
+  readonly generation: AttemptGeneration;
+  readonly changes: readonly ProjectionChange[];
+}
+
+export interface ReviewDispositionProjection {
+  readonly reviewId: string;
+  readonly boardId: BoardId;
+  readonly cardId: CardId;
+  readonly disposition: "approved";
+  readonly reviewer: "operator";
+  readonly reviewedCardVersion: number;
+  readonly occurredAt: number;
+}
+
+export interface ReviewDispositionEventPayload {
+  readonly changes: readonly ProjectionChange[];
+}
+
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
@@ -178,7 +209,8 @@ export type ProjectionChange =
   | { readonly entity: "run_context"; readonly operation: "insert"; readonly value: RunContext }
   | { readonly entity: "attempt_inspector"; readonly operation: "upsert"; readonly value: AttemptInspectorProjection }
   | { readonly entity: "follow_up_queue"; readonly operation: "upsert"; readonly value: FollowUpQueueProjection }
-  | { readonly entity: "attention_blocker"; readonly operation: "upsert"; readonly value: AttentionBlockerProjection };
+  | { readonly entity: "attention_blocker"; readonly operation: "upsert"; readonly value: AttentionBlockerProjection }
+  | { readonly entity: "review_disposition"; readonly operation: "insert"; readonly value: ReviewDispositionProjection };
 
 export interface WorkflowCommandEventPayload {
   readonly mutationId: string;
@@ -212,10 +244,17 @@ export interface PersistenceSnapshot {
   readonly attemptInspectors: readonly AttemptInspectorProjection[];
   readonly followUpQueues: readonly FollowUpQueueProjection[];
   readonly attentionBlockers: readonly AttentionBlockerProjection[];
+  readonly reviewDispositions: readonly ReviewDispositionProjection[];
+}
+
+export interface JournalBatchAppendInput {
+  readonly event: unknown;
+  readonly options?: JournalAppendOptions;
 }
 
 export interface EventJournal {
   append(input: unknown, options?: JournalAppendOptions): ProjectionDelta;
+  appendBatch(inputs: readonly JournalBatchAppendInput[]): readonly ProjectionDelta[];
   snapshot(): PersistenceSnapshot;
   events(): readonly JournalEvent[];
   eventById(eventId: string): JournalEvent | null;
@@ -619,6 +658,27 @@ function parseCardProjection(value: unknown): CardProjection {
   };
 }
 
+function parseReviewDisposition(value: unknown): ReviewDispositionProjection {
+  assertRecord(value, "review disposition");
+  assertExactKeys(value, [
+    "reviewId", "boardId", "cardId", "disposition", "reviewer", "reviewedCardVersion", "occurredAt",
+  ]);
+  if (value.disposition !== "approved" || value.reviewer !== "operator") {
+    throw new JournalValidationError("review disposition must be an explicit operator approval");
+  }
+  const reviewedCardVersion = integerField(value.reviewedCardVersion, "reviewedCardVersion");
+  if (reviewedCardVersion === 0) throw new JournalValidationError("reviewedCardVersion must be positive");
+  return {
+    reviewId: stringField(value.reviewId, "reviewId"),
+    boardId: stringField(value.boardId, "review boardId") as BoardId,
+    cardId: stringField(value.cardId, "review cardId") as CardId,
+    disposition: "approved",
+    reviewer: "operator",
+    reviewedCardVersion,
+    occurredAt: integerField(value.occurredAt, "review occurredAt"),
+  };
+}
+
 const WORKFLOW_COMMAND_KINDS: readonly WorkflowCommandKind[] = [
   "bind_repository",
   "create_stage",
@@ -697,9 +757,56 @@ function parseProjectionChange(value: unknown): ProjectionChange {
       } catch (error) {
         throw new JournalValidationError(error instanceof Error ? error.message : "Attention Blocker is invalid");
       }
+    case "review_disposition":
+      if (operation !== "insert") throw new JournalValidationError("review disposition changes must insert");
+      return { entity, operation, value: parseReviewDisposition(value.value) };
     default:
       throw new JournalValidationError("projection change entity is unsupported");
   }
+}
+
+function parseAttemptInterruptedPayload(value: unknown): AttemptInterruptedEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["generation", "changes"]);
+  if (!Array.isArray(value.changes) || value.changes.length < 3) {
+    throw new JournalValidationError("attempt interruption requires attempt, card, and inspector changes");
+  }
+  const changes = value.changes.map(parseProjectionChange);
+  const attempts = changes.filter((change) => change.entity === "attempt");
+  const cards = changes.filter((change) => change.entity === "card");
+  const inspectors = changes.filter((change) => change.entity === "attempt_inspector");
+  const blockers = changes.filter((change) => change.entity === "attention_blocker");
+  if (attempts.length !== 1 || attempts[0]!.value.state !== "interrupted") {
+    throw new JournalValidationError("attempt interruption requires one interrupted attempt");
+  }
+  if (cards.length !== 1 || cards[0]!.value.executionStatus !== "failed") {
+    throw new JournalValidationError("attempt interruption requires one unlocked failed card");
+  }
+  if (inspectors.length !== 1 || inspectors[0]!.value.terminalOutcome !== "interrupted") {
+    throw new JournalValidationError("attempt interruption requires one interrupted inspector outcome");
+  }
+  if (blockers.length > 1 || blockers.some((change) => change.value.active || change.value.outcome?.kind !== "cancelled")) {
+    throw new JournalValidationError("attempt interruption may only cancel one active blocker");
+  }
+  return {
+    generation: integerField(value.generation, "payload.generation") as AttemptGeneration,
+    changes,
+  };
+}
+
+function parseReviewDispositionPayload(value: unknown): ReviewDispositionEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["changes"]);
+  if (!Array.isArray(value.changes) || value.changes.length !== 2) {
+    throw new JournalValidationError("review disposition requires review and card changes");
+  }
+  const changes = value.changes.map(parseProjectionChange);
+  const reviews = changes.filter((change) => change.entity === "review_disposition");
+  const cards = changes.filter((change) => change.entity === "card");
+  if (reviews.length !== 1 || cards.length !== 1 || cards[0]!.value.executionStatus !== "completed") {
+    throw new JournalValidationError("review disposition requires one approval and one completed card");
+  }
+  return { changes };
 }
 
 function parseFollowUpQueuePayload(value: unknown): FollowUpQueueEventPayload {
@@ -1024,6 +1131,58 @@ export function validateJournalEvent(input: unknown): JournalEvent {
       }
       if (actor !== "agent" && actor !== "operator" && actor !== "system") {
         throw new JournalValidationError("Attention Blocker actor is unsupported");
+      }
+      return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
+    }
+    case "attempt_interrupted": {
+      const payload = parseAttemptInterruptedPayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      const attemptId = stringField(input.attemptId, "attemptId");
+      const attemptProjection = payload.changes.find((change) => change.entity === "attempt")!.value;
+      const card = payload.changes.find((change) => change.entity === "card")!.value;
+      const inspector = payload.changes.find((change) => change.entity === "attempt_inspector")!.value;
+      if (
+        actor !== "system"
+        || attemptProjection.boardId !== boardId
+        || attemptProjection.cardId !== cardId
+        || attemptProjection.attemptId !== attemptId
+        || attemptProjection.generation !== payload.generation
+        || card.boardId !== boardId
+        || card.cardId !== cardId
+        || inspector.attemptId !== attemptId
+      ) {
+        throw new JournalValidationError("attempt interruption identity is inconsistent");
+      }
+      return {
+        eventId,
+        boardId,
+        cardId,
+        attemptId,
+        attemptSequence: integerField(input.attemptSequence, "attemptSequence"),
+        actor,
+        kind: input.kind,
+        occurredAt,
+        payload,
+      };
+    }
+    case "review_disposition_committed": {
+      const payload = parseReviewDispositionPayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      const review = payload.changes.find((change) => change.entity === "review_disposition")!.value;
+      const card = payload.changes.find((change) => change.entity === "card")!.value;
+      if (
+        actor !== "operator"
+        || Object.hasOwn(input, "attemptId")
+        || Object.hasOwn(input, "attemptSequence")
+        || review.boardId !== boardId
+        || review.cardId !== cardId
+        || card.boardId !== boardId
+        || card.cardId !== cardId
+        || eventId !== `review:${review.reviewId}`
+        || review.reviewedCardVersion + 1 !== card.version
+        || review.occurredAt !== occurredAt
+      ) {
+        throw new JournalValidationError("review disposition identity is inconsistent");
       }
       return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
     }
@@ -1514,6 +1673,23 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
       upsert.finalize();
       return;
     }
+    case "review_disposition": {
+      const value = change.value;
+      database.query<void, [string, string, string, string, string, number, number]>(`
+        INSERT INTO review_dispositions(
+          review_id, board_id, card_id, disposition, reviewer, reviewed_card_version, occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        value.reviewId,
+        value.boardId,
+        value.cardId,
+        value.disposition,
+        value.reviewer,
+        value.reviewedCardVersion,
+        value.occurredAt,
+      );
+      return;
+    }
   }
 }
 
@@ -1651,6 +1827,10 @@ export function applyProjectionEvent(
               ? [{ entity: "follow_up_queue", operation: "upsert", value: event.payload.queue }]
               : event.kind === "attention_blocker_committed"
                 ? event.payload.changes
+                : event.kind === "attempt_interrupted"
+                  ? event.payload.changes
+                  : event.kind === "review_disposition_committed"
+                    ? event.payload.changes
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -1770,6 +1950,16 @@ interface FollowUpQueueRow {
 
 interface AttentionBlockerRow {
   readonly projectionJson: string;
+}
+
+interface ReviewDispositionRow {
+  readonly reviewId: string;
+  readonly boardId: string;
+  readonly cardId: string;
+  readonly disposition: string;
+  readonly reviewer: string;
+  readonly reviewedCardVersion: number;
+  readonly occurredAt: number;
 }
 
 function parsePersistedJson(value: string, label: string): unknown {
@@ -1958,6 +2148,15 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
   const attentionBlockers = attentionBlockerRows.map((row) => validateAttentionBlockerProjection(
     parsePersistedJson(row.projectionJson, "persisted Attention Blocker projection"),
   ));
+  const reviewDispositionsStatement = database.query<ReviewDispositionRow, []>(`
+    SELECT review_id AS reviewId, board_id AS boardId, card_id AS cardId,
+      disposition, reviewer, reviewed_card_version AS reviewedCardVersion,
+      occurred_at AS occurredAt
+    FROM review_dispositions ORDER BY occurred_at, review_id
+  `);
+  const reviewDispositionRows = reviewDispositionsStatement.all();
+  reviewDispositionsStatement.finalize();
+  const reviewDispositions = reviewDispositionRows.map(parseReviewDisposition);
 
   return {
     schemaVersion: 1,
@@ -1977,6 +2176,7 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     attemptInspectors,
     followUpQueues,
     attentionBlockers,
+    reviewDispositions,
   };
 }
 
@@ -2055,72 +2255,94 @@ function assertProjectionPreconditions(
   }
 }
 
+function appendValidatedEvent(
+  database: Database,
+  event: JournalEvent,
+  options: JournalAppendOptions,
+): ProjectionDelta {
+  const duplicate = database.query<{ readonly present: number }, [string]>(
+    "SELECT 1 AS present FROM journal_events WHERE event_id = ?",
+  ).get(event.eventId);
+  if (duplicate !== null) throw new DuplicateJournalEventError(event.eventId);
+
+  assertProjectionPreconditions(database, options.preconditions ?? []);
+
+  if (event.attemptId !== undefined && event.attemptSequence !== undefined) {
+    const latest = database.query<{ readonly sequence: number }, [string]>(`
+      SELECT attempt_sequence AS sequence FROM journal_events
+      WHERE attempt_id = ? ORDER BY attempt_sequence DESC LIMIT 1
+    `).get(event.attemptId)?.sequence ?? null;
+    if (event.kind === "attempt_activity_committed" || event.kind === "attempt_interrupted") {
+      const expected = latest === null ? 0 : latest + 1;
+      if (event.attemptSequence !== expected) {
+        throw new AttemptActivityMutationError(
+          event.attemptSequence < expected ? "non_monotonic" : "sequence_gap",
+          `Attempt ${event.attemptId} expected sequence ${expected}, received ${event.attemptSequence}`,
+        );
+      }
+    } else if (latest !== null && event.attemptSequence <= latest) {
+      throw new AttemptSequenceError(event.attemptId, event.attemptSequence, latest);
+    }
+  }
+
+  const inserted = database.query<void, [
+    string, string, string | null, string | null, number | null, string, string, number, string,
+  ]>(`
+    INSERT INTO journal_events(
+      event_id, board_id, card_id, attempt_id, attempt_sequence,
+      actor, kind, occurred_at, payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    event.eventId,
+    event.boardId,
+    "cardId" in event && event.cardId !== undefined ? event.cardId : null,
+    event.attemptId ?? null,
+    event.attemptSequence ?? null,
+    event.actor,
+    event.kind,
+    event.occurredAt,
+    JSON.stringify(event.payload),
+  );
+  const journalOrder = Number(inserted.lastInsertRowid);
+  const changes = applyProjectionEvent(database, event);
+  database.query<void, [number]>(`
+    UPDATE projection_metadata
+    SET revision = revision + 1, last_journal_order = ?
+    WHERE singleton = 1
+  `).run(journalOrder);
+  const revision = database.query<{ readonly revision: number }, []>(
+    "SELECT revision FROM projection_metadata WHERE singleton = 1",
+  ).get()?.revision;
+  if (revision === undefined) throw new Error("Projection metadata is missing");
+  return { eventId: event.eventId, journalOrder, revision, changes };
+}
+
 export function createEventJournal(database: Database): EventJournal {
   return {
     append(input, options = {}) {
       const event = validateJournalEvent(input);
       let delta: ProjectionDelta | undefined;
       const appendTransaction = database.transaction(() => {
-        const duplicate = database.query<{ readonly present: number }, [string]>(
-          "SELECT 1 AS present FROM journal_events WHERE event_id = ?",
-        ).get(event.eventId);
-        if (duplicate !== null) throw new DuplicateJournalEventError(event.eventId);
-
-        assertProjectionPreconditions(database, options.preconditions ?? []);
-
-        if (event.attemptId !== undefined && event.attemptSequence !== undefined) {
-          const latest = database.query<{ readonly sequence: number }, [string]>(`
-            SELECT attempt_sequence AS sequence FROM journal_events
-            WHERE attempt_id = ? ORDER BY attempt_sequence DESC LIMIT 1
-          `).get(event.attemptId)?.sequence ?? null;
-          if (event.kind === "attempt_activity_committed") {
-            const expected = latest === null ? 0 : latest + 1;
-            if (event.attemptSequence !== expected) {
-              throw new AttemptActivityMutationError(
-                event.attemptSequence < expected ? "non_monotonic" : "sequence_gap",
-                `Attempt ${event.attemptId} expected sequence ${expected}, received ${event.attemptSequence}`,
-              );
-            }
-          } else if (latest !== null && event.attemptSequence <= latest) {
-            throw new AttemptSequenceError(event.attemptId, event.attemptSequence, latest);
-          }
-        }
-
-        const inserted = database.query<void, [
-          string, string, string | null, string | null, number | null, string, string, number, string,
-        ]>(`
-          INSERT INTO journal_events(
-            event_id, board_id, card_id, attempt_id, attempt_sequence,
-            actor, kind, occurred_at, payload_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          event.eventId,
-          event.boardId,
-          "cardId" in event && event.cardId !== undefined ? event.cardId : null,
-          event.attemptId ?? null,
-          event.attemptSequence ?? null,
-          event.actor,
-          event.kind,
-          event.occurredAt,
-          JSON.stringify(event.payload),
-        );
-        const journalOrder = Number(inserted.lastInsertRowid);
-        const changes = applyProjectionEvent(database, event);
-        database.query<void, [number]>(`
-          UPDATE projection_metadata
-          SET revision = revision + 1, last_journal_order = ?
-          WHERE singleton = 1
-        `).run(journalOrder);
-        const revision = database.query<{ readonly revision: number }, []>(
-          "SELECT revision FROM projection_metadata WHERE singleton = 1",
-        ).get()?.revision;
-        if (revision === undefined) throw new Error("Projection metadata is missing");
-        delta = { eventId: event.eventId, journalOrder, revision, changes };
+        delta = appendValidatedEvent(database, event, options);
       });
-
       appendTransaction.immediate();
       if (delta === undefined) throw new Error("Journal transaction committed without a delta");
       return delta;
+    },
+    appendBatch(inputs) {
+      if (inputs.length === 0) return [];
+      const validated = inputs.map(({ event, options = {} }) => ({
+        event: validateJournalEvent(event),
+        options,
+      }));
+      const deltas: ProjectionDelta[] = [];
+      const appendTransaction = database.transaction(() => {
+        for (const input of validated) {
+          deltas.push(appendValidatedEvent(database, input.event, input.options));
+        }
+      });
+      appendTransaction.immediate();
+      return deltas;
     },
     snapshot() {
       return readPersistenceSnapshot(database);

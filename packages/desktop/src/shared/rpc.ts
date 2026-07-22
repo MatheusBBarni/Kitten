@@ -10,7 +10,15 @@ import type {
   QueueFollowUpInput,
   RemoveQueuedFollowUpInput,
 } from "../attempts/attemptCoordinator.ts";
-import type { FollowUpRpcRequest, FollowUpRpcResultEnvelope } from "../host/desktopRpc.ts";
+import type {
+  FollowUpRpcRequest,
+  FollowUpRpcResultEnvelope,
+  ReviewCardRpcEnvelope,
+  ReviewRpcRequest,
+} from "../host/desktopRpc.ts";
+import type { ReviewCardInput } from "../host/reviewDisposition.ts";
+export type { ReviewCardRpcEnvelope } from "../host/desktopRpc.ts";
+export type { ReviewCardInput } from "../host/reviewDisposition.ts";
 
 export type JsonPrimitive = boolean | number | string | null;
 export type ProjectionValue =
@@ -131,6 +139,10 @@ export type DesktopRpcSchema = {
       confirmQueuedFollowUp: {
         params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>;
         response: FollowUpRpcResultEnvelope;
+      };
+      reviewCard: {
+        params: ReviewRpcRequest<ReviewCardInput>;
+        response: ReviewCardRpcEnvelope;
       };
     };
     messages: Record<never, never>;

@@ -17,8 +17,10 @@ import type {
 } from "./attempts/attemptCoordinator.ts";
 import type {
   DesktopFollowUpRpc,
+  DesktopReviewRpc,
   FollowUpRpcRequest,
   FollowUpRpcResultEnvelope,
+  ReviewCardRpcEnvelope,
 } from "./host/desktopRpc.ts";
 
 export interface DesktopWindowPort {
@@ -34,6 +36,7 @@ export interface DesktopWindowFactory {
     onQueueFollowUp(params: FollowUpRpcRequest<QueueFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
     onRemoveQueuedFollowUp(params: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
     onConfirmQueuedFollowUp(params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+    onReviewCard(params: Parameters<DesktopReviewRpc["reviewCard"]>[0]): ReturnType<DesktopReviewRpc["reviewCard"]>;
   }): DesktopWindowPort;
 }
 
@@ -47,11 +50,13 @@ export function startDesktopShell(options: {
   readonly getSnapshot?: () => DesktopSnapshot | Promise<DesktopSnapshot>;
   readonly getCardInspector?: (cardId: CardId) => CardInspectorProjection | null | Promise<CardInspectorProjection | null>;
   readonly followUpRpc?: DesktopFollowUpRpc;
+  readonly reviewRpc?: DesktopReviewRpc;
 }): DesktopShell {
   let stopped = false;
   const getSnapshot = options.getSnapshot ?? createEmptyDesktopSnapshot;
 
-  const window = options.windowFactory.open({
+  let window: DesktopWindowPort;
+  window = options.windowFactory.open({
     async onGetDesktopSnapshot() {
       if (stopped) {
         return createBootstrapEnvelope({
@@ -112,6 +117,23 @@ export function startDesktopShell(options: {
         ? unavailableFollowUp(request.commandId)
         : options.followUpRpc.confirmQueuedFollowUp(request);
     },
+    async onReviewCard(request) {
+      if (stopped) return unavailableReview(request.commandId, "host_stopped");
+      if (options.reviewRpc === undefined) return unavailableReview(request.commandId, "not_ready");
+      try {
+        const envelope = await options.reviewRpc.reviewCard(request);
+        if (envelope.result.status === "committed") {
+          window.sendHostMessage(assertHostMessage({
+            kind: "projection_committed",
+            messageId: `review:${request.commandId}`,
+            revision: envelope.result.revision,
+          }));
+        }
+        return envelope;
+      } catch {
+        return unavailableReview(request.commandId, "projection_rejected");
+      }
+    },
   });
 
   return {
@@ -138,6 +160,13 @@ function unavailableFollowUp(commandId: string): FollowUpRpcResultEnvelope {
       reason: { code: "invalid_state", message: "Follow-up commands are not ready" },
     },
   };
+}
+
+function unavailableReview(
+  commandId: string,
+  reason: "not_ready" | "host_stopped" | "projection_rejected",
+): ReviewCardRpcEnvelope {
+  return { kind: "review_card_result", commandId, result: { status: "unavailable", reason } };
 }
 
 export async function main(): Promise<DesktopShell> {

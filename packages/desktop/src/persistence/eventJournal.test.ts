@@ -136,11 +136,11 @@ describe("desktop SQLite factory and migrations", () => {
     const database = openSqliteDatabase({ filename: ":memory:" });
     try {
       expect(migrateDatabase(database, { now: () => 55 })).toEqual({
-        currentVersion: 7,
-        appliedVersions: [1, 2, 3, 4, 5, 6, 7],
+        currentVersion: 8,
+        appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       });
       expect(migrateDatabase(database, { now: () => 99 })).toEqual({
-        currentVersion: 7,
+        currentVersion: 8,
         appliedVersions: [],
       });
       expect(readAppliedMigrations(database)).toEqual([
@@ -151,6 +151,7 @@ describe("desktop SQLite factory and migrations", () => {
         { version: 5, name: "normalized_activity_and_inspector_projections" },
         { version: 6, name: "durable_confirmable_follow_up_queue" },
         { version: 7, name: "durable_attention_blockers_and_notification_results" },
+        { version: 8, name: "interrupted_attempt_recovery_and_review_dispositions" },
       ]);
 
       const tables = database.query<{ name: string }, []>(`
@@ -166,6 +167,7 @@ describe("desktop SQLite factory and migrations", () => {
         "follow_up_queue_projections",
         "journal_events",
         "projection_metadata",
+        "review_dispositions",
         "run_contexts",
         "schema_migrations",
         "skill_catalog_diagnostics",

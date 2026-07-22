@@ -6,6 +6,11 @@ import type {
   QueueFollowUpInput,
   RemoveQueuedFollowUpInput,
 } from "../attempts/attemptCoordinator.ts";
+import type {
+  ReviewCardInput,
+  ReviewCardResult,
+  ReviewDispositionService,
+} from "./reviewDisposition.ts";
 
 export interface FollowUpRpcRequest<Input> {
   readonly commandId: string;
@@ -34,6 +39,35 @@ export interface DesktopFollowUpRpc {
   queueFollowUp(request: FollowUpRpcRequest<QueueFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
   removeQueuedFollowUp(request: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
   confirmQueuedFollowUp(request: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+}
+
+export interface ReviewRpcRequest<Input> {
+  readonly commandId: string;
+  readonly input: Input;
+}
+
+export type ReviewCardRpcResult = ReviewCardResult | {
+  readonly status: "unavailable";
+  readonly reason: "not_ready" | "host_stopped" | "projection_rejected";
+};
+
+export interface ReviewCardRpcEnvelope {
+  readonly kind: "review_card_result";
+  readonly commandId: string;
+  readonly result: ReviewCardRpcResult;
+}
+
+export interface DesktopReviewRpc {
+  reviewCard(request: ReviewRpcRequest<ReviewCardInput>): Promise<ReviewCardRpcEnvelope>;
+}
+
+export function createDesktopReviewRpc(service: ReviewDispositionService): DesktopReviewRpc {
+  return {
+    async reviewCard(request) {
+      if (request.commandId.trim().length === 0) throw new Error("Review RPC commandId must be non-empty");
+      return { kind: "review_card_result", commandId: request.commandId, result: service.reviewCard(request.input) };
+    },
+  };
 }
 
 export function createDesktopFollowUpRpc(coordinator: DesktopAttemptCoordinator): DesktopFollowUpRpc {

@@ -22,5 +22,13 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run --filter @matheusbbarni/kitten typecheck
+      - name: Typecheck desktop dependencies
+        run: bun run --filter @kitten/engine typecheck && bun run --filter @kitten/desktop typecheck
+      - name: Desktop layered acceptance
+        run: bun run test:desktop-acceptance
+      - name: Desktop test coverage
+        run: bun run --filter @kitten/desktop test:coverage
       - name: Test with coverage
         run: bun run --filter @matheusbbarni/kitten test:coverage
+      - name: Relocated Cockpit compatibility
+        run: bun run verify:cockpit

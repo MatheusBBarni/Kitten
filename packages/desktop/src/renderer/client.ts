@@ -1,8 +1,15 @@
-import type { BootstrapEnvelope, CardInspectorEnvelope, HostMessageEnvelope } from "../shared/rpc.ts";
+import type {
+  BootstrapEnvelope,
+  CardInspectorEnvelope,
+  HostMessageEnvelope,
+  ReviewCardInput,
+  ReviewCardRpcEnvelope,
+} from "../shared/rpc.ts";
 
 export interface DesktopRpcClient {
   getDesktopSnapshot(): Promise<BootstrapEnvelope>;
   getCardInspector(cardId: string): Promise<CardInspectorEnvelope>;
+  reviewCard?(commandId: string, input: ReviewCardInput): Promise<ReviewCardRpcEnvelope>;
   subscribe(listener: (message: HostMessageEnvelope) => void): () => void;
   dispose(): void;
 }

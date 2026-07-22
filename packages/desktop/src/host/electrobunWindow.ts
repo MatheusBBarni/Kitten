@@ -11,6 +11,7 @@ export async function createElectrobunWindowFactory(): Promise<DesktopWindowFact
       onQueueFollowUp,
       onRemoveQueuedFollowUp,
       onConfirmQueuedFollowUp,
+      onReviewCard,
     }) {
       const rpc = BrowserView.defineRPC<DesktopRpcSchema>({
         maxRequestTime: 5_000,
@@ -21,6 +22,7 @@ export async function createElectrobunWindowFactory(): Promise<DesktopWindowFact
             queueFollowUp: onQueueFollowUp,
             removeQueuedFollowUp: onRemoveQueuedFollowUp,
             confirmQueuedFollowUp: onConfirmQueuedFollowUp,
+            reviewCard: onReviewCard,
           },
         },
       });

@@ -315,6 +315,18 @@ const ATTENTION_BLOCKER_SCHEMA_SQL = `
     ON attention_blocker_projections(card_id, generation, blocker_id);
 `;
 
+const RECOVERY_REVIEW_SCHEMA_SQL = `
+  CREATE TABLE review_dispositions (
+    review_id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+    card_id TEXT NOT NULL UNIQUE REFERENCES cards(card_id) ON DELETE CASCADE,
+    disposition TEXT NOT NULL CHECK (disposition = 'approved'),
+    reviewer TEXT NOT NULL CHECK (reviewer = 'operator'),
+    reviewed_card_version INTEGER NOT NULL CHECK (reviewed_card_version > 0),
+    occurred_at INTEGER NOT NULL CHECK (occurred_at >= 0)
+  ) STRICT;
+`;
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -363,6 +375,13 @@ export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
     name: "durable_attention_blockers_and_notification_results",
     up(database) {
       database.run(ATTENTION_BLOCKER_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 8,
+    name: "interrupted_attempt_recovery_and_review_dispositions",
+    up(database) {
+      database.run(RECOVERY_REVIEW_SCHEMA_SQL);
     },
   },
 ];

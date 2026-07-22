@@ -8,7 +8,15 @@
     "build": "electrobun build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test src test",
-    "test:coverage": "bun test src test --coverage --isolate"
+    "test:coverage": "bun test src test --coverage --isolate",
+    "test:domain": "bun test src/workflow src/board src/attempts/inspectorProjection.test.ts src/attempts/runnableValidator.test.ts src/host/recovery.test.ts src/host/reviewDisposition.test.ts",
+    "test:sqlite": "bun test src/persistence test/recoveryReview.integration.test.ts",
+    "test:rpc": "bun test test/desktopShell.test.ts test/workflowBoard.integration.test.ts test/settingsRpc.integration.test.ts test/recoveryReview.integration.test.ts",
+    "test:acp": "bun test src/attempts src/attention test/attempt-inspector.integration.test.ts test/followUpQueue.integration.test.ts test/recoveryReview.integration.test.ts",
+    "test:worktree": "bun test src/worktrees test/recoveryReview.integration.test.ts",
+    "test:smoke": "bun test test/desktopSmoke.integration.test.ts",
+    "test:acceptance": "bun run test:domain && bun run test:sqlite && bun run test:rpc && bun run test:acp && bun run test:worktree && bun run test:smoke",
+    "verify": "bun run typecheck && bun run test:acceptance && bun run test:coverage"
   },
   "dependencies": {
     "@kitten/engine": "workspace:*",
