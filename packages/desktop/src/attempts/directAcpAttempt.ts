@@ -1,4 +1,4 @@
-import type { AttemptGeneration, AttemptId, ProfileId } from "@kitten/engine";
+import type { AttemptGeneration, AttemptId, DirectAcpPromptResult, ProfileId } from "@kitten/engine";
 import type { CertifiedDirectAcpProfile, AttemptStartupFailure } from "./contracts.ts";
 
 export interface FreshDirectAcpSessionInput {
@@ -12,6 +12,7 @@ export interface FreshDirectAcpSessionInput {
 
 export interface DirectAcpConnection {
   newSession(input: FreshDirectAcpSessionInput): Promise<{ readonly sessionId: string }>;
+  prompt(input: { readonly sessionId: string; readonly prompt: string }): Promise<DirectAcpPromptResult>;
   subscribeActivity(listener: (input: unknown) => void | Promise<void>): () => void;
   close(): void | Promise<void>;
 }

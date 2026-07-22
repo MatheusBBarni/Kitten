@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { ProfileId } from "@kitten/engine";
+import type { AttemptId, ProfileId } from "@kitten/engine";
 import type { SkillCatalog, SkillCatalogEntry } from "../catalog/contracts.ts";
 import { createEventJournal, type EventJournal, type JournalEvent } from "../persistence/eventJournal.ts";
 import { migrateDatabase } from "../persistence/migrations.ts";
+import { rebuildProjections } from "../persistence/projectionRebuilder.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "../persistence/sqliteDatabase.ts";
 import type { CardWorktreeBinding } from "../worktrees/contracts.ts";
 import { workflowIds, type BoardId, type CardId, type CardProjection, type SkillId } from "../workflow/workflowTypes.ts";
-import { createAttemptCoordinator } from "./attemptCoordinator.ts";
+import { createAttemptCoordinator, type ContentFreeFollowUpTelemetry } from "./attemptCoordinator.ts";
 import type { CertifiedDirectAcpProfile } from "./contracts.ts";
 import { createDirectAcpAttemptStarter, type DirectAcpConnectionFactory } from "./directAcpAttempt.ts";
 import { createGlobalAttemptScheduler } from "./scheduler.ts";
+import type { FollowUpQueueId } from "./followUpQueue.ts";
 
 const databases: ReturnType<typeof openSqliteDatabase>[] = [];
 afterEach(() => {
@@ -46,6 +48,7 @@ describe("attempt admission integration", () => {
             expect(input.skillContent).toContain("Execute the card");
             return { sessionId: "fresh-session-1" };
           },
+          async prompt() { return { stopReason: "end_turn" }; },
           subscribeActivity() {
             return () => {};
           },
@@ -116,6 +119,7 @@ describe("attempt admission integration", () => {
             sessionIds.push(sessionId);
             return { sessionId };
           },
+          async prompt() { return { stopReason: "end_turn" }; },
           subscribeActivity() {
             return () => {};
           },
@@ -177,6 +181,139 @@ describe("attempt admission integration", () => {
   });
 });
 
+describe("confirmable non-cancelling follow-ups", () => {
+  test("queues without cancellation or auto-send, then confirms exactly one FIFO head", async () => {
+    const fixture = createFixture([CARD_ONE]);
+    const prompts: string[] = [];
+    const telemetry: unknown[] = [];
+    let cancellationCalls = 0;
+    const coordinator = fixture.coordinator({
+      async connect() {
+        return {
+          async newSession() { return { sessionId: "session-follow-up" }; },
+          async prompt({ prompt }) { prompts.push(prompt); return { stopReason: "end_turn" }; },
+          subscribeActivity() { return () => {}; },
+          close() {},
+          cancel() { cancellationCalls += 1; },
+        };
+      },
+    }, createGlobalAttemptScheduler(), fixture.journal, {
+      telemetry: { record: (name, attributes) => telemetry.push({ name, attributes }) },
+    });
+    const started = await coordinator.start(CARD_ONE);
+    if (started.status !== "started") throw new Error("expected started attempt");
+    const fence = { attemptId: started.attempt.attemptId, generation: started.attempt.generation };
+
+    expect(coordinator.queueFollowUp({ ...fence, expectedQueueVersion: 0, queueId: "queue-1" as FollowUpQueueId, text: "first" }).status).toBe("ok");
+    expect(coordinator.queueFollowUp({ ...fence, expectedQueueVersion: 1, queueId: "queue-2" as FollowUpQueueId, text: "second" }).status).toBe("ok");
+    expect(prompts).toEqual([]);
+    expect(cancellationCalls).toBe(0);
+
+    const settled = coordinator.settleTurn(fence);
+    expect(settled).toMatchObject({ status: "ok", projection: { version: 3, turnState: "settled" } });
+    if (settled.status !== "ok" || settled.projection === null) throw new Error("expected settled queue");
+    expect(settled.projection.drafts.map(({ state }) => state)).toEqual(["awaiting_confirmation", "queued"]);
+
+    const confirmed = await coordinator.confirmQueuedFollowUp({
+      ...fence,
+      expectedQueueVersion: 3,
+      queueId: "queue-1" as FollowUpQueueId,
+    });
+    expect(confirmed).toMatchObject({ status: "ok", projection: { version: 5, turnState: "settled" } });
+    expect(prompts).toEqual(["first"]);
+    expect(JSON.stringify(telemetry)).not.toContain("first");
+    expect(JSON.stringify(telemetry)).not.toContain("second");
+    expect(cancellationCalls).toBe(0);
+    expect(fixture.journal.events()
+      .filter((event) => event.kind === "follow_up_queue_committed")
+      .map((event) => event.payload.operation)).toEqual([
+        "created", "created", "head_ready", "confirmed", "dispatched",
+      ]);
+    expect(await coordinator.confirmQueuedFollowUp({
+      ...fence,
+      expectedQueueVersion: 5,
+      queueId: "queue-1" as FollowUpQueueId,
+    })).toMatchObject({ status: "rejected", reason: { code: "stale_head" } });
+    expect(prompts).toEqual(["first"]);
+
+    const live = fixture.journal.snapshot();
+    expect(rebuildProjections(fixture.database)).toEqual(live);
+  });
+
+  test("types stale, active-turn, blocker, failed, cancelled, and succeeded confirmation rejections", async () => {
+    for (const terminalState of ["failed", "cancelled", "succeeded"] as const) {
+      const fixture = createFixture([CARD_ONE]);
+      let blockerActive = false;
+      let promptCalls = 0;
+      const coordinator = fixture.coordinator({
+        async connect() {
+          return {
+            async newSession() { return { sessionId: `session-${terminalState}` }; },
+            async prompt() { promptCalls += 1; return { stopReason: "end_turn" }; },
+            subscribeActivity() { return () => {}; },
+            close() {},
+          };
+        },
+      }, createGlobalAttemptScheduler(), fixture.journal, { hasActiveAttention: () => blockerActive });
+      const started = await coordinator.start(CARD_ONE);
+      if (started.status !== "started") throw new Error("expected started attempt");
+      const fence = { attemptId: started.attempt.attemptId, generation: started.attempt.generation };
+      const queued = coordinator.queueFollowUp({
+        ...fence,
+        expectedQueueVersion: 0,
+        queueId: "queue-terminal" as FollowUpQueueId,
+        text: "keep me",
+      });
+      expect(queued.status).toBe("ok");
+      await expect(coordinator.confirmQueuedFollowUp({
+        ...fence,
+        expectedQueueVersion: 1,
+        queueId: "queue-terminal" as FollowUpQueueId,
+      })).resolves.toMatchObject({ status: "rejected", reason: { code: "stale_head" } });
+      const settled = coordinator.settleTurn(fence);
+      expect(settled.status).toBe("ok");
+      const beforeBlocker = fixture.journal.snapshot().followUpQueues;
+      blockerActive = true;
+      expect(await coordinator.confirmQueuedFollowUp({
+        ...fence,
+        expectedQueueVersion: 2,
+        queueId: "queue-terminal" as FollowUpQueueId,
+      })).toMatchObject({ status: "rejected", reason: { code: "blocker_active" } });
+      expect(fixture.journal.snapshot().followUpQueues).toEqual(beforeBlocker);
+      blockerActive = false;
+      expect(await coordinator.confirmQueuedFollowUp({
+        attemptId: fence.attemptId,
+        generation: (Number(fence.generation) + 1) as typeof fence.generation,
+        expectedQueueVersion: 2,
+        queueId: "queue-terminal" as FollowUpQueueId,
+      })).toMatchObject({ status: "rejected", reason: { code: "stale_generation" } });
+      expect(await coordinator.confirmQueuedFollowUp({
+        ...fence,
+        expectedQueueVersion: 1,
+        queueId: "queue-terminal" as FollowUpQueueId,
+      })).toMatchObject({ status: "rejected", reason: { code: "stale_version" } });
+
+      fixture.journal.append({
+        eventId: `terminal-${terminalState}`,
+        boardId: BOARD_ID,
+        cardId: CARD_ONE,
+        attemptId: fence.attemptId,
+        attemptSequence: 2,
+        actor: "agent",
+        kind: "attempt_activity_committed",
+        occurredAt: 900,
+        payload: { generation: fence.generation, activity: { kind: "attempt_state", state: terminalState } },
+      });
+      expect(await coordinator.confirmQueuedFollowUp({
+        ...fence,
+        expectedQueueVersion: 2,
+        queueId: "queue-terminal" as FollowUpQueueId,
+      })).toMatchObject({ status: "rejected", reason: { code: "attempt_terminal" } });
+      expect(promptCalls).toBe(0);
+    }
+  });
+});
+
 function createFixture(cardIds: readonly CardId[]) {
   const database = openSqliteDatabase({ filename: ":memory:" });
   databases.push(database);
@@ -205,6 +342,10 @@ function createFixture(cardIds: readonly CardId[]) {
       factory: DirectAcpConnectionFactory,
       scheduler = createGlobalAttemptScheduler(),
       selectedJournal: EventJournal = journal,
+      followUpOptions: {
+        readonly hasActiveAttention?: (attemptId: AttemptId) => boolean;
+        readonly telemetry?: ContentFreeFollowUpTelemetry;
+      } = {},
     ) {
       return createAttemptCoordinator({
         journal: selectedJournal,
@@ -229,6 +370,8 @@ function createFixture(cardIds: readonly CardId[]) {
         now: () => 100 + eventNumber,
         createAttemptId: () => `attempt-${++attemptNumber}`,
         createEventId: (operation) => `attempt-event-${operation}-${++eventNumber}`,
+        createFollowUpEventId: (operation) => `follow-up-event-${operation}-${++eventNumber}`,
+        ...followUpOptions,
       });
     },
   };

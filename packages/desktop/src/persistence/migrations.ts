@@ -275,6 +275,22 @@ const ATTEMPT_INSPECTOR_SCHEMA_SQL = `
     ON attempt_inspector_projections(card_id, generation);
 `;
 
+const FOLLOW_UP_QUEUE_SCHEMA_SQL = `
+  CREATE TABLE follow_up_queue_projections (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id) ON DELETE CASCADE,
+    board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+    card_id TEXT NOT NULL REFERENCES cards(card_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    version INTEGER NOT NULL CHECK (version > 0),
+    projection_json TEXT NOT NULL CHECK (json_valid(projection_json)),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    UNIQUE (card_id, generation)
+  ) STRICT;
+
+  CREATE INDEX follow_up_queue_card_generation
+    ON follow_up_queue_projections(card_id, generation);
+`;
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -309,6 +325,13 @@ export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
     name: "normalized_activity_and_inspector_projections",
     up(database) {
       database.run(ATTEMPT_INSPECTOR_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 6,
+    name: "durable_confirmable_follow_up_queue",
+    up(database) {
+      database.run(FOLLOW_UP_QUEUE_SCHEMA_SQL);
     },
   },
 ];

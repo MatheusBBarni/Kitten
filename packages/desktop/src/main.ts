@@ -10,6 +10,16 @@ import {
 } from "./shared/rpc.ts";
 import type { CardInspectorProjection } from "./attempts/inspectorProjection.ts";
 import type { CardId } from "./workflow/workflowTypes.ts";
+import type {
+  ConfirmQueuedFollowUpInput,
+  QueueFollowUpInput,
+  RemoveQueuedFollowUpInput,
+} from "./attempts/attemptCoordinator.ts";
+import type {
+  DesktopFollowUpRpc,
+  FollowUpRpcRequest,
+  FollowUpRpcResultEnvelope,
+} from "./host/desktopRpc.ts";
 
 export interface DesktopWindowPort {
   sendHostMessage(message: HostMessageEnvelope): void;
@@ -21,6 +31,9 @@ export interface DesktopWindowFactory {
   open(options: {
     onGetDesktopSnapshot(params: { readonly knownRevision?: number }): Promise<BootstrapEnvelope>;
     onGetCardInspector(params: { readonly cardId: string }): Promise<CardInspectorEnvelope>;
+    onQueueFollowUp(params: FollowUpRpcRequest<QueueFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+    onRemoveQueuedFollowUp(params: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+    onConfirmQueuedFollowUp(params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
   }): DesktopWindowPort;
 }
 
@@ -33,6 +46,7 @@ export function startDesktopShell(options: {
   readonly windowFactory: DesktopWindowFactory;
   readonly getSnapshot?: () => DesktopSnapshot | Promise<DesktopSnapshot>;
   readonly getCardInspector?: (cardId: CardId) => CardInspectorProjection | null | Promise<CardInspectorProjection | null>;
+  readonly followUpRpc?: DesktopFollowUpRpc;
 }): DesktopShell {
   let stopped = false;
   const getSnapshot = options.getSnapshot ?? createEmptyDesktopSnapshot;
@@ -83,6 +97,21 @@ export function startDesktopShell(options: {
         });
       }
     },
+    async onQueueFollowUp(request) {
+      return options.followUpRpc === undefined
+        ? unavailableFollowUp(request.commandId)
+        : options.followUpRpc.queueFollowUp(request);
+    },
+    async onRemoveQueuedFollowUp(request) {
+      return options.followUpRpc === undefined
+        ? unavailableFollowUp(request.commandId)
+        : options.followUpRpc.removeQueuedFollowUp(request);
+    },
+    async onConfirmQueuedFollowUp(request) {
+      return options.followUpRpc === undefined
+        ? unavailableFollowUp(request.commandId)
+        : options.followUpRpc.confirmQueuedFollowUp(request);
+    },
   });
 
   return {
@@ -96,6 +125,17 @@ export function startDesktopShell(options: {
       stopped = true;
       window.removeHandlers();
       window.close();
+    },
+  };
+}
+
+function unavailableFollowUp(commandId: string): FollowUpRpcResultEnvelope {
+  return {
+    kind: "follow_up_command_result",
+    commandId,
+    result: {
+      status: "rejected",
+      reason: { code: "invalid_state", message: "Follow-up commands are not ready" },
     },
   };
 }

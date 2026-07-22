@@ -102,9 +102,10 @@ describe("fake ACP to durable inspector and typed RPC", () => {
     const directFactory: DirectAcpConnectionFactory = {
       async connect() {
         return {
-          async newSession() {
+        async newSession() {
             return { sessionId: "fresh-integrated-session" };
-          },
+        },
+        async prompt() { return { stopReason: "end_turn" }; },
           subscribeActivity(listener) {
             emitActivity = async (input) => { await listener(input); };
             return () => { unsubscribeCalls += 1; };

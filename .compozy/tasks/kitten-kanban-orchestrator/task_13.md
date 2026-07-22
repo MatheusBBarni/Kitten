@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add confirmable, non-cancelling follow-up queue
 type: backend
 complexity: high
@@ -32,11 +32,11 @@ surfaces only the queue head for explicit operator confirmation.
 
 ## Subtasks
 
-- [ ] 13.1 Define durable queue identity, events, states, and projection validation.
-- [ ] 13.2 Implement transactional enqueue, removal, FIFO ordering, and version-fenced reads.
-- [ ] 13.3 Surface only the head for explicit confirmation after normal settlement.
-- [ ] 13.4 Dispatch one confirmed head without any cancellation path.
-- [ ] 13.5 Expose typed host operations and add persistence/ACP-boundary coverage.
+- [x] 13.1 Define durable queue identity, events, states, and projection validation.
+- [x] 13.2 Implement transactional enqueue, removal, FIFO ordering, and version-fenced reads.
+- [x] 13.3 Surface only the head for explicit confirmation after normal settlement.
+- [x] 13.4 Dispatch one confirmed head without any cancellation path.
+- [x] 13.5 Expose typed host operations and add persistence/ACP-boundary coverage.
 
 ## Implementation Details
 
@@ -76,13 +76,13 @@ desktop follow-up behavior.
 ## Tests
 
 - Unit tests:
-  - [ ] Verify FIFO order, head-only confirmation, removal, and rebuild equality.
-  - [ ] Reject duplicate, stale, out-of-order, terminal, errored, and cancelled confirmation.
-  - [ ] Reject confirmation while a blocker is active without changing drafts.
+  - [x] Verify FIFO order, head-only confirmation, removal, and rebuild equality.
+  - [x] Reject duplicate, stale, out-of-order, terminal, errored, and cancelled confirmation.
+  - [x] Reject confirmation while a blocker is active without changing drafts.
 - Integration tests:
-  - [ ] Queue during an active turn and assert zero ACP cancellation calls and zero automatic sends.
-  - [ ] Settle normally and assert explicit confirmation sends exactly once in the same attempt.
-  - [ ] Verify typed RPC conflict/result behavior.
+  - [x] Queue during an active turn and assert zero ACP cancellation calls and zero automatic sends.
+  - [x] Settle normally and assert explicit confirmation sends exactly once in the same attempt.
+  - [x] Verify typed RPC conflict/result behavior.
 - Test coverage target: >=80%
 - All tests must pass
 

@@ -1,0 +1,74 @@
+import type {
+  ConfirmQueuedFollowUpInput,
+  DesktopAttemptCoordinator,
+  FollowUpQueueResult,
+  FollowUpRejectionCode,
+  QueueFollowUpInput,
+  RemoveQueuedFollowUpInput,
+} from "../attempts/attemptCoordinator.ts";
+
+export interface FollowUpRpcRequest<Input> {
+  readonly commandId: string;
+  readonly input: Input;
+}
+
+export interface FollowUpRpcResultEnvelope {
+  readonly kind: "follow_up_command_result";
+  readonly commandId: string;
+  readonly result: FollowUpRpcResult;
+}
+
+export type FollowUpRpcResult =
+  | Extract<FollowUpQueueResult, { readonly status: "ok" }>
+  | {
+      readonly status: "conflict";
+      readonly conflict: {
+        readonly kind: "follow_up_queue";
+        readonly code: Extract<FollowUpRejectionCode, "stale_attempt" | "stale_generation" | "stale_version" | "stale_head">;
+        readonly message: string;
+      };
+    }
+  | Extract<FollowUpQueueResult, { readonly status: "rejected" }>;
+
+export interface DesktopFollowUpRpc {
+  queueFollowUp(request: FollowUpRpcRequest<QueueFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+  removeQueuedFollowUp(request: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+  confirmQueuedFollowUp(request: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
+}
+
+export function createDesktopFollowUpRpc(coordinator: DesktopAttemptCoordinator): DesktopFollowUpRpc {
+  return {
+    async queueFollowUp(request) {
+      return envelope(request.commandId, coordinator.queueFollowUp(request.input));
+    },
+    async removeQueuedFollowUp(request) {
+      return envelope(request.commandId, coordinator.removeQueuedFollowUp(request.input));
+    },
+    async confirmQueuedFollowUp(request) {
+      return envelope(request.commandId, await coordinator.confirmQueuedFollowUp(request.input));
+    },
+  };
+}
+
+function envelope(commandId: string, result: FollowUpQueueResult): FollowUpRpcResultEnvelope {
+  if (commandId.trim().length === 0) throw new Error("Follow-up RPC commandId must be non-empty");
+  if (
+    result.status === "rejected"
+    && (
+      result.reason.code === "stale_attempt"
+      || result.reason.code === "stale_generation"
+      || result.reason.code === "stale_version"
+      || result.reason.code === "stale_head"
+    )
+  ) {
+    return {
+      kind: "follow_up_command_result",
+      commandId,
+      result: {
+        status: "conflict",
+        conflict: { kind: "follow_up_queue", code: result.reason.code, message: result.reason.message },
+      },
+    };
+  }
+  return { kind: "follow_up_command_result", commandId, result };
+}

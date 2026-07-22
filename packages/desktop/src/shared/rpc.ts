@@ -5,6 +5,12 @@ import type {
   CardInspectorProjection,
 } from "../attempts/inspectorProjection.ts";
 import type { BoardId, CardId } from "../workflow/workflowTypes.ts";
+import type {
+  ConfirmQueuedFollowUpInput,
+  QueueFollowUpInput,
+  RemoveQueuedFollowUpInput,
+} from "../attempts/attemptCoordinator.ts";
+import type { FollowUpRpcRequest, FollowUpRpcResultEnvelope } from "../host/desktopRpc.ts";
 
 export type JsonPrimitive = boolean | number | string | null;
 export type ProjectionValue =
@@ -113,6 +119,18 @@ export type DesktopRpcSchema = {
       getCardInspector: {
         params: { readonly cardId: string };
         response: CardInspectorEnvelope;
+      };
+      queueFollowUp: {
+        params: FollowUpRpcRequest<QueueFollowUpInput>;
+        response: FollowUpRpcResultEnvelope;
+      };
+      removeQueuedFollowUp: {
+        params: FollowUpRpcRequest<RemoveQueuedFollowUpInput>;
+        response: FollowUpRpcResultEnvelope;
+      };
+      confirmQueuedFollowUp: {
+        params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>;
+        response: FollowUpRpcResultEnvelope;
       };
     };
     messages: Record<never, never>;

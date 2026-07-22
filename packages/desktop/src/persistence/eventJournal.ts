@@ -41,6 +41,11 @@ import {
   projectAttemptActivity,
   validateAttemptInspectorProjection,
 } from "../attempts/inspectorProjection.ts";
+import type {
+  FollowUpQueueOperation,
+  FollowUpQueueProjection,
+} from "../attempts/followUpQueue.ts";
+import { validateFollowUpQueueProjection } from "../attempts/followUpQueue.ts";
 
 export type {
   BoardProjection,
@@ -109,6 +114,11 @@ export type JournalEvent =
       readonly attemptId: string;
       readonly attemptSequence: number;
       readonly payload: AttemptActivityEventPayload;
+    })
+  | (JournalEventBase & {
+      readonly kind: "follow_up_queue_committed";
+      readonly cardId: CardId;
+      readonly payload: FollowUpQueueEventPayload;
     });
 
 export interface CatalogProjection {
@@ -136,6 +146,11 @@ export interface AttemptActivityEventPayload {
   readonly activity: NormalizedAttemptActivity;
 }
 
+export interface FollowUpQueueEventPayload {
+  readonly operation: FollowUpQueueOperation;
+  readonly queue: FollowUpQueueProjection;
+}
+
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
@@ -147,7 +162,8 @@ export type ProjectionChange =
   | { readonly entity: "card_worktree"; readonly operation: "upsert"; readonly value: CardWorktreeBinding }
   | { readonly entity: "attempt"; readonly operation: "upsert"; readonly value: AttemptProjection }
   | { readonly entity: "run_context"; readonly operation: "insert"; readonly value: RunContext }
-  | { readonly entity: "attempt_inspector"; readonly operation: "upsert"; readonly value: AttemptInspectorProjection };
+  | { readonly entity: "attempt_inspector"; readonly operation: "upsert"; readonly value: AttemptInspectorProjection }
+  | { readonly entity: "follow_up_queue"; readonly operation: "upsert"; readonly value: FollowUpQueueProjection };
 
 export interface WorkflowCommandEventPayload {
   readonly mutationId: string;
@@ -179,6 +195,7 @@ export interface PersistenceSnapshot {
   readonly attempts: readonly AttemptProjection[];
   readonly runContexts: readonly RunContext[];
   readonly attemptInspectors: readonly AttemptInspectorProjection[];
+  readonly followUpQueues: readonly FollowUpQueueProjection[];
 }
 
 export interface EventJournal {
@@ -194,7 +211,8 @@ export interface JournalAppendOptions {
 
 export type ProjectionVersionPrecondition =
   | { readonly entity: "board"; readonly id: BoardId; readonly expectedVersion: number }
-  | { readonly entity: "card"; readonly id: CardId; readonly expectedVersion: number };
+  | { readonly entity: "card"; readonly id: CardId; readonly expectedVersion: number }
+  | { readonly entity: "follow_up_queue"; readonly id: string; readonly expectedVersion: number };
 
 export class JournalValidationError extends Error {
   constructor(message: string) {
@@ -224,7 +242,7 @@ export class AttemptSequenceError extends Error {
 export class ProjectionVersionConflictError extends Error {
   constructor(
     readonly entity: ProjectionVersionPrecondition["entity"],
-    readonly id: BoardId | CardId,
+    readonly id: BoardId | CardId | string,
     readonly expectedVersion: number,
     readonly actualVersion: number,
   ) {
@@ -648,8 +666,29 @@ function parseProjectionChange(value: unknown): ProjectionChange {
       } catch (error) {
         throw new JournalValidationError(error instanceof Error ? error.message : "attempt inspector is invalid");
       }
+    case "follow_up_queue":
+      if (operation !== "upsert") throw new JournalValidationError("follow-up queue changes must upsert");
+      try {
+        return { entity, operation, value: validateFollowUpQueueProjection(value.value) };
+      } catch (error) {
+        throw new JournalValidationError(error instanceof Error ? error.message : "follow-up queue is invalid");
+      }
     default:
       throw new JournalValidationError("projection change entity is unsupported");
+  }
+}
+
+function parseFollowUpQueuePayload(value: unknown): FollowUpQueueEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["operation", "queue"]);
+  const operation = stringField(value.operation, "payload.operation") as FollowUpQueueOperation;
+  if (!(["created", "removed", "head_ready", "confirmed", "dispatched"] as const).includes(operation)) {
+    throw new JournalValidationError("follow-up queue operation is unsupported");
+  }
+  try {
+    return { operation, queue: validateFollowUpQueueProjection(value.queue) };
+  } catch (error) {
+    throw new JournalValidationError(error instanceof Error ? error.message : "follow-up queue is invalid");
   }
 }
 
@@ -889,6 +928,22 @@ export function validateJournalEvent(input: unknown): JournalEvent {
         occurredAt,
         payload,
       };
+    }
+    case "follow_up_queue_committed": {
+      const payload = parseFollowUpQueuePayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      if (
+        payload.queue.boardId !== boardId
+        || payload.queue.cardId !== cardId
+        || Object.hasOwn(input, "attemptId")
+        || Object.hasOwn(input, "attemptSequence")
+      ) {
+        throw new JournalValidationError("follow-up queue event identity does not match payload");
+      }
+      if (actor !== "operator" && actor !== "system") {
+        throw new JournalValidationError("follow-up queue actor is unsupported");
+      }
+      return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
     }
     default:
       throw new JournalValidationError("kind is unsupported");
@@ -1300,6 +1355,30 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
       upsert.finalize();
       return;
     }
+    case "follow_up_queue": {
+      const value = change.value;
+      const serialized = JSON.stringify(value);
+      const upsert = database.query<void, [string, string, string, number, number, string, number]>(`
+        INSERT INTO follow_up_queue_projections(
+          attempt_id, board_id, card_id, generation, version, projection_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_id) DO UPDATE SET
+          version = excluded.version,
+          projection_json = excluded.projection_json,
+          updated_at = excluded.updated_at
+      `);
+      upsert.run(
+        value.attemptId,
+        value.boardId,
+        value.cardId,
+        value.generation,
+        value.version,
+        serialized,
+        value.updatedAt,
+      );
+      upsert.finalize();
+      return;
+    }
   }
 }
 
@@ -1433,6 +1512,8 @@ export function applyProjectionEvent(
           ? event.payload.changes
           : event.kind === "attempt_activity_committed"
             ? applyAttemptActivityProjection(database, event)
+            : event.kind === "follow_up_queue_committed"
+              ? [{ entity: "follow_up_queue", operation: "upsert", value: event.payload.queue }]
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -1543,6 +1624,10 @@ interface RunContextRow {
 }
 
 interface AttemptInspectorRow {
+  readonly projectionJson: string;
+}
+
+interface FollowUpQueueRow {
   readonly projectionJson: string;
 }
 
@@ -1714,6 +1799,15 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
   const attemptInspectors = attemptInspectorRows.map((row) => validateAttemptInspectorProjection(
     parsePersistedJson(row.projectionJson, "persisted inspector projection"),
   ));
+  const followUpQueuesStatement = database.query<FollowUpQueueRow, []>(`
+    SELECT projection_json AS projectionJson
+    FROM follow_up_queue_projections ORDER BY board_id, card_id, generation
+  `);
+  const followUpQueueRows = followUpQueuesStatement.all();
+  followUpQueuesStatement.finalize();
+  const followUpQueues = followUpQueueRows.map((row) => validateFollowUpQueueProjection(
+    parsePersistedJson(row.projectionJson, "persisted follow-up queue projection"),
+  ));
 
   return {
     schemaVersion: 1,
@@ -1731,6 +1825,7 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     attempts,
     runContexts,
     attemptInspectors,
+    followUpQueues,
   };
 }
 
@@ -1787,9 +1882,13 @@ function assertProjectionPreconditions(
       ? database.query<{ readonly version: number }, [string]>(
           "SELECT workflow_version AS version FROM boards WHERE board_id = ?",
         ).get(precondition.id)?.version ?? 0
-      : database.query<{ readonly version: number }, [string]>(
-          "SELECT version FROM cards WHERE card_id = ?",
-        ).get(precondition.id)?.version ?? 0;
+      : precondition.entity === "card"
+        ? database.query<{ readonly version: number }, [string]>(
+            "SELECT version FROM cards WHERE card_id = ?",
+          ).get(precondition.id)?.version ?? 0
+        : database.query<{ readonly version: number }, [string]>(
+            "SELECT version FROM follow_up_queue_projections WHERE attempt_id = ?",
+          ).get(precondition.id)?.version ?? 0;
     if (actualVersion !== precondition.expectedVersion) {
       throw new ProjectionVersionConflictError(
         precondition.entity,

@@ -19,22 +19,38 @@ import {
   bindDesktopRenderer,
   type DesktopRpcClient,
 } from "../src/renderer/client.ts";
+import type { DesktopFollowUpRpc } from "../src/host/desktopRpc.ts";
 
 class FakeWindowFactory implements DesktopWindowFactory {
   handler?: (params: { readonly knownRevision?: number }) => Promise<BootstrapEnvelope>;
   inspectorHandler?: (params: { readonly cardId: string }) => Promise<CardInspectorEnvelope>;
+  queueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onQueueFollowUp"];
+  removeQueueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onRemoveQueuedFollowUp"];
+  confirmQueueHandler?: Parameters<DesktopWindowFactory["open"]>[0]["onConfirmQueuedFollowUp"];
   readonly messages: HostMessageEnvelope[] = [];
   handlerRemovalCount = 0;
   closeCount = 0;
 
-  open({ onGetDesktopSnapshot, onGetCardInspector }: Parameters<DesktopWindowFactory["open"]>[0]) {
+  open({
+    onGetDesktopSnapshot,
+    onGetCardInspector,
+    onQueueFollowUp,
+    onRemoveQueuedFollowUp,
+    onConfirmQueuedFollowUp,
+  }: Parameters<DesktopWindowFactory["open"]>[0]) {
     this.handler = onGetDesktopSnapshot;
     this.inspectorHandler = onGetCardInspector;
+    this.queueHandler = onQueueFollowUp;
+    this.removeQueueHandler = onRemoveQueuedFollowUp;
+    this.confirmQueueHandler = onConfirmQueuedFollowUp;
     return {
       sendHostMessage: (message: HostMessageEnvelope) => this.messages.push(message),
       removeHandlers: () => {
         this.handler = undefined;
         this.inspectorHandler = undefined;
+        this.queueHandler = undefined;
+        this.removeQueueHandler = undefined;
+        this.confirmQueueHandler = undefined;
         this.handlerRemovalCount += 1;
       },
       close: () => {
@@ -99,6 +115,42 @@ describe("typed desktop RPC contract", () => {
 });
 
 describe("desktop host lifecycle", () => {
+  test("registers and forwards typed follow-up queue operations with a not-ready fallback", async () => {
+    const unavailableFactory = new FakeWindowFactory();
+    startDesktopShell({ windowFactory: unavailableFactory });
+    const request = {
+      commandId: "follow-up-command",
+      input: {
+        attemptId: "attempt-1",
+        generation: 1,
+        expectedQueueVersion: 0,
+        queueId: "queue-1",
+        text: "follow up",
+      },
+    } as never;
+    expect(await unavailableFactory.queueHandler?.(request)).toMatchObject({
+      result: { status: "rejected", reason: { code: "invalid_state" } },
+    });
+
+    const calls: string[] = [];
+    const ok = (commandId: string) => ({
+      kind: "follow_up_command_result" as const,
+      commandId,
+      result: { status: "ok" as const, projection: null },
+    });
+    const followUpRpc: DesktopFollowUpRpc = {
+      async queueFollowUp(value) { calls.push("queue"); return ok(value.commandId); },
+      async removeQueuedFollowUp(value) { calls.push("remove"); return ok(value.commandId); },
+      async confirmQueuedFollowUp(value) { calls.push("confirm"); return ok(value.commandId); },
+    };
+    const factory = new FakeWindowFactory();
+    startDesktopShell({ windowFactory: factory, followUpRpc });
+    expect((await factory.queueHandler?.(request))?.result.status).toBe("ok");
+    expect((await factory.removeQueueHandler?.(request))?.result.status).toBe("ok");
+    expect((await factory.confirmQueueHandler?.(request))?.result.status).toBe("ok");
+    expect(calls).toEqual(["queue", "remove", "confirm"]);
+  });
+
   test("registers bootstrap, delivers messages, and removes everything on teardown", async () => {
     const factory = new FakeWindowFactory();
     const shell = startDesktopShell({ windowFactory: factory });
