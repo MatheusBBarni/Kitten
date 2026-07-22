@@ -14,6 +14,7 @@ import type { PromptHistoryEvent, PromptHistoryState } from "./promptHistory.ts"
 import type { StatuslinePreference } from "./statusline.ts"
 import type { ExplorePolicySnapshot } from "./explorePolicy.ts"
 import type { ThemePresetId } from "./themeCatalog.ts"
+import type { TerminalQuestionOutcome } from "@kitten/engine"
 
 export type { ThemePresetId } from "./themeCatalog.ts"
 
@@ -298,11 +299,7 @@ export interface ClarificationAnswer {
 }
 
 /** The closed terminal vocabulary shared by every clarification transport. */
-export type ClarificationOutcome =
-  | { kind: "submitted"; answers: Record<string, ClarificationAnswer> }
-  | { kind: "skipped" }
-  | { kind: "timed_out" }
-  | { kind: "cancelled" }
+export type ClarificationOutcome = TerminalQuestionOutcome<Record<string, ClarificationAnswer>>
 
 /** User-owned lifecycle for one conversation in the workspace. */
 export type ConversationLifecycle = "visible" | "background" | "closed"

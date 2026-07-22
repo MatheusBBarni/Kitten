@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import rootPackage from "../../../package.json" with { type: "json" }
+import enginePackage from "../../engine/package.json" with { type: "json" }
 import tuiPackage from "../package.json" with { type: "json" }
 
 const lockfile = Bun.JSONC.parse(
@@ -8,17 +9,16 @@ const lockfile = Bun.JSONC.parse(
 ) as { workspaces: Record<string, { name?: string }> }
 
 const TUI_PACKAGE_NAME = "@matheusbbarni/kitten"
-const FORWARDED_LIFECYCLE = [
+const ENGINE_PACKAGE_NAME = "@kitten/engine"
+const TUI_ONLY_LIFECYCLE = [
   "start",
   "dev",
-  "typecheck",
-  "test",
-  "test:coverage",
   "selfcheck",
   "selfcheck:reload",
   "build",
   "build:local",
 ] as const
+const SHARED_GATES = ["typecheck", "test", "test:coverage"] as const
 
 const EXPECTED_DEPENDENCIES = {
   "@agentclientprotocol/sdk": "1.2.1",
@@ -33,6 +33,7 @@ const EXPECTED_DEPENDENCIES = {
 } as const
 
 const EXPECTED_DEV_DEPENDENCIES = {
+  "@kitten/engine": "workspace:*",
   "@agentclientprotocol/claude-agent-acp": "0.57.0",
   "@agentclientprotocol/codex-acp": "1.1.2",
   "@types/bun": "1.3.14",
@@ -62,11 +63,17 @@ describe("workspace ownership boundary", () => {
     expect(rootPackage).not.toHaveProperty("optionalDependencies")
     expect(lockfile.workspaces[""]?.name).toBe("kitten-workspace")
     expect(lockfile.workspaces["packages/tui"]?.name).toBe(TUI_PACKAGE_NAME)
+    expect(lockfile.workspaces["packages/engine"]?.name).toBe(ENGINE_PACKAGE_NAME)
   })
 
   it("keeps every root lifecycle script forwarding-only", () => {
-    for (const lifecycle of FORWARDED_LIFECYCLE) {
+    for (const lifecycle of TUI_ONLY_LIFECYCLE) {
       expect(rootPackage.scripts[lifecycle]).toBe(`bun run --filter ${TUI_PACKAGE_NAME} ${lifecycle}`)
+    }
+    for (const lifecycle of SHARED_GATES) {
+      expect(rootPackage.scripts[lifecycle]).toBe(
+        `bun run --filter ${ENGINE_PACKAGE_NAME} ${lifecycle} && bun run --filter ${TUI_PACKAGE_NAME} ${lifecycle}`,
+      )
     }
 
     const rootCommands = Object.values(rootPackage.scripts).join("\n")
@@ -83,6 +90,13 @@ describe("workspace ownership boundary", () => {
     expect(tuiPackage.optionalDependencies).toEqual(EXPECTED_OPTIONAL_DEPENDENCIES)
     expect(tuiPackage.dependencies).toEqual(EXPECTED_DEPENDENCIES)
     expect(tuiPackage.devDependencies).toEqual(EXPECTED_DEV_DEPENDENCIES)
+  })
+
+  it("keeps the engine private, source-exported, and dependency-free at runtime", () => {
+    expect(enginePackage.name).toBe(ENGINE_PACKAGE_NAME)
+    expect(enginePackage.private).toBe(true)
+    expect(enginePackage.exports).toEqual({ ".": "./src/index.ts" })
+    expect(enginePackage).not.toHaveProperty("dependencies")
   })
 
   it("keeps dependency ownership exclusively in the TUI package", () => {

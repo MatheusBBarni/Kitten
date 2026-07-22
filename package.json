@@ -8,9 +8,9 @@
   "scripts": {
     "start": "bun run --filter @matheusbbarni/kitten start",
     "dev": "bun run --filter @matheusbbarni/kitten dev",
-    "typecheck": "bun run --filter @matheusbbarni/kitten typecheck",
-    "test": "bun run --filter @matheusbbarni/kitten test",
-    "test:coverage": "bun run --filter @matheusbbarni/kitten test:coverage",
+    "typecheck": "bun run --filter @kitten/engine typecheck && bun run --filter @matheusbbarni/kitten typecheck",
+    "test": "bun run --filter @kitten/engine test && bun run --filter @matheusbbarni/kitten test",
+    "test:coverage": "bun run --filter @kitten/engine test:coverage && bun run --filter @matheusbbarni/kitten test:coverage",
     "selfcheck": "bun run --filter @matheusbbarni/kitten selfcheck",
     "selfcheck:reload": "bun run --filter @matheusbbarni/kitten selfcheck:reload",
     "build": "bun run --filter @matheusbbarni/kitten build",

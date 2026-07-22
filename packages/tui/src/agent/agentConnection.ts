@@ -28,6 +28,11 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
+import type {
+  DirectAcpPromptResult,
+  DirectAcpReadyState,
+  DirectAcpStopReason,
+} from "@kitten/engine"
 
 import type {
   AgentConfig,
@@ -99,17 +104,13 @@ export class ConcurrentPromptError extends Error {
 }
 
 /** Why a prompt turn stopped, normalized from the ACP stop reason. */
-export type PromptStopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled"
+export type PromptStopReason = DirectAcpStopReason
 
 /** The result of a completed prompt turn. */
-export interface PromptResult {
-  stopReason: PromptStopReason
-}
+export type PromptResult = DirectAcpPromptResult
 
 /** Outcome of `connect`: a completed handshake, or a legible not-ready reason. */
-export type ReadyState =
-  | { ready: true; protocolVersion: number; canLoadSession: boolean }
-  | { ready: false; reason?: "authentication_required"; error: string }
+export type ReadyState = DirectAcpReadyState
 
 /**
  * The ACP protocol version Kitten negotiates during `initialize`.

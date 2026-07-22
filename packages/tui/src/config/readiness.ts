@@ -18,6 +18,7 @@ import {
   type AgentConnection,
   type ReadyState,
 } from "../agent/agentConnection.ts"
+import type { ProfileNotReadyReason, ProfileReadiness } from "@kitten/engine"
 import type {
   AppConfig,
   ClarificationCapability,
@@ -29,39 +30,14 @@ import { PROVIDER_KINDS } from "../core/types.ts"
 import { findAgentConfig } from "./configLoader.ts"
 
 /** Why an agent is not ready. Each value maps to one distinct, actionable failure. */
-export type NotReadyReason =
-  /** The configured `command` is not on `PATH` (or is not executable). */
-  | "binary_not_found"
-  /** The process started but `initialize` errored, died, or never spoke ACP. */
-  | "handshake_failed"
-  /** The process started but never answered `initialize` - typically a login prompt. */
-  | "handshake_timeout"
-  /** `initialize` succeeded at a protocol version Kitten does not speak. */
-  | "capability_mismatch"
-  /** Cursor's final resolved recipe does not match a reviewed certified profile. */
-  | "uncertified_recipe"
-  /** Cursor's CLI version could not be proven to exactly match its certified profile. */
-  | "version_mismatch"
-  /** Cursor initialized but its adapter-owned login did not complete. */
-  | "authentication_required"
+export type NotReadyReason = ProfileNotReadyReason
 
 /** One agent's startup verdict: handshake completed, or a legible reason it did not. */
-export type AgentReadiness =
-  | {
-      agentId: ProviderKind
-      displayName: string
-      clarificationCapability: ClarificationCapability
-      ready: true
-      protocolVersion: number
-    }
-  | {
-      agentId: ProviderKind
-      displayName: string
-      clarificationCapability: ClarificationCapability
-      ready: false
-      reason: NotReadyReason
-      message: string
-    }
+export type AgentReadiness = ProfileReadiness & {
+  agentId: ProviderKind
+  displayName: string
+  clarificationCapability: ClarificationCapability
+}
 
 /** How long to wait for `initialize` before declaring the agent unresponsive. */
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000

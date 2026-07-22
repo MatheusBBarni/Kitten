@@ -28,6 +28,7 @@ import type {
   ToolKind,
   UsageUpdate,
 } from "@agentclientprotocol/sdk"
+import type { NormalizedAttemptActivity } from "@kitten/engine"
 
 import type {
   AvailableCommand,
@@ -280,18 +281,18 @@ export function translateSessionUpdate(
     case "user_message_chunk": {
       const text = extractText(update.content)
       if (text === null) return null
-      return { kind: "user_message", messageId: messageIdOf(update.messageId), text }
+      return normalizedActivity({ kind: "user_message", messageId: messageIdOf(update.messageId), text })
     }
     case "agent_message_chunk": {
       const text = extractText(update.content)
       if (text === null) return null
-      return { kind: "agent_message", messageId: messageIdOf(update.messageId), textDelta: text }
+      return normalizedActivity({ kind: "agent_message", messageId: messageIdOf(update.messageId), textDelta: text })
     }
     case "tool_call":
     case "tool_call_update":
-      return { kind: "tool_call", call: translateToolCall(update, failureKind) }
+      return normalizedActivity({ kind: "tool_call", call: translateToolCall(update, failureKind) })
     case "plan":
-      return { kind: "plan", entries: update.entries.map(translatePlanEntry) }
+      return normalizedActivity({ kind: "plan", entries: update.entries.map(translatePlanEntry) })
     case "config_option_update":
       // The agent advertises the full option set; translate the select options
       // and drop booleans (V1 renders select categories only, ADR-003/ADR-004).
@@ -401,7 +402,12 @@ function translatePlanEntry(entry: AcpPlanEntry): PlanEntry {
 
 /** Copy only the content-free context counters; ACP cost and metadata stay at the boundary. */
 function translateUsage(update: UsageUpdate): Extract<DomainSessionEvent, { kind: "usage" }> {
-  return { kind: "usage", used: update.used, size: update.size }
+  return normalizedActivity({ kind: "usage", used: update.used, size: update.size })
+}
+
+/** Compile-time fence proving ACP translation satisfies the shared protocol-free activity contract. */
+function normalizedActivity<Activity extends NormalizedAttemptActivity>(activity: Activity): Activity {
+  return activity
 }
 
 /**
