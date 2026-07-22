@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type {
   BoardId,
   BoardProjection,
@@ -11,6 +12,17 @@ import type {
   StageProjection,
   WorkflowCommandKind,
 } from "../workflow/workflowTypes.ts";
+import { isSkillId } from "../workflow/workflowTypes.ts";
+import type {
+  CatalogDiagnostic,
+  CatalogRoot,
+  SkillCatalogEntry,
+  SkillMetadata,
+  SkillSnapshot,
+} from "../catalog/contracts.ts";
+import { deriveSkillIdentity } from "../catalog/skillCatalog.ts";
+import type { CardWorktreeBinding } from "../worktrees/contracts.ts";
+import { validateCardWorktreeBinding } from "../worktrees/contracts.ts";
 
 export type {
   BoardProjection,
@@ -52,14 +64,43 @@ export type JournalEvent =
       readonly kind: "workflow_command_committed";
       readonly cardId?: CardId;
       readonly payload: WorkflowCommandEventPayload;
+    })
+  | (JournalEventBase & {
+      readonly kind: "catalog_projection_replaced";
+      readonly payload: CatalogProjection;
+    })
+  | (JournalEventBase & {
+      readonly kind: "skill_snapshot_stored";
+      readonly payload: StoredSkillSnapshot;
+    })
+  | (JournalEventBase & {
+      readonly kind: "card_worktree_binding_recorded";
+      readonly cardId: CardId;
+      readonly payload: CardWorktreeBinding;
     });
+
+export interface CatalogProjection {
+  readonly catalogId: string;
+  readonly roots: readonly CatalogRoot[];
+  readonly entries: readonly SkillCatalogEntry[];
+  readonly diagnostics: readonly CatalogDiagnostic[];
+}
+
+export interface StoredSkillSnapshot {
+  readonly catalogId: string;
+  readonly snapshot: SkillSnapshot;
+  readonly storedAt: number;
+}
 
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
   | { readonly entity: "edge"; readonly operation: "upsert"; readonly value: EdgeProjection }
   | { readonly entity: "edge"; readonly operation: "delete"; readonly value: EdgeProjection }
-  | { readonly entity: "card"; readonly operation: "upsert"; readonly value: CardProjection };
+  | { readonly entity: "card"; readonly operation: "upsert"; readonly value: CardProjection }
+  | { readonly entity: "catalog"; readonly operation: "replace"; readonly value: CatalogProjection }
+  | { readonly entity: "skill_snapshot"; readonly operation: "insert"; readonly value: StoredSkillSnapshot }
+  | { readonly entity: "card_worktree"; readonly operation: "upsert"; readonly value: CardWorktreeBinding };
 
 export interface WorkflowCommandEventPayload {
   readonly mutationId: string;
@@ -83,6 +124,11 @@ export interface PersistenceSnapshot {
   readonly stages: readonly StageProjection[];
   readonly edges: readonly EdgeProjection[];
   readonly cards: readonly CardProjection[];
+  readonly catalogRoots: readonly (CatalogRoot & { readonly catalogId: string })[];
+  readonly catalogEntries: readonly (SkillCatalogEntry & { readonly catalogId: string })[];
+  readonly catalogDiagnostics: readonly (CatalogDiagnostic & { readonly catalogId: string })[];
+  readonly skillSnapshots: readonly StoredSkillSnapshot[];
+  readonly cardWorktrees: readonly CardWorktreeBinding[];
 }
 
 export interface EventJournal {
@@ -174,6 +220,14 @@ function optionalStringField(value: unknown, label: string): string | null {
   return value === null ? null : stringField(value, label);
 }
 
+function optionalSkillIdField(value: unknown, label: string): SkillId | null {
+  const skillId = optionalStringField(value, label);
+  if (skillId !== null && !isSkillId(skillId)) {
+    throw new JournalValidationError(`${label} must be a digest-backed catalog identity`);
+  }
+  return skillId;
+}
+
 function integerField(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new JournalValidationError(`${label} must be a non-negative safe integer`);
@@ -184,6 +238,200 @@ function integerField(value: unknown, label: string): number {
 function booleanField(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new JournalValidationError(`${label} must be a boolean`);
   return value;
+}
+
+function nullableStringField(value: unknown, label: string): string | null {
+  return value === null ? null : stringField(value, label);
+}
+
+function stringRecord(value: unknown, label: string): Readonly<Record<string, string>> {
+  assertRecord(value, label);
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    result[key] = stringField(entry, `${label}.${key}`, true);
+  }
+  return result;
+}
+
+function parseSkillMetadata(value: unknown, label: string): SkillMetadata {
+  assertRecord(value, label);
+  assertExactKeys(value, ["name", "description", "frontmatter"]);
+  return {
+    name: stringField(value.name, `${label}.name`),
+    description: stringField(value.description, `${label}.description`),
+    frontmatter: stringRecord(value.frontmatter, `${label}.frontmatter`),
+  };
+}
+
+const DIAGNOSTIC_CODES = [
+  "missing_root",
+  "unreadable_root",
+  "invalid_root",
+  "missing_skill_file",
+  "unreadable_skill_file",
+  "non_utf8_skill_file",
+  "empty_skill_file",
+  "malformed_skill_file",
+  "name_collision",
+] as const;
+
+function parseRootClass(value: unknown, label: string): CatalogRoot["rootClass"] {
+  const rootClass = stringField(value, label);
+  if (rootClass !== "project" && rootClass !== "user") {
+    throw new JournalValidationError(`${label} is unsupported`);
+  }
+  return rootClass;
+}
+
+function parseCatalogDiagnostic(value: unknown, label: string): CatalogDiagnostic {
+  assertRecord(value, label);
+  assertExactKeys(value, [
+    "diagnosticId", "code", "severity", "message", "rootClass", "configuredPath",
+    "canonicalPath", "skillPath", "displayName", "relatedSkillIds",
+  ]);
+  const code = stringField(value.code, `${label}.code`);
+  if (!DIAGNOSTIC_CODES.includes(code as (typeof DIAGNOSTIC_CODES)[number])) {
+    throw new JournalValidationError(`${label}.code is unsupported`);
+  }
+  const severity = stringField(value.severity, `${label}.severity`);
+  if (severity !== "error" && severity !== "warning") {
+    throw new JournalValidationError(`${label}.severity is unsupported`);
+  }
+  if (!Array.isArray(value.relatedSkillIds)) {
+    throw new JournalValidationError(`${label}.relatedSkillIds must be an array`);
+  }
+  return {
+    diagnosticId: stringField(value.diagnosticId, `${label}.diagnosticId`),
+    code: code as CatalogDiagnostic["code"],
+    severity,
+    message: stringField(value.message, `${label}.message`),
+    rootClass: parseRootClass(value.rootClass, `${label}.rootClass`),
+    configuredPath: stringField(value.configuredPath, `${label}.configuredPath`),
+    canonicalPath: nullableStringField(value.canonicalPath, `${label}.canonicalPath`),
+    skillPath: nullableStringField(value.skillPath, `${label}.skillPath`),
+    displayName: nullableStringField(value.displayName, `${label}.displayName`),
+    relatedSkillIds: value.relatedSkillIds.map((entry) => (
+      stringField(entry, `${label}.relatedSkillIds[]`) as SkillId
+    )),
+  };
+}
+
+function parseCatalogRoot(value: unknown, label: string): CatalogRoot {
+  assertRecord(value, label);
+  assertExactKeys(value, [
+    "rootClass", "configuredPath", "canonicalPath", "order", "valid", "diagnostics",
+  ]);
+  if (!Array.isArray(value.diagnostics)) {
+    throw new JournalValidationError(`${label}.diagnostics must be an array`);
+  }
+  const canonicalPath = nullableStringField(value.canonicalPath, `${label}.canonicalPath`);
+  const valid = booleanField(value.valid, `${label}.valid`);
+  if (valid !== (canonicalPath !== null)) {
+    throw new JournalValidationError(`${label}.valid does not match canonicalPath`);
+  }
+  return {
+    rootClass: parseRootClass(value.rootClass, `${label}.rootClass`),
+    configuredPath: stringField(value.configuredPath, `${label}.configuredPath`),
+    canonicalPath,
+    order: integerField(value.order, `${label}.order`),
+    valid,
+    diagnostics: value.diagnostics.map((entry) => parseCatalogDiagnostic(entry, `${label}.diagnostics[]`)),
+  };
+}
+
+function parseCatalogEntry(value: unknown, label: string): SkillCatalogEntry {
+  assertRecord(value, label);
+  assertExactKeys(value, [
+    "skillId", "canonicalPath", "rootClass", "rootPath", "digest", "metadata", "order",
+    "hasNameCollision", "diagnostics",
+  ]);
+  if (!Array.isArray(value.diagnostics)) {
+    throw new JournalValidationError(`${label}.diagnostics must be an array`);
+  }
+  const digest = stringField(value.digest, `${label}.digest`);
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new JournalValidationError(`${label}.digest must be a lowercase SHA-256 digest`);
+  }
+  const skillId = stringField(value.skillId, `${label}.skillId`) as SkillId;
+  const canonicalPath = stringField(value.canonicalPath, `${label}.canonicalPath`);
+  if (skillId !== deriveSkillIdentity(canonicalPath, digest)) {
+    throw new JournalValidationError(`${label}.skillId does not match location and digest`);
+  }
+  return {
+    skillId,
+    canonicalPath,
+    rootClass: parseRootClass(value.rootClass, `${label}.rootClass`),
+    rootPath: stringField(value.rootPath, `${label}.rootPath`),
+    digest,
+    metadata: parseSkillMetadata(value.metadata, `${label}.metadata`),
+    order: integerField(value.order, `${label}.order`),
+    hasNameCollision: booleanField(value.hasNameCollision, `${label}.hasNameCollision`),
+    diagnostics: value.diagnostics.map((entry) => parseCatalogDiagnostic(entry, `${label}.diagnostics[]`)),
+  };
+}
+
+function parseCatalogProjection(value: unknown): CatalogProjection {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["catalogId", "roots", "entries", "diagnostics"]);
+  if (!Array.isArray(value.roots) || !Array.isArray(value.entries) || !Array.isArray(value.diagnostics)) {
+    throw new JournalValidationError("catalog projection collections must be arrays");
+  }
+  return {
+    catalogId: stringField(value.catalogId, "payload.catalogId"),
+    roots: value.roots.map((entry) => parseCatalogRoot(entry, "payload.roots[]")),
+    entries: value.entries.map((entry) => parseCatalogEntry(entry, "payload.entries[]")),
+    diagnostics: value.diagnostics.map((entry) => parseCatalogDiagnostic(entry, "payload.diagnostics[]")),
+  };
+}
+
+function parseSkillSnapshot(value: unknown, label: string): SkillSnapshot {
+  assertRecord(value, label);
+  assertExactKeys(value, [
+    "snapshotId", "skillId", "canonicalPath", "rootClass", "digest", "metadata", "content",
+  ]);
+  const snapshotId = stringField(value.snapshotId, `${label}.snapshotId`) as SkillId;
+  const skillId = stringField(value.skillId, `${label}.skillId`) as SkillId;
+  if (snapshotId !== skillId) throw new JournalValidationError(`${label} identity is inconsistent`);
+  const digest = stringField(value.digest, `${label}.digest`);
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new JournalValidationError(`${label}.digest must be a lowercase SHA-256 digest`);
+  }
+  const canonicalPath = stringField(value.canonicalPath, `${label}.canonicalPath`);
+  const content = stringField(value.content, `${label}.content`);
+  const contentDigest = createHash("sha256").update(new TextEncoder().encode(content)).digest("hex");
+  if (contentDigest !== digest) throw new JournalValidationError(`${label}.digest does not match content`);
+  if (skillId !== deriveSkillIdentity(canonicalPath, digest)) {
+    throw new JournalValidationError(`${label}.skillId does not match location and digest`);
+  }
+  return {
+    snapshotId,
+    skillId,
+    canonicalPath,
+    rootClass: parseRootClass(value.rootClass, `${label}.rootClass`),
+    digest,
+    metadata: parseSkillMetadata(value.metadata, `${label}.metadata`),
+    content,
+  };
+}
+
+function parseStoredSkillSnapshot(value: unknown): StoredSkillSnapshot {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["catalogId", "snapshot", "storedAt"]);
+  return {
+    catalogId: stringField(value.catalogId, "payload.catalogId"),
+    snapshot: parseSkillSnapshot(value.snapshot, "payload.snapshot"),
+    storedAt: integerField(value.storedAt, "payload.storedAt"),
+  };
+}
+
+function parseCardWorktreeBinding(value: unknown): CardWorktreeBinding {
+  try {
+    return validateCardWorktreeBinding(value);
+  } catch (error) {
+    throw new JournalValidationError(
+      error instanceof Error ? error.message : "card worktree binding is invalid",
+    );
+  }
 }
 
 function parseBoardProjection(value: unknown): BoardProjection {
@@ -212,7 +460,7 @@ function parseStageProjection(value: unknown): StageProjection {
     boardId: stringField(value.boardId, "payload.boardId") as BoardId,
     label: stringField(value.label, "payload.label"),
     position: integerField(value.position, "payload.position"),
-    defaultSkillId: optionalStringField(value.defaultSkillId, "payload.defaultSkillId") as SkillId | null,
+    defaultSkillId: optionalSkillIdField(value.defaultSkillId, "payload.defaultSkillId"),
     configured: booleanField(value.configured, "payload.configured"),
     workflowVersion: integerField(value.workflowVersion, "payload.workflowVersion"),
     updatedAt: integerField(value.updatedAt, "payload.updatedAt"),
@@ -261,7 +509,7 @@ function parseCardProjection(value: unknown): CardProjection {
     provider: stringField(value.provider, "payload.provider"),
     model: stringField(value.model, "payload.model"),
     effort: stringField(value.effort, "payload.effort"),
-    skillOverrideId: optionalStringField(value.skillOverrideId, "payload.skillOverrideId") as SkillId | null,
+    skillOverrideId: optionalSkillIdField(value.skillOverrideId, "payload.skillOverrideId"),
     runnable: booleanField(value.runnable, "payload.runnable"),
     executionStatus: executionStatus as ExecutionStatus,
     version: integerField(value.version, "payload.version"),
@@ -304,6 +552,15 @@ function parseProjectionChange(value: unknown): ProjectionChange {
     case "card":
       if (operation !== "upsert") throw new JournalValidationError("card changes must be upserts");
       return { entity, operation, value: parseCardProjection(value.value) };
+    case "catalog":
+      if (operation !== "replace") throw new JournalValidationError("catalog changes must replace");
+      return { entity, operation, value: parseCatalogProjection(value.value) };
+    case "skill_snapshot":
+      if (operation !== "insert") throw new JournalValidationError("Skill snapshot changes must insert");
+      return { entity, operation, value: parseStoredSkillSnapshot(value.value) };
+    case "card_worktree":
+      if (operation !== "upsert") throw new JournalValidationError("card worktree changes must upsert");
+      return { entity, operation, value: parseCardWorktreeBinding(value.value) };
     default:
       throw new JournalValidationError("projection change entity is unsupported");
   }
@@ -383,7 +640,12 @@ export function validateJournalEvent(input: unknown): JournalEvent {
     }
     case "workflow_command_committed": {
       const payload = parseWorkflowCommandPayload(input.payload);
-      const mismatchedChange = payload.changes.find((change) => change.value.boardId !== boardId);
+      const mismatchedChange = payload.changes.find((change) => (
+        change.entity === "catalog"
+        || change.entity === "skill_snapshot"
+        || change.entity === "card_worktree"
+        || change.value.boardId !== boardId
+      ));
       if (mismatchedChange !== undefined) {
         throw new JournalValidationError("boardId does not match a workflow command change");
       }
@@ -404,6 +666,43 @@ export function validateJournalEvent(input: unknown): JournalEvent {
         occurredAt,
         payload,
         ...(cardId === undefined ? {} : { cardId }),
+        ...attempt,
+      };
+    }
+    case "catalog_projection_replaced": {
+      const payload = parseCatalogProjection(input.payload);
+      if (payload.catalogId !== boardId) {
+        throw new JournalValidationError("boardId does not match catalogId");
+      }
+      if (Object.hasOwn(input, "cardId")) {
+        throw new JournalValidationError("catalog event cannot carry cardId");
+      }
+      return { eventId, boardId, actor, kind: input.kind, occurredAt, payload, ...attempt };
+    }
+    case "skill_snapshot_stored": {
+      const payload = parseStoredSkillSnapshot(input.payload);
+      if (payload.catalogId !== boardId) {
+        throw new JournalValidationError("boardId does not match catalogId");
+      }
+      if (Object.hasOwn(input, "cardId")) {
+        throw new JournalValidationError("Skill snapshot event cannot carry cardId");
+      }
+      return { eventId, boardId, actor, kind: input.kind, occurredAt, payload, ...attempt };
+    }
+    case "card_worktree_binding_recorded": {
+      const payload = parseCardWorktreeBinding(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      if (payload.boardId !== boardId || payload.cardId !== cardId) {
+        throw new JournalValidationError("card worktree event identity does not match payload");
+      }
+      return {
+        eventId,
+        boardId,
+        cardId,
+        actor,
+        kind: input.kind,
+        occurredAt,
+        payload,
         ...attempt,
       };
     }
@@ -507,6 +806,210 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
       );
       return;
     }
+    case "card_worktree": {
+      const value = change.value;
+      const cardStatement = database.query<{ readonly boardId: string }, [string]>(
+        "SELECT board_id AS boardId FROM cards WHERE card_id = ?",
+      );
+      const card = cardStatement.get(value.cardId);
+      cardStatement.finalize();
+      if (card?.boardId !== value.boardId) {
+        throw new Error(`Card ${value.cardId} does not belong to board ${value.boardId}`);
+      }
+      const existingStatement = database.query<{
+        readonly bindingId: string;
+        readonly boardId: string;
+        readonly repositoryRoot: string;
+        readonly repositoryGitDir: string;
+        readonly managedRoot: string;
+        readonly worktreePath: string;
+        readonly branch: string;
+        readonly baselineBranch: string;
+        readonly baselineCommit: string;
+        readonly createdAt: number;
+      }, [string]>(`
+        SELECT binding_id AS bindingId, board_id AS boardId,
+          repository_root AS repositoryRoot, repository_git_dir AS repositoryGitDir,
+          managed_root AS managedRoot, worktree_path AS worktreePath, branch,
+          baseline_branch AS baselineBranch, baseline_commit AS baselineCommit,
+          created_at AS createdAt
+        FROM card_worktrees WHERE card_id = ?
+      `);
+      const existing = existingStatement.get(value.cardId);
+      existingStatement.finalize();
+      if (existing !== null && JSON.stringify(existing) !== JSON.stringify({
+        bindingId: value.bindingId,
+        boardId: value.boardId,
+        repositoryRoot: value.repositoryRoot,
+        repositoryGitDir: value.repositoryGitDir,
+        managedRoot: value.managedRoot,
+        worktreePath: value.worktreePath,
+        branch: value.branch,
+        baselineBranch: value.baselineBranch,
+        baselineCommit: value.baselineCommit,
+        createdAt: value.createdAt,
+      })) {
+        throw new Error(`Card worktree identity conflict: ${value.cardId}`);
+      }
+      const upsert = database.query<void, [
+        string, string, number, string, string, string, string, string, string, string,
+        string, string, string | null, number, number,
+      ]>(`
+        INSERT INTO card_worktrees(
+          card_id, board_id, binding_version, binding_id, repository_root,
+          repository_git_dir, managed_root, worktree_path, branch, baseline_branch,
+          baseline_commit, lifecycle, reason, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(card_id) DO UPDATE SET
+          lifecycle = excluded.lifecycle,
+          reason = excluded.reason,
+          updated_at = excluded.updated_at
+      `);
+      upsert.run(
+        value.cardId,
+        value.boardId,
+        value.bindingVersion,
+        value.bindingId,
+        value.repositoryRoot,
+        value.repositoryGitDir,
+        value.managedRoot,
+        value.worktreePath,
+        value.branch,
+        value.baselineBranch,
+        value.baselineCommit,
+        value.lifecycle,
+        value.reason,
+        value.createdAt,
+        value.updatedAt,
+      );
+      upsert.finalize();
+      return;
+    }
+    case "catalog": {
+      const value = change.value;
+      const deleteDiagnostics = database.query<void, [string]>(
+        "DELETE FROM skill_catalog_diagnostics WHERE catalog_id = ?",
+      );
+      deleteDiagnostics.run(value.catalogId);
+      deleteDiagnostics.finalize();
+      const deleteEntries = database.query<void, [string]>(
+        "DELETE FROM skill_catalog_entries WHERE catalog_id = ?",
+      );
+      deleteEntries.run(value.catalogId);
+      deleteEntries.finalize();
+      const deleteRoots = database.query<void, [string]>(
+        "DELETE FROM skill_catalog_roots WHERE catalog_id = ?",
+      );
+      deleteRoots.run(value.catalogId);
+      deleteRoots.finalize();
+      const insertRoot = database.query<void, [string, number, string, string, string | null, number, string]>(`
+        INSERT INTO skill_catalog_roots(
+          catalog_id, root_order, root_class, configured_path, canonical_path, valid, diagnostics_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      value.roots.forEach((root) => insertRoot.run(
+        value.catalogId,
+        root.order,
+        root.rootClass,
+        root.configuredPath,
+        root.canonicalPath,
+        root.valid ? 1 : 0,
+        JSON.stringify(root.diagnostics),
+      ));
+      insertRoot.finalize();
+      const insertEntry = database.query<void, [
+        string, string, number, string, string, string, string, string, number, string,
+      ]>(`
+        INSERT INTO skill_catalog_entries(
+          catalog_id, skill_id, entry_order, canonical_path, root_class, root_path, digest,
+          metadata_json, has_name_collision, diagnostics_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      value.entries.forEach((entry) => insertEntry.run(
+        value.catalogId,
+        entry.skillId,
+        entry.order,
+        entry.canonicalPath,
+        entry.rootClass,
+        entry.rootPath,
+        entry.digest,
+        JSON.stringify(entry.metadata),
+        entry.hasNameCollision ? 1 : 0,
+        JSON.stringify(entry.diagnostics),
+      ));
+      insertEntry.finalize();
+      const insertDiagnostic = database.query<void, [string, string, number, string]>(`
+        INSERT INTO skill_catalog_diagnostics(
+          catalog_id, diagnostic_id, diagnostic_order, diagnostic_json
+        ) VALUES (?, ?, ?, ?)
+      `);
+      value.diagnostics.forEach((entry, order) => insertDiagnostic.run(
+        value.catalogId,
+        entry.diagnosticId,
+        order,
+        JSON.stringify(entry),
+      ));
+      insertDiagnostic.finalize();
+      return;
+    }
+    case "skill_snapshot": {
+      const value = change.value;
+      const snapshot = value.snapshot;
+      const insertSnapshot = database.query<void, [
+        string, string, string, string, string, string, string, Uint8Array, number,
+      ]>(`
+        INSERT INTO skill_snapshots(
+          snapshot_id, catalog_id, skill_id, canonical_path, root_class, digest,
+          metadata_json, content, stored_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(snapshot_id) DO NOTHING
+      `);
+      insertSnapshot.run(
+        snapshot.snapshotId,
+        value.catalogId,
+        snapshot.skillId,
+        snapshot.canonicalPath,
+        snapshot.rootClass,
+        snapshot.digest,
+        JSON.stringify(snapshot.metadata),
+        new TextEncoder().encode(snapshot.content),
+        value.storedAt,
+      );
+      insertSnapshot.finalize();
+      const readSnapshot = database.query<{
+        readonly catalogId: string;
+        readonly skillId: string;
+        readonly canonicalPath: string;
+        readonly rootClass: string;
+        readonly digest: string;
+        readonly metadataJson: string;
+        readonly content: Uint8Array;
+        readonly storedAt: number;
+      }, [string]>(`
+        SELECT catalog_id AS catalogId, skill_id AS skillId, canonical_path AS canonicalPath,
+          root_class AS rootClass, digest, metadata_json AS metadataJson, content,
+          stored_at AS storedAt
+        FROM skill_snapshots WHERE snapshot_id = ?
+      `);
+      const persisted = readSnapshot.get(snapshot.snapshotId);
+      readSnapshot.finalize();
+      if (persisted === null || JSON.stringify({
+        ...persisted,
+        content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(persisted.content),
+      }) !== JSON.stringify({
+        catalogId: value.catalogId,
+        skillId: snapshot.skillId,
+        canonicalPath: snapshot.canonicalPath,
+        rootClass: snapshot.rootClass,
+        digest: snapshot.digest,
+        metadataJson: JSON.stringify(snapshot.metadata),
+        content: snapshot.content,
+        storedAt: value.storedAt,
+      })) {
+        throw new Error(`Skill snapshot identity conflict: ${snapshot.snapshotId}`);
+      }
+      return;
+    }
   }
 }
 
@@ -516,6 +1019,12 @@ export function applyProjectionEvent(
 ): readonly ProjectionChange[] {
   const changes: readonly ProjectionChange[] = event.kind === "workflow_command_committed"
     ? event.payload.changes
+    : event.kind === "catalog_projection_replaced"
+      ? [{ entity: "catalog", operation: "replace", value: event.payload }]
+      : event.kind === "skill_snapshot_stored"
+        ? [{ entity: "skill_snapshot", operation: "insert", value: event.payload }]
+        : event.kind === "card_worktree_binding_recorded"
+          ? [{ entity: "card_worktree", operation: "upsert", value: event.payload }]
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -548,35 +1057,201 @@ interface CardRow extends Omit<CardProjection, "runnable"> {
   readonly runnable: number;
 }
 
+interface CatalogRootRow {
+  readonly catalogId: string;
+  readonly order: number;
+  readonly rootClass: string;
+  readonly configuredPath: string;
+  readonly canonicalPath: string | null;
+  readonly valid: number;
+  readonly diagnosticsJson: string;
+}
+
+interface CatalogEntryRow {
+  readonly catalogId: string;
+  readonly skillId: string;
+  readonly order: number;
+  readonly canonicalPath: string;
+  readonly rootClass: string;
+  readonly rootPath: string;
+  readonly digest: string;
+  readonly metadataJson: string;
+  readonly hasNameCollision: number;
+  readonly diagnosticsJson: string;
+}
+
+interface CatalogDiagnosticRow {
+  readonly catalogId: string;
+  readonly diagnosticJson: string;
+}
+
+interface SkillSnapshotRow {
+  readonly snapshotId: string;
+  readonly catalogId: string;
+  readonly skillId: string;
+  readonly canonicalPath: string;
+  readonly rootClass: string;
+  readonly digest: string;
+  readonly metadataJson: string;
+  readonly content: Uint8Array;
+  readonly storedAt: number;
+}
+
+interface CardWorktreeRow {
+  readonly bindingVersion: number;
+  readonly bindingId: string;
+  readonly boardId: string;
+  readonly cardId: string;
+  readonly repositoryRoot: string;
+  readonly repositoryGitDir: string;
+  readonly managedRoot: string;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly baselineBranch: string;
+  readonly baselineCommit: string;
+  readonly lifecycle: string;
+  readonly reason: string | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+function parsePersistedJson(value: string, label: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new JournalValidationError(`${label} is not JSON`);
+  }
+}
+
 export function readPersistenceSnapshot(database: Database): PersistenceSnapshot {
-  const metadata = database.query<MetadataRow, []>(`
+  const metadataStatement = database.query<MetadataRow, []>(`
     SELECT revision, last_journal_order AS lastJournalOrder
     FROM projection_metadata WHERE singleton = 1
-  `).get();
+  `);
+  const metadata = metadataStatement.get();
+  metadataStatement.finalize();
   if (metadata === null) throw new Error("Projection metadata is missing");
 
-  const boards = database.query<BoardRow, []>(`
+  const boardsStatement = database.query<BoardRow, []>(`
     SELECT board_id AS boardId, repository_path AS repositoryPath,
       workflow_version AS workflowVersion, created_at AS createdAt, updated_at AS updatedAt
     FROM boards ORDER BY board_id
-  `).all();
-  const stages = database.query<StageRow, []>(`
+  `);
+  const boards = boardsStatement.all();
+  boardsStatement.finalize();
+  const stagesStatement = database.query<StageRow, []>(`
     SELECT stage_id AS stageId, board_id AS boardId, label, position,
       default_skill_id AS defaultSkillId, configured, workflow_version AS workflowVersion,
       updated_at AS updatedAt
     FROM workflow_stages ORDER BY board_id, position, stage_id
-  `).all().map((row) => ({ ...row, configured: row.configured === 1 }));
-  const edges = database.query<EdgeProjection, []>(`
+  `);
+  const stageRows = stagesStatement.all();
+  stagesStatement.finalize();
+  const stages = stageRows.map((row) => ({ ...row, configured: row.configured === 1 }));
+  const edgesStatement = database.query<EdgeProjection, []>(`
     SELECT board_id AS boardId, source_stage_id AS sourceStageId,
       target_stage_id AS targetStageId, workflow_version AS workflowVersion
     FROM workflow_edges ORDER BY board_id, source_stage_id, target_stage_id
-  `).all();
-  const cards = database.query<CardRow, []>(`
+  `);
+  const edges = edgesStatement.all();
+  edgesStatement.finalize();
+  const cardsStatement = database.query<CardRow, []>(`
     SELECT card_id AS cardId, board_id AS boardId, stage_id AS stageId, title, description,
       provider, model, effort, skill_override_id AS skillOverrideId, runnable,
       execution_status AS executionStatus, version, created_at AS createdAt, updated_at AS updatedAt
     FROM cards ORDER BY board_id, stage_id, card_id
-  `).all().map((row) => ({ ...row, runnable: row.runnable === 1 }));
+  `);
+  const cardRows = cardsStatement.all();
+  cardsStatement.finalize();
+  const cards = cardRows.map((row) => ({ ...row, runnable: row.runnable === 1 }));
+  const catalogRootsStatement = database.query<CatalogRootRow, []>(`
+    SELECT catalog_id AS catalogId, root_order AS 'order', root_class AS rootClass,
+      configured_path AS configuredPath, canonical_path AS canonicalPath, valid,
+      diagnostics_json AS diagnosticsJson
+    FROM skill_catalog_roots ORDER BY catalog_id, root_order
+  `);
+  const catalogRootRows = catalogRootsStatement.all();
+  catalogRootsStatement.finalize();
+  const catalogRoots = catalogRootRows.map((row) => ({
+    catalogId: row.catalogId,
+    ...parseCatalogRoot({
+      rootClass: row.rootClass,
+      configuredPath: row.configuredPath,
+      canonicalPath: row.canonicalPath,
+      order: row.order,
+      valid: row.valid === 1,
+      diagnostics: parsePersistedJson(row.diagnosticsJson, "persisted root diagnostics"),
+    }, "persisted catalog root"),
+  }));
+  const catalogEntriesStatement = database.query<CatalogEntryRow, []>(`
+    SELECT catalog_id AS catalogId, skill_id AS skillId, entry_order AS 'order',
+      canonical_path AS canonicalPath, root_class AS rootClass, root_path AS rootPath,
+      digest, metadata_json AS metadataJson, has_name_collision AS hasNameCollision,
+      diagnostics_json AS diagnosticsJson
+    FROM skill_catalog_entries ORDER BY catalog_id, entry_order
+  `);
+  const catalogEntryRows = catalogEntriesStatement.all();
+  catalogEntriesStatement.finalize();
+  const catalogEntries = catalogEntryRows.map((row) => ({
+    catalogId: row.catalogId,
+    ...parseCatalogEntry({
+      skillId: row.skillId,
+      canonicalPath: row.canonicalPath,
+      rootClass: row.rootClass,
+      rootPath: row.rootPath,
+      digest: row.digest,
+      metadata: parsePersistedJson(row.metadataJson, "persisted Skill metadata"),
+      order: row.order,
+      hasNameCollision: row.hasNameCollision === 1,
+      diagnostics: parsePersistedJson(row.diagnosticsJson, "persisted entry diagnostics"),
+    }, "persisted catalog entry"),
+  }));
+  const catalogDiagnosticsStatement = database.query<CatalogDiagnosticRow, []>(`
+    SELECT catalog_id AS catalogId, diagnostic_json AS diagnosticJson
+    FROM skill_catalog_diagnostics ORDER BY catalog_id, diagnostic_order
+  `);
+  const catalogDiagnosticRows = catalogDiagnosticsStatement.all();
+  catalogDiagnosticsStatement.finalize();
+  const catalogDiagnostics = catalogDiagnosticRows.map((row) => ({
+    catalogId: row.catalogId,
+    ...parseCatalogDiagnostic(
+      parsePersistedJson(row.diagnosticJson, "persisted catalog diagnostic"),
+      "persisted catalog diagnostic",
+    ),
+  }));
+  const skillSnapshotsStatement = database.query<SkillSnapshotRow, []>(`
+    SELECT snapshot_id AS snapshotId, catalog_id AS catalogId, skill_id AS skillId,
+      canonical_path AS canonicalPath, root_class AS rootClass, digest,
+      metadata_json AS metadataJson, content, stored_at AS storedAt
+    FROM skill_snapshots ORDER BY snapshot_id
+  `);
+  const skillSnapshotRows = skillSnapshotsStatement.all();
+  skillSnapshotsStatement.finalize();
+  const skillSnapshots = skillSnapshotRows.map((row): StoredSkillSnapshot => ({
+    catalogId: row.catalogId,
+    snapshot: parseSkillSnapshot({
+      snapshotId: row.snapshotId,
+      skillId: row.skillId,
+      canonicalPath: row.canonicalPath,
+      rootClass: row.rootClass,
+      digest: row.digest,
+      metadata: parsePersistedJson(row.metadataJson, "persisted snapshot metadata"),
+      content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(row.content),
+    }, "persisted Skill snapshot"),
+    storedAt: row.storedAt,
+  }));
+  const cardWorktreesStatement = database.query<CardWorktreeRow, []>(`
+    SELECT binding_version AS bindingVersion, binding_id AS bindingId,
+      board_id AS boardId, card_id AS cardId, repository_root AS repositoryRoot,
+      repository_git_dir AS repositoryGitDir, managed_root AS managedRoot,
+      worktree_path AS worktreePath, branch, baseline_branch AS baselineBranch,
+      baseline_commit AS baselineCommit, lifecycle, reason,
+      created_at AS createdAt, updated_at AS updatedAt
+    FROM card_worktrees ORDER BY board_id, card_id
+  `);
+  const cardWorktreeRows = cardWorktreesStatement.all();
+  cardWorktreesStatement.finalize();
+  const cardWorktrees = cardWorktreeRows.map(parseCardWorktreeBinding);
 
   return {
     schemaVersion: 1,
@@ -586,6 +1261,11 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     stages,
     edges,
     cards,
+    catalogRoots,
+    catalogEntries,
+    catalogDiagnostics,
+    skillSnapshots,
+    cardWorktrees,
   };
 }
 
@@ -602,12 +1282,14 @@ interface JournalRow {
 }
 
 export function readOrderedJournalEvents(database: Database): readonly JournalEvent[] {
-  const rows = database.query<JournalRow, []>(`
+  const statement = database.query<JournalRow, []>(`
     SELECT event_id AS eventId, board_id AS boardId, card_id AS cardId,
       attempt_id AS attemptId, attempt_sequence AS attemptSequence, actor, kind,
       occurred_at AS occurredAt, payload_json AS payloadJson
     FROM journal_events ORDER BY journal_order
-  `).all();
+  `);
+  const rows = statement.all();
+  statement.finalize();
 
   return rows.map((row) => {
     let payload: unknown;

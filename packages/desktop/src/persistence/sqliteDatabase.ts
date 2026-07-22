@@ -29,5 +29,5 @@ export function openSqliteDatabase(options: SqliteDatabaseOptions): Database {
 }
 
 export function closeSqliteDatabase(database: Database): void {
-  database.close(true);
+  database.close();
 }

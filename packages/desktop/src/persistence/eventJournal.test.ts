@@ -36,7 +36,7 @@ const BACKLOG: StageProjection = {
   boardId: BOARD.boardId,
   label: "Backlog",
   position: 0,
-  defaultSkillId: workflowIds.skill("skill-refine"),
+  defaultSkillId: workflowIds.skill(`skill:${"a".repeat(64)}`),
   configured: true,
   workflowVersion: 1,
   updatedAt: 110,
@@ -47,7 +47,7 @@ const DOING: StageProjection = {
   stageId: workflowIds.stage("stage-doing"),
   label: "Doing",
   position: 1,
-  defaultSkillId: workflowIds.skill("skill-execute"),
+  defaultSkillId: workflowIds.skill(`skill:${"b".repeat(64)}`),
 };
 
 const EDGE: EdgeProjection = {
@@ -74,7 +74,9 @@ const CARD: CardProjection = {
   updatedAt: 120,
 };
 
-type ProjectionJournalEvent = Exclude<JournalEvent, { kind: "workflow_command_committed" }>;
+type ProjectionJournalEvent = Extract<JournalEvent, {
+  kind: "board_upserted" | "stage_upserted" | "edge_upserted" | "card_upserted";
+}>;
 
 function event<TKind extends ProjectionJournalEvent["kind"]>(
   kind: TKind,
@@ -126,6 +128,7 @@ describe("desktop SQLite factory and migrations", () => {
       options: { readonly: false, create: true, strict: true },
     });
     closeSqliteDatabase(database);
+    expect(() => database.run("SELECT 1")).toThrow("Database has closed");
     expect(() => openSqliteDatabase({ filename: "   " })).toThrow("must not be empty");
   });
 
@@ -133,15 +136,17 @@ describe("desktop SQLite factory and migrations", () => {
     const database = openSqliteDatabase({ filename: ":memory:" });
     try {
       expect(migrateDatabase(database, { now: () => 55 })).toEqual({
-        currentVersion: 1,
-        appliedVersions: [1],
+        currentVersion: 3,
+        appliedVersions: [1, 2, 3],
       });
       expect(migrateDatabase(database, { now: () => 99 })).toEqual({
-        currentVersion: 1,
+        currentVersion: 3,
         appliedVersions: [],
       });
       expect(readAppliedMigrations(database)).toEqual([
         { version: 1, name: "initial_desktop_journal_and_projections" },
+        { version: 2, name: "skill_catalog_projections_and_snapshots" },
+        { version: 3, name: "card_owned_worktree_bindings" },
       ]);
 
       const tables = database.query<{ name: string }, []>(`
@@ -149,10 +154,15 @@ describe("desktop SQLite factory and migrations", () => {
       `).all().map(({ name }) => name);
       expect(tables).toEqual([
         "boards",
+        "card_worktrees",
         "cards",
         "journal_events",
         "projection_metadata",
         "schema_migrations",
+        "skill_catalog_diagnostics",
+        "skill_catalog_entries",
+        "skill_catalog_roots",
+        "skill_snapshots",
         "workflow_edges",
         "workflow_stages",
       ]);

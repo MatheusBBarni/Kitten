@@ -17,11 +17,18 @@ function id<Kind extends string>(value: string, label: Kind): WorkflowId<Kind> {
   return value as WorkflowId<Kind>;
 }
 
+export function isSkillId(value: string): value is SkillId {
+  return /^skill:[a-f0-9]{64}$/.test(value);
+}
+
 export const workflowIds = {
   board: (value: string): BoardId => id(value, "board"),
   stage: (value: string): StageId => id(value, "stage"),
   card: (value: string): CardId => id(value, "card"),
-  skill: (value: string): SkillId => id(value, "skill"),
+  skill: (value: string): SkillId => {
+    if (!isSkillId(value)) throw new Error("skill ID must be a digest-backed catalog identity");
+    return value;
+  },
   mutation: (value: string): MutationId => id(value, "mutation"),
 } as const;
 

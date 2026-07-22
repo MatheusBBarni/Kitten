@@ -112,12 +112,124 @@ const INITIAL_SCHEMA_SQL = `
   VALUES (1, 0, 0);
 `;
 
+const SKILL_CATALOG_SCHEMA_SQL = `
+  CREATE TABLE skill_catalog_roots (
+    catalog_id TEXT NOT NULL,
+    root_order INTEGER NOT NULL CHECK (root_order >= 0),
+    root_class TEXT NOT NULL CHECK (root_class IN ('project', 'user')),
+    configured_path TEXT NOT NULL,
+    canonical_path TEXT,
+    valid INTEGER NOT NULL CHECK (valid IN (0, 1)),
+    diagnostics_json TEXT NOT NULL CHECK (json_valid(diagnostics_json)),
+    PRIMARY KEY (catalog_id, root_order),
+    UNIQUE (catalog_id, root_class, configured_path)
+  ) STRICT;
+
+  CREATE TABLE skill_catalog_entries (
+    catalog_id TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    entry_order INTEGER NOT NULL CHECK (entry_order >= 0),
+    canonical_path TEXT NOT NULL,
+    root_class TEXT NOT NULL CHECK (root_class IN ('project', 'user')),
+    root_path TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
+    has_name_collision INTEGER NOT NULL CHECK (has_name_collision IN (0, 1)),
+    diagnostics_json TEXT NOT NULL CHECK (json_valid(diagnostics_json)),
+    PRIMARY KEY (catalog_id, skill_id),
+    UNIQUE (catalog_id, entry_order),
+    UNIQUE (catalog_id, canonical_path)
+  ) STRICT;
+
+  CREATE TABLE skill_catalog_diagnostics (
+    catalog_id TEXT NOT NULL,
+    diagnostic_id TEXT NOT NULL,
+    diagnostic_order INTEGER NOT NULL CHECK (diagnostic_order >= 0),
+    diagnostic_json TEXT NOT NULL CHECK (json_valid(diagnostic_json)),
+    PRIMARY KEY (catalog_id, diagnostic_id),
+    UNIQUE (catalog_id, diagnostic_order)
+  ) STRICT;
+
+  CREATE TABLE skill_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    catalog_id TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    root_class TEXT NOT NULL CHECK (root_class IN ('project', 'user')),
+    digest TEXT NOT NULL,
+    metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
+    content BLOB NOT NULL,
+    stored_at INTEGER NOT NULL CHECK (stored_at >= 0),
+    CHECK (length(content) > 0)
+  ) STRICT;
+
+  CREATE TRIGGER skill_snapshots_reject_update
+    BEFORE UPDATE ON skill_snapshots
+    BEGIN
+      SELECT RAISE(ABORT, 'skill snapshots are immutable');
+    END;
+
+  CREATE TRIGGER skill_snapshots_reject_delete
+    BEFORE DELETE ON skill_snapshots
+    BEGIN
+      SELECT RAISE(ABORT, 'skill snapshots are immutable');
+    END;
+`;
+
+const CARD_WORKTREE_SCHEMA_SQL = `
+  CREATE TABLE card_worktrees (
+    card_id TEXT PRIMARY KEY REFERENCES cards(card_id) ON DELETE CASCADE,
+    board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+    binding_version INTEGER NOT NULL CHECK (binding_version = 1),
+    binding_id TEXT NOT NULL UNIQUE,
+    repository_root TEXT NOT NULL,
+    repository_git_dir TEXT NOT NULL,
+    managed_root TEXT NOT NULL,
+    worktree_path TEXT NOT NULL UNIQUE,
+    branch TEXT NOT NULL,
+    baseline_branch TEXT NOT NULL,
+    baseline_commit TEXT NOT NULL,
+    lifecycle TEXT NOT NULL CHECK (
+      lifecycle IN ('active', 'unavailable', 'cleanup_refused', 'removed')
+    ),
+    reason TEXT CHECK (
+      reason IS NULL OR reason IN (
+        'not_git_repository', 'detached', 'gitlink', 'managed_root_invalid',
+        'collision', 'missing', 'external', 'symlink', 'repository_mismatch',
+        'branch_mismatch', 'baseline_mismatch', 'parent_changed', 'dirty',
+        'divergent', 'unmerged', 'live', 'removed', 'unverified', 'git_failed'
+      )
+    ),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+    UNIQUE (repository_git_dir, branch),
+    CHECK (
+      (lifecycle IN ('active', 'removed') AND reason IS NULL) OR
+      (lifecycle IN ('unavailable', 'cleanup_refused') AND reason IS NOT NULL)
+    )
+  ) STRICT;
+`;
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
     name: "initial_desktop_journal_and_projections",
     up(database) {
       database.run(INITIAL_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 2,
+    name: "skill_catalog_projections_and_snapshots",
+    up(database) {
+      database.run(SKILL_CATALOG_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 3,
+    name: "card_owned_worktree_bindings",
+    up(database) {
+      database.run(CARD_WORKTREE_SCHEMA_SQL);
     },
   },
 ];

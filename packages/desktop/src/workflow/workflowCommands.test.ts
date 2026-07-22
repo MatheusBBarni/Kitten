@@ -109,7 +109,7 @@ describe("workflow board and stage commands", () => {
     const harness = commandHarness();
     try {
       let workflowVersion = buildLinearWorkflow(harness);
-      const skillId = workflowIds.skill("skill-refine");
+      const skillId = workflowIds.skill(`skill:${"a".repeat(64)}`);
       expect(harness.commands.execute({
         kind: "assign_stage_skill",
         mutationId: mutation("assign-skill"),
