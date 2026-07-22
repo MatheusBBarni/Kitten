@@ -217,6 +217,17 @@ describe("desktop package boundaries", () => {
     }
   });
 
+  test("keeps SQLite imports inside the desktop host persistence package", async () => {
+    const sourceDirectory = join(import.meta.dir, "../src");
+    for (const path of await sourceFiles(sourceDirectory)) {
+      const source = await readFile(path, "utf8");
+      if (source.includes('from "bun:sqlite"')) {
+        expect(path).toContain("/src/persistence/");
+        expect(path).not.toContain("/src/renderer/");
+      }
+    }
+  });
+
   test("keeps every direct desktop dependency exact-pinned", async () => {
     const manifest = JSON.parse(
       await readFile(join(import.meta.dir, "../package.json"), "utf8"),

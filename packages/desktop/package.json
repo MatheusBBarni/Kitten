@@ -7,8 +7,8 @@
     "dev": "electrobun dev",
     "build": "electrobun build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test test",
-    "test:coverage": "bun test test --coverage --isolate"
+    "test": "bun test src test",
+    "test:coverage": "bun test src test --coverage --isolate"
   },
   "dependencies": {
     "react": "19.2.7",
