@@ -77,9 +77,10 @@ export function projectWorkspace(snapshot: PersistenceSnapshot): WorkspaceProjec
     revision: snapshot.revision,
     boards: [...snapshot.boards]
       .sort((left, right) => right.updatedAt - left.updatedAt || left.boardId.localeCompare(right.boardId))
-      .map(({ boardId, repositoryPath, updatedAt, workflowVersion }) => ({
+      .map(({ boardId, repositoryPath, createdAt, updatedAt, workflowVersion }) => ({
         boardId,
         repositoryPath,
+        createdAt,
         updatedAt,
         workflowVersion,
       })),
@@ -100,12 +101,25 @@ export function projectWorkflowCatalog(
 export function createDesktopBoardRpc(
   journal: EventJournal,
   commands: WorkflowCommandHandler,
+  options: {
+    readonly onRepositoryBound?: (repositoryPath: string) => void;
+    readonly onRepositoryOpened?: (repositoryPath: string) => void;
+    readonly onProjectionCommitted?: (projection: WorkflowBoardProjection) => void;
+  } = {},
 ): DesktopBoardRpc {
   return {
     async getBoard({ boardId, mode }) {
+      const projection = projectWorkflowBoard(journal.snapshot(), boardId, mode);
+      if (projection.board !== null) {
+        try {
+          options.onRepositoryOpened?.(projection.board.repositoryPath);
+        } catch {
+          // Board reads remain available if catalog root refresh degrades.
+        }
+      }
       return createWorkflowBoardEnvelope({
         status: "ok",
-        projection: projectWorkflowBoard(journal.snapshot(), boardId, mode),
+        projection,
       });
     },
     async getWorkspace() {
@@ -134,7 +148,19 @@ export function createDesktopBoardRpc(
           rejection: result.rejection,
         });
       }
+      if (command.kind === "bind_repository") {
+        try {
+          options.onRepositoryBound?.(command.repositoryPath);
+        } catch {
+          // The committed board remains usable even if local catalog refresh degrades.
+        }
+      }
       const projection = projectWorkflowBoard(journal.snapshot(), command.boardId as BoardId);
+      try {
+        options.onProjectionCommitted?.(projection);
+      } catch {
+        // SQLite remains authoritative if a project-local configuration mirror cannot be refreshed.
+      }
       return createWorkflowCommandEnvelope(commandId, {
         status: "ok",
         outcome: result.status,

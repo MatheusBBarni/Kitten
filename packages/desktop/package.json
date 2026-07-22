@@ -22,12 +22,19 @@
     "verify": "bun run typecheck && bun run test:acceptance && bun run test:coverage"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.2.1",
+    "@dnd-kit/core": "6.3.1",
+    "@dnd-kit/sortable": "10.0.0",
+    "@dnd-kit/utilities": "3.2.2",
     "@heroui/react": "3.2.2",
     "@heroui/styles": "3.2.2",
     "@kitten/engine": "workspace:*",
+    "@tanstack/react-query": "5.90.3",
+    "iconoir-react": "7.11.1",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "tailwindcss": "4.3.2"
+    "tailwindcss": "4.3.2",
+    "zustand": "5.0.12"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "20.10.6",

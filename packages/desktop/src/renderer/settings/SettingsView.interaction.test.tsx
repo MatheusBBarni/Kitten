@@ -3,7 +3,9 @@ import type { ProfileId } from "@kitten/engine";
 import "./testDom.ts";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClientProvider } from "@tanstack/react-query";
 import type { DesktopRpcClient } from "../client.ts";
+import { createDesktopQueryClient } from "../query/desktopQueries.ts";
 import type {
   DesktopSettingsProjection,
   SettingsCommandResult,
@@ -22,11 +24,13 @@ afterEach(cleanup);
 const PROFILE_ID = "profile-codex" as ProfileId;
 
 function projection(overrides: Partial<DesktopSettingsProjection> = {}): DesktopSettingsProjection {
+  const { acpProviders = [], ...remainingOverrides } = overrides;
   return {
     kind: "desktop_settings_projection",
     revision: 0,
     preferences: { theme: "system" },
     profileDefaults: { profileId: null, model: null, effort: null, appliesTo: "future_cards" },
+    acpProviders,
     profiles: [{
       profileId: PROFILE_ID,
       provider: "Codex",
@@ -37,12 +41,21 @@ function projection(overrides: Partial<DesktopSettingsProjection> = {}): Desktop
     catalog: { catalogId: "default", roots: [], entries: [], diagnostics: [] },
     scheduler: { automaticExecutionLimit: 1, activeCount: 0 },
     historyPolicy: "future_cards_only",
-    ...overrides,
+    ...remainingOverrides,
   };
 }
 
 function unused(): never {
   throw new Error("not used");
+}
+
+function renderSettings(client: DesktopRpcClient) {
+  const queryClient = createDesktopQueryClient();
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <SettingsView client={client} />
+    </QueryClientProvider>,
+  );
 }
 
 function fakeClient(initial = projection()) {
@@ -137,10 +150,10 @@ describe("settings renderer interactions", () => {
       await user.click(await view.findByRole("option", { name: option }));
       await user.keyboard("{Escape}");
     };
-    await choose("Default profile for future cards", "Codex");
-    await choose("Default model for future cards", "gpt-5-mini");
-    await choose("Default effort for future cards", "high");
-    fireEvent.submit(view.getByRole("button", { name: "Save profile default" }).closest("form")!);
+    await choose("Agent", "Codex");
+    await choose("Model", "gpt-5-mini");
+    await choose("Effort", "high");
+    fireEvent.submit(view.getByRole("button", { name: "Save task defaults" }).closest("form")!);
     expect(saves[0]).toEqual({ profileId: PROFILE_ID, model: "gpt-5-mini", effort: "high" });
 
     await user.type(view.getByLabelText("Project roots"), " /repo/a {enter}{enter}/repo/b");
@@ -163,7 +176,7 @@ describe("settings renderer interactions", () => {
   test("reconciles successful commands and exposes conflict, rejection, and unavailable feedback", async () => {
     const fake = fakeClient();
     const user = userEvent.setup();
-    const view = render(<SettingsView client={fake.client} />);
+    const view = renderSettings(fake.client);
     await view.findByText("Revision 0");
 
     const choose = async (label: string, option: string) => {
@@ -175,9 +188,9 @@ describe("settings renderer interactions", () => {
     await view.findByText("Theme preference saved.");
     expect(fake.calls[0]).toMatchObject({ method: "preferences", input: { expectedRevision: 0, theme: "dark" } });
 
-    await choose("Default profile for future cards", "Codex");
-    fireEvent.submit(view.getByRole("button", { name: "Save profile default" }).closest("form")!);
-    await view.findByText("Future-card profile default saved.");
+    await choose("Agent", "Codex");
+    fireEvent.submit(view.getByRole("button", { name: "Save task defaults" }).closest("form")!);
+    await view.findByText("Task defaults saved.");
     expect(fake.calls.some(({ method }) => method === "profile")).toBeTrue();
 
     await user.type(view.getByLabelText("Project roots"), "/repo/skills");
@@ -217,7 +230,7 @@ describe("settings renderer interactions", () => {
   test("retries an unavailable initial projection", async () => {
     const fake = fakeClient();
     fake.setGetSettingsUnavailable(true);
-    const view = render(<SettingsView client={fake.client} />);
+    const view = renderSettings(fake.client);
     await view.findByText("Settings unavailable");
     fake.setGetSettingsUnavailable(false);
     fireEvent.click(view.getByRole("button", { name: "Retry settings" }));

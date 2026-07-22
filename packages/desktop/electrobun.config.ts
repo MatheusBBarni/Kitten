@@ -23,6 +23,7 @@ export default {
     copy: {
       "src/renderer/index.html": "views/main/index.html",
       "src/renderer/generated.css": "views/main/styles.css",
+      "assets/kitten-icon.iconset/icon_128x128.png": "views/main/kitten-icon.png",
     },
     mac: {
       codesign: false,

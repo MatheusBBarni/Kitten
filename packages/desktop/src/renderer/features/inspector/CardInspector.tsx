@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Chip, Drawer } from "@heroui/react";
-import type { AttentionOutcome } from "../../../attention/contracts.ts";
-import type { FollowUpQueueId } from "../../../attempts/followUpQueue.ts";
 import type { CardInspectorProjection } from "../../../attempts/inspectorProjection.ts";
 import type { CardProjection } from "../../../workflow/workflowTypes.ts";
 import type { CardInspectorEnvelope } from "../../../shared/rpc.ts";
@@ -10,10 +8,10 @@ import { bindCardInspectorRenderer } from "../../client.ts";
 import { AttentionBlockerPanel } from "./AttentionBlockerPanel.tsx";
 import { AttemptTimeline } from "./AttemptTimeline.tsx";
 import { PersistentComposer } from "./PersistentComposer.tsx";
-import { answerAttentionThroughRpc } from "./inspectorCommands.ts";
 import { TaskEditModal } from "./TaskEditModal.tsx";
 import type { CardEditInput } from "../board/boardInteractions.ts";
 import { EditIcon } from "../../components/Icons.tsx";
+import { useInspectorCommands, type InspectorFeedback } from "./useInspectorCommands.ts";
 
 export interface DraftStore {
   read(cardId: string): string;
@@ -39,15 +37,6 @@ const browserDraftStore: DraftStore = {
   },
 };
 
-interface Feedback {
-  readonly tone: "status" | "error";
-  readonly message: string;
-}
-
-function commandId(kind: string): string {
-  return `inspector:${kind}:${crypto.randomUUID()}`;
-}
-
 function currentProjectionCard(fallback: CardProjection, projection: CardInspectorProjection | null): CardProjection {
   return projection?.card ?? fallback;
 }
@@ -67,15 +56,13 @@ export function CardInspector({
   readonly isOpen?: boolean;
   readonly taskBusy?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
-  readonly onSaveTask?: (input: CardEditInput) => Promise<boolean>;
+  readonly onSaveTask?: (input: CardEditInput, onSaved: () => void) => void;
 }) {
   const [projection, setProjection] = useState<CardInspectorProjection | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [feedback, setFeedback] = useState<InspectorFeedback | null>(null);
   const [draft, setDraft] = useState(() => draftStore.read(card.cardId));
-  const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
-  const inFlight = useRef(new Set<string>());
   const historyRef = useRef<HTMLDivElement>(null);
   const bindingRef = useRef<ReturnType<typeof bindCardInspectorRenderer> | null>(null);
 
@@ -111,24 +98,6 @@ export function CardInspector({
     draftStore.write(card.cardId, draft);
   }, [card.cardId, draft, draftStore]);
 
-  const runOnce = useCallback(async (key: string, action: () => Promise<boolean>) => {
-    if (inFlight.current.has(key)) return;
-    inFlight.current.add(key);
-    setBusy(true);
-    try {
-      const committed = await action();
-      if (committed) await bindingRef.current?.refresh();
-    } catch {
-      setFeedback({
-        tone: "error",
-        message: "The desktop host did not finish this inspector action. Review the refreshed card and try again.",
-      });
-    } finally {
-      inFlight.current.delete(key);
-      setBusy(inFlight.current.size > 0);
-    }
-  }, []);
-
   const projectedCard = currentProjectionCard(card, projection);
   const latestAttempt = projection?.attemptStates.at(-1) ?? null;
   const queue = latestAttempt === null
@@ -137,87 +106,26 @@ export function CardInspector({
   const blocker = projection?.attentionBlockers.find(({ active }) => active) ?? null;
   const feedbackId = `inspector-feedback-${projectedCard.cardId}`;
 
-  function showInspectorResult(result: { readonly status: string; readonly conflict?: { readonly message: string }; readonly reason?: { readonly message: string } }, success: string): boolean {
-    if (result.status === "ok") {
-      setFeedback({ tone: "status", message: success });
-      return true;
-    }
-    setFeedback({
-      tone: "error",
-      message: result.conflict?.message ?? result.reason?.message ?? "The inspector command was rejected. Review the refreshed card and try again.",
-    });
-    return false;
-  }
-
-  function startAttempt(initialPrompt: string) {
-    void runOnce("start", async () => {
-      const response = await client.startAttempt(commandId("start"), {
-        cardId: projectedCard.cardId,
-        expectedCardVersion: projectedCard.version,
-        initialPrompt,
-      });
-      const committed = showInspectorResult(response.result, "Run Attempt started with the saved initial prompt.");
-      if (committed) setDraft("");
-      return committed;
-    });
-  }
-
-  function queueFollowUp(text: string) {
-    if (latestAttempt === null) return;
-    void runOnce("queue", async () => {
-      const response = await client.queueFollowUp(commandId("queue"), {
-        attemptId: latestAttempt.attemptId,
-        generation: latestAttempt.generation,
-        expectedQueueVersion: queue?.version ?? 0,
-        text,
-      });
-      const committed = showInspectorResult(response.result, "Follow-up queued. It will require confirmation after the active turn settles.");
-      if (committed) setDraft("");
-      return committed;
-    });
-  }
-
-  function removeQueuedFollowUp(queueId: FollowUpQueueId) {
-    if (latestAttempt === null || queue === null) return;
-    void runOnce(`remove:${queueId}`, async () => {
-      const response = await client.removeQueuedFollowUp(commandId("remove"), {
-        attemptId: latestAttempt.attemptId,
-        generation: latestAttempt.generation,
-        expectedQueueVersion: queue.version,
-        queueId,
-      });
-      return showInspectorResult(response.result, "Queued follow-up removed.");
-    });
-  }
-
-  function confirmQueuedFollowUp(queueId: FollowUpQueueId) {
-    if (latestAttempt === null || queue === null || blocker !== null) return;
-    void runOnce(`confirm:${queueId}`, async () => {
-      const response = await client.confirmQueuedFollowUp(commandId("confirm"), {
-        attemptId: latestAttempt.attemptId,
-        generation: latestAttempt.generation,
-        expectedQueueVersion: queue.version,
-        queueId,
-      });
-      return showInspectorResult(response.result, "Confirmed follow-up dispatched once.");
-    });
-  }
-
-  function answerAttention(outcome: AttentionOutcome) {
-    if (blocker === null) return;
-    void runOnce(`attention:${blocker.blockerId}`, async () => {
-      const response = await answerAttentionThroughRpc(client, commandId("attention"), blocker, outcome);
-      return showInspectorResult(response.result, "Attention outcome recorded for the blocked attempt.");
-    });
-  }
+  const commands = useInspectorCommands({
+    client,
+    card: projectedCard,
+    attempt: latestAttempt === null
+      ? null
+      : { attemptId: latestAttempt.attemptId, generation: latestAttempt.generation },
+    queue,
+    blocker,
+    refresh: () => bindingRef.current?.refresh() ?? Promise.resolve(),
+    onFeedback: setFeedback,
+    onDraftConsumed: () => setDraft(""),
+  });
 
   const status = projectedCard.executionStatus.replaceAll("_", " ");
 
   return (
     <>
       <Drawer.Backdrop isOpen={isOpen} onOpenChange={onOpenChange} isDismissable={!editing}>
-        <Drawer.Content placement="right" className="task-drawer-content">
-          <Drawer.Dialog className="task-drawer-dialog" aria-labelledby="card-inspector-title">
+        <Drawer.Content placement="right">
+          <Drawer.Dialog className="h-full max-h-dvh w-screen max-w-none sm:w-[min(56rem,72vw)] sm:max-w-[calc(100vw-1rem)]" aria-labelledby="card-inspector-title">
             <Drawer.CloseTrigger />
             <Drawer.Header className="task-drawer-header">
               <div className="task-drawer-heading-row">
@@ -254,8 +162,8 @@ export function CardInspector({
                   <AttentionBlockerPanel
                     key={blocker.blockerId}
                     blocker={blocker}
-                    busy={busy}
-                    onOutcome={answerAttention}
+                    busy={commands.busy}
+                    onOutcome={commands.answerAttention}
                     onValidationError={(message) => setFeedback({ tone: "error", message })}
                   />
                 )}
@@ -281,14 +189,14 @@ export function CardInspector({
                 queue={queue}
                 draft={draft}
                 blockerActive={blocker !== null}
-                busy={busy}
+                busy={commands.busy}
                 unavailable={unavailable}
                 feedbackId={feedback === null ? undefined : feedbackId}
                 onDraftChange={setDraft}
-                onStartAttempt={startAttempt}
-                onQueueFollowUp={queueFollowUp}
-                onRemoveQueuedFollowUp={removeQueuedFollowUp}
-                onConfirmQueuedFollowUp={confirmQueuedFollowUp}
+                onStartAttempt={commands.startAttempt}
+                onQueueFollowUp={commands.queueFollowUp}
+                onRemoveQueuedFollowUp={commands.removeQueuedFollowUp}
+                onConfirmQueuedFollowUp={commands.confirmQueuedFollowUp}
               />
             </Drawer.Body>
           </Drawer.Dialog>
@@ -301,12 +209,7 @@ export function CardInspector({
           isOpen={editing}
           busy={taskBusy}
           onOpenChange={setEditing}
-          onSave={(input) => {
-            void (async () => {
-              const saved = await onSaveTask(input);
-              if (saved) setEditing(false);
-            })();
-          }}
+          onSave={(input) => onSaveTask(input, () => setEditing(false))}
         />
       )}
     </>

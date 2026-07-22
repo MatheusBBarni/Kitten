@@ -16,6 +16,7 @@ import { createAttentionCoordinator } from "../attention/attentionCoordinator.ts
 import { createAttemptAskUserBridge, type AttemptAskUserBridge } from "../attention/attemptAskUserBridge.ts";
 import type { AttentionForm } from "../attention/contracts.ts";
 import { createCardNotificationService } from "../notifications/cardNotificationService.ts";
+import { createActivityIngestor, type AttemptActivityIngestor } from "./activityIngestor.ts";
 
 const databases: ReturnType<typeof openSqliteDatabase>[] = [];
 afterEach(() => {
@@ -182,6 +183,34 @@ describe("attempt admission integration", () => {
     expect(snapshot.cards.find(({ cardId }) => cardId === CARD_TWO)?.executionStatus).toBe("idle");
     expect(snapshot.runContexts).toHaveLength(1);
     expect(scheduler.activeCount).toBe(0);
+  });
+
+  test("journals the initial message and terminal outcome while prompt work continues off the RPC path", async () => {
+    const fixture = createFixture([CARD_ONE]);
+    const prompts: string[] = [];
+    const coordinator = fixture.coordinator({
+      async connect() {
+        return {
+          async newSession() { return { sessionId: "session-initial-prompt" }; },
+          async prompt({ prompt }) { prompts.push(prompt); return { stopReason: "end_turn" }; },
+          subscribeActivity() { return () => {}; },
+          close() {},
+        };
+      },
+    }, createGlobalAttemptScheduler(), fixture.journal, {
+      activityIngestor: createActivityIngestor({ journal: fixture.journal }),
+    });
+
+    const started = await coordinator.start(CARD_ONE, "Review the latest UI changes");
+    expect(started.status).toBe("started");
+    for (let count = 0; count < 20 && fixture.journal.snapshot().attemptInspectors[0]?.terminalOutcome !== "succeeded"; count += 1) {
+      await Promise.resolve();
+    }
+    expect(prompts).toEqual(["Review the latest UI changes"]);
+    expect(fixture.journal.snapshot().attemptInspectors[0]?.entries).toMatchObject([
+      { kind: "user", text: "Review the latest UI changes" },
+      { kind: "terminal", outcome: "succeeded" },
+    ]);
   });
 });
 
@@ -444,6 +473,7 @@ function createFixture(cardIds: readonly CardId[]) {
         readonly hasActiveAttention?: (attemptId: AttemptId) => boolean;
         readonly telemetry?: ContentFreeFollowUpTelemetry;
         readonly askUserBridge?: Pick<AttemptAskUserBridge, "register" | "revoke">;
+        readonly activityIngestor?: AttemptActivityIngestor;
       } = {},
     ) {
       return createAttemptCoordinator({

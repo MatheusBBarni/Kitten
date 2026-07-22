@@ -31,17 +31,16 @@ const stages: readonly StageProjection[] = [
 ];
 
 describe("projected workflow canvas", () => {
-  test("shows only current committed immediate-successor arrows", () => {
+  test("shows only current committed valid path arrows independent of column order", () => {
     const edges: readonly EdgeProjection[] = [
-      { boardId, sourceStageId: backlogId, targetStageId: doingId, workflowVersion: 7 },
-      { boardId, sourceStageId: doingId, targetStageId: reviewId, workflowVersion: 7 },
       { boardId, sourceStageId: backlogId, targetStageId: reviewId, workflowVersion: 7 },
-      { boardId, sourceStageId: reviewId, targetStageId: backlogId, workflowVersion: 6 },
+      { boardId, sourceStageId: reviewId, targetStageId: doingId, workflowVersion: 7 },
+      { boardId, sourceStageId: doingId, targetStageId: backlogId, workflowVersion: 6 },
     ];
 
     expect(deriveImmediateSuccessorArrows(board, stages, edges)).toEqual([
-      { sourceStageId: backlogId, targetStageId: doingId, workflowVersion: 7 },
-      { sourceStageId: doingId, targetStageId: reviewId, workflowVersion: 7 },
+      { sourceStageId: backlogId, targetStageId: reviewId, workflowVersion: 7 },
+      { sourceStageId: reviewId, targetStageId: doingId, workflowVersion: 7 },
     ]);
     expect(isCommittedOrderedPath(board, stages, edges)).toBeTrue();
     expect(isCommittedOrderedPath(board, stages, edges.slice(1))).toBeFalse();

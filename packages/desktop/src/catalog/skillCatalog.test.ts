@@ -30,23 +30,47 @@ const fileSystem: SkillCatalogFileSystem = {
 };
 
 describe("deterministic Skill Catalog discovery", () => {
-  test("orders project roots before user roots and exposes distinct same-name collisions", () => {
+  test("lets a project Skill override a same-name user Skill", () => {
     withCatalogFixture((directory) => {
       const projectRoot = createCatalogRoot(directory, "z-project");
       const userRoot = createCatalogRoot(directory, "a-user");
-      writeSkill(projectRoot, "refine-project", skillContent("refine", "Project instructions."));
-      writeSkill(userRoot, "refine-user", skillContent("refine", "User instructions."));
+      writeSkill(projectRoot, "refine-project", skillContent("refine", "Follow project instructions.", "Project instructions."));
+      writeSkill(userRoot, "refine-user", skillContent("refine", "Follow user instructions.", "User instructions."));
 
       const catalog = discoverSkillCatalog({ projectRoots: [projectRoot], userRoots: [userRoot] });
 
-      expect(catalog.entries.map(({ rootClass }) => rootClass)).toEqual(["project", "user"]);
-      expect(catalog.entries.map(({ order }) => order)).toEqual([0, 1]);
-      expect(catalog.entries[0]?.skillId).not.toBe(catalog.entries[1]?.skillId);
+      expect(catalog.entries).toHaveLength(1);
+      expect(catalog.entries[0]).toMatchObject({ rootClass: "project", order: 0, hasNameCollision: false });
+      expect(catalog.entries[0]?.metadata.description).toBe("Project instructions.");
+      expect(catalog.diagnostics.filter(({ code }) => code === "name_collision")).toEqual([]);
+    });
+  });
+
+  test("keeps same-class duplicate names ambiguous", () => {
+    withCatalogFixture((directory) => {
+      const firstRoot = createCatalogRoot(directory, "a-user");
+      const secondRoot = createCatalogRoot(directory, "b-user");
+      writeSkill(firstRoot, "refine-one", skillContent("refine", "First instructions."));
+      writeSkill(secondRoot, "refine-two", skillContent("refine", "Second instructions."));
+
+      const catalog = discoverSkillCatalog({ projectRoots: [], userRoots: [firstRoot, secondRoot] });
+
+      expect(catalog.entries).toHaveLength(2);
       expect(catalog.entries.every(({ hasNameCollision }) => hasNameCollision)).toBe(true);
       expect(catalog.diagnostics.filter(({ code }) => code === "name_collision")).toHaveLength(2);
-      expect(catalog.entries[0]?.diagnostics[0]?.relatedSkillIds).toEqual(
-        catalog.entries.map(({ skillId }) => skillId),
-      );
+    });
+  });
+
+  test("ignores hidden root machinery that is not a user Skill", () => {
+    withCatalogFixture((directory) => {
+      const root = createCatalogRoot(directory, "user");
+      mkdirSync(join(root, ".system"));
+      writeSkill(root, "visible", skillContent("visible"));
+
+      const catalog = discoverSkillCatalog({ projectRoots: [], userRoots: [root] });
+
+      expect(catalog.entries.map(({ metadata }) => metadata.name)).toEqual(["visible"]);
+      expect(catalog.diagnostics).toEqual([]);
     });
   });
 

@@ -8,6 +8,7 @@ import {
   createSettingsEnvelope,
 } from "../shared/rpc.ts";
 import type {
+  AcpProviderProjection,
   DesktopSettingsProjection,
   DesktopSettingsRpc,
   FutureCardProfileDefaults,
@@ -27,11 +28,13 @@ export interface CreateDesktopSettingsRpcOptions {
   readonly catalogId?: string;
   readonly scheduler?: GlobalAttemptScheduler;
   readonly profiles?: readonly CertifiedDirectAcpProfile[];
+  readonly acpProviders?: readonly AcpProviderProjection[];
   readonly initialTheme?: SettingsTheme;
   readonly initialProfileDefaults?: Omit<FutureCardProfileDefaults, "appliesTo">;
   readonly initialProjectRoots?: readonly string[];
   readonly initialUserRoots?: readonly string[];
   readonly discoverCatalog?: (input: DiscoverSkillCatalogInput) => SkillCatalog;
+  readonly onCatalogChanged?: (catalog: SkillCatalog) => void;
 }
 
 const FUTURE_CARD_DEFAULTS: FutureCardProfileDefaults = Object.freeze({
@@ -67,9 +70,14 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 
 export function createDesktopSettingsRpc(
   options: CreateDesktopSettingsRpcOptions = {},
-): DesktopSettingsRpc & { readonly scheduler: GlobalAttemptScheduler; defaultsForNewCard(): FutureCardProfileDefaults } {
+): DesktopSettingsRpc & {
+  readonly scheduler: GlobalAttemptScheduler;
+  defaultsForNewCard(): FutureCardProfileDefaults;
+  replaceProjectRoots(projectRoots: readonly string[]): boolean;
+} {
   const scheduler = options.scheduler ?? createGlobalAttemptScheduler();
   const profiles = [...(options.profiles ?? [])];
+  const acpProviders = [...(options.acpProviders ?? [])];
   const discoverCatalog = options.discoverCatalog ?? discoverSkillCatalog;
   const catalogId = options.catalogId ?? "default";
   let revision = 0;
@@ -81,6 +89,7 @@ export function createDesktopSettingsRpc(
   let projectRoots = [...(options.initialProjectRoots ?? [])];
   let userRoots = [...(options.initialUserRoots ?? [])];
   let catalog = discoverCatalog({ projectRoots, userRoots });
+  options.onCatalogChanged?.(catalog);
 
   const projection = (): DesktopSettingsProjection => ({
     kind: "desktop_settings_projection",
@@ -88,6 +97,12 @@ export function createDesktopSettingsRpc(
     preferences: { theme },
     profileDefaults: { ...profileDefaults },
     profiles: profiles.map(profileProjection),
+    acpProviders: acpProviders.map((provider) => ({
+      ...provider,
+      detectedCommands: [...provider.detectedCommands],
+      models: [...provider.models],
+      efforts: [...provider.efforts],
+    })),
     catalog: {
       catalogId,
       roots: catalog.roots,
@@ -141,6 +156,16 @@ export function createDesktopSettingsRpc(
     defaultsForNewCard() {
       return Object.freeze({ ...profileDefaults });
     },
+    replaceProjectRoots(nextProjectRoots) {
+      const normalizedProject = nextProjectRoots.map((root) => root.trim());
+      if (sameStrings(projectRoots, normalizedProject)) return false;
+      const discovered = discoverCatalog({ projectRoots: normalizedProject, userRoots });
+      projectRoots = normalizedProject;
+      catalog = discovered;
+      revision += 1;
+      options.onCatalogChanged?.(catalog);
+      return true;
+    },
     async getSettings() {
       return createSettingsEnvelope({ status: "ok", projection: projection() });
     },
@@ -176,7 +201,7 @@ export function createDesktopSettingsRpc(
               status: "rejected",
               rejection: {
                 code: "invalid_profile_default",
-                message: "Choose a ready certified profile for future cards.",
+                message: "Choose a ready agent profile for new tasks.",
               },
             };
           }
@@ -230,6 +255,7 @@ export function createDesktopSettingsRpc(
           projectRoots = normalizedProject;
           userRoots = normalizedUser;
           catalog = discovered;
+          options.onCatalogChanged?.(catalog);
         }
         return { changed, sections: ["catalog_roots"] };
       });

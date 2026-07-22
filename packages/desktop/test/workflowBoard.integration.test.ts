@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ReactElement, ReactNode } from "react";
 import { createEventJournal } from "../src/persistence/eventJournal.ts";
 import { migrateDatabase } from "../src/persistence/migrations.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "../src/persistence/sqliteDatabase.ts";
@@ -30,7 +29,6 @@ import {
 import {
   keyboardStageReorderIntent,
 } from "../src/renderer/features/board/workflowCanvas.ts";
-import { BoardCanvas } from "../src/renderer/features/board/WorkflowBoard.tsx";
 
 class SequentialIdentities implements IdentityFactory {
   private sequence = 0;
@@ -38,31 +36,6 @@ class SequentialIdentities implements IdentityFactory {
     this.sequence += 1;
     return `${scope}-${this.sequence}`;
   }
-}
-
-function textContent(node: ReactNode): string {
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(textContent).join("");
-  if (node !== null && typeof node === "object" && "props" in node) {
-    return textContent((node as ReactElement<{ children?: ReactNode }>).props.children);
-  }
-  return "";
-}
-
-function findButton(node: ReactNode, label: string): ReactElement<{ onPress?: () => void; "aria-label"?: string }> | null {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const found = findButton(child, label);
-      if (found !== null) return found;
-    }
-    return null;
-  }
-  if (node === null || typeof node !== "object" || !("type" in node) || !("props" in node)) return null;
-  const element = node as ReactElement<{ children?: ReactNode; onPress?: () => void; "aria-label"?: string }>;
-  if (typeof element.props.onPress === "function" && (
-    textContent(element.props.children).trim() === label || element.props["aria-label"] === label
-  )) return element;
-  return findButton(element.props.children, label);
 }
 
 describe("Workflow Board fake typed RPC", () => {
@@ -218,23 +191,12 @@ describe("Workflow Board fake typed RPC", () => {
       expect(connected.status).toBe("ok");
       if (connected.status !== "ok") throw new Error("connect failed");
 
-      let keyboardIntent: ReturnType<typeof keyboardStageReorderIntent> = null;
-      const canvas = BoardCanvas({
-        projection: connected.projection,
-        catalog,
-        selectedCardId: null,
-        busy: false,
-        draggedStageId: null,
-        onConfigureStage() {},
-        onReorder(intent) { keyboardIntent = intent; },
-        onConnect() {},
-        onMoveCard() {},
-        onSelectCard() {},
-        onDragStart() {},
-      });
-      const moveLater = findButton(canvas, "Move Backlog later");
-      expect(moveLater).not.toBeNull();
-      moveLater?.props.onPress?.();
+      const keyboardIntent = keyboardStageReorderIntent(
+        connected.projection.board!,
+        connected.projection.stages,
+        connected.projection.stages.find(({ label }) => label === "Backlog")!.stageId,
+        "next",
+      );
       expect(keyboardIntent).not.toBeNull();
       const reordered = await executeBoardCommand(
         client,
@@ -253,7 +215,7 @@ describe("Workflow Board fake typed RPC", () => {
         boardId: currentBoard.boardId,
         expectedWorkflowVersion: currentBoard.workflowVersion,
         cardId,
-        stageId: reordered.projection.stages[0]!.stageId,
+        stageId: reordered.projection.stages.find(({ label }) => label === "Backlog")!.stageId,
         title: "Keyboard-created card",
         description: "Fake RPC projection refresh",
         provider: "codex",
@@ -270,7 +232,7 @@ describe("Workflow Board fake typed RPC", () => {
         command: createCardCommand,
       })).toMatchObject({ result: { status: "ok", outcome: "idempotent" } });
       const projectedCard = cardCreated.projection.cards[0]!;
-      const targetStageId = cardCreated.projection.stages[1]!.stageId;
+      const targetStageId = cardCreated.projection.stages.find(({ label }) => label === "Doing")!.stageId;
       const moveCommand = moveCardCommand(cardCreated.projection, projectedCard, targetStageId, identities);
       expect(moveCommand).not.toBeNull();
       const moved = await executeBoardCommand(client, moveCommand!, identities);

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import "../../settings/testDom.ts";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClientProvider } from "@tanstack/react-query";
 import type { ActivitySequence } from "@kitten/engine";
 import type { AttemptGeneration, AttemptId } from "@kitten/engine";
 import { getCardInspectorProjection } from "../../../attempts/activityIngestor.ts";
@@ -12,17 +13,25 @@ import type { DesktopRpcClient } from "../../client.ts";
 import { bindCardInspectorRenderer } from "../../client.ts";
 import { inspectorCard, inspectorProjection, TEST_CARD_ID } from "./testSupport.ts";
 import { CardInspector } from "./CardInspector.tsx";
+import { createDesktopQueryClient } from "../../query/desktopQueries.ts";
 
 afterEach(cleanup);
 
-function fakeClient() {
+function fakeClient(options: { readonly unavailable?: boolean } = {}) {
   let subscriber: ((message: HostMessageEnvelope) => void) | undefined;
   let requests = 0;
   const accepted = inspectorProjection();
+  const starts: string[] = [];
   const client: DesktopRpcClient = {
     async getDesktopSnapshot() { throw new Error("not used"); },
     async getCardInspector() {
       requests += 1;
+      if (options.unavailable) {
+        return createCardInspectorEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "card_inspector", reason: "not_ready" },
+        });
+      }
       if (requests === 3) {
         return createCardInspectorEnvelope({
           status: "ok",
@@ -38,7 +47,10 @@ function fakeClient() {
     async getBoard() { throw new Error("not used"); },
     async getCatalog() { throw new Error("not used"); },
     async executeWorkflowCommand() { throw new Error("not used"); },
-    async startAttempt() { throw new Error("not used"); },
+    async startAttempt(_commandId, input) {
+      starts.push(input.initialPrompt);
+      return { kind: "inspector_command_result", commandId: _commandId, result: { status: "ok" } };
+    },
     async queueFollowUp() { throw new Error("not used"); },
     async removeQueuedFollowUp() { throw new Error("not used"); },
     async confirmQueuedFollowUp() { throw new Error("not used"); },
@@ -51,14 +63,20 @@ function fakeClient() {
     subscribe(listener) { subscriber = listener; return () => { subscriber = undefined; }; },
     dispose() {},
   };
-  return { client, emit: (message: HostMessageEnvelope) => subscriber?.(message), requests: () => requests };
+  return { client, emit: (message: HostMessageEnvelope) => subscriber?.(message), requests: () => requests, starts };
+}
+
+function renderInspector(inspector: React.ReactNode) {
+  return render(
+    <QueryClientProvider client={createDesktopQueryClient()}>{inspector}</QueryClientProvider>,
+  );
 }
 
 describe("selected-card inspector binding", () => {
   test("opens a task side sheet with metadata, history, composer, and edit controls", async () => {
     const fake = fakeClient();
     const user = userEvent.setup();
-    const view = render(
+    const view = renderInspector(
       <CardInspector
         client={fake.client}
         card={inspectorCard()}
@@ -68,6 +86,7 @@ describe("selected-card inspector binding", () => {
     );
 
     expect(await view.findByRole("dialog", { name: "Implement supervision surface" })).toBeDefined();
+    expect(view.getByRole("dialog", { name: "Implement supervision surface" }).className).toContain("sm:w-[min(56rem,72vw)]");
     expect(view.getByText("Keep durable evidence visible")).toBeDefined();
     expect(view.getAllByText("codex").length).toBeGreaterThan(0);
     expect(view.getAllByText("gpt-5").length).toBeGreaterThan(0);
@@ -78,6 +97,26 @@ describe("selected-card inspector binding", () => {
     expect(await view.findByRole("dialog", { name: "Edit task" })).toBeDefined();
     expect((view.getByLabelText("Title") as HTMLInputElement).value).toBe("Implement supervision surface");
     expect(view.getByRole("button", { name: "Save task" })).toBeDefined();
+  });
+
+  test("keeps idle start available when only inspector history is unavailable", async () => {
+    const fake = fakeClient({ unavailable: true });
+    const user = userEvent.setup();
+    const view = renderInspector(
+      <CardInspector
+        client={fake.client}
+        card={inspectorCard("idle")}
+        isOpen
+        draftStore={{ read: () => "", write() {} }}
+      />,
+    );
+
+    expect(await view.findByText("History is unavailable until the desktop host reconnects.")).toBeDefined();
+    await user.type(view.getByLabelText("Message"), "Review the latest UI changes");
+    const start = view.getByRole("button", { name: "Start run" });
+    expect(start.hasAttribute("disabled")).toBeFalse();
+    await user.click(start);
+    await waitFor(() => expect(fake.starts).toEqual(["Review the latest UI changes"]));
   });
 
   test("composes sorted attempt, queue, and blocker projections for one card", () => {

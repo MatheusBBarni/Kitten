@@ -1,8 +1,11 @@
 import type {
+  ActivityEventId,
+  ActivitySequence,
   AttemptGeneration,
   AttemptId,
+  DirectAcpAttemptState,
 } from "@kitten/engine";
-import { isDirectAcpTerminalState } from "@kitten/engine";
+import { isDirectAcpTerminalState, toActivitySequence, toOpaqueId } from "@kitten/engine";
 import { createSkillSnapshot } from "../catalog/skillCatalog.ts";
 import type { SkillCatalog, SkillSnapshot } from "../catalog/contracts.ts";
 import type {
@@ -57,7 +60,7 @@ export type StartAttemptResult =
     };
 
 export interface DesktopAttemptCoordinator {
-  start(cardId: CardId): Promise<StartAttemptResult>;
+  start(cardId: CardId, initialPrompt?: string): Promise<StartAttemptResult>;
   release(attemptId: AttemptId): Promise<boolean>;
   queueFollowUp(input: QueueFollowUpInput): FollowUpQueueResult;
   removeQueuedFollowUp(input: RemoveQueuedFollowUpInput): FollowUpQueueResult;
@@ -218,7 +221,7 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
   });
 
   return {
-    async start(cardId) {
+    async start(cardId, initialPrompt) {
       const beforeWorktree = resolveAdmission(cardId);
       const initial = validate(beforeWorktree, null);
       if (!initial.runnable && initial.reason.code !== "worktree_unavailable") {
@@ -439,6 +442,20 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
           }
         });
       }
+      const prompt = initialPrompt?.trim();
+      if (prompt !== undefined && prompt.length > 0) {
+        void dispatchInitialPrompt({
+          journal: options.journal,
+          activityIngestor: options.activityIngestor,
+          scheduler: options.scheduler,
+          active,
+          attemptId,
+          generation,
+          session: started.session,
+          prompt,
+          now,
+        });
+      }
       return { status: "started", attempt: runningAttempt, context, sessionId: started.session.sessionId };
     },
 
@@ -562,6 +579,77 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
       return releaseActive(active, options.scheduler, attemptId);
     },
   };
+}
+
+async function dispatchInitialPrompt(input: {
+  readonly journal: EventJournal;
+  readonly activityIngestor?: AttemptActivityIngestor;
+  readonly scheduler: GlobalAttemptScheduler;
+  readonly active: Map<AttemptId, ActiveAttempt>;
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+  readonly session: FreshDirectAcpSession;
+  readonly prompt: string;
+  readonly now: () => number;
+}): Promise<void> {
+  if (input.activityIngestor !== undefined) {
+    const initialMessage = await input.activityIngestor.ingest({
+      eventId: activityEventId("initial-prompt"),
+      attemptId: input.attemptId,
+      generation: input.generation,
+      sequence: activitySequence(2),
+      occurredAt: Math.max(0, input.now()),
+      activity: {
+        kind: "user_message",
+        messageId: `initial:${input.attemptId}:${input.generation}`,
+        text: input.prompt,
+      },
+    }, { attemptId: input.attemptId, generation: input.generation });
+    if (initialMessage.status !== "committed") {
+      await commitPromptTerminal(input, "failed");
+      await releaseActive(input.active, input.scheduler, input.attemptId);
+      return;
+    }
+  }
+
+  let terminal: DirectAcpAttemptState = "succeeded";
+  try {
+    const result = await input.session.connection.prompt({
+      sessionId: input.session.sessionId,
+      prompt: input.prompt,
+    });
+    terminal = result.stopReason === "cancelled" ? "cancelled" : result.stopReason === "refusal" ? "failed" : "succeeded";
+  } catch {
+    terminal = "failed";
+  }
+
+  await commitPromptTerminal(input, terminal);
+  await releaseActive(input.active, input.scheduler, input.attemptId);
+}
+
+async function commitPromptTerminal(
+  input: Parameters<typeof dispatchInitialPrompt>[0],
+  terminal: DirectAcpAttemptState,
+): Promise<void> {
+  if (input.activityIngestor === undefined) return;
+  const nextSequence = input.journal.snapshot().attemptInspectors
+    .find(({ attemptId }) => attemptId === input.attemptId)?.nextSequence ?? activitySequence(2);
+  await input.activityIngestor.ingest({
+    eventId: activityEventId(`terminal-${terminal}`),
+    attemptId: input.attemptId,
+    generation: input.generation,
+    sequence: nextSequence,
+    occurredAt: Math.max(0, input.now()),
+    activity: { kind: "attempt_state", state: terminal },
+  }, { attemptId: input.attemptId, generation: input.generation });
+}
+
+function activityEventId(kind: string): ActivityEventId {
+  return toOpaqueId<ActivityEventId>(`attempt:${kind}:${crypto.randomUUID()}`)!;
+}
+
+function activitySequence(value: number): ActivitySequence {
+  return toActivitySequence(value)!;
 }
 
 type ResolvedFollowUpFence =

@@ -9,6 +9,7 @@ import type {
 import type { AttemptGeneration, AttemptId, QuestionId } from "@kitten/engine";
 import type { AttentionOutcome } from "../attention/contracts.ts";
 import type { CardId } from "../workflow/workflowTypes.ts";
+import type { EventJournal } from "../persistence/eventJournal.ts";
 import type {
   ReviewCardInput,
   ReviewCardResult,
@@ -133,6 +134,65 @@ export function createDesktopFollowUpRpc(coordinator: DesktopAttemptCoordinator)
       return envelope(request.commandId, await coordinator.confirmQueuedFollowUp(request.input));
     },
   };
+}
+
+export function createDesktopInspectorRpc(
+  journal: EventJournal,
+  coordinator: DesktopAttemptCoordinator,
+): DesktopInspectorRpc {
+  return {
+    async startAttempt(request) {
+      if (request.commandId.trim().length === 0) {
+        throw new Error("Inspector RPC commandId must be non-empty");
+      }
+      const card = journal.snapshot().cards.find(({ cardId }) => cardId === request.input.cardId);
+      if (card === undefined) {
+        return inspectorEnvelope(request.commandId, {
+          status: "rejected",
+          reason: { code: "card_not_found", message: "The task no longer exists on this board." },
+        });
+      }
+      if (card.version !== request.input.expectedCardVersion) {
+        return inspectorEnvelope(request.commandId, {
+          status: "conflict",
+          conflict: {
+            kind: "inspector_command",
+            code: "stale_card",
+            message: "The task changed before the run started. Review the refreshed task and try again.",
+          },
+        });
+      }
+      const prompt = request.input.initialPrompt.trim();
+      if (prompt.length === 0) {
+        return inspectorEnvelope(request.commandId, {
+          status: "rejected",
+          reason: { code: "empty_prompt", message: "Add a message before starting the run." },
+        });
+      }
+      const result = await coordinator.start(card.cardId, prompt);
+      if (result.status === "started") return inspectorEnvelope(request.commandId, { status: "ok" });
+      if (result.status === "rejected") {
+        return inspectorEnvelope(request.commandId, { status: "rejected", reason: result.reason });
+      }
+      return inspectorEnvelope(request.commandId, {
+        status: "rejected",
+        reason: { code: result.failure.code, message: result.failure.message },
+      });
+    },
+    async answerAttention(request) {
+      return inspectorEnvelope(request.commandId, {
+        status: "rejected",
+        reason: { code: "not_ready", message: "Answering attention requests is not ready in this desktop host." },
+      });
+    },
+  };
+}
+
+function inspectorEnvelope(
+  commandId: string,
+  result: InspectorCommandResult,
+): InspectorCommandResultEnvelope {
+  return { kind: "inspector_command_result", commandId, result };
 }
 
 function envelope(commandId: string, result: FollowUpQueueResult): FollowUpRpcResultEnvelope {

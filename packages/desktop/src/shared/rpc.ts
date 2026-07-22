@@ -110,6 +110,7 @@ export interface WorkflowCatalogProjection {
 export interface WorkspaceBoardSummary {
   readonly boardId: BoardId;
   readonly repositoryPath: string;
+  readonly createdAt: number;
   readonly updatedAt: number;
   readonly workflowVersion: number;
 }
@@ -182,7 +183,7 @@ export interface WorkspaceEnvelope {
 }
 
 export type RepositoryDirectoryPickerResult =
-  | { readonly status: "selected"; readonly path: string }
+  | { readonly status: "selected"; readonly path: string; readonly boardId?: BoardId }
   | { readonly status: "cancelled" }
   | {
       readonly status: "unavailable";

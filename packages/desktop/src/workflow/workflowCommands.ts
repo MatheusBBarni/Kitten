@@ -22,6 +22,7 @@ import {
 import {
   immediateSuccessor,
   sortStagesByPosition,
+  validateConfigurableWorkflowPath,
   validateLinearWorkflow,
 } from "./workflowValidation.ts";
 
@@ -324,7 +325,7 @@ export function createWorkflowCommandHandler(
             targetStageId: edge.targetStageId,
             workflowVersion: state.board!.workflowVersion + 1,
           }));
-          const validation = validateLinearWorkflow(state.stages, edges);
+          const validation = validateConfigurableWorkflowPath(state.stages, edges);
           if (!validation.valid) {
             return reject(command, "invalid_workflow", validation.error.message);
           }
@@ -346,13 +347,7 @@ export function createWorkflowCommandHandler(
             ...byId.get(stageId)!,
             position,
           }));
-          const edges = command.orderedStageIds.slice(0, -1).map((sourceStageId, index): EdgeProjection => ({
-            boardId: command.boardId,
-            sourceStageId,
-            targetStageId: command.orderedStageIds[index + 1]!,
-            workflowVersion: state.board!.workflowVersion + 1,
-          }));
-          changes = workflowProjectionChanges(state.board, state.edges, stages, edges, occurredAt);
+          changes = workflowProjectionChanges(state.board, state.edges, stages, state.edges, occurredAt);
           preconditions.push({
             entity: "board", id: command.boardId, expectedVersion: command.expectedWorkflowVersion,
           });

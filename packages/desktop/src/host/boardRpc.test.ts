@@ -13,13 +13,24 @@ afterEach(() => {
 });
 
 describe("DesktopBoardRpc workspace projection", () => {
-  test("lists the most recently changed project boards and exposes a blank board setup projection", async () => {
+  test("lists multiple boards for one project and exposes a blank board setup projection", async () => {
     const database = openSqliteDatabase({ filename: ":memory:" });
     databases.push(database);
     migrateDatabase(database, { now: () => 1 });
     const journal = createEventJournal(database);
     let now = 10;
-    const rpc = createDesktopBoardRpc(journal, createWorkflowCommandHandler(journal, { now: () => ++now }));
+    const repositoryBindings: string[] = [];
+    const mirroredBoardIds: string[] = [];
+    const rpc = createDesktopBoardRpc(
+      journal,
+      createWorkflowCommandHandler(journal, { now: () => ++now }),
+      {
+        onRepositoryBound: (repositoryPath) => repositoryBindings.push(repositoryPath),
+        onProjectionCommitted: (projection) => {
+          if (projection.board !== null) mirroredBoardIds.push(projection.board.boardId);
+        },
+      },
+    );
 
     const firstBoardId = workflowIds.board("board-first");
     const secondBoardId = workflowIds.board("board-second");
@@ -29,7 +40,7 @@ describe("DesktopBoardRpc workspace projection", () => {
         kind: "bind_repository",
         mutationId: workflowIds.mutation("mutation-first"),
         boardId: firstBoardId,
-        repositoryPath: "/Users/name/projects/first",
+        repositoryPath: "/Users/name/projects/kitten",
       },
     });
     await rpc.executeWorkflowCommand({
@@ -38,7 +49,7 @@ describe("DesktopBoardRpc workspace projection", () => {
         kind: "bind_repository",
         mutationId: workflowIds.mutation("mutation-second"),
         boardId: secondBoardId,
-        repositoryPath: "/Users/name/projects/second",
+        repositoryPath: "/Users/name/projects/kitten",
       },
     });
 
@@ -48,8 +59,8 @@ describe("DesktopBoardRpc workspace projection", () => {
         status: "ok",
         projection: {
           boards: [
-            { boardId: secondBoardId, repositoryPath: "/Users/name/projects/second" },
-            { boardId: firstBoardId, repositoryPath: "/Users/name/projects/first" },
+            { boardId: secondBoardId, repositoryPath: "/Users/name/projects/kitten", createdAt: 12 },
+            { boardId: firstBoardId, repositoryPath: "/Users/name/projects/kitten", createdAt: 11 },
           ],
         },
       },
@@ -57,5 +68,10 @@ describe("DesktopBoardRpc workspace projection", () => {
     expect(await rpc.getBoard({ mode: "new" })).toMatchObject({
       result: { status: "ok", projection: { board: null, stages: [], edges: [], cards: [] } },
     });
+    expect(repositoryBindings).toEqual([
+      "/Users/name/projects/kitten",
+      "/Users/name/projects/kitten",
+    ]);
+    expect(mirroredBoardIds).toEqual([firstBoardId, secondBoardId]);
   });
 });

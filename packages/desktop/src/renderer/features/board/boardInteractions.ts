@@ -30,7 +30,7 @@ export type BoardInteractionResult =
   | { readonly status: "invalid"; readonly message: string };
 
 export interface IdentityFactory {
-  next(scope: "board" | "stage" | "mutation" | "command"): string;
+  next(scope: "board" | "stage" | "card" | "mutation" | "command"): string;
 }
 
 export function createBrowserIdentityFactory(): IdentityFactory {
@@ -257,6 +257,26 @@ export function connectStagesCommand(
   projection: WorkflowBoardProjection,
   identities: IdentityFactory,
 ): WorkflowCommand | null {
+  return setStagePathCommand(
+    projection,
+    projection.stages.slice(0, -1).map((source, index) => ({
+      sourceStageId: source.stageId,
+      targetStageId: projection.stages[index + 1]!.stageId,
+    })),
+    identities,
+  );
+}
+
+export interface StagePathEdge {
+  readonly sourceStageId: StageId;
+  readonly targetStageId: StageId;
+}
+
+export function setStagePathCommand(
+  projection: WorkflowBoardProjection,
+  edges: readonly StagePathEdge[],
+  identities: IdentityFactory,
+): WorkflowCommand | null {
   const board = projection.board;
   if (board === null || projection.stages.length < 2) return null;
   return {
@@ -264,10 +284,7 @@ export function connectStagesCommand(
     mutationId: mutationId(identities),
     boardId: board.boardId,
     expectedWorkflowVersion: board.workflowVersion,
-    edges: projection.stages.slice(0, -1).map((source, index) => ({
-      sourceStageId: source.stageId,
-      targetStageId: projection.stages[index + 1]!.stageId,
-    })),
+    edges,
   };
 }
 
@@ -298,6 +315,42 @@ export interface CardEditInput {
   readonly model: string;
   readonly effort: string;
   readonly runnable: boolean;
+}
+
+export interface CardCreateInput extends CardEditInput {
+  readonly stageId: StageId;
+  readonly skillOverrideId: SkillId | null;
+}
+
+export function createCardCommand(
+  projection: WorkflowBoardProjection,
+  input: CardCreateInput,
+  identities: IdentityFactory,
+): Extract<WorkflowCommand, { kind: "create_card" }> | null {
+  const board = projection.board;
+  if (
+    board === null
+    || !projection.stages.some(({ stageId }) => stageId === input.stageId)
+    || input.title.trim().length === 0
+    || input.provider.trim().length === 0
+    || input.model.trim().length === 0
+    || input.effort.trim().length === 0
+  ) return null;
+  return {
+    kind: "create_card",
+    mutationId: mutationId(identities),
+    boardId: board.boardId,
+    expectedWorkflowVersion: board.workflowVersion,
+    cardId: workflowIds.card(identities.next("card")),
+    stageId: input.stageId,
+    title: input.title.trim(),
+    description: input.description.trim(),
+    provider: input.provider.trim(),
+    model: input.model.trim(),
+    effort: input.effort.trim(),
+    skillOverrideId: input.skillOverrideId,
+    runnable: input.runnable,
+  };
 }
 
 export function updateCardCommand(

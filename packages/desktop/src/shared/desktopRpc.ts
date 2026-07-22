@@ -8,6 +8,17 @@ export type SettingsSection =
   | "catalog_roots"
   | "execution_limit";
 
+export interface AcpProviderProjection {
+  readonly providerId: string;
+  readonly displayName: string;
+  readonly configuredBy: "kitten_default" | "kitten_config";
+  readonly configuredCommand: string;
+  readonly detectedCommands: readonly string[];
+  readonly models: readonly string[];
+  readonly efforts: readonly string[];
+  readonly availability: "available" | "not_detected";
+}
+
 export interface SettingsProfileProjection {
   readonly profileId: ProfileId;
   readonly provider: string;
@@ -35,6 +46,7 @@ export interface DesktopSettingsProjection {
   readonly preferences: { readonly theme: SettingsTheme };
   readonly profileDefaults: FutureCardProfileDefaults;
   readonly profiles: readonly SettingsProfileProjection[];
+  readonly acpProviders: readonly AcpProviderProjection[];
   readonly catalog: CatalogProjection;
   readonly scheduler: {
     readonly automaticExecutionLimit: number;

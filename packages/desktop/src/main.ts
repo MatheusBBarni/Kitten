@@ -1,5 +1,6 @@
 import {
   assertHostMessage,
+  createAttemptActivityMessage,
   createCardInspectorEnvelope,
   createBootstrapEnvelope,
   createEmptyDesktopSnapshot,
@@ -24,18 +25,24 @@ import {
   type SettingsEnvelope,
 } from "./shared/rpc.ts";
 import type { CardInspectorProjection } from "./attempts/inspectorProjection.ts";
+import { createActivityIngestor, getCardInspectorProjection } from "./attempts/activityIngestor.ts";
+import { createAttemptCoordinator } from "./attempts/attemptCoordinator.ts";
+import { createDesktopAcpConnectionFactory } from "./attempts/desktopAcpAdapter.ts";
+import { createDirectAcpAttemptStarter } from "./attempts/directAcpAttempt.ts";
 import type { CardId } from "./workflow/workflowTypes.ts";
 import type {
   ConfirmQueuedFollowUpInput,
   QueueFollowUpInput,
   RemoveQueuedFollowUpInput,
 } from "./attempts/attemptCoordinator.ts";
-import type {
-  DesktopFollowUpRpc,
-  DesktopInspectorRpc,
-  DesktopReviewRpc,
-  FollowUpRpcRequest,
-  FollowUpRpcResultEnvelope,
+import {
+  createDesktopFollowUpRpc,
+  createDesktopInspectorRpc,
+  type DesktopInspectorRpc,
+  type DesktopFollowUpRpc,
+  type DesktopReviewRpc,
+  type FollowUpRpcRequest,
+  type FollowUpRpcResultEnvelope,
 } from "./host/desktopRpc.ts";
 import type { DesktopBoardRpc } from "./host/boardRpc.ts";
 import type { WorkflowCommand } from "./workflow/workflowTypes.ts";
@@ -48,13 +55,26 @@ import type {
   UpdatePreferencesInput,
   UpdateProfileDefaultsInput,
 } from "./shared/desktopRpc.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { createDesktopBoardRpc } from "./host/boardRpc.ts";
+import { createDesktopBoardRpc, projectWorkflowBoard } from "./host/boardRpc.ts";
 import { createEventJournal } from "./persistence/eventJournal.ts";
 import { migrateDatabase } from "./persistence/migrations.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "./persistence/sqliteDatabase.ts";
 import { createWorkflowCommandHandler } from "./workflow/workflowCommands.ts";
+import { readCatalogProjection, replaceCatalogProjection } from "./catalog/catalogProjection.ts";
+import type { SkillCatalog } from "./catalog/contracts.ts";
+import {
+  defaultProjectSkillRoots,
+  defaultUserSkillRoots,
+  discoverAcpProviders,
+  discoverDesktopAcpRuntimeProfiles,
+} from "./host/localConfiguration.ts";
+import {
+  findBoardForRepository,
+  writeProjectBoardConfig,
+} from "./host/projectBoardConfig.ts";
+import { createCardWorktreeService } from "./worktrees/cardWorktreeService.ts";
 
 export interface DesktopWindowPort {
   sendHostMessage(message: HostMessageEnvelope): void;
@@ -471,12 +491,112 @@ export async function main(): Promise<DesktopShell> {
   migrateDatabase(database);
 
   const journal = createEventJournal(database);
-  const boardRpc = createDesktopBoardRpc(journal, createWorkflowCommandHandler(journal));
-  const shell = startDesktopShell({
+  let currentCatalog: SkillCatalog | null = null;
+  const syncCatalog = (catalog: SkillCatalog) => {
+    currentCatalog = catalog;
+    const current = readCatalogProjection(journal.snapshot(), "default");
+    const next = {
+      catalogId: "default",
+      roots: catalog.roots,
+      entries: catalog.entries,
+      diagnostics: catalog.diagnostics,
+    };
+    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    replaceCatalogProjection(journal, {
+      eventId: `catalog-sync:${crypto.randomUUID()}`,
+      catalogId: "default",
+      catalog,
+      occurredAt: Date.now(),
+    });
+  };
+  const initialBoard = journal.snapshot().boards[0];
+  const acpProviders = discoverAcpProviders({ homePath: Utils.paths.home });
+  const runtimeProfiles = discoverDesktopAcpRuntimeProfiles({ homePath: Utils.paths.home });
+  const settingsRpc = createDesktopSettingsRpc({
+    initialProjectRoots: initialBoard === undefined
+      ? []
+      : defaultProjectSkillRoots(initialBoard.repositoryPath),
+    initialUserRoots: defaultUserSkillRoots(Utils.paths.home),
+    profiles: runtimeProfiles.map(({ profile }) => profile),
+    acpProviders,
+    onCatalogChanged: syncCatalog,
+  });
+  const boardRpc = createDesktopBoardRpc(journal, createWorkflowCommandHandler(journal), {
+    onRepositoryBound(repositoryPath) {
+      settingsRpc.replaceProjectRoots(defaultProjectSkillRoots(repositoryPath));
+    },
+    onRepositoryOpened(repositoryPath) {
+      settingsRpc.replaceProjectRoots(defaultProjectSkillRoots(repositoryPath));
+    },
+    onProjectionCommitted(projection) {
+      writeProjectBoardConfig(projection);
+    },
+  });
+  const startupSnapshot = journal.snapshot();
+  for (const board of startupSnapshot.boards) {
+    try {
+      writeProjectBoardConfig(projectWorkflowBoard(startupSnapshot, board.boardId));
+    } catch {
+      // SQLite remains authoritative when a repository is temporarily read-only or unavailable.
+    }
+  }
+  let shell: DesktopShell | null = null;
+  const activityIngestor = createActivityIngestor({
+    journal,
+    onCommitted({ event, inspector, delta }) {
+      shell?.publish(createAttemptActivityMessage({
+        messageId: `attempt:${event.eventId}`,
+        revision: delta.revision,
+        boardId: inspector.boardId,
+        cardId: inspector.cardId,
+        attemptId: inspector.attemptId,
+        generation: inspector.generation,
+        sequence: event.sequence,
+        projection: inspector,
+      }));
+    },
+  });
+  const attemptCoordinator = createAttemptCoordinator({
+    journal,
+    scheduler: settingsRpc.scheduler,
+    worktrees: createCardWorktreeService(journal),
+    directAcp: createDirectAcpAttemptStarter(createDesktopAcpConnectionFactory(runtimeProfiles)),
+    activityIngestor,
+    getCatalog: () => {
+      if (currentCatalog === null) throw new Error("The Workflow Skill catalog is not ready.");
+      return currentCatalog;
+    },
+    resolveProfile: (card) => runtimeProfiles.find(({ profile }) => profile.provider === card.provider)?.profile ?? null,
+    verifyRepository: (board) => {
+      try {
+        const canonicalPath = realpathSync(board.repositoryPath);
+        return {
+          trusted: canonicalPath === board.repositoryPath,
+          canonicalPath,
+          checkedAt: Date.now(),
+          message: canonicalPath === board.repositoryPath ? "Repository verified" : "Repository path is not canonical",
+        };
+      } catch {
+        return {
+          trusted: false,
+          canonicalPath: board.repositoryPath,
+          checkedAt: Date.now(),
+          message: "Repository is unavailable",
+        };
+      }
+    },
+  });
+  shell = startDesktopShell({
     windowFactory: await createElectrobunWindowFactory(),
     boardRpc,
+    settingsRpc,
+    getCardInspector: (cardId) => getCardInspectorProjection(journal, cardId),
+    inspectorRpc: createDesktopInspectorRpc(journal, attemptCoordinator),
+    followUpRpc: createDesktopFollowUpRpc(attemptCoordinator),
     async getSnapshot() {
       const snapshot = journal.snapshot();
+      const settings = await settingsRpc.getSettings();
+      const settingsProjection = settings.result.status === "ok" ? settings.result.projection : null;
       return {
         kind: "desktop_snapshot",
         schemaVersion: 1,
@@ -485,7 +605,10 @@ export async function main(): Promise<DesktopShell> {
           status: snapshot.boards.length === 0 ? "unbound" : "bound",
           boardCount: snapshot.boards.length,
         },
-        settings: { theme: "system", executionLimit: 1 },
+        settings: {
+          theme: settingsProjection?.preferences.theme ?? "system",
+          executionLimit: settingsProjection?.scheduler.automaticExecutionLimit ?? 1,
+        },
       };
     },
     async pickRepositoryDirectory() {
@@ -497,9 +620,14 @@ export async function main(): Promise<DesktopShell> {
         allowsMultipleSelection: false,
       });
       const path = chosenPaths.find((candidate) => candidate.trim().length > 0);
-      return path === undefined
-        ? createRepositoryDirectoryPickerEnvelope({ status: "cancelled" })
-        : createRepositoryDirectoryPickerEnvelope({ status: "selected", path });
+      if (path === undefined) return createRepositoryDirectoryPickerEnvelope({ status: "cancelled" });
+      settingsRpc.replaceProjectRoots(defaultProjectSkillRoots(path));
+      const boardId = findBoardForRepository(path, journal.snapshot().boards);
+      return createRepositoryDirectoryPickerEnvelope({
+        status: "selected",
+        path,
+        ...(boardId === null ? {} : { boardId }),
+      });
     },
   });
 

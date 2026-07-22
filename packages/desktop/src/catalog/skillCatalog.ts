@@ -316,6 +316,18 @@ function freezeEntry(entry: SkillCatalogEntry): SkillCatalogEntry {
   return Object.freeze({ ...entry, diagnostics: Object.freeze([...entry.diagnostics]) });
 }
 
+function deduplicateDiagnostics(values: readonly CatalogDiagnostic[]): readonly CatalogDiagnostic[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.skillPath === null
+      ? value.diagnosticId
+      : `${value.code}:${value.skillPath}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function discoverSkillCatalog(
   input: DiscoverSkillCatalogInput,
   options: { readonly fileSystem?: SkillCatalogFileSystem } = {},
@@ -346,6 +358,7 @@ export function discoverSkillCatalog(
     const children = [...fileSystem.readdir(root.canonicalPath)]
       .sort((left, right) => compareText(left.name, right.name));
     for (const child of children) {
+      if (child.name.startsWith(".")) continue;
       const discovered = discoverEntry(root, child, fileSystem);
       if (discovered === null) continue;
       if ("code" in discovered) {
@@ -358,7 +371,17 @@ export function discoverSkillCatalog(
     }
   }
 
-  const provisional: { candidate: EntryCandidate; entry: SkillCatalogEntry }[] = candidates.map(
+  const projectNames = new Set(
+    candidates
+      .filter(({ root }) => root.rootClass === "project")
+      .map(({ metadata }) => metadata.name),
+  );
+  const activeCandidates = candidates.filter((candidate) => (
+    candidate.root.rootClass === "project"
+    || !projectNames.has(candidate.metadata.name)
+  ));
+
+  const provisional: { candidate: EntryCandidate; entry: SkillCatalogEntry }[] = activeCandidates.map(
     (candidate, order) => ({
       candidate,
       entry: {
@@ -417,7 +440,7 @@ export function discoverSkillCatalog(
   return Object.freeze({
     roots: Object.freeze(roots),
     entries: Object.freeze(entries),
-    diagnostics: Object.freeze(diagnostics),
+    diagnostics: Object.freeze(deduplicateDiagnostics(diagnostics)),
     resolvedSkills,
   });
 }

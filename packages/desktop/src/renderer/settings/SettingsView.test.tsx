@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ProfileId } from "@kitten/engine";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CatalogProjection } from "../../persistence/eventJournal.ts";
+import { AcpProvidersPanel } from "./AcpProvidersPanel.tsx";
 import { CatalogRootsPanel } from "./CatalogRootsPanel.tsx";
 import { ExecutionLimitPanel, parseExecutionLimit } from "./ExecutionLimitPanel.tsx";
 import { ProfileDefaultsPanel } from "./ProfileDefaultsPanel.tsx";
@@ -73,21 +74,35 @@ describe("settings renderer states", () => {
         onSave={() => {}}
       />,
     );
-    expect(markup).toContain("Future-card profile default");
-    expect(markup).toContain("Existing card configuration and recorded Run Contexts stay unchanged");
-    expect(markup).toContain("Ready · protocol 1");
-    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("Defaults for new tasks");
+    expect(markup).toContain("Existing tasks and run history do not change");
+    expect(markup).toContain("Ready");
+    expect(markup).toContain("Needs setup");
     expect(markup).toContain("Sign in to Claude.");
-    expect(markup).toContain("Claude — unavailable");
+    expect(markup).not.toContain("Claude — unavailable");
+  });
+
+  test("explains the no-ready-agent state without presenting dead default controls", () => {
+    const markup = renderToStaticMarkup(
+      <ProfileDefaultsPanel
+        profiles={[]}
+        defaults={{ profileId: null, model: null, effort: null, appliesTo: "future_cards" }}
+        busy={false}
+        onSave={() => {}}
+      />,
+    );
+    expect(markup).toContain("No ready task agents");
+    expect(markup).toContain("create draft tasks");
+    expect(markup).not.toContain("Save task defaults");
   });
 
   test("renders canonicalization, collision, invalid-root diagnostics, and no free-text Skill selector", () => {
     const markup = renderToStaticMarkup(<CatalogRootsPanel catalog={catalog} busy={false} onSave={() => {}} />);
-    expect(markup).toContain("/repo/skills-link → /repo/.agents/skills");
-    expect(markup).toContain("/missing — invalid");
+    expect(markup).toContain("Resolves to /repo/.agents/skills");
+    expect(markup).toContain("Invalid or unavailable");
     expect(markup).toContain("verify");
-    expect(markup).toContain("name collision");
-    expect(markup).toContain("missing root");
+    expect(markup).not.toContain("name collision");
+    expect(markup).toContain("Missing Root");
     expect(markup).toContain("never a typed name");
     expect(markup.match(/<textarea/g)).toHaveLength(2);
     expect(markup).not.toContain("Skill name<input");
@@ -101,5 +116,39 @@ describe("settings renderer states", () => {
     expect(parseExecutionLimit("1.5").valid).toBeFalse();
     expect(parseExecutionLimit(" 2 ").valid).toBeFalse();
     expect(parseExecutionLimit("2")).toEqual({ valid: true, value: 2 });
+  });
+
+  test("shows machine-detected ACP providers separately from certified execution readiness", () => {
+    const markup = renderToStaticMarkup(<AcpProvidersPanel providers={[
+      {
+        providerId: "claude-code",
+        displayName: "Claude Code",
+        configuredBy: "kitten_default",
+        configuredCommand: "npx",
+        detectedCommands: ["claude"],
+        models: ["default", "sonnet"],
+        efforts: ["default", "high"],
+        availability: "available",
+      },
+      {
+        providerId: "cursor",
+        displayName: "Cursor",
+        configuredBy: "kitten_config",
+        configuredCommand: "agent",
+        detectedCommands: [],
+        models: ["default"],
+        efforts: ["default"],
+        availability: "not_detected",
+      },
+    ]} />);
+
+    expect(markup).toContain("Agent clients (ACP)");
+    expect(markup).toContain("Claude Code");
+    expect(markup).toContain("Built-in Kitten setup");
+    expect(markup).toContain("Detected");
+    expect(markup).toContain("Cursor");
+    expect(markup).toContain("Kitten configuration");
+    expect(markup).toContain("Not detected");
+    expect(markup).toContain("needs a ready profile");
   });
 });

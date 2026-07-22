@@ -72,7 +72,7 @@ function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
 
 describe("StageSetupDialog", () => {
   test("offers only validated catalog identities and exposes collision diagnostics", () => {
-    render(
+    const view = render(
       <StageSetupDialog
         catalog={catalog}
         label="Doing"
@@ -87,9 +87,10 @@ describe("StageSetupDialog", () => {
 
     const markup = document.body.innerHTML;
     expect(document.body.textContent).toContain("Default Workflow Skill");
-    expect(markup).toContain(`value="${validSkillId}"`);
-    expect(markup).not.toContain(`value="${collisionSkillId}"`);
-    expect(document.body.textContent).toContain("Name collision:");
+    expect((view.getByRole("combobox", { name: "Default Workflow Skill" }) as HTMLInputElement).value)
+      .toBe("verify (project)");
+    expect(markup).not.toContain(collisionSkillId);
+    expect(document.body.textContent).toContain("Name Collision");
     expect(document.body.textContent).toContain("Two catalog roots expose the name execute.");
     expect(document.body.textContent).toContain("Add unconfigured stage");
     expect(document.body.textContent).toContain("Add configured stage");
@@ -158,6 +159,28 @@ describe("StageSetupDialog", () => {
     expect(skills).toEqual([null, validSkillId]);
     expect(creations).toEqual([true, false]);
     expect(closes).toBe(2);
+  });
+
+  test("keeps modal actions in a wrapping footer while the form body scrolls", () => {
+    const view = StageSetupDialog({
+      catalog,
+      label: "Doing",
+      selectedSkillId: validSkillId,
+      busy: false,
+      onLabelChange: noop,
+      onSkillChange: noop,
+      onCreate: noop,
+      onClose: noop,
+    });
+    const modalContainer = elements(view).find(({ props }) => props.scroll === "inside");
+    const form = descendants(view, "form")[0];
+    const footer = elements(view).find(({ props }) => (
+      typeof props.className === "string" && props.className.includes("flex-wrap")
+    ));
+
+    expect(modalContainer).toBeDefined();
+    expect(form?.props.className).toBe("contents");
+    expect(footer).toBeDefined();
   });
 
   test("does not submit or close while busy or without a valid catalog selection", () => {

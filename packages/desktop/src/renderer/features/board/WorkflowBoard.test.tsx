@@ -143,6 +143,7 @@ describe("WorkflowBoard", () => {
           boards: [{
             boardId,
             repositoryPath: "/Users/name/projects/kitten",
+            createdAt: 1,
             updatedAt: 9,
             workflowVersion: 5,
           }],
@@ -150,13 +151,18 @@ describe("WorkflowBoard", () => {
         activeBoardId={boardId}
         busy={false}
         onOpenProject={noop}
+        onAddBoard={noop}
         onSelectBoard={noop}
+        onEditPath={noop}
       />,
     );
 
     expect(projectName("C:\\Projects\\kitten")).toBe("kitten");
     expect(markup).toContain("Open project");
     expect(markup).toContain("kitten");
+    expect(markup).not.toContain("/Users/name/projects/kitten");
+    expect(markup).not.toContain("Workflow board</");
+    expect(markup).not.toContain(">Settings<");
     expect(markup).toContain('aria-current="page"');
     expect(markup).toContain("Project actions for kitten");
   });
@@ -171,10 +177,11 @@ describe("WorkflowBoard", () => {
         draggedStageId={null}
         onConfigureStage={noop}
         onReorder={noop}
-        onConnect={noop}
+        onEditPath={noop}
         onMoveCard={noop}
         onSelectCard={noop}
         onDragStart={noop}
+        onDragEnd={noop}
       />,
     );
 
@@ -282,92 +289,51 @@ describe("WorkflowBoard", () => {
     expect(manualCreates).toBe(0);
   });
 
-  test("proposes only stable reorder, connect, configure, movement, and inspector intents", () => {
-    expect(BoardCanvas({
-      projection: { ...projection, board: null },
-      catalog,
-      selectedCardId: null,
-      busy: false,
-      draggedStageId: null,
-      onConfigureStage: noop,
-      onReorder: noop,
-      onConnect: noop,
-      onMoveCard: noop,
-      onSelectCard: noop,
-      onDragStart: noop,
-    })).toBeNull();
+  test("renders stable reorder, path, configure, movement, and inspector controls", () => {
+    expect(renderToStaticMarkup(
+      <BoardCanvas
+        projection={{ ...projection, board: null }}
+        catalog={catalog}
+        selectedCardId={null}
+        busy={false}
+        draggedStageId={null}
+        onConfigureStage={noop}
+        onReorder={noop}
+        onEditPath={noop}
+        onMoveCard={noop}
+        onSelectCard={noop}
+        onDragStart={noop}
+        onDragEnd={noop}
+      />,
+    )).toBe("");
 
-    const reorders: unknown[] = [];
-    const movements: string[] = [];
-    const selections: string[] = [];
-    const drags: string[] = [];
-    const configurations: string[] = [];
-    let connects = 0;
     const unconfiguredStages: readonly StageProjection[] = [
       { ...stages[0]!, configured: false, defaultSkillId: null },
       stages[1]!,
     ];
     const disconnected = { ...projection, stages: unconfiguredStages, edges: [] };
-    const createView = (draggedStageId: typeof backlogId | null) => BoardCanvas({
-      projection: disconnected,
-      catalog,
-      selectedCardId: null,
-      busy: false,
-      draggedStageId,
-      onConfigureStage: (stage) => configurations.push(stage.stageId),
-      onReorder: (intent) => reorders.push(intent),
-      onConnect: () => connects += 1,
-      onMoveCard: (selected, targetStageId) => movements.push(`${selected.cardId}:${targetStageId}`),
-      onSelectCard: (selected) => selections.push(selected.cardId),
-      onDragStart: (stageId) => drags.push(stageId),
-    });
-    const view = createView(null);
+    const markup = renderToStaticMarkup(
+      <BoardCanvas
+        projection={disconnected}
+        catalog={catalog}
+        selectedCardId={null}
+        busy={false}
+        draggedStageId={backlogId}
+        onConfigureStage={noop}
+        onReorder={noop}
+        onEditPath={noop}
+        onMoveCard={noop}
+        onSelectCard={noop}
+        onDragStart={noop}
+        onDragEnd={noop}
+      />,
+    );
 
-    (button(view, "Connect path").props.onPress as () => void)();
-    (button(view, "Configure Backlog: Default Workflow Skill not selected. This stage cannot launch work.").props.onPress as () => void)();
-    (button(view, "Move Backlog later").props.onPress as () => void)();
-    (button(view, "Move Backlog earlier").props.onPress as () => void)();
-    (button(view, "Running task").props.onPress as () => void)();
-    const connectedView = BoardCanvas({
-      projection: { ...projection, stages: unconfiguredStages },
-      catalog,
-      selectedCardId: null,
-      busy: false,
-      draggedStageId: null,
-      onConfigureStage: noop,
-      onReorder: noop,
-      onConnect: noop,
-      onMoveCard: (selected, targetStageId) => movements.push(`${selected.cardId}:${targetStageId}`),
-      onSelectCard: noop,
-      onDragStart: noop,
-    });
-    (button(connectedView, "Move Ready task to next stage").props.onPress as () => void)();
-
-    const stageColumn = descendants(view, "li").find(({ props }) => props.draggable === true)!;
-    (stageColumn.props.onDragStart as () => void)();
-    let prevented = 0;
-    (stageColumn.props.onDragOver as (event: { preventDefault(): void }) => void)({ preventDefault: () => prevented += 1 });
-    const drop = stageColumn.props.onDrop as (event: {
-      preventDefault(): void;
-      clientX: number;
-      currentTarget: { getBoundingClientRect(): { left: number; width: number } };
-    }) => void;
-    drop({ preventDefault: () => prevented += 1, clientX: 2, currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 10 }) } });
-
-    const draggedView = createView(backlogId);
-    const doingColumn = descendants(draggedView, "li").filter(({ props }) => props.draggable === true)[1]!;
-    (doingColumn.props.onDrop as typeof drop)({
-      preventDefault: () => prevented += 1,
-      clientX: 9,
-      currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 10 }) },
-    });
-
-    expect(connects).toBe(1);
-    expect(configurations).toEqual([backlogId]);
-    expect(drags).toEqual([backlogId]);
-    expect(selections).toEqual([runningCard.cardId]);
-    expect(movements).toEqual([`${idleCard.cardId}:${doingId}`]);
-    expect(reorders).toHaveLength(2);
-    expect(prevented).toBe(3);
+    expect(markup).toContain("Connect path");
+    expect(markup).toContain("Configure Backlog");
+    expect(markup).toContain("Move Backlog later");
+    expect(markup).toContain("Drag Backlog to reorder");
+    expect(markup).toContain("absolute inset-0 cursor-grab");
+    expect(markup).toContain("Running task");
   });
 });

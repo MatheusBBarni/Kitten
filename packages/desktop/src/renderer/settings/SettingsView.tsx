@@ -1,16 +1,12 @@
-import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Chip, Skeleton } from "@heroui/react";
 import type { DesktopRpcClient } from "../client.ts";
-import type {
-  DesktopSettingsProjection,
-  SettingsCommandEnvelope,
-  SettingsSection,
-} from "../../shared/desktopRpc.ts";
-import { bindSettingsQuery, settingsUnavailableMessage, type SettingsQueryBinding } from "./settingsQueries.ts";
+import { settingsUnavailableMessage } from "./settingsQueries.ts";
 import { ProfileDefaultsPanel } from "./ProfileDefaultsPanel.tsx";
 import { CatalogRootsPanel } from "./CatalogRootsPanel.tsx";
 import { ExecutionLimitPanel } from "./ExecutionLimitPanel.tsx";
 import { SelectField } from "../components/SelectField.tsx";
+import { AcpProvidersPanel } from "./AcpProvidersPanel.tsx";
+import { useSettingsController } from "./useSettingsController.ts";
 
 export interface SettingsFeedbackValue {
   readonly tone: "status" | "error";
@@ -42,71 +38,18 @@ export function SettingsUnavailableState({ retry }: { readonly retry: () => void
   );
 }
 
-function commandId(section: SettingsSection): string {
-  return `settings:${section}:${crypto.randomUUID()}`;
-}
-
 export function SettingsView({ client }: { readonly client: DesktopRpcClient }) {
-  const [projection, setProjection] = useState<DesktopSettingsProjection | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [busySection, setBusySection] = useState<SettingsSection | null>(null);
-  const [feedback, setFeedback] = useState<SettingsFeedbackValue | null>(null);
-  const binding = useRef<SettingsQueryBinding | null>(null);
+  const controller = useSettingsController(client);
 
-  useEffect(() => {
-    const next = bindSettingsQuery(client, (envelope) => {
-      if (envelope.result.status === "ok") {
-        setProjection(envelope.result.projection);
-        setLoadError(null);
-      } else {
-        setLoadError(settingsUnavailableMessage());
-      }
-    });
-    binding.current = next;
-    return () => {
-      binding.current = null;
-      next.dispose();
-    };
-  }, [client]);
-
-  async function run(
-    section: SettingsSection,
-    execute: () => Promise<SettingsCommandEnvelope>,
-    successMessage: string,
-  ) {
-    if (busySection !== null) return;
-    setBusySection(section);
-    try {
-      const envelope = await execute();
-      if (envelope.result.status === "ok") {
-        setProjection(envelope.result.projection);
-        setFeedback({ tone: "status", message: successMessage });
-      } else if (envelope.result.status === "conflict") {
-        setFeedback({
-          tone: "error",
-          message: `Settings changed before this action was committed. Expected revision ${envelope.result.conflict.expectedRevision}, now ${envelope.result.conflict.actualRevision}. Review the refreshed values and try again.`,
-        });
-        await binding.current?.refresh();
-      } else if (envelope.result.status === "rejected") {
-        setFeedback({ tone: "error", message: envelope.result.rejection.message });
-      } else {
-        setFeedback({ tone: "error", message: settingsUnavailableMessage() });
-      }
-    } catch {
-      setFeedback({ tone: "error", message: settingsUnavailableMessage() });
-    } finally {
-      setBusySection(null);
-    }
-  }
-
-  if (projection === null && loadError === null) {
+  if (controller.loading) {
     return <SettingsLoadingState />;
   }
-  if (projection === null) {
-    return <SettingsUnavailableState retry={() => void binding.current?.refresh()} />;
+  if (controller.projection === null || controller.unavailable) {
+    return <SettingsUnavailableState retry={() => void controller.retry()} />;
   }
 
-  const current = projection;
+  const current = controller.projection;
+  const busySection = controller.busySection;
   return (
     <main className="app-shell settings-shell">
       <div className="settings-content">
@@ -118,10 +61,10 @@ export function SettingsView({ client }: { readonly client: DesktopRpcClient }) 
         <Chip size="sm" variant="soft">Revision {current.revision}</Chip>
       </header>
 
-      <p className="m-0 text-sm text-muted">Defaults apply to future cards only. Recorded tasks, attempts, and run contexts are never rewritten.</p>
+      <p className="m-0 text-sm text-muted">Defaults apply only when you create a task. Existing tasks, attempts, and run history are never rewritten.</p>
 
-      {feedback !== null ? (
-        <SettingsFeedback feedback={feedback} />
+      {controller.feedback !== null ? (
+        <SettingsFeedback feedback={controller.feedback} />
       ) : null}
 
       <Card className="settings-panel" aria-labelledby="theme-title">
@@ -138,46 +81,27 @@ export function SettingsView({ client }: { readonly client: DesktopRpcClient }) 
           ]}
           onChange={(value) => {
               const theme = value as typeof current.preferences.theme;
-              void run(
-                "preferences",
-                () => client.updatePreferences(commandId("preferences"), {
-                  expectedRevision: current.revision,
-                  theme,
-                }),
-                "Theme preference saved.",
-              );
+              controller.saveTheme(theme);
           }}
         />
         </Card.Content>
       </Card>
+
+      <AcpProvidersPanel providers={current.acpProviders} />
 
       <ProfileDefaultsPanel
         key={`${current.profileDefaults.profileId}:${current.profileDefaults.model}:${current.profileDefaults.effort}`}
         profiles={current.profiles}
         defaults={current.profileDefaults}
         busy={busySection !== null}
-        onSave={(defaults) => void run(
-          "profile_defaults",
-          () => client.updateProfileDefaults(commandId("profile_defaults"), {
-            expectedRevision: current.revision,
-            ...defaults,
-          }),
-          "Future-card profile default saved.",
-        )}
+        onSave={controller.saveProfileDefaults}
       />
 
       <CatalogRootsPanel
         key={current.catalog.roots.map((root) => `${root.rootClass}:${root.configuredPath}`).join("|")}
         catalog={current.catalog}
         busy={busySection !== null}
-        onSave={(roots) => void run(
-          "catalog_roots",
-          () => client.updateCatalogRoots(commandId("catalog_roots"), {
-            expectedRevision: current.revision,
-            ...roots,
-          }),
-          "Catalog roots saved and scanned.",
-        )}
+        onSave={controller.saveCatalogRoots}
       />
 
       <ExecutionLimitPanel
@@ -185,14 +109,7 @@ export function SettingsView({ client }: { readonly client: DesktopRpcClient }) 
         limit={current.scheduler.automaticExecutionLimit}
         activeCount={current.scheduler.activeCount}
         busy={busySection !== null}
-        onSave={(limit) => void run(
-          "execution_limit",
-          () => client.setExecutionLimit(commandId("execution_limit"), {
-            expectedRevision: current.revision,
-            limit,
-          }),
-          "Automatic execution limit saved.",
-        )}
+        onSave={controller.saveExecutionLimit}
       />
       </div>
     </main>

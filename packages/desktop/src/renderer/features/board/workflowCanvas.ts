@@ -4,6 +4,7 @@ import type {
   StageId,
   StageProjection,
 } from "../../../workflow/workflowTypes.ts";
+import { validateConfigurableWorkflowPath, validateLinearWorkflow } from "../../../workflow/workflowValidation.ts";
 
 export interface CanvasArrow {
   readonly sourceStageId: StageId;
@@ -36,31 +37,27 @@ export function orderedProjectedStages(
 }
 
 /**
- * The renderer draws only host-committed edges that match adjacent stages in
- * the current ordered projection. Invalid or stale graph shapes stay hidden
- * and remain the host's responsibility to reject or repair.
+ * The renderer draws only current, host-committed edges between known stages.
+ * Invalid or stale graph shapes fail closed instead of becoming movement affordances.
  */
 export function deriveImmediateSuccessorArrows(
   board: BoardProjection,
   stages: readonly StageProjection[],
   edges: readonly EdgeProjection[],
 ): readonly CanvasArrow[] {
-  const ordered = orderedProjectedStages(stages);
-  const committed = new Set(
-    edges
-      .filter((edge) => edge.boardId === board.boardId && edge.workflowVersion === board.workflowVersion)
-      .map((edge) => `${edge.sourceStageId}\0${edge.targetStageId}`),
-  );
-
-  return ordered.slice(0, -1).flatMap((source, index): CanvasArrow[] => {
-    const target = ordered[index + 1];
-    if (target === undefined || !committed.has(`${source.stageId}\0${target.stageId}`)) return [];
-    return [{
-      sourceStageId: source.stageId,
-      targetStageId: target.stageId,
-      workflowVersion: board.workflowVersion,
-    }];
-  });
+  const stageIds = new Set(stages.map(({ stageId }) => stageId));
+  const committed = edges.filter((edge) => (
+    edge.boardId === board.boardId
+    && edge.workflowVersion === board.workflowVersion
+    && stageIds.has(edge.sourceStageId)
+    && stageIds.has(edge.targetStageId)
+  ));
+  if (!validateConfigurableWorkflowPath(stages, committed).valid) return [];
+  return committed.map(({ sourceStageId, targetStageId, workflowVersion }) => ({
+    sourceStageId,
+    targetStageId,
+    workflowVersion,
+  }));
 }
 
 export function isCommittedOrderedPath(
@@ -68,8 +65,8 @@ export function isCommittedOrderedPath(
   stages: readonly StageProjection[],
   edges: readonly EdgeProjection[],
 ): boolean {
-  const requiredArrowCount = Math.max(orderedProjectedStages(stages).length - 1, 0);
-  return deriveImmediateSuccessorArrows(board, stages, edges).length === requiredArrowCount;
+  const committed = deriveImmediateSuccessorArrows(board, stages, edges);
+  return validateLinearWorkflow(stages, committed).valid;
 }
 
 function reorder(

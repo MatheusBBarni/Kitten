@@ -105,7 +105,35 @@ function buildLinearWorkflow(harness: ReturnType<typeof commandHarness>): number
 }
 
 describe("workflow board and stage commands", () => {
-  test("materializes configured state, replaces the linear path, and reorders deterministically", () => {
+  test("persists partial and fully disconnected adjacent paths", () => {
+    const harness = commandHarness();
+    try {
+      let workflowVersion = buildLinearWorkflow(harness);
+      expect(harness.commands.execute({
+        kind: "connect_stages",
+        mutationId: mutation("connect-partial"),
+        boardId: BOARD_ID,
+        expectedWorkflowVersion: workflowVersion++,
+        edges: [{ sourceStageId: DOING_ID, targetStageId: REVIEW_ID }],
+      }).status).toBe("committed");
+      expect(harness.journal.snapshot().edges).toEqual([
+        { boardId: BOARD_ID, sourceStageId: DOING_ID, targetStageId: REVIEW_ID, workflowVersion: 6 },
+      ]);
+
+      expect(harness.commands.execute({
+        kind: "connect_stages",
+        mutationId: mutation("disconnect-all"),
+        boardId: BOARD_ID,
+        expectedWorkflowVersion: workflowVersion,
+        edges: [],
+      }).status).toBe("committed");
+      expect(harness.journal.snapshot().edges).toEqual([]);
+    } finally {
+      closeSqliteDatabase(harness.database);
+    }
+  });
+
+  test("materializes configured state, preserves the path, and reorders columns deterministically", () => {
     const harness = commandHarness();
     try {
       let workflowVersion = buildLinearWorkflow(harness);
@@ -140,7 +168,7 @@ describe("workflow board and stage commands", () => {
       });
       expect(snapshot.edges).toEqual([
         { boardId: BOARD_ID, sourceStageId: BACKLOG_ID, targetStageId: DOING_ID, workflowVersion: 7 },
-        { boardId: BOARD_ID, sourceStageId: REVIEW_ID, targetStageId: BACKLOG_ID, workflowVersion: 7 },
+        { boardId: BOARD_ID, sourceStageId: DOING_ID, targetStageId: REVIEW_ID, workflowVersion: 7 },
       ]);
     } finally {
       closeSqliteDatabase(harness.database);

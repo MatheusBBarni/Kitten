@@ -2,8 +2,9 @@ import type { FormEvent } from "react";
 import { Alert, Button, Input, Label, Modal, TextField } from "@heroui/react";
 import type { WorkflowCatalogProjection } from "../../../shared/rpc.ts";
 import type { SkillId } from "../../../workflow/workflowTypes.ts";
+import { CatalogDiagnosticsList, uniqueCatalogDiagnostics } from "../../components/CatalogDiagnosticsList.tsx";
 import { AlertIcon } from "../../components/Icons.tsx";
-import { SelectField } from "../../components/SelectField.tsx";
+import { SearchableSelectField } from "../../components/SearchableSelectField.tsx";
 import { selectableCatalogEntries } from "./boardInteractions.ts";
 
 export interface StageSetupDialogProps {
@@ -30,7 +31,7 @@ export function StageSetupDialog({
   mode = "create",
 }: StageSetupDialogProps) {
   const entries = selectableCatalogEntries(catalog);
-  const diagnostics = catalog.catalog.diagnostics;
+  const diagnostics = uniqueCatalogDiagnostics(catalog.catalog.diagnostics);
   const canConfigure = label.trim().length > 0
     && selectedSkillId !== null
     && entries.some(({ skillId }) => skillId === selectedSkillId);
@@ -42,9 +43,9 @@ export function StageSetupDialog({
 
   return (
     <Modal.Backdrop isOpen onOpenChange={(open) => !open && !busy && onClose()}>
-      <Modal.Container size="md">
+      <Modal.Container size="md" scroll="inside">
         <Modal.Dialog aria-label={mode === "create" ? "Add workflow stage" : `Configure ${label}`}>
-          <form onSubmit={submit} aria-busy={busy}>
+          <form className="contents" onSubmit={submit} aria-busy={busy}>
             <Modal.CloseTrigger isDisabled={busy} />
             <Modal.Header>
               <Modal.Heading>
@@ -64,7 +65,7 @@ export function StageSetupDialog({
                 </TextField>
               ) : null}
 
-              <SelectField
+              <SearchableSelectField
                 label="Default Workflow Skill"
                 value={selectedSkillId ?? ""}
                 options={[
@@ -76,6 +77,8 @@ export function StageSetupDialog({
                 ]}
                 onChange={(value) => onSkillChange(value.length === 0 ? null : value as SkillId)}
                 disabled={busy || entries.length === 0}
+                placeholder="Select a validated Skill"
+                emptyMessage="No matching Workflow Skills"
                 description="The host catalog supplies stable Skill identities. Catalog changes affect future attempts only."
               />
 
@@ -94,20 +97,16 @@ export function StageSetupDialog({
               ) : null}
 
               {diagnostics.length > 0 ? (
-                <section className="catalog-diagnostics" aria-labelledby="catalog-diagnostics-title">
-                  <h3 id="catalog-diagnostics-title">Catalog diagnostics</h3>
-                  <ul>
-                    {diagnostics.map((diagnostic) => (
-                      <li key={diagnostic.diagnosticId}>
-                        <strong>{diagnostic.code === "name_collision" ? "Name collision" : "Invalid catalog entry"}:</strong>{" "}
-                        {diagnostic.message}
-                      </li>
-                    ))}
-                  </ul>
+                <section className="min-w-0" aria-labelledby="catalog-diagnostics-title">
+                  <div className="mb-2 flex items-baseline justify-between gap-4">
+                    <h3 id="catalog-diagnostics-title" className="m-0">Catalog diagnostics</h3>
+                    <span className="text-xs tabular-nums text-muted">{diagnostics.length}</span>
+                  </div>
+                  <CatalogDiagnosticsList diagnostics={diagnostics} maxHeightClassName="max-h-64" />
                 </section>
               ) : null}
             </Modal.Body>
-            <Modal.Footer>
+            <Modal.Footer className="flex flex-wrap justify-end gap-2">
               <Button variant="secondary" onPress={onClose} isDisabled={busy}>Cancel</Button>
               {mode === "create" ? (
                 <Button

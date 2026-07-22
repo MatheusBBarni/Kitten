@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ProfileId } from "@kitten/engine";
 import type { CertifiedDirectAcpProfile } from "../attempts/contracts.ts";
 import { createGlobalAttemptScheduler } from "../attempts/scheduler.ts";
-import type { SkillCatalog } from "../catalog/contracts.ts";
+import type { DiscoverSkillCatalogInput, SkillCatalog } from "../catalog/contracts.ts";
 import { createDesktopSettingsRpc } from "./settingsRpc.ts";
 
 const READY_ID = "profile-ready" as ProfileId;
@@ -38,7 +38,20 @@ function emptyCatalog(): SkillCatalog {
 
 describe("desktop settings RPC", () => {
   test("starts at one and projects ready and unavailable certified profiles without certification internals", async () => {
-    const rpc = createDesktopSettingsRpc({ profiles, discoverCatalog: emptyCatalog });
+    const rpc = createDesktopSettingsRpc({
+      profiles,
+      discoverCatalog: emptyCatalog,
+      acpProviders: [{
+        providerId: "codex",
+        displayName: "Codex",
+        configuredBy: "kitten_default",
+        configuredCommand: "npx",
+        detectedCommands: ["codex"],
+        models: ["gpt-5"],
+        efforts: ["high"],
+        availability: "available",
+      }],
+    });
     const envelope = await rpc.getSettings();
     expect(envelope.result).toMatchObject({
       status: "ok",
@@ -51,6 +64,12 @@ describe("desktop settings RPC", () => {
           { profileId: READY_ID, readiness: { ready: true } },
           { profileId: UNREADY_ID, readiness: { ready: false, message: "Sign in to Claude." } },
         ],
+        acpProviders: [{
+          providerId: "codex",
+          configuredBy: "kitten_default",
+          detectedCommands: ["codex"],
+          availability: "available",
+        }],
         historyPolicy: "future_cards_only",
       },
     });
@@ -125,6 +144,39 @@ describe("desktop settings RPC", () => {
     expect((await rpc.getSettings()).result).toMatchObject({
       status: "ok",
       projection: { preferences: { theme: "dark" }, scheduler: { automaticExecutionLimit: 1 } },
+    });
+  });
+
+  test("rescans project Skill roots after repository binding and publishes catalog changes", async () => {
+    const discoveries: DiscoverSkillCatalogInput[] = [];
+    const published: SkillCatalog[] = [];
+    const discoverCatalog = (input: DiscoverSkillCatalogInput): SkillCatalog => {
+      discoveries.push(input);
+      return emptyCatalog();
+    };
+    const rpc = createDesktopSettingsRpc({
+      initialProjectRoots: ["/repo/first/.agents/skills"],
+      initialUserRoots: ["/home/name/.codex/skills"],
+      discoverCatalog,
+      onCatalogChanged: (catalog) => published.push(catalog),
+    });
+
+    expect(rpc.replaceProjectRoots(["/repo/second/.agents/skills"])).toBeTrue();
+    expect(rpc.replaceProjectRoots(["/repo/second/.agents/skills"])).toBeFalse();
+    expect(discoveries).toEqual([
+      {
+        projectRoots: ["/repo/first/.agents/skills"],
+        userRoots: ["/home/name/.codex/skills"],
+      },
+      {
+        projectRoots: ["/repo/second/.agents/skills"],
+        userRoots: ["/home/name/.codex/skills"],
+      },
+    ]);
+    expect(published).toHaveLength(2);
+    expect((await rpc.getSettings()).result).toMatchObject({
+      status: "ok",
+      projection: { revision: 1 },
     });
   });
 });

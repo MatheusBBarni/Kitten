@@ -21,10 +21,12 @@ import {
   connectStagesCommand,
   createBlankBoard,
   createBrowserIdentityFactory,
+  createCardCommand,
   createStageWithCatalogSkill,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
+  setStagePathCommand,
   selectableCatalogEntries,
   stageConfigurationReason,
   updateCardCommand,
@@ -84,7 +86,7 @@ const catalog: WorkflowCatalogProjection = {
 
 class Identities implements IdentityFactory {
   sequence = 0;
-  next(scope: "board" | "stage" | "mutation" | "command") {
+  next(scope: "board" | "stage" | "card" | "mutation" | "command") {
     return `${scope}-${++this.sequence}`;
   }
 }
@@ -236,6 +238,10 @@ describe("board interactions", () => {
       kind: "connect_stages",
       edges: [{ sourceStageId: firstStageId, targetStageId: secondStageId }],
     });
+    expect(setStagePathCommand(projection, [], identities)).toMatchObject({
+      kind: "connect_stages",
+      edges: [],
+    });
     expect(moveCardCommand(projection, card("running"), secondStageId, identities)).toBeNull();
     expect(moveCardCommand(projection, card("idle"), firstStageId, identities)).toBeNull();
     expect(moveCardCommand(projection, card("idle"), secondStageId, identities)).toMatchObject({ kind: "move_card" });
@@ -271,6 +277,41 @@ describe("board interactions", () => {
       model: "gpt-5",
       effort: "high",
       runnable: true,
+    }, new Identities())).toBeNull();
+  });
+
+  test("builds a new task for an existing stage with trimmed agent configuration", () => {
+    expect(createCardCommand(projection, {
+      stageId: firstStageId,
+      title: "  Investigate retries  ",
+      description: "  Preserve attempt history.  ",
+      provider: " codex ",
+      model: " gpt-5.6 ",
+      effort: " high ",
+      skillOverrideId: skillId,
+      runnable: true,
+    }, new Identities())).toMatchObject({
+      kind: "create_card",
+      boardId,
+      expectedWorkflowVersion: 3,
+      stageId: firstStageId,
+      title: "Investigate retries",
+      description: "Preserve attempt history.",
+      provider: "codex",
+      model: "gpt-5.6",
+      effort: "high",
+      skillOverrideId: skillId,
+      runnable: true,
+    });
+    expect(createCardCommand(projection, {
+      stageId: workflowIds.stage("missing"),
+      title: "Task",
+      description: "",
+      provider: "codex",
+      model: "gpt-5.6",
+      effort: "high",
+      skillOverrideId: null,
+      runnable: false,
     }, new Identities())).toBeNull();
   });
 

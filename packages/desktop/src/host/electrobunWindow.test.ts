@@ -1,8 +1,24 @@
 import { expect, test } from "bun:test";
 import {
   createElectrobunDesktopWindowPort,
+  nativeApplicationMenu,
   type ElectrobunDesktopWindow,
 } from "./electrobunWindow.ts";
+
+test("declares native Edit roles so macOS standard shortcuts reach focused fields", () => {
+  const edit = nativeApplicationMenu().find(({ label }) => label === "Edit");
+  expect(edit?.submenu.map((item) => "role" in item ? item.role : item.type)).toEqual([
+    "undo",
+    "redo",
+    "separator",
+    "cut",
+    "copy",
+    "paste",
+    "pasteAndMatchStyle",
+    "delete",
+    "selectAll",
+  ]);
+});
 
 test("reveals the native window and stops delivering messages after handlers are removed", () => {
   const calls: string[] = [];

@@ -36,8 +36,49 @@ export function createElectrobunDesktopWindowPort(window: ElectrobunDesktopWindo
   };
 }
 
+export function nativeApplicationMenu() {
+  return [
+    {
+      label: "Kitten Orchestrator",
+      submenu: [
+        { role: "about" as const },
+        { type: "separator" as const },
+        { role: "hide" as const },
+        { role: "hideOthers" as const },
+        { role: "showAll" as const },
+        { type: "separator" as const },
+        { role: "quit" as const },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" as const },
+        { role: "redo" as const },
+        { type: "separator" as const },
+        { role: "cut" as const },
+        { role: "copy" as const },
+        { role: "paste" as const },
+        { role: "pasteAndMatchStyle" as const },
+        { role: "delete" as const },
+        { role: "selectAll" as const },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" as const },
+        { role: "zoom" as const },
+        { type: "separator" as const },
+        { role: "front" as const },
+      ],
+    },
+  ];
+}
+
 export async function createElectrobunWindowFactory(): Promise<DesktopWindowFactory> {
-  const { BrowserView, BrowserWindow } = await import("electrobun/bun");
+  const { ApplicationMenu, BrowserView, BrowserWindow } = await import("electrobun/bun");
+  ApplicationMenu.setApplicationMenu(nativeApplicationMenu());
 
   return {
     open({

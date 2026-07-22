@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Button } from "@heroui/react";
+import { Button, Toast } from "@heroui/react";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type {
   BootstrapEnvelope,
   DesktopRpcSchema,
@@ -14,6 +15,12 @@ import { WorkflowBoard } from "./features/board/WorkflowBoardContainer.tsx";
 import { SettingsView } from "./settings/SettingsView.tsx";
 import type { SettingsTheme } from "../shared/desktopRpc.ts";
 import { BoardIcon, SettingsIcon } from "./components/Icons.tsx";
+import {
+  bootstrapQueryOptions,
+  createDesktopQueryClient,
+  useDesktopHostInvalidation,
+} from "./query/desktopQueries.ts";
+import { useDesktopViewStore } from "./state/desktopViewStore.ts";
 
 export type { DesktopRpcClient } from "./client.ts";
 export { bindDesktopRenderer } from "./client.ts";
@@ -122,20 +129,33 @@ export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient>
 }
 
 export function DesktopApp({ client }: { readonly client: DesktopRpcClient }) {
-  const [bootstrap, setBootstrap] = useState<BootstrapEnvelope | null>(null);
-  const [route, setRoute] = useState<"board" | "settings">("board");
+  const [queryClient] = useState(createDesktopQueryClient);
+
+  useEffect(() => () => client.dispose(), [client]);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <Toast.Provider placement="bottom end" maxVisibleToasts={3} />
+      <DesktopAppContent client={client} />
+    </QueryClientProvider>
+  );
+}
+
+function DesktopAppContent({ client }: { readonly client: DesktopRpcClient }) {
+  const bootstrapQuery = useQuery(bootstrapQueryOptions(client));
+  const route = useDesktopViewStore((state) => state.route);
+  const setRoute = useDesktopViewStore((state) => state.setRoute);
+
+  useDesktopHostInvalidation(client);
 
   useEffect(() => {
-    const lifecycle = bindDesktopRenderer(client, setBootstrap);
-    return () => lifecycle.dispose();
-  }, [client]);
-
-  useEffect(() => {
+    const bootstrap = bootstrapQuery.data;
     if (bootstrap?.result.status !== "ok") return;
     applyThemePreference(bootstrap.result.projection.settings.theme);
-  }, [bootstrap]);
+  }, [bootstrapQuery.data]);
 
-  if (bootstrap === null) return <main aria-busy="true">Loading Kitten Orchestrator…</main>;
+  const bootstrap = bootstrapQuery.data;
+  if (bootstrap === undefined) return <main aria-busy="true">Loading Kitten Orchestrator…</main>;
   if (bootstrap.result.status === "unavailable") {
     return <main role="alert">Desktop host unavailable.</main>;
   }
@@ -161,7 +181,7 @@ export function DesktopApp({ client }: { readonly client: DesktopRpcClient }) {
         </Button>
       </nav>
       {route === "board"
-        ? <WorkflowBoard client={client} onOpenSettings={() => setRoute("settings")} />
+        ? <WorkflowBoard client={client} />
         : <SettingsView client={client} />}
     </>
   );

@@ -4,6 +4,7 @@ import { workflowIds } from "./workflowTypes.ts";
 import {
   immediateSuccessor,
   sortStagesByPosition,
+  validateConfigurableWorkflowPath,
   validateLinearWorkflow,
 } from "./workflowValidation.ts";
 
@@ -32,6 +33,29 @@ function edge(source: StageProjection, target: StageProjection): EdgeProjection 
 }
 
 describe("linear workflow validation", () => {
+  test("accepts disconnected adjacent subsets for path configuration", () => {
+    const [a, b, c] = [stage("A", 0), stage("B", 1), stage("C", 2)];
+
+    expect(validateConfigurableWorkflowPath([a, b, c], [])).toEqual({
+      valid: true,
+      orderedStageIds: [a.stageId, b.stageId, c.stageId],
+    });
+    expect(validateConfigurableWorkflowPath([a, b, c], [edge(b, c)])).toMatchObject({ valid: true });
+    expect(validateConfigurableWorkflowPath([a, b, c], [edge(a, c)])).toMatchObject({ valid: true });
+    expect(validateConfigurableWorkflowPath([a, b, c], [edge(a, b), edge(a, c)])).toMatchObject({
+      valid: false,
+      error: { kind: "branch" },
+    });
+    expect(validateConfigurableWorkflowPath([a, b, c], [edge(a, c), edge(b, c)])).toMatchObject({
+      valid: false,
+      error: { kind: "join" },
+    });
+    expect(validateConfigurableWorkflowPath([a, b, c], [edge(a, b), edge(b, a)])).toMatchObject({
+      valid: false,
+      error: { kind: "cycle" },
+    });
+  });
+
   test("accepts the editable starter path and a custom single-stage path", () => {
     const stages = ["Backlog", "To-do", "Refinement", "Ready", "Doing", "Finished", "Closed"]
       .map(stage);

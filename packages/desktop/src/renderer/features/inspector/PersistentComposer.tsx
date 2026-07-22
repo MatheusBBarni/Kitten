@@ -53,7 +53,8 @@ export function PersistentComposer({
 }: PersistentComposerProps) {
   const running = status === "running";
   const blocked = blockerActive || status === "needs_attention";
-  const disabled = busy || unavailable || blocked;
+  const missingActiveAttempt = running && (attemptId === null || generation === null);
+  const disabled = busy || blocked || missingActiveAttempt;
   const drafts = activeDrafts(queue);
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -124,7 +125,6 @@ export function PersistentComposer({
           className="field"
           value={draft}
           onChange={onDraftChange}
-          isDisabled={unavailable}
         >
           <Label>Message</Label>
           <TextArea
@@ -140,9 +140,17 @@ export function PersistentComposer({
               <Alert.Description>Answer the active question before sending this message. Your draft is saved.</Alert.Description>
             </Alert.Content>
           </Alert>
+        ) : missingActiveAttempt ? (
+          <Alert id="composer-help" status="warning">
+            <Alert.Content>
+              <Alert.Description>Reconnect the desktop host before queuing a follow-up. Your draft is saved.</Alert.Description>
+            </Alert.Content>
+          </Alert>
         ) : (
           <p id="composer-help" className="composer-help">
-            {running
+            {unavailable
+              ? "History is unavailable, but you can still start a new run. Your draft is saved."
+              : running
               ? "Queued messages wait for the active turn to settle and require confirmation before dispatch."
               : "This message starts a fresh run in the task's current stage."}
           </p>

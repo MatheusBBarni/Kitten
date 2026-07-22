@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Chip, Skeleton } from "@heroui/react";
+import { useState } from "react";
+import { Alert, Button, Skeleton } from "@heroui/react";
 import type { DesktopRpcClient } from "../../client.ts";
-import { bindWorkflowBoardRenderer } from "../../client.ts";
-import type {
-  WorkflowBoardProjection,
-  WorkflowCatalogProjection,
-  WorkspaceProjection,
-} from "../../../shared/rpc.ts";
-import { createEmptyWorkspaceProjection } from "../../../shared/rpc.ts";
 import type {
   CardId,
   SkillId,
@@ -18,46 +11,27 @@ import {
   STARTER_STAGE_LABELS,
   applyStarterTemplate,
   assignCatalogSkillToStage,
-  boardInteractionMessage,
-  connectStagesCommand,
   createBlankBoard,
-  createBrowserIdentityFactory,
+  createCardCommand,
   createStageWithCatalogSkill,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
-  updateCardCommand,
+  setStagePathCommand,
   type CardEditInput,
-  type BoardInteractionResult,
-  type IdentityFactory,
+  type CardCreateInput,
 } from "./boardInteractions.ts";
-import { BlankBoardSetup, BoardCanvas, type SetupMode } from "./WorkflowBoard.tsx";
+import { BlankBoardSetup, BoardCanvas, ProjectSetupModal, type SetupMode } from "./WorkflowBoard.tsx";
 import { ProjectSidebar } from "./ProjectSidebar.tsx";
 import { StageSetupModal } from "./StageSetupModal.tsx";
 import { CardInspector } from "../inspector/CardInspector.tsx";
-import { AlertIcon, PlusIcon } from "../../components/Icons.tsx";
+import { AlertIcon, PlusIcon, TaskIcon } from "../../components/Icons.tsx";
+import { useWorkflowBoardController } from "./useWorkflowBoardController.ts";
+import { TaskCreateModal } from "./TaskCreateModal.tsx";
+import { PathEditorModal } from "./PathEditorModal.tsx";
 
-interface Feedback {
-  readonly message: string;
-  readonly tone: "status" | "error";
-}
-
-export function WorkflowBoard({
-  client,
-  onOpenSettings,
-}: {
-  readonly client: DesktopRpcClient;
-  readonly onOpenSettings?: () => void;
-}) {
-  const identities = useRef<IdentityFactory>(createBrowserIdentityFactory());
-  const [projection, setProjection] = useState<WorkflowBoardProjection | null>(null);
-  const [catalog, setCatalog] = useState<WorkflowCatalogProjection | null>(null);
-  const [workspace, setWorkspace] = useState<WorkspaceProjection>(createEmptyWorkspaceProjection);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [busy, setBusy] = useState(false);
+export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient }) {
   const [setupMode, setSetupMode] = useState<SetupMode>("choice");
-  const [repositoryPath, setRepositoryPath] = useState("");
   const [starterLabels, setStarterLabels] = useState<readonly string[]>(STARTER_STAGE_LABELS);
   const [selectedCardId, setSelectedCardId] = useState<CardId | null>(null);
   const [draggedStageId, setDraggedStageId] = useState<StageId | null>(null);
@@ -65,125 +39,29 @@ export function WorkflowBoard({
   const [stageBeingConfigured, setStageBeingConfigured] = useState<StageId | null>(null);
   const [stageLabel, setStageLabel] = useState("");
   const [stageSkillId, setStageSkillId] = useState<SkillId | null>(null);
-  const [activeBoardId, setActiveBoardId] = useState<string | undefined>(undefined);
-  const [boardMode, setBoardMode] = useState<"active" | "new">("active");
-
-  useEffect(() => {
-    const binding = bindWorkflowBoardRenderer(client, {
-      onBoard(envelope) {
-        if (envelope.result.status === "ok") {
-          setProjection(envelope.result.projection);
-          setLoadError(null);
-          if (
-            boardMode === "active"
-            && activeBoardId === undefined
-            && envelope.result.projection.board !== null
-          ) {
-            setActiveBoardId(envelope.result.projection.board.boardId);
-          }
-        } else {
-          setLoadError("The Workflow Board projection is unavailable. Wait for the desktop host to reconnect.");
-        }
-      },
-      onCatalog(envelope) {
-        if (envelope.result.status === "ok") {
-          setCatalog(envelope.result.projection);
-        } else {
-          setLoadError("The local Skill Catalog is unavailable. Stage setup cannot continue.");
-        }
-      },
-      onWorkspace(envelope) {
-        if (envelope.result.status === "ok") setWorkspace(envelope.result.projection);
-      },
-    }, { boardId: activeBoardId, mode: boardMode });
-    return () => binding.dispose();
-  }, [activeBoardId, boardMode, client]);
-
-  const applyResult = useCallback((result: BoardInteractionResult): boolean => {
-    const message = boardInteractionMessage(result);
-    setFeedback({
-      message: message ?? "Board projection committed.",
-      tone: result.status === "ok" ? "status" : "error",
-    });
-    if (result.status !== "ok") return false;
-    setProjection(result.projection);
-    if (boardMode === "new" && result.projection.board !== null) {
-      setActiveBoardId(result.projection.board.boardId);
-      setBoardMode("active");
-    }
-    return true;
-  }, [boardMode]);
-
-  const run = useCallback(async (action: () => Promise<BoardInteractionResult>): Promise<boolean> => {
-    if (busy) return false;
-    setBusy(true);
-    try {
-      return applyResult(await action());
-    } catch {
-      setFeedback({
-        message: "The desktop host did not finish this action. Review the current board and try again.",
-        tone: "error",
-      });
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }, [applyResult, busy]);
-
-  const chooseRepository = useCallback(async () => {
-    if (busy) return;
-    if (client.pickRepositoryDirectory === undefined) {
-      setFeedback({
-        message: "Folder selection is not available. Restart the desktop app and try again.",
-        tone: "error",
-      });
-      return;
-    }
-    setBusy(true);
-    try {
-      const envelope = await client.pickRepositoryDirectory();
-      if (envelope.result.status === "selected") {
-        setRepositoryPath(envelope.result.path);
-        setFeedback({ message: "Repository folder selected.", tone: "status" });
-      } else if (envelope.result.status === "unavailable") {
-        setFeedback({
-          message: "Couldn't open the folder picker. Restart the desktop app and try again.",
-          tone: "error",
-        });
-      } else {
-        setFeedback({ message: "Folder selection cancelled.", tone: "status" });
-      }
-    } catch {
-      setFeedback({
-        message: "Couldn't open the folder picker. Restart the desktop app and try again.",
-        tone: "error",
-      });
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, client]);
-
-  function openProject() {
-    if (busy) return;
-    setActiveBoardId(undefined);
-    setBoardMode("new");
-    setProjection(null);
-    setSelectedCardId(null);
-    setStageDialogMode(null);
-    setSetupMode("choice");
-    setRepositoryPath("");
-    setFeedback(null);
-    void chooseRepository();
-  }
-
-  function selectBoard(boardId: string) {
-    if (busy || boardId === activeBoardId) return;
-    setActiveBoardId(boardId);
-    setBoardMode("active");
-    setSelectedCardId(null);
-    setStageDialogMode(null);
-    setFeedback(null);
-  }
+  const [taskCreateOpen, setTaskCreateOpen] = useState(false);
+  const [pathEditorBoardId, setPathEditorBoardId] = useState<string | null>(null);
+  const controller = useWorkflowBoardController(client, {
+    onBeginProjectSetup() {
+      setSelectedCardId(null);
+      setStageDialogMode(null);
+      setSetupMode("choice");
+      setPathEditorBoardId(null);
+    },
+    onSelectBoard() {
+      setSelectedCardId(null);
+      setStageDialogMode(null);
+    },
+  });
+  const {
+    projection,
+    catalog,
+    workspace,
+    settings,
+    loadError,
+    busy,
+    repositoryPath,
+  } = controller;
 
   if (loadError !== null) {
     return (
@@ -203,11 +81,18 @@ export function WorkflowBoard({
       <div className="desktop-workspace">
         <ProjectSidebar
           workspace={workspace}
-          activeBoardId={activeBoardId ?? null}
+          activeBoardId={controller.activeBoardId ?? null}
           busy={busy}
-          onOpenProject={openProject}
-          onSelectBoard={selectBoard}
-          onOpenSettings={onOpenSettings}
+          onOpenProject={controller.openProject}
+          onAddBoard={controller.addBoard}
+          onSelectBoard={(boardId) => {
+            setPathEditorBoardId(null);
+            controller.selectBoard(boardId);
+          }}
+          onEditPath={(boardId) => {
+            setPathEditorBoardId(boardId);
+            controller.selectBoard(boardId);
+          }}
         />
         <main aria-busy="true" className="app-shell p-4">
           <Skeleton className="mb-3 h-16 w-full rounded-lg" />
@@ -225,45 +110,64 @@ export function WorkflowBoard({
   const currentProjection = projection;
   const currentCatalog = catalog;
 
-  async function runCommand(command: WorkflowCommand) {
-    await run(() => executeBoardCommand(client, command, identities.current));
+  function runCommand(command: WorkflowCommand, onCommitted?: () => void) {
+    controller.run(
+      () => executeBoardCommand(client, command, controller.identities.current),
+      onCommitted,
+    );
   }
 
-  async function createStage(configured: boolean) {
-    const success = stageDialogMode === "configure" && stageBeingConfigured !== null && stageSkillId !== null
-      ? await run(() => assignCatalogSkillToStage(
+  function createTask(input: CardCreateInput) {
+    const command = createCardCommand(currentProjection, input, controller.identities.current);
+    if (command === null) return;
+    runCommand(command, () => {
+      setTaskCreateOpen(false);
+      setSelectedCardId(command.cardId);
+    });
+  }
+
+  function createStage(configured: boolean) {
+    const execute = stageDialogMode === "configure" && stageBeingConfigured !== null && stageSkillId !== null
+      ? () => assignCatalogSkillToStage(
           client,
           currentProjection,
           stageBeingConfigured,
           stageSkillId,
           currentCatalog,
-          identities.current,
-        ))
-      : await run(() => createStageWithCatalogSkill(
+          controller.identities.current,
+        )
+      : () => createStageWithCatalogSkill(
           client,
           currentProjection,
           stageLabel,
           configured ? stageSkillId : null,
           currentCatalog,
-          identities.current,
-        ));
-    if (success) {
+          controller.identities.current,
+        );
+    controller.run(execute, () => {
       setStageDialogMode(null);
       setStageBeingConfigured(null);
       setStageLabel("");
       setStageSkillId(null);
-    }
+    });
   }
 
   return (
     <div className="desktop-workspace">
       <ProjectSidebar
         workspace={workspace}
-        activeBoardId={boardMode === "new" ? null : activeBoardId ?? projection.board?.boardId ?? null}
+        activeBoardId={controller.boardMode === "new" ? null : controller.activeBoardId ?? projection.board?.boardId ?? null}
         busy={busy}
-        onOpenProject={openProject}
-        onSelectBoard={selectBoard}
-        onOpenSettings={onOpenSettings}
+        onOpenProject={controller.openProject}
+        onAddBoard={controller.addBoard}
+        onSelectBoard={(boardId) => {
+          setPathEditorBoardId(null);
+          controller.selectBoard(boardId);
+        }}
+        onEditPath={(boardId) => {
+          setPathEditorBoardId(boardId);
+          controller.selectBoard(boardId);
+        }}
       />
       <main className="app-shell board-page">
       <header className="app-header">
@@ -271,23 +175,7 @@ export function WorkflowBoard({
           <p className="eyebrow">Workflow board</p>
           <h1>{projection.board === null ? "New project" : projection.board.repositoryPath.split(/[\\/]/).filter(Boolean).at(-1)}</h1>
         </div>
-        <div className="app-header-meta">
-          {projection.board === null ? null : <span className="hidden max-w-[28rem] truncate lg:inline">{projection.board.repositoryPath}</span>}
-          <Chip size="sm" variant="soft">Revision {projection.revision}</Chip>
-        </div>
       </header>
-
-      {feedback !== null ? (
-        <div className="board-feedback">
-        <Alert
-          className="notice"
-          status={feedback.tone === "status" ? "success" : "danger"}
-          role={feedback.tone === "status" ? "status" : "alert"}
-        >
-          <Alert.Content><Alert.Description>{feedback.message}</Alert.Description></Alert.Content>
-        </Alert>
-        </div>
-      ) : null}
 
       {projection.board === null ? (
         <BlankBoardSetup
@@ -296,26 +184,23 @@ export function WorkflowBoard({
           starterLabels={starterLabels}
           busy={busy}
           onModeChange={setSetupMode}
-          onChooseRepository={() => void chooseRepository()}
+          onChooseRepository={controller.chooseRepository}
           onStarterLabelChange={(index, label) => setStarterLabels((current) => current.map(
             (value, currentIndex) => currentIndex === index ? label : value,
           ))}
-          onApplyStarter={() => void run(() => applyStarterTemplate(
+          onApplyStarter={() => controller.run(() => applyStarterTemplate(
             client,
             projection,
             repositoryPath,
             starterLabels,
-            identities.current,
+            controller.identities.current,
           ))}
-          onCreateManual={() => void (async () => {
-            const created = await run(() => createBlankBoard(
+          onCreateManual={() => controller.run(() => createBlankBoard(
               client,
               projection,
               repositoryPath,
-              identities.current,
-            ));
-            if (created) setStageDialogMode("create");
-          })()}
+              controller.identities.current,
+            ), () => setStageDialogMode("create"))}
         />
       ) : (
         <>
@@ -327,6 +212,15 @@ export function WorkflowBoard({
             ) : null}
             <Button
               size="sm"
+              onPress={() => setTaskCreateOpen(true)}
+              isDisabled={busy || projection.stages.length === 0}
+              aria-label={projection.stages.length === 0 ? "Create task — add a stage first" : "Create task"}
+            >
+              <TaskIcon />Create task
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               onPress={() => {
                 setStageDialogMode("create");
                 setStageBeingConfigured(null);
@@ -347,20 +241,18 @@ export function WorkflowBoard({
               busy={busy}
               draggedStageId={draggedStageId}
               onDragStart={setDraggedStageId}
+              onDragEnd={() => setDraggedStageId(null)}
               onConfigureStage={(stage) => {
                 setStageDialogMode("configure");
                 setStageBeingConfigured(stage.stageId);
                 setStageLabel(stage.label);
                 setStageSkillId(stage.defaultSkillId);
               }}
-              onReorder={(intent) => void runCommand(reorderStagesCommand(intent, identities.current))}
-              onConnect={() => {
-                const command = connectStagesCommand(projection, identities.current);
-                if (command !== null) void runCommand(command);
-              }}
+              onReorder={(intent) => runCommand(reorderStagesCommand(intent, controller.identities.current))}
+              onEditPath={() => setPathEditorBoardId(projection.board?.boardId ?? null)}
               onMoveCard={(card, targetStageId) => {
-                const command = moveCardCommand(projection, card, targetStageId, identities.current);
-                if (command !== null) void runCommand(command);
+                const command = moveCardCommand(projection, card, targetStageId, controller.identities.current);
+                if (command !== null) runCommand(command);
               }}
               onSelectCard={(card) => {
                 setSelectedCardId(card.cardId);
@@ -376,14 +268,9 @@ export function WorkflowBoard({
                 onOpenChange={(open) => {
                   if (!open) setSelectedCardId(null);
                 }}
-                onSaveTask={async (input: CardEditInput) => {
+                onSaveTask={(input: CardEditInput, onSaved) => {
                   const current = currentProjection.cards.find(({ cardId }) => cardId === selectedCard.cardId) ?? selectedCard;
-                  const command = updateCardCommand(current, input, identities.current);
-                  if (command === null) {
-                    setFeedback({ message: "Title, provider, model, and effort are required.", tone: "error" });
-                    return false;
-                  }
-                  return run(() => executeBoardCommand(client, command, identities.current));
+                  controller.saveTask(current, input, onSaved);
                 }}
               />
             ) : null}
@@ -400,12 +287,72 @@ export function WorkflowBoard({
           busy={busy}
           onLabelChange={setStageLabel}
           onSkillChange={setStageSkillId}
-          onCreate={(configured) => void createStage(configured)}
+          onCreate={createStage}
           onClose={() => {
             if (!busy) setStageDialogMode(null);
           }}
         />
       ) : null}
+      {taskCreateOpen ? (
+        <TaskCreateModal
+          stages={projection.stages}
+          catalog={catalog}
+          profiles={settings?.profiles ?? []}
+          providers={settings?.acpProviders ?? []}
+          defaults={settings?.profileDefaults ?? {
+            profileId: null,
+            model: null,
+            effort: null,
+            appliesTo: "future_cards",
+          }}
+          busy={busy}
+          onCreate={createTask}
+          onClose={() => {
+            if (!busy) setTaskCreateOpen(false);
+          }}
+        />
+      ) : null}
+      {projection.board !== null && pathEditorBoardId === projection.board.boardId ? (
+        <PathEditorModal
+          key={`${projection.board.boardId}:${projection.board.workflowVersion}`}
+          projection={projection}
+          busy={busy}
+          onClose={() => setPathEditorBoardId(null)}
+          onSave={(edges) => {
+            const command = setStagePathCommand(projection, edges, controller.identities.current);
+            if (command !== null) runCommand(command, () => setPathEditorBoardId(null));
+          }}
+        />
+      ) : null}
+      <ProjectSetupModal
+        isOpen={controller.projectSetupOpen}
+        context={workspace.boards.some(({ repositoryPath: existingPath }) => (
+          existingPath.replace(/[\\/]+$/, "") === repositoryPath.replace(/[\\/]+$/, "")
+        )) ? "board" : "project"}
+        mode={setupMode}
+        repositoryPath={repositoryPath}
+        starterLabels={starterLabels}
+        busy={busy}
+        onModeChange={setSetupMode}
+        onChooseRepository={controller.chooseRepository}
+        onStarterLabelChange={(index, label) => setStarterLabels((current) => current.map(
+          (value, currentIndex) => currentIndex === index ? label : value,
+        ))}
+        onApplyStarter={() => controller.run(() => applyStarterTemplate(
+          client,
+          projection,
+          repositoryPath,
+          starterLabels,
+          controller.identities.current,
+        ))}
+        onCreateManual={() => controller.run(() => createBlankBoard(
+          client,
+          projection,
+          repositoryPath,
+          controller.identities.current,
+        ), () => setStageDialogMode("create"))}
+        onClose={controller.closeProjectSetup}
+      />
       </main>
     </div>
   );
