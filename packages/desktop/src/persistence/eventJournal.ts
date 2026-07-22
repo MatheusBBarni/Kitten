@@ -1,6 +1,16 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type {
+  AttemptGeneration,
+  DirectAcpTerminalState,
+  NormalizedAttemptActivity,
+  NormalizedAttemptEvent,
+} from "@kitten/engine";
+import {
+  isDirectAcpTerminalState,
+  validateNormalizedAttemptActivity,
+} from "@kitten/engine";
+import type {
   BoardId,
   BoardProjection,
   CardId,
@@ -25,6 +35,12 @@ import type { CardWorktreeBinding } from "../worktrees/contracts.ts";
 import { validateCardWorktreeBinding } from "../worktrees/contracts.ts";
 import type { AttemptProjection, RunContext } from "../attempts/contracts.ts";
 import { validateAttemptProjection, validateRunContext } from "../attempts/contracts.ts";
+import type { AttemptInspectorProjection } from "../attempts/inspectorProjection.ts";
+import {
+  createAttemptInspectorProjection,
+  projectAttemptActivity,
+  validateAttemptInspectorProjection,
+} from "../attempts/inspectorProjection.ts";
 
 export type {
   BoardProjection,
@@ -86,6 +102,13 @@ export type JournalEvent =
       readonly attemptId: string;
       readonly attemptSequence: number;
       readonly payload: AttemptLifecycleEventPayload;
+    })
+  | (JournalEventBase & {
+      readonly kind: "attempt_activity_committed";
+      readonly cardId: CardId;
+      readonly attemptId: string;
+      readonly attemptSequence: number;
+      readonly payload: AttemptActivityEventPayload;
     });
 
 export interface CatalogProjection {
@@ -108,6 +131,11 @@ export interface AttemptLifecycleEventPayload {
   readonly changes: readonly ProjectionChange[];
 }
 
+export interface AttemptActivityEventPayload {
+  readonly generation: AttemptGeneration;
+  readonly activity: NormalizedAttemptActivity;
+}
+
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
@@ -118,7 +146,8 @@ export type ProjectionChange =
   | { readonly entity: "skill_snapshot"; readonly operation: "insert"; readonly value: StoredSkillSnapshot }
   | { readonly entity: "card_worktree"; readonly operation: "upsert"; readonly value: CardWorktreeBinding }
   | { readonly entity: "attempt"; readonly operation: "upsert"; readonly value: AttemptProjection }
-  | { readonly entity: "run_context"; readonly operation: "insert"; readonly value: RunContext };
+  | { readonly entity: "run_context"; readonly operation: "insert"; readonly value: RunContext }
+  | { readonly entity: "attempt_inspector"; readonly operation: "upsert"; readonly value: AttemptInspectorProjection };
 
 export interface WorkflowCommandEventPayload {
   readonly mutationId: string;
@@ -149,6 +178,7 @@ export interface PersistenceSnapshot {
   readonly cardWorktrees: readonly CardWorktreeBinding[];
   readonly attempts: readonly AttemptProjection[];
   readonly runContexts: readonly RunContext[];
+  readonly attemptInspectors: readonly AttemptInspectorProjection[];
 }
 
 export interface EventJournal {
@@ -200,6 +230,22 @@ export class ProjectionVersionConflictError extends Error {
   ) {
     super(`Stale ${entity} projection ${id}: expected ${expectedVersion}, actual ${actualVersion}`);
     this.name = "ProjectionVersionConflictError";
+  }
+}
+
+export type AttemptActivityMutationReason =
+  | "unknown_attempt"
+  | "stale_generation"
+  | "attempt_not_active"
+  | "post_terminal"
+  | "non_monotonic"
+  | "sequence_gap"
+  | "missing_run_context";
+
+export class AttemptActivityMutationError extends Error {
+  constructor(readonly reason: AttemptActivityMutationReason, message: string) {
+    super(message);
+    this.name = "AttemptActivityMutationError";
   }
 }
 
@@ -595,8 +641,28 @@ function parseProjectionChange(value: unknown): ProjectionChange {
       } catch (error) {
         throw new JournalValidationError(error instanceof Error ? error.message : "Run Context is invalid");
       }
+    case "attempt_inspector":
+      if (operation !== "upsert") throw new JournalValidationError("attempt inspector changes must upsert");
+      try {
+        return { entity, operation, value: validateAttemptInspectorProjection(value.value) };
+      } catch (error) {
+        throw new JournalValidationError(error instanceof Error ? error.message : "attempt inspector is invalid");
+      }
     default:
       throw new JournalValidationError("projection change entity is unsupported");
+  }
+}
+
+function parseAttemptActivityPayload(value: unknown): AttemptActivityEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["generation", "activity"]);
+  try {
+    return {
+      generation: integerField(value.generation, "payload.generation") as AttemptGeneration,
+      activity: validateNormalizedAttemptActivity(value.activity),
+    };
+  } catch (error) {
+    throw new JournalValidationError(error instanceof Error ? error.message : "attempt activity is invalid");
   }
 }
 
@@ -795,6 +861,23 @@ export function validateJournalEvent(input: unknown): JournalEvent {
       )) {
         throw new JournalValidationError("attempt lifecycle event identity does not match Run Context");
       }
+      return {
+        eventId,
+        boardId,
+        cardId,
+        attemptId,
+        attemptSequence: integerField(input.attemptSequence, "attemptSequence"),
+        actor,
+        kind: input.kind,
+        occurredAt,
+        payload,
+      };
+    }
+    case "attempt_activity_committed": {
+      const payload = parseAttemptActivityPayload(input.payload);
+      if (actor !== "agent") throw new JournalValidationError("attempt activity actor must be agent");
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      const attemptId = stringField(input.attemptId, "attemptId");
       return {
         eventId,
         boardId,
@@ -1190,7 +1273,148 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
       }
       return;
     }
+    case "attempt_inspector": {
+      const value = change.value;
+      const serialized = JSON.stringify(value);
+      const upsert = database.query<void, [string, string, string, number, number, string | null, string, number]>(`
+        INSERT INTO attempt_inspector_projections(
+          attempt_id, board_id, card_id, generation, next_sequence,
+          terminal_outcome, projection_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_id) DO UPDATE SET
+          next_sequence = excluded.next_sequence,
+          terminal_outcome = excluded.terminal_outcome,
+          projection_json = excluded.projection_json,
+          updated_at = excluded.updated_at
+      `);
+      upsert.run(
+        value.attemptId,
+        value.boardId,
+        value.cardId,
+        value.generation,
+        value.nextSequence,
+        value.terminalOutcome,
+        serialized,
+        value.updatedAt,
+      );
+      upsert.finalize();
+      return;
+    }
   }
+}
+
+function applyAttemptActivityProjection(
+  database: Database,
+  event: Extract<JournalEvent, { kind: "attempt_activity_committed" }>,
+): readonly ProjectionChange[] {
+  const attemptStatement = database.query<AttemptRow, [string]>(`
+    SELECT attempt_id AS attemptId, board_id AS boardId, card_id AS cardId, generation,
+      state, session_id AS sessionId, failure_json AS failureJson,
+      created_at AS createdAt, started_at AS startedAt, terminal_at AS terminalAt
+    FROM attempts WHERE attempt_id = ?
+  `);
+  const attemptRow = attemptStatement.get(event.attemptId);
+  attemptStatement.finalize();
+  if (attemptRow === null || attemptRow.boardId !== event.boardId || attemptRow.cardId !== event.cardId) {
+    throw new AttemptActivityMutationError("unknown_attempt", `Attempt ${event.attemptId} is unknown for this card`);
+  }
+  const attempt = validateAttemptProjection({
+    ...attemptRow,
+    failure: attemptRow.failureJson === null
+      ? null
+      : parsePersistedJson(attemptRow.failureJson, "persisted attempt failure"),
+  });
+  if (attempt.generation !== event.payload.generation) {
+    throw new AttemptActivityMutationError("stale_generation", `Attempt ${event.attemptId} generation is stale`);
+  }
+  if (isDirectAcpTerminalState(attempt.state)) {
+    throw new AttemptActivityMutationError("post_terminal", `Attempt ${event.attemptId} is already terminal`);
+  }
+  if (attempt.state !== "running" && attempt.state !== "needs_attention") {
+    throw new AttemptActivityMutationError("attempt_not_active", `Attempt ${event.attemptId} is not active`);
+  }
+
+  const contextStatement = database.query<RunContextRow, [string]>(
+    "SELECT context_json AS contextJson FROM run_contexts WHERE attempt_id = ?",
+  );
+  const contextRow = contextStatement.get(event.attemptId);
+  contextStatement.finalize();
+  if (contextRow === null) {
+    throw new AttemptActivityMutationError("missing_run_context", `Attempt ${event.attemptId} has no Run Context`);
+  }
+  const context = validateRunContext(parsePersistedJson(contextRow.contextJson, "persisted Run Context"));
+
+  const inspectorStatement = database.query<{ readonly projectionJson: string }, [string]>(
+    "SELECT projection_json AS projectionJson FROM attempt_inspector_projections WHERE attempt_id = ?",
+  );
+  const inspectorRow = inspectorStatement.get(event.attemptId);
+  inspectorStatement.finalize();
+  const current = inspectorRow === null
+    ? createAttemptInspectorProjection(context)
+    : validateAttemptInspectorProjection(parsePersistedJson(inspectorRow.projectionJson, "persisted inspector projection"));
+  if (current.terminalOutcome !== null) {
+    throw new AttemptActivityMutationError("post_terminal", `Attempt ${event.attemptId} inspector is terminal`);
+  }
+  if (event.attemptSequence < current.nextSequence) {
+    throw new AttemptActivityMutationError("non_monotonic", `Attempt ${event.attemptId} activity regressed`);
+  }
+  if (event.attemptSequence > current.nextSequence) {
+    throw new AttemptActivityMutationError("sequence_gap", `Attempt ${event.attemptId} activity has a sequence gap`);
+  }
+
+  const normalizedEvent: NormalizedAttemptEvent = {
+    eventId: event.eventId as NormalizedAttemptEvent["eventId"],
+    attemptId: event.attemptId as NormalizedAttemptEvent["attemptId"],
+    generation: event.payload.generation,
+    sequence: event.attemptSequence as NormalizedAttemptEvent["sequence"],
+    occurredAt: event.occurredAt,
+    activity: event.payload.activity,
+  };
+  const inspector = projectAttemptActivity(current, normalizedEvent);
+  const changes: ProjectionChange[] = [
+    { entity: "attempt_inspector", operation: "upsert", value: inspector },
+  ];
+
+  if (event.payload.activity.kind === "attempt_state" && isDirectAcpTerminalState(event.payload.activity.state)) {
+    const state = event.payload.activity.state;
+    changes.push({
+      entity: "attempt",
+      operation: "upsert",
+      value: {
+        ...attempt,
+        state,
+        failure: state === "failed"
+          ? { code: "activity_failed", message: "The agent reported a failed attempt", occurredAt: event.occurredAt }
+          : null,
+        terminalAt: event.occurredAt,
+      },
+    });
+    if (state !== "succeeded") {
+      const cardStatement = database.query<CardRow, [string]>(`
+        SELECT card_id AS cardId, board_id AS boardId, stage_id AS stageId, title, description,
+          provider, model, effort, skill_override_id AS skillOverrideId, runnable,
+          execution_status AS executionStatus, version, created_at AS createdAt, updated_at AS updatedAt
+        FROM cards WHERE card_id = ?
+      `);
+      const row = cardStatement.get(event.cardId);
+      cardStatement.finalize();
+      if (row === null) throw new AttemptActivityMutationError("unknown_attempt", "Attempt card projection is missing");
+      const card: CardProjection = { ...row, runnable: row.runnable === 1 };
+      changes.push({
+        entity: "card",
+        operation: "upsert",
+        value: {
+          ...card,
+          executionStatus: state === "cancelled" ? "cancelled" : "failed",
+          version: card.version + 1,
+          updatedAt: Math.max(card.updatedAt, event.occurredAt),
+        },
+      });
+    }
+  }
+
+  changes.forEach((change) => applyProjectionChange(database, change));
+  return changes;
 }
 
 export function applyProjectionEvent(
@@ -1207,6 +1431,8 @@ export function applyProjectionEvent(
           ? [{ entity: "card_worktree", operation: "upsert", value: event.payload }]
         : event.kind === "attempt_lifecycle_committed"
           ? event.payload.changes
+          : event.kind === "attempt_activity_committed"
+            ? applyAttemptActivityProjection(database, event)
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -1214,7 +1440,9 @@ export function applyProjectionEvent(
         : event.kind === "edge_upserted"
           ? [{ entity: "edge", operation: "upsert", value: event.payload }]
           : [{ entity: "card", operation: "upsert", value: event.payload }];
-  changes.forEach((change) => applyProjectionChange(database, change));
+  if (event.kind !== "attempt_activity_committed") {
+    changes.forEach((change) => applyProjectionChange(database, change));
+  }
   return changes;
 }
 
@@ -1312,6 +1540,10 @@ interface AttemptRow {
 
 interface RunContextRow {
   readonly contextJson: string;
+}
+
+interface AttemptInspectorRow {
+  readonly projectionJson: string;
 }
 
 function parsePersistedJson(value: string, label: string): unknown {
@@ -1473,6 +1705,15 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
   const runContexts = runContextRows.map((row) => validateRunContext(
     parsePersistedJson(row.contextJson, "persisted Run Context"),
   ));
+  const attemptInspectorsStatement = database.query<AttemptInspectorRow, []>(`
+    SELECT projection_json AS projectionJson
+    FROM attempt_inspector_projections ORDER BY board_id, card_id, generation
+  `);
+  const attemptInspectorRows = attemptInspectorsStatement.all();
+  attemptInspectorsStatement.finalize();
+  const attemptInspectors = attemptInspectorRows.map((row) => validateAttemptInspectorProjection(
+    parsePersistedJson(row.projectionJson, "persisted inspector projection"),
+  ));
 
   return {
     schemaVersion: 1,
@@ -1489,6 +1730,7 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     cardWorktrees,
     attempts,
     runContexts,
+    attemptInspectors,
   };
 }
 
@@ -1577,7 +1819,15 @@ export function createEventJournal(database: Database): EventJournal {
             SELECT attempt_sequence AS sequence FROM journal_events
             WHERE attempt_id = ? ORDER BY attempt_sequence DESC LIMIT 1
           `).get(event.attemptId)?.sequence ?? null;
-          if (latest !== null && event.attemptSequence <= latest) {
+          if (event.kind === "attempt_activity_committed") {
+            const expected = latest === null ? 0 : latest + 1;
+            if (event.attemptSequence !== expected) {
+              throw new AttemptActivityMutationError(
+                event.attemptSequence < expected ? "non_monotonic" : "sequence_gap",
+                `Attempt ${event.attemptId} expected sequence ${expected}, received ${event.attemptSequence}`,
+              );
+            }
+          } else if (latest !== null && event.attemptSequence <= latest) {
             throw new AttemptSequenceError(event.attemptId, event.attemptSequence, latest);
           }
         }

@@ -255,6 +255,26 @@ const ATTEMPT_ADMISSION_SCHEMA_SQL = `
     END;
 `;
 
+const ATTEMPT_INSPECTOR_SCHEMA_SQL = `
+  CREATE TABLE attempt_inspector_projections (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id) ON DELETE CASCADE,
+    board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+    card_id TEXT NOT NULL REFERENCES cards(card_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    next_sequence INTEGER NOT NULL CHECK (next_sequence >= 2),
+    terminal_outcome TEXT CHECK (
+      terminal_outcome IS NULL OR
+      terminal_outcome IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+    ),
+    projection_json TEXT NOT NULL CHECK (json_valid(projection_json)),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    UNIQUE (card_id, generation)
+  ) STRICT;
+
+  CREATE INDEX attempt_inspector_card_generation
+    ON attempt_inspector_projections(card_id, generation);
+`;
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -282,6 +302,13 @@ export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
     name: "attempt_admission_and_immutable_run_contexts",
     up(database) {
       database.run(ATTEMPT_ADMISSION_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 5,
+    name: "normalized_activity_and_inspector_projections",
+    up(database) {
+      database.run(ATTEMPT_INSPECTOR_SCHEMA_SQL);
     },
   },
 ];

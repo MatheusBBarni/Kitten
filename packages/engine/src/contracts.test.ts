@@ -10,6 +10,8 @@ import {
   toActivitySequence,
   toAttemptGeneration,
   toOpaqueId,
+  validateNormalizedAttemptEvent,
+  NormalizedActivityValidationError,
   type ActivityEventId,
   type ActivitySequence,
   type AttemptGeneration,
@@ -117,6 +119,39 @@ describe("normalized activity ordering", () => {
       accepted: false,
       reason: "sequence_gap",
     })
+  })
+
+  it("runtime-validates every normalized activity shape and rejects wire-shaped or unknown data", () => {
+    expect(validateNormalizedAttemptEvent(activity())).toEqual(activity())
+    expect(validateNormalizedAttemptEvent(activity({
+      activity: {
+        kind: "tool_call",
+        call: {
+          toolCallId: "tool-1",
+          kind: "execute",
+          status: "completed",
+          locations: ["src/index.ts"],
+          failureKind: null,
+          diff: { path: "src/index.ts", unified: "@@ fixture" },
+        },
+      },
+    })).activity).toMatchObject({ kind: "tool_call" })
+    expect(validateNormalizedAttemptEvent(activity({
+      activity: { kind: "plan", entries: [{ content: "Verify", priority: "high", status: "pending" }] },
+    })).activity).toMatchObject({ kind: "plan" })
+    expect(validateNormalizedAttemptEvent(activity({
+      activity: { kind: "usage", used: 5, size: 10 },
+    })).activity).toEqual({ kind: "usage", used: 5, size: 10 })
+
+    for (const invalid of [
+      { ...activity(), eventId: "" },
+      { ...activity(), wireType: "session/update" },
+      { ...activity(), activity: { kind: "agent_message", messageId: "m", textDelta: "", acp: {} } },
+      { ...activity(), activity: { kind: "usage", used: 11, size: 10 } },
+      { ...activity(), activity: { kind: "tool_call", call: { toolCallId: "t", status: "wire_pending" } } },
+    ]) {
+      expect(() => validateNormalizedAttemptEvent(invalid)).toThrow(NormalizedActivityValidationError)
+    }
   })
 })
 

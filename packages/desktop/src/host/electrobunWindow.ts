@@ -5,11 +5,14 @@ export async function createElectrobunWindowFactory(): Promise<DesktopWindowFact
   const { BrowserView, BrowserWindow } = await import("electrobun/bun");
 
   return {
-    open({ onGetDesktopSnapshot }) {
+    open({ onGetDesktopSnapshot, onGetCardInspector }) {
       const rpc = BrowserView.defineRPC<DesktopRpcSchema>({
         maxRequestTime: 5_000,
         handlers: {
-          requests: { getDesktopSnapshot: onGetDesktopSnapshot },
+          requests: {
+            getDesktopSnapshot: onGetDesktopSnapshot,
+            getCardInspector: onGetCardInspector,
+          },
         },
       });
       const window = new BrowserWindow({

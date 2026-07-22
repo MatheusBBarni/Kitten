@@ -12,6 +12,7 @@ import {
   createCommandResultEnvelope,
   createEmptyDesktopSnapshot,
   type BootstrapEnvelope,
+  type CardInspectorEnvelope,
   type HostMessageEnvelope,
 } from "../src/shared/rpc.ts";
 import {
@@ -21,16 +22,19 @@ import {
 
 class FakeWindowFactory implements DesktopWindowFactory {
   handler?: (params: { readonly knownRevision?: number }) => Promise<BootstrapEnvelope>;
+  inspectorHandler?: (params: { readonly cardId: string }) => Promise<CardInspectorEnvelope>;
   readonly messages: HostMessageEnvelope[] = [];
   handlerRemovalCount = 0;
   closeCount = 0;
 
-  open({ onGetDesktopSnapshot }: Parameters<DesktopWindowFactory["open"]>[0]) {
+  open({ onGetDesktopSnapshot, onGetCardInspector }: Parameters<DesktopWindowFactory["open"]>[0]) {
     this.handler = onGetDesktopSnapshot;
+    this.inspectorHandler = onGetCardInspector;
     return {
       sendHostMessage: (message: HostMessageEnvelope) => this.messages.push(message),
       removeHandlers: () => {
         this.handler = undefined;
+        this.inspectorHandler = undefined;
         this.handlerRemovalCount += 1;
       },
       close: () => {
@@ -145,6 +149,46 @@ describe("desktop host lifecycle", () => {
       },
     });
   });
+
+  test("fails closed for unavailable, missing, stopped, and rejected inspector projections", async () => {
+    const unavailableFactory = new FakeWindowFactory();
+    const unavailableShell = startDesktopShell({ windowFactory: unavailableFactory });
+    expect(await unavailableFactory.inspectorHandler?.({ cardId: "card-1" })).toEqual({
+      kind: "card_inspector",
+      result: {
+        status: "unavailable",
+        unavailable: { resource: "card_inspector", reason: "not_ready" },
+      },
+    });
+    expect(await unavailableFactory.inspectorHandler?.({ cardId: "   " })).toMatchObject({
+      result: { status: "unavailable", unavailable: { reason: "not_ready" } },
+    });
+    const stoppedHandler = unavailableFactory.inspectorHandler;
+    unavailableShell.stop();
+    expect(await stoppedHandler?.({ cardId: "card-1" })).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "desktop_host", reason: "host_stopped" } },
+    });
+
+    const missingFactory = new FakeWindowFactory();
+    const missingShell = startDesktopShell({
+      windowFactory: missingFactory,
+      getCardInspector: () => null,
+    });
+    expect(await missingFactory.inspectorHandler?.({ cardId: "card-missing" })).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "card_inspector", reason: "not_ready" } },
+    });
+    missingShell.stop();
+
+    const rejectedFactory = new FakeWindowFactory();
+    const rejectedShell = startDesktopShell({
+      windowFactory: rejectedFactory,
+      getCardInspector() { throw new Error("unsafe projection"); },
+    });
+    expect(await rejectedFactory.inspectorHandler?.({ cardId: "card-1" })).toMatchObject({
+      result: { status: "unavailable", unavailable: { resource: "card_inspector", reason: "projection_rejected" } },
+    });
+    rejectedShell.stop();
+  });
 });
 
 describe("renderer lifecycle", () => {
@@ -161,6 +205,9 @@ describe("renderer lifecycle", () => {
           status: "ok",
           projection: createEmptyDesktopSnapshot(),
         });
+      },
+      async getCardInspector() {
+        throw new Error("not used by bootstrap lifecycle");
       },
       subscribe(listener) {
         subscriber = listener;

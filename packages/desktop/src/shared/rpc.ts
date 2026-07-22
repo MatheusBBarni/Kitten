@@ -1,4 +1,10 @@
 import type { RPCSchema } from "electrobun/bun";
+import type { ActivitySequence, AttemptGeneration, AttemptId } from "@kitten/engine";
+import type {
+  AttemptInspectorProjection,
+  CardInspectorProjection,
+} from "../attempts/inspectorProjection.ts";
+import type { BoardId, CardId } from "../workflow/workflowTypes.ts";
 
 export type JsonPrimitive = boolean | number | string | null;
 export type ProjectionValue =
@@ -37,7 +43,7 @@ export interface RpcConflict {
 export interface RpcUnavailable {
   readonly status: "unavailable";
   readonly unavailable: {
-    readonly resource: "desktop_host" | "desktop_snapshot";
+    readonly resource: "desktop_host" | "desktop_snapshot" | "card_inspector";
     readonly reason: "host_stopped" | "projection_rejected" | "not_ready";
   };
 }
@@ -69,6 +75,11 @@ export interface BootstrapEnvelope {
   readonly result: DesktopQueryResult<DesktopSnapshot>;
 }
 
+export interface CardInspectorEnvelope {
+  readonly kind: "card_inspector";
+  readonly result: DesktopQueryResult<CardInspectorProjection>;
+}
+
 export type HostMessageEnvelope =
   | {
       readonly kind: "projection_committed";
@@ -79,6 +90,17 @@ export type HostMessageEnvelope =
       readonly kind: "host_unavailable";
       readonly messageId: string;
       readonly reason: RpcUnavailable["unavailable"]["reason"];
+    }
+  | {
+      readonly kind: "attempt_activity";
+      readonly messageId: string;
+      readonly revision: number;
+      readonly boardId: BoardId;
+      readonly cardId: CardId;
+      readonly attemptId: AttemptId;
+      readonly generation: AttemptGeneration;
+      readonly sequence: ActivitySequence;
+      readonly projection: AttemptInspectorProjection;
     };
 
 export type DesktopRpcSchema = {
@@ -87,6 +109,10 @@ export type DesktopRpcSchema = {
       getDesktopSnapshot: {
         params: { readonly knownRevision?: number };
         response: BootstrapEnvelope;
+      };
+      getCardInspector: {
+        params: { readonly cardId: string };
+        response: CardInspectorEnvelope;
       };
     };
     messages: Record<never, never>;
@@ -190,6 +216,12 @@ export function createBootstrapEnvelope(
   return assertProjectionPayload({ kind: "bootstrap", result });
 }
 
+export function createCardInspectorEnvelope(
+  result: DesktopQueryResult<CardInspectorProjection>,
+): CardInspectorEnvelope {
+  return assertProjectionPayload({ kind: "card_inspector", result });
+}
+
 export function createCommandResultEnvelope<TProjection>(
   commandId: string,
   result: DesktopCommandResult<TProjection>,
@@ -199,4 +231,11 @@ export function createCommandResultEnvelope<TProjection>(
 
 export function assertHostMessage(message: HostMessageEnvelope): HostMessageEnvelope {
   return assertProjectionPayload(message);
+}
+
+export function createAttemptActivityMessage(input: Omit<
+  Extract<HostMessageEnvelope, { kind: "attempt_activity" }>,
+  "kind"
+>): HostMessageEnvelope {
+  return assertHostMessage({ kind: "attempt_activity", ...input });
 }

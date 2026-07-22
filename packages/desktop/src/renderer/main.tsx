@@ -34,6 +34,9 @@ export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient>
     getDesktopSnapshot() {
       return rpc.request.getDesktopSnapshot({});
     },
+    getCardInspector(cardId) {
+      return rpc.request.getCardInspector({ cardId });
+    },
     subscribe(listener) {
       if (disposed) return () => {};
       subscribers.add(listener);

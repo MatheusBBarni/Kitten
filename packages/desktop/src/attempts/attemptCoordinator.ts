@@ -23,6 +23,7 @@ import type { DirectAcpAttemptStarter, FreshDirectAcpSession } from "./directAcp
 import { safeClose } from "./directAcpAttempt.ts";
 import { validateRunnable, type RunnableFailure, type RunnableValidationInput } from "./runnableValidator.ts";
 import type { GlobalAttemptScheduler, SchedulerReservation } from "./scheduler.ts";
+import type { AttemptActivityIngestor } from "./activityIngestor.ts";
 
 export type StartAttemptResult =
   | { readonly status: "rejected"; readonly reason: RunnableFailure }
@@ -54,6 +55,7 @@ export interface CreateAttemptCoordinatorOptions {
   readonly now?: () => number;
   readonly createAttemptId?: () => string;
   readonly createEventId?: (operation: "created" | "started" | "startup_failed") => string;
+  readonly activityIngestor?: AttemptActivityIngestor;
 }
 
 interface ResolvedAdmission {
@@ -70,6 +72,7 @@ interface ResolvedAdmission {
 interface ActiveAttempt {
   readonly reservation: SchedulerReservation;
   readonly session: FreshDirectAcpSession;
+  unsubscribeActivity: () => void;
 }
 
 function defaultAttemptId(): string {
@@ -306,18 +309,43 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
         }
         return { status: "failed", attempt: failedAttempt, failure };
       }
-      active.set(attemptId, { reservation: reserved.reservation, session: started.session });
+      const activeAttempt: ActiveAttempt = {
+        reservation: reserved.reservation,
+        session: started.session,
+        unsubscribeActivity: () => {},
+      };
+      active.set(attemptId, activeAttempt);
+      if (options.activityIngestor !== undefined) {
+        activeAttempt.unsubscribeActivity = started.session.connection.subscribeActivity(async (input) => {
+          const result = await options.activityIngestor!.ingest(input, { attemptId, generation });
+          if (
+            result.status === "committed"
+            && result.inspector.terminalOutcome !== null
+          ) {
+            await releaseActive(active, options.scheduler, attemptId);
+          }
+        });
+      }
       return { status: "started", attempt: runningAttempt, context, sessionId: started.session.sessionId };
     },
 
     async release(attemptId) {
-      const value = active.get(attemptId);
-      if (value === undefined) return false;
-      active.delete(attemptId);
-      await safeClose(value.session.connection);
-      return options.scheduler.release(value.reservation);
+      return releaseActive(active, options.scheduler, attemptId);
     },
   };
+}
+
+async function releaseActive(
+  active: Map<AttemptId, ActiveAttempt>,
+  scheduler: GlobalAttemptScheduler,
+  attemptId: AttemptId,
+): Promise<boolean> {
+  const value = active.get(attemptId);
+  if (value === undefined) return false;
+  active.delete(attemptId);
+  value.unsubscribeActivity();
+  await safeClose(value.session.connection);
+  return scheduler.release(value.reservation);
 }
 
 function createRunContext(input: {

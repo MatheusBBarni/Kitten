@@ -1,7 +1,8 @@
-import type { BootstrapEnvelope, HostMessageEnvelope } from "../shared/rpc.ts";
+import type { BootstrapEnvelope, CardInspectorEnvelope, HostMessageEnvelope } from "../shared/rpc.ts";
 
 export interface DesktopRpcClient {
   getDesktopSnapshot(): Promise<BootstrapEnvelope>;
+  getCardInspector(cardId: string): Promise<CardInspectorEnvelope>;
   subscribe(listener: (message: HostMessageEnvelope) => void): () => void;
   dispose(): void;
 }
@@ -17,7 +18,11 @@ export function bindDesktopRenderer(
     if (active) onBootstrap(envelope);
   };
   const unsubscribe = client.subscribe((message) => {
-    if (message.kind === "projection_committed" || message.kind === "host_unavailable") {
+    if (
+      message.kind === "projection_committed"
+      || message.kind === "attempt_activity"
+      || message.kind === "host_unavailable"
+    ) {
       void refresh();
     }
   });

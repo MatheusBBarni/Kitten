@@ -46,6 +46,9 @@ describe("attempt admission integration", () => {
             expect(input.skillContent).toContain("Execute the card");
             return { sessionId: "fresh-session-1" };
           },
+          subscribeActivity() {
+            return () => {};
+          },
           async close() {
             closeCalls += 1;
           },
@@ -112,6 +115,9 @@ describe("attempt admission integration", () => {
             const sessionId = `fresh-session-${sessionIds.length + 1}`;
             sessionIds.push(sessionId);
             return { sessionId };
+          },
+          subscribeActivity() {
+            return () => {};
           },
           close() {},
           loadSession() {

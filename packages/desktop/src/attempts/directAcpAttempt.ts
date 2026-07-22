@@ -12,6 +12,7 @@ export interface FreshDirectAcpSessionInput {
 
 export interface DirectAcpConnection {
   newSession(input: FreshDirectAcpSessionInput): Promise<{ readonly sessionId: string }>;
+  subscribeActivity(listener: (input: unknown) => void | Promise<void>): () => void;
   close(): void | Promise<void>;
 }
 

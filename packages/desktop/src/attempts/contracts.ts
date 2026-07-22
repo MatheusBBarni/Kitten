@@ -33,7 +33,8 @@ export interface RepositoryReadinessEvidence {
 export type AttemptStartupFailureCode =
   | "connection_failed"
   | "session_start_failed"
-  | "startup_commit_failed";
+  | "startup_commit_failed"
+  | "activity_failed";
 
 export interface AttemptStartupFailure {
   readonly code: AttemptStartupFailureCode;
@@ -92,7 +93,7 @@ const STATES: readonly DirectAcpAttemptState[] = [
   "created", "starting", "running", "needs_attention", "succeeded", "failed", "cancelled", "interrupted",
 ];
 const FAILURE_CODES: readonly AttemptStartupFailureCode[] = [
-  "connection_failed", "session_start_failed", "startup_commit_failed",
+  "connection_failed", "session_start_failed", "startup_commit_failed", "activity_failed",
 ];
 
 function record(value: unknown, label: string): Record<string, unknown> {

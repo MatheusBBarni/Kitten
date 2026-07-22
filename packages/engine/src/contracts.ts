@@ -146,6 +146,188 @@ export interface NormalizedAttemptEvent {
   readonly activity: NormalizedAttemptActivity
 }
 
+export class NormalizedActivityValidationError extends Error {
+  constructor(message: string) {
+    super(`Invalid normalized attempt activity: ${message}`)
+    this.name = "NormalizedActivityValidationError"
+  }
+}
+
+function activityRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new NormalizedActivityValidationError(`${label} must be a plain object`)
+  }
+  return value as Record<string, unknown>
+}
+
+function activityKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): void {
+  const allowed = new Set([...required, ...optional])
+  for (const key of required) {
+    if (!Object.hasOwn(value, key)) throw new NormalizedActivityValidationError(`${key} is required`)
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new NormalizedActivityValidationError(`${key} is unsupported`)
+  }
+}
+
+function activityString(value: unknown, label: string, allowEmpty = false): string {
+  if (typeof value !== "string" || (!allowEmpty && value.trim().length === 0)) {
+    throw new NormalizedActivityValidationError(`${label} is invalid`)
+  }
+  return value
+}
+
+function activityInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new NormalizedActivityValidationError(`${label} is invalid`)
+  }
+  return value as number
+}
+
+function optionalActivityString(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : activityString(value, label)
+}
+
+const TOOL_KINDS: readonly NormalizedToolKind[] = [
+  "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other",
+]
+const TOOL_STATUSES: readonly NormalizedToolStatus[] = ["pending", "in_progress", "completed", "failed"]
+const ATTEMPT_STATES: readonly DirectAcpAttemptState[] = [
+  "created", "starting", "running", "needs_attention", "succeeded", "failed", "cancelled", "interrupted",
+]
+
+/** Runtime validation for the protocol-free adapter boundary. Unknown fields fail closed. */
+export function validateNormalizedAttemptEvent(input: unknown): NormalizedAttemptEvent {
+  const event = activityRecord(input, "event")
+  activityKeys(event, ["eventId", "attemptId", "generation", "sequence", "occurredAt", "activity"])
+  const eventId = toOpaqueId<ActivityEventId>(activityString(event.eventId, "eventId"))
+  const attemptId = toOpaqueId<AttemptId>(activityString(event.attemptId, "attemptId"))
+  const generation = toAttemptGeneration(activityInteger(event.generation, "generation"))
+  const sequence = toActivitySequence(activityInteger(event.sequence, "sequence"))
+  if (eventId === null || attemptId === null || generation === null || sequence === null) {
+    throw new NormalizedActivityValidationError("event identity is invalid")
+  }
+  return {
+    eventId,
+    attemptId,
+    generation,
+    sequence,
+    occurredAt: activityInteger(event.occurredAt, "occurredAt"),
+    activity: validateNormalizedAttemptActivity(event.activity),
+  }
+}
+
+export function validateNormalizedAttemptActivity(input: unknown): NormalizedAttemptActivity {
+  const activity = activityRecord(input, "activity")
+  const kind = activityString(activity.kind, "activity.kind")
+  switch (kind) {
+    case "agent_message":
+      activityKeys(activity, ["kind", "messageId", "textDelta"])
+      return {
+        kind,
+        messageId: activityString(activity.messageId, "activity.messageId"),
+        textDelta: activityString(activity.textDelta, "activity.textDelta"),
+      }
+    case "user_message":
+      activityKeys(activity, ["kind", "messageId", "text"])
+      return {
+        kind,
+        messageId: activityString(activity.messageId, "activity.messageId"),
+        text: activityString(activity.text, "activity.text"),
+      }
+    case "tool_call": {
+      activityKeys(activity, ["kind", "call"])
+      const call = activityRecord(activity.call, "activity.call")
+      activityKeys(call, ["toolCallId"], ["kind", "title", "status", "locations", "inputSummary", "failureKind", "diff"])
+      const toolKind = optionalActivityString(call.kind, "activity.call.kind")
+      if (toolKind !== undefined && !TOOL_KINDS.includes(toolKind as NormalizedToolKind)) {
+        throw new NormalizedActivityValidationError("activity.call.kind is unsupported")
+      }
+      const status = optionalActivityString(call.status, "activity.call.status")
+      if (status !== undefined && !TOOL_STATUSES.includes(status as NormalizedToolStatus)) {
+        throw new NormalizedActivityValidationError("activity.call.status is unsupported")
+      }
+      let locations: readonly string[] | undefined
+      if (call.locations !== undefined) {
+        if (!Array.isArray(call.locations)) throw new NormalizedActivityValidationError("activity.call.locations must be an array")
+        locations = call.locations.map((value) => activityString(value, "activity.call.locations[]"))
+      }
+      let failureKind: NormalizedToolFailure | null | undefined
+      if (call.failureKind !== undefined) {
+        if (call.failureKind !== null && call.failureKind !== "temporary_capacity" && call.failureKind !== "unavailable") {
+          throw new NormalizedActivityValidationError("activity.call.failureKind is unsupported")
+        }
+        failureKind = call.failureKind
+      }
+      let diff: NormalizedToolDiff | null | undefined
+      if (call.diff !== undefined) {
+        if (call.diff === null) {
+          diff = null
+        } else {
+          const value = activityRecord(call.diff, "activity.call.diff")
+          activityKeys(value, ["path", "unified"])
+          diff = {
+            path: activityString(value.path, "activity.call.diff.path"),
+            unified: activityString(value.unified, "activity.call.diff.unified", true),
+          }
+        }
+      }
+      return {
+        kind,
+        call: {
+          toolCallId: activityString(call.toolCallId, "activity.call.toolCallId"),
+          ...(toolKind === undefined ? {} : { kind: toolKind as NormalizedToolKind }),
+          ...(call.title === undefined ? {} : { title: activityString(call.title, "activity.call.title") }),
+          ...(status === undefined ? {} : { status: status as NormalizedToolStatus }),
+          ...(locations === undefined ? {} : { locations }),
+          ...(call.inputSummary === undefined ? {} : { inputSummary: activityString(call.inputSummary, "activity.call.inputSummary", true) }),
+          ...(failureKind === undefined ? {} : { failureKind }),
+          ...(diff === undefined ? {} : { diff }),
+        },
+      }
+    }
+    case "plan": {
+      activityKeys(activity, ["kind", "entries"])
+      if (!Array.isArray(activity.entries)) throw new NormalizedActivityValidationError("activity.entries must be an array")
+      return {
+        kind,
+        entries: activity.entries.map((entry) => {
+          const value = activityRecord(entry, "activity.entries[]")
+          activityKeys(value, ["content"], ["priority", "status"])
+          const priority = optionalActivityString(value.priority, "activity.entries[].priority")
+          if (priority !== undefined && priority !== "low" && priority !== "medium" && priority !== "high") {
+            throw new NormalizedActivityValidationError("activity.entries[].priority is unsupported")
+          }
+          const status = optionalActivityString(value.status, "activity.entries[].status")
+          if (status !== undefined && status !== "pending" && status !== "in_progress" && status !== "completed") {
+            throw new NormalizedActivityValidationError("activity.entries[].status is unsupported")
+          }
+          return {
+            content: activityString(value.content, "activity.entries[].content"),
+            ...(priority === undefined ? {} : { priority: priority as NormalizedPlanEntry["priority"] }),
+            ...(status === undefined ? {} : { status: status as NormalizedPlanEntry["status"] }),
+          }
+        }),
+      }
+    }
+    case "usage": {
+      activityKeys(activity, ["kind", "used", "size"])
+      const used = activityInteger(activity.used, "activity.used")
+      const size = activityInteger(activity.size, "activity.size")
+      if (used > size) throw new NormalizedActivityValidationError("activity.used exceeds activity.size")
+      return { kind, used, size }
+    }
+    case "attempt_state": {
+      activityKeys(activity, ["kind", "state"])
+      const state = activityString(activity.state, "activity.state") as DirectAcpAttemptState
+      if (!ATTEMPT_STATES.includes(state)) throw new NormalizedActivityValidationError("activity.state is unsupported")
+      return { kind, state }
+    }
+    default:
+      throw new NormalizedActivityValidationError("activity.kind is unsupported")
+  }
+}
+
 export interface ActivityOrderCursor {
   readonly attemptId: AttemptId
   readonly generation: AttemptGeneration
