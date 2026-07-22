@@ -9,6 +9,7 @@
       "name": "@kitten/desktop",
       "version": "0.1.0",
       "dependencies": {
+        "@kitten/engine": "workspace:*",
         "react": "19.2.7",
         "react-dom": "19.2.7",
       },

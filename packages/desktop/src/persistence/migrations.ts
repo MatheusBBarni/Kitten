@@ -210,6 +210,51 @@ const CARD_WORKTREE_SCHEMA_SQL = `
   ) STRICT;
 `;
 
+const ATTEMPT_ADMISSION_SCHEMA_SQL = `
+  CREATE TABLE attempts (
+    attempt_id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL REFERENCES boards(board_id) ON DELETE CASCADE,
+    card_id TEXT NOT NULL REFERENCES cards(card_id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    state TEXT NOT NULL CHECK (
+      state IN ('created', 'starting', 'running', 'needs_attention', 'succeeded', 'failed', 'cancelled', 'interrupted')
+    ),
+    session_id TEXT,
+    failure_json TEXT CHECK (failure_json IS NULL OR json_valid(failure_json)),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    started_at INTEGER CHECK (started_at IS NULL OR started_at >= created_at),
+    terminal_at INTEGER CHECK (terminal_at IS NULL OR terminal_at >= created_at),
+    UNIQUE (card_id, generation),
+    CHECK (state <> 'running' OR session_id IS NOT NULL),
+    CHECK (state <> 'failed' OR failure_json IS NOT NULL)
+  ) STRICT;
+
+  CREATE UNIQUE INDEX attempts_one_live_per_card
+    ON attempts(card_id)
+    WHERE state IN ('created', 'starting', 'running', 'needs_attention');
+
+  CREATE TABLE run_contexts (
+    attempt_id TEXT PRIMARY KEY,
+    board_id TEXT NOT NULL,
+    card_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    context_json TEXT NOT NULL CHECK (json_valid(context_json)),
+    UNIQUE (card_id, generation)
+  ) STRICT;
+
+  CREATE TRIGGER run_contexts_reject_update
+    BEFORE UPDATE ON run_contexts
+    BEGIN
+      SELECT RAISE(ABORT, 'Run Contexts are immutable');
+    END;
+
+  CREATE TRIGGER run_contexts_reject_delete
+    BEFORE DELETE ON run_contexts
+    BEGIN
+      SELECT RAISE(ABORT, 'Run Contexts are immutable');
+    END;
+`;
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -230,6 +275,13 @@ export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
     name: "card_owned_worktree_bindings",
     up(database) {
       database.run(CARD_WORKTREE_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 4,
+    name: "attempt_admission_and_immutable_run_contexts",
+    up(database) {
+      database.run(ATTEMPT_ADMISSION_SCHEMA_SQL);
     },
   },
 ];

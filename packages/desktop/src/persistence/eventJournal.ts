@@ -23,6 +23,8 @@ import type {
 import { deriveSkillIdentity } from "../catalog/skillCatalog.ts";
 import type { CardWorktreeBinding } from "../worktrees/contracts.ts";
 import { validateCardWorktreeBinding } from "../worktrees/contracts.ts";
+import type { AttemptProjection, RunContext } from "../attempts/contracts.ts";
+import { validateAttemptProjection, validateRunContext } from "../attempts/contracts.ts";
 
 export type {
   BoardProjection,
@@ -77,6 +79,13 @@ export type JournalEvent =
       readonly kind: "card_worktree_binding_recorded";
       readonly cardId: CardId;
       readonly payload: CardWorktreeBinding;
+    })
+  | (JournalEventBase & {
+      readonly kind: "attempt_lifecycle_committed";
+      readonly cardId: CardId;
+      readonly attemptId: string;
+      readonly attemptSequence: number;
+      readonly payload: AttemptLifecycleEventPayload;
     });
 
 export interface CatalogProjection {
@@ -92,6 +101,13 @@ export interface StoredSkillSnapshot {
   readonly storedAt: number;
 }
 
+export type AttemptLifecycleOperation = "created" | "started" | "startup_failed";
+
+export interface AttemptLifecycleEventPayload {
+  readonly operation: AttemptLifecycleOperation;
+  readonly changes: readonly ProjectionChange[];
+}
+
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
@@ -100,7 +116,9 @@ export type ProjectionChange =
   | { readonly entity: "card"; readonly operation: "upsert"; readonly value: CardProjection }
   | { readonly entity: "catalog"; readonly operation: "replace"; readonly value: CatalogProjection }
   | { readonly entity: "skill_snapshot"; readonly operation: "insert"; readonly value: StoredSkillSnapshot }
-  | { readonly entity: "card_worktree"; readonly operation: "upsert"; readonly value: CardWorktreeBinding };
+  | { readonly entity: "card_worktree"; readonly operation: "upsert"; readonly value: CardWorktreeBinding }
+  | { readonly entity: "attempt"; readonly operation: "upsert"; readonly value: AttemptProjection }
+  | { readonly entity: "run_context"; readonly operation: "insert"; readonly value: RunContext };
 
 export interface WorkflowCommandEventPayload {
   readonly mutationId: string;
@@ -129,6 +147,8 @@ export interface PersistenceSnapshot {
   readonly catalogDiagnostics: readonly (CatalogDiagnostic & { readonly catalogId: string })[];
   readonly skillSnapshots: readonly StoredSkillSnapshot[];
   readonly cardWorktrees: readonly CardWorktreeBinding[];
+  readonly attempts: readonly AttemptProjection[];
+  readonly runContexts: readonly RunContext[];
 }
 
 export interface EventJournal {
@@ -561,9 +581,53 @@ function parseProjectionChange(value: unknown): ProjectionChange {
     case "card_worktree":
       if (operation !== "upsert") throw new JournalValidationError("card worktree changes must upsert");
       return { entity, operation, value: parseCardWorktreeBinding(value.value) };
+    case "attempt":
+      if (operation !== "upsert") throw new JournalValidationError("attempt changes must upsert");
+      try {
+        return { entity, operation, value: validateAttemptProjection(value.value) };
+      } catch (error) {
+        throw new JournalValidationError(error instanceof Error ? error.message : "attempt projection is invalid");
+      }
+    case "run_context":
+      if (operation !== "insert") throw new JournalValidationError("Run Context changes must insert");
+      try {
+        return { entity, operation, value: validateRunContext(value.value) };
+      } catch (error) {
+        throw new JournalValidationError(error instanceof Error ? error.message : "Run Context is invalid");
+      }
     default:
       throw new JournalValidationError("projection change entity is unsupported");
   }
+}
+
+function parseAttemptLifecyclePayload(value: unknown): AttemptLifecycleEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["operation", "changes"]);
+  const operation = stringField(value.operation, "payload.operation") as AttemptLifecycleOperation;
+  if (operation !== "created" && operation !== "started" && operation !== "startup_failed") {
+    throw new JournalValidationError("attempt lifecycle operation is unsupported");
+  }
+  if (!Array.isArray(value.changes) || value.changes.length === 0) {
+    throw new JournalValidationError("attempt lifecycle changes must be a non-empty array");
+  }
+  const changes = value.changes.map(parseProjectionChange);
+  const attempts = changes.filter((change) => change.entity === "attempt");
+  const cards = changes.filter((change) => change.entity === "card");
+  const contexts = changes.filter((change) => change.entity === "run_context");
+  if (attempts.length !== 1) throw new JournalValidationError("attempt lifecycle requires one attempt change");
+  const attempt = attempts[0]?.value;
+  if (operation === "created") {
+    if (cards.length !== 1 || contexts.length !== 1 || changes.length !== 3 || attempt?.state !== "starting") {
+      throw new JournalValidationError("attempt creation requires starting attempt, Run Context, and card changes");
+    }
+  } else if (operation === "started") {
+    if (cards.length !== 0 || contexts.length !== 0 || changes.length !== 1 || attempt?.state !== "running") {
+      throw new JournalValidationError("attempt startup requires one running attempt change");
+    }
+  } else if (cards.length !== 1 || contexts.length !== 0 || changes.length !== 2 || attempt?.state !== "failed") {
+    throw new JournalValidationError("attempt startup failure requires failed attempt and card changes");
+  }
+  return { operation, changes };
 }
 
 function parseWorkflowCommandPayload(value: unknown): WorkflowCommandEventPayload {
@@ -640,12 +704,16 @@ export function validateJournalEvent(input: unknown): JournalEvent {
     }
     case "workflow_command_committed": {
       const payload = parseWorkflowCommandPayload(input.payload);
-      const mismatchedChange = payload.changes.find((change) => (
-        change.entity === "catalog"
-        || change.entity === "skill_snapshot"
-        || change.entity === "card_worktree"
-        || change.value.boardId !== boardId
-      ));
+      const mismatchedChange = payload.changes.find((change) => {
+        if (
+          change.entity === "catalog"
+          || change.entity === "skill_snapshot"
+          || change.entity === "card_worktree"
+          || change.entity === "attempt"
+          || change.entity === "run_context"
+        ) return true;
+        return change.value.boardId !== boardId;
+      });
       if (mismatchedChange !== undefined) {
         throw new JournalValidationError("boardId does not match a workflow command change");
       }
@@ -704,6 +772,39 @@ export function validateJournalEvent(input: unknown): JournalEvent {
         occurredAt,
         payload,
         ...attempt,
+      };
+    }
+    case "attempt_lifecycle_committed": {
+      const payload = parseAttemptLifecyclePayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      const attemptId = stringField(input.attemptId, "attemptId");
+      const attempt = payload.changes.find((change) => change.entity === "attempt")?.value as AttemptProjection;
+      if (attempt.boardId !== boardId || attempt.cardId !== cardId || attempt.attemptId !== attemptId) {
+        throw new JournalValidationError("attempt lifecycle event identity does not match attempt projection");
+      }
+      const card = payload.changes.find((change) => change.entity === "card")?.value;
+      if (card !== undefined && (card.boardId !== boardId || card.cardId !== cardId)) {
+        throw new JournalValidationError("attempt lifecycle event identity does not match card projection");
+      }
+      const context = payload.changes.find((change) => change.entity === "run_context")?.value;
+      if (context !== undefined && (
+        context.attemptId !== attemptId
+        || context.generation !== attempt.generation
+        || context.card.cardId !== cardId
+        || context.workflow.boardId !== boardId
+      )) {
+        throw new JournalValidationError("attempt lifecycle event identity does not match Run Context");
+      }
+      return {
+        eventId,
+        boardId,
+        cardId,
+        attemptId,
+        attemptSequence: integerField(input.attemptSequence, "attemptSequence"),
+        actor,
+        kind: input.kind,
+        occurredAt,
+        payload,
       };
     }
     default:
@@ -1010,6 +1111,85 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
       }
       return;
     }
+    case "attempt": {
+      const value = change.value;
+      const cardStatement = database.query<{ readonly boardId: string }, [string]>(
+        "SELECT board_id AS boardId FROM cards WHERE card_id = ?",
+      );
+      const card = cardStatement.get(value.cardId);
+      cardStatement.finalize();
+      if (card?.boardId !== value.boardId) {
+        throw new Error(`Attempt card ${value.cardId} does not belong to board ${value.boardId}`);
+      }
+      const existingStatement = database.query<{
+        readonly boardId: string;
+        readonly cardId: string;
+        readonly generation: number;
+        readonly createdAt: number;
+      }, [string]>(`
+        SELECT board_id AS boardId, card_id AS cardId, generation, created_at AS createdAt
+        FROM attempts WHERE attempt_id = ?
+      `);
+      const existing = existingStatement.get(value.attemptId);
+      existingStatement.finalize();
+      if (existing !== null && JSON.stringify(existing) !== JSON.stringify({
+        boardId: value.boardId,
+        cardId: value.cardId,
+        generation: value.generation,
+        createdAt: value.createdAt,
+      })) {
+        throw new Error(`Attempt identity conflict: ${value.attemptId}`);
+      }
+      const upsert = database.query<void, [
+        string, string, string, number, string, string | null, string | null,
+        number, number | null, number | null,
+      ]>(`
+        INSERT INTO attempts(
+          attempt_id, board_id, card_id, generation, state, session_id, failure_json,
+          created_at, started_at, terminal_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_id) DO UPDATE SET
+          state = excluded.state,
+          session_id = excluded.session_id,
+          failure_json = excluded.failure_json,
+          started_at = excluded.started_at,
+          terminal_at = excluded.terminal_at
+      `);
+      upsert.run(
+        value.attemptId,
+        value.boardId,
+        value.cardId,
+        value.generation,
+        value.state,
+        value.sessionId,
+        value.failure === null ? null : JSON.stringify(value.failure),
+        value.createdAt,
+        value.startedAt,
+        value.terminalAt,
+      );
+      upsert.finalize();
+      return;
+    }
+    case "run_context": {
+      const value = change.value;
+      const insert = database.query<void, [string, string, string, number, string]>(`
+        INSERT INTO run_contexts(attempt_id, board_id, card_id, generation, context_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_id) DO NOTHING
+      `);
+      const serialized = JSON.stringify(value);
+      insert.run(value.attemptId, value.workflow.boardId, value.card.cardId, value.generation, serialized);
+      insert.finalize();
+      const persistedStatement = database.query<{ readonly contextJson: string }, [string]>(
+        "SELECT context_json AS contextJson FROM run_contexts WHERE attempt_id = ?",
+      );
+      const persisted = persistedStatement.get(value.attemptId);
+      persistedStatement.finalize();
+      if (persisted?.contextJson !== serialized) {
+        throw new Error(`Run Context identity conflict: ${value.attemptId}`);
+      }
+      return;
+    }
   }
 }
 
@@ -1025,6 +1205,8 @@ export function applyProjectionEvent(
         ? [{ entity: "skill_snapshot", operation: "insert", value: event.payload }]
         : event.kind === "card_worktree_binding_recorded"
           ? [{ entity: "card_worktree", operation: "upsert", value: event.payload }]
+        : event.kind === "attempt_lifecycle_committed"
+          ? event.payload.changes
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -1113,6 +1295,23 @@ interface CardWorktreeRow {
   readonly reason: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
+}
+
+interface AttemptRow {
+  readonly attemptId: string;
+  readonly boardId: string;
+  readonly cardId: string;
+  readonly generation: number;
+  readonly state: string;
+  readonly sessionId: string | null;
+  readonly failureJson: string | null;
+  readonly createdAt: number;
+  readonly startedAt: number | null;
+  readonly terminalAt: number | null;
+}
+
+interface RunContextRow {
+  readonly contextJson: string;
 }
 
 function parsePersistedJson(value: string, label: string): unknown {
@@ -1252,6 +1451,28 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
   const cardWorktreeRows = cardWorktreesStatement.all();
   cardWorktreesStatement.finalize();
   const cardWorktrees = cardWorktreeRows.map(parseCardWorktreeBinding);
+  const attemptsStatement = database.query<AttemptRow, []>(`
+    SELECT attempt_id AS attemptId, board_id AS boardId, card_id AS cardId, generation,
+      state, session_id AS sessionId, failure_json AS failureJson,
+      created_at AS createdAt, started_at AS startedAt, terminal_at AS terminalAt
+    FROM attempts ORDER BY board_id, card_id, generation
+  `);
+  const attemptRows = attemptsStatement.all();
+  attemptsStatement.finalize();
+  const attempts = attemptRows.map((row) => validateAttemptProjection({
+    ...row,
+    failure: row.failureJson === null
+      ? null
+      : parsePersistedJson(row.failureJson, "persisted attempt failure"),
+  }));
+  const runContextsStatement = database.query<RunContextRow, []>(`
+    SELECT context_json AS contextJson FROM run_contexts ORDER BY board_id, card_id, generation
+  `);
+  const runContextRows = runContextsStatement.all();
+  runContextsStatement.finalize();
+  const runContexts = runContextRows.map((row) => validateRunContext(
+    parsePersistedJson(row.contextJson, "persisted Run Context"),
+  ));
 
   return {
     schemaVersion: 1,
@@ -1266,6 +1487,8 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     catalogDiagnostics,
     skillSnapshots,
     cardWorktrees,
+    attempts,
+    runContexts,
   };
 }
 

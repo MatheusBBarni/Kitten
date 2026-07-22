@@ -136,28 +136,31 @@ describe("desktop SQLite factory and migrations", () => {
     const database = openSqliteDatabase({ filename: ":memory:" });
     try {
       expect(migrateDatabase(database, { now: () => 55 })).toEqual({
-        currentVersion: 3,
-        appliedVersions: [1, 2, 3],
+        currentVersion: 4,
+        appliedVersions: [1, 2, 3, 4],
       });
       expect(migrateDatabase(database, { now: () => 99 })).toEqual({
-        currentVersion: 3,
+        currentVersion: 4,
         appliedVersions: [],
       });
       expect(readAppliedMigrations(database)).toEqual([
         { version: 1, name: "initial_desktop_journal_and_projections" },
         { version: 2, name: "skill_catalog_projections_and_snapshots" },
         { version: 3, name: "card_owned_worktree_bindings" },
+        { version: 4, name: "attempt_admission_and_immutable_run_contexts" },
       ]);
 
       const tables = database.query<{ name: string }, []>(`
         SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name
       `).all().map(({ name }) => name);
       expect(tables).toEqual([
+        "attempts",
         "boards",
         "card_worktrees",
         "cards",
         "journal_events",
         "projection_metadata",
+        "run_contexts",
         "schema_migrations",
         "skill_catalog_diagnostics",
         "skill_catalog_entries",
@@ -166,7 +169,7 @@ describe("desktop SQLite factory and migrations", () => {
         "workflow_edges",
         "workflow_stages",
       ]);
-      expect(tables).not.toContain("attempts");
+      expect(tables).toContain("attempts");
     } finally {
       closeSqliteDatabase(database);
     }

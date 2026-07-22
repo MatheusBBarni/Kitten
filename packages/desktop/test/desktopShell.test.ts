@@ -232,8 +232,11 @@ describe("desktop package boundaries", () => {
     const manifest = JSON.parse(
       await readFile(join(import.meta.dir, "../package.json"), "utf8"),
     ) as { dependencies: Record<string, string>; devDependencies: Record<string, string> };
+    expect(manifest.dependencies["@kitten/engine"]).toBe("workspace:*");
     for (const version of [
-      ...Object.values(manifest.dependencies),
+      ...Object.entries(manifest.dependencies)
+        .filter(([name]) => name !== "@kitten/engine")
+        .map(([, version]) => version),
       ...Object.values(manifest.devDependencies),
     ]) {
       expect(version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
