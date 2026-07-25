@@ -17,20 +17,20 @@ describe("AttemptTimeline", () => {
     expect(markup).toContain("Immutable Run Context");
     expect(markup).toContain("Immutable card title");
     expect(markup).toContain("execute-task");
-    expect(markup).toContain("Agent message");
-    expect(markup).toContain("Plan activity");
-    expect(markup).toContain("Operator message");
-    expect(markup).toContain("Tool activity");
+    expect(markup).toContain(">Agent<");
+    expect(markup).toContain(">Plan<");
+    expect(markup).toContain("Keep the draft safe.");
+    expect(markup).toContain(">read<");
     expect(markup).toContain("Operator follow-up");
     expect(markup).toContain("Awaiting confirmation");
     expect(markup).toContain("Attention question");
     expect(markup).toContain("Attention outcome");
     expect(markup).toContain("Question skipped");
-    expect(markup).toContain("Attempt interrupted");
+    expect(markup).toContain("Run interrupted");
 
-    expect(markup.indexOf("Agent message")).toBeLessThan(markup.indexOf("Operator message"));
-    expect(markup.indexOf("Operator message")).toBeLessThan(markup.indexOf("Tool activity"));
-    expect(markup.indexOf("Tool activity")).toBeLessThan(markup.indexOf("Operator follow-up"));
+    expect(markup.indexOf(">Agent<")).toBeLessThan(markup.indexOf("Keep the draft safe."));
+    expect(markup.indexOf("Keep the draft safe.")).toBeLessThan(markup.indexOf(">read<"));
+    expect(markup.indexOf(">read<")).toBeLessThan(markup.indexOf("Operator follow-up"));
     expect(markup.indexOf("Operator follow-up")).toBeLessThan(markup.indexOf("Attention question"));
   });
 

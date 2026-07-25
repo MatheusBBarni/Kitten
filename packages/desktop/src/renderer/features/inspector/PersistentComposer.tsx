@@ -129,6 +129,7 @@ export function PersistentComposer({
           <Label>Message</Label>
           <TextArea
             id="card-composer-draft"
+            autoFocus={!blocked}
             rows={4}
             variant="secondary"
             aria-describedby={["composer-help", feedbackId].filter(Boolean).join(" ") || undefined}

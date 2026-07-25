@@ -27,6 +27,14 @@ import type {
   DirectAcpConnectionFactory,
   FreshDirectAcpSessionInput,
 } from "./directAcpAttempt.ts";
+import {
+  DESKTOP_ASK_USER_CAPABILITY_ENV,
+  DESKTOP_ASK_USER_ENDPOINT_ENV,
+  DESKTOP_ASK_USER_MCP_SERVER_NAME,
+} from "../attention/desktopAskUserMcpServer.ts";
+
+const ASK_USER_HOST_GUIDANCE =
+  "<kitten-runtime-instruction>When operator input is required, call the ask_user MCP tool and wait for its structured outcome. Do not ask the question only as assistant text.</kitten-runtime-instruction>";
 
 export interface DesktopAcpRuntimeProfile {
   readonly profile: CertifiedDirectAcpProfile;
@@ -42,9 +50,15 @@ export interface DesktopAcpTransport {
 
 export type DesktopAcpTransportFactory = (profile: DesktopAcpRuntimeProfile) => DesktopAcpTransport;
 
+export interface DesktopAskUserMcpLaunch {
+  readonly command: string;
+  readonly args: readonly string[];
+}
+
 export function createDesktopAcpConnectionFactory(
   profiles: readonly DesktopAcpRuntimeProfile[],
   createTransport: DesktopAcpTransportFactory = spawnAcpTransport,
+  askUserMcpLaunch?: DesktopAskUserMcpLaunch,
 ): DirectAcpConnectionFactory {
   const byProfileId = new Map(profiles.map((profile) => [profile.profile.profileId, profile]));
   return {
@@ -57,7 +71,7 @@ export function createDesktopAcpConnectionFactory(
       ) {
         throw new Error("The selected ACP profile is not available in this desktop host.");
       }
-      const connection = new DesktopAcpConnection(runtime, createTransport(runtime));
+      const connection = new DesktopAcpConnection(runtime, createTransport(runtime), askUserMcpLaunch);
       try {
         await connection.connect();
         return connection;
@@ -81,6 +95,7 @@ class DesktopAcpConnection implements DirectAcpConnection {
   constructor(
     private readonly runtime: DesktopAcpRuntimeProfile,
     private readonly transport: DesktopAcpTransport,
+    private readonly askUserMcpLaunch?: DesktopAskUserMcpLaunch,
   ) {
     this.connection = new ClientSideConnection(
       () => this.client(),
@@ -103,8 +118,19 @@ class DesktopAcpConnection implements DirectAcpConnection {
     this.session = input;
     this.skillContent = input.skillContent;
     this.nextSequence = 3;
+    const mcpServers = input.askUserRoute === undefined || this.askUserMcpLaunch === undefined
+      ? []
+      : [{
+          name: DESKTOP_ASK_USER_MCP_SERVER_NAME,
+          command: this.askUserMcpLaunch.command,
+          args: [...this.askUserMcpLaunch.args],
+          env: [
+            { name: DESKTOP_ASK_USER_ENDPOINT_ENV, value: input.askUserRoute.endpoint },
+            { name: DESKTOP_ASK_USER_CAPABILITY_ENV, value: input.askUserRoute.capability },
+          ],
+        }];
     const created = await withTimeout(
-      this.connection.newSession({ cwd: input.cwd, mcpServers: [] }),
+      this.connection.newSession({ cwd: input.cwd, mcpServers }),
       "ACP session startup",
     );
     this.sessionId = created.sessionId;
@@ -117,6 +143,8 @@ class DesktopAcpConnection implements DirectAcpConnection {
     if (this.sessionId === null || input.sessionId !== this.sessionId) {
       throw new Error("The ACP prompt does not belong to this fresh session.");
     }
+    const session = this.session;
+    if (session === null) throw new Error("The ACP session context is unavailable.");
     const firstPrompt = this.nextSequence === 3;
     if (firstPrompt) this.suppressInitialUserMessage = true;
     let result;
@@ -126,6 +154,7 @@ class DesktopAcpConnection implements DirectAcpConnection {
         prompt: [{
           type: "text",
           text: [
+            ...(session.askUserRoute === undefined ? [] : [ASK_USER_HOST_GUIDANCE]),
             "Follow this Workflow Skill for the run:",
             this.skillContent,
             "Operator request:",
@@ -142,6 +171,13 @@ class DesktopAcpConnection implements DirectAcpConnection {
   subscribeActivity(listener: (input: unknown) => void | Promise<void>): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  async cancel(input: { readonly sessionId: string }): Promise<void> {
+    if (this.sessionId === null || input.sessionId !== this.sessionId) {
+      throw new Error("The ACP cancellation does not belong to this fresh session.");
+    }
+    await this.connection.cancel({ sessionId: input.sessionId });
   }
 
   async close(): Promise<void> {

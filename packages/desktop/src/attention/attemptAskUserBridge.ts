@@ -1,4 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AttemptGeneration, AttemptId } from "@kitten/engine";
 import { isDirectAcpTerminalState } from "@kitten/engine";
 import type { EventJournal } from "../persistence/eventJournal.ts";
@@ -9,11 +12,13 @@ import { validateAttentionForm } from "./contracts.ts";
 
 export const MAX_ATTEMPT_ASK_USER_CALL_ID_BYTES = 128;
 export const MAX_ATTEMPT_ASK_USER_CALLS_PER_ROUTE = 64;
+export const MAX_ATTEMPT_ASK_USER_FRAME_BYTES = 64 * 1024;
 
 export interface AttemptAskUserRoute {
   readonly attemptId: AttemptId;
   readonly generation: AttemptGeneration;
   readonly capability: string;
+  readonly endpoint: string;
 }
 
 export type AttemptAskUserBridgeErrorCode = "registration_failed" | "unavailable" | "invalid_request" | "busy";
@@ -38,8 +43,20 @@ export interface AttemptAskUserBridge {
 
 interface RouteState extends AttemptAskUserRoute {
   readonly callIds: Set<string>;
+  readonly directory: string | null;
+  readonly listener: LocalListener;
   pending: boolean;
   revoked: boolean;
+}
+
+interface LocalSocket {
+  write(data: string): number;
+  end(): void;
+}
+
+interface LocalListener {
+  stop(closeActiveConnections?: boolean): void;
+  unref?(): void;
 }
 
 export function createAttemptAskUserBridge(options: {
@@ -50,6 +67,7 @@ export function createAttemptAskUserBridge(options: {
   const createCapability = options.createCapability ?? (() => randomBytes(32).toString("base64url"));
   const byCapability = new Map<string, RouteState>();
   const byAttempt = new Map<AttemptId, RouteState>();
+  const buffers = new Map<LocalSocket, Uint8Array>();
   let disposed = false;
 
   const revokeRoute = (route: RouteState): void => {
@@ -57,10 +75,18 @@ export function createAttemptAskUserBridge(options: {
     route.revoked = true;
     byCapability.delete(route.capability);
     if (byAttempt.get(route.attemptId) === route) byAttempt.delete(route.attemptId);
-    options.attention.cancelActive(route);
+    try {
+      route.listener.stop(true);
+    } finally {
+      try {
+        if (route.directory !== null) rmSync(route.directory, { recursive: true, force: true });
+      } finally {
+        options.attention.cancelActive(route);
+      }
+    }
   };
 
-  return {
+  const bridge: AttemptAskUserBridge = {
     register(input) {
       if (disposed) throw new AttemptAskUserBridgeError("registration_failed", "bridge_disposed");
       const attempt = options.journal.snapshot().attempts.find((candidate) => candidate.attemptId === input.attemptId);
@@ -73,9 +99,50 @@ export function createAttemptAskUserBridge(options: {
       if (!isCapability(capability) || byCapability.has(capability)) {
         throw new AttemptAskUserBridgeError("registration_failed", "capability_invalid");
       }
-      const route: RouteState = {
+      const local = createPrivateEndpoint();
+      let listener: LocalListener;
+      let route!: RouteState;
+      try {
+        listener = Bun.listen<undefined>({
+          unix: local.endpoint,
+          socket: {
+            open(socket) {
+              buffers.set(socket, new Uint8Array());
+            },
+            data(socket, data) {
+              const current = buffers.get(socket) ?? new Uint8Array();
+              const newline = data.indexOf(10);
+              const segment = newline < 0 ? data : data.subarray(0, newline);
+              const next = concatBytes(current, segment);
+              if (next.byteLength > MAX_ATTEMPT_ASK_USER_FRAME_BYTES) {
+                writeIpcError(socket, undefined, "invalid_request");
+                buffers.delete(socket);
+                return;
+              }
+              buffers.set(socket, next);
+              if (newline < 0) return;
+              buffers.delete(socket);
+              void handleIpcFrame(bridge, route, socket, next);
+            },
+            close(socket) {
+              buffers.delete(socket);
+            },
+            error(socket) {
+              buffers.delete(socket);
+            },
+          },
+        });
+        listener.unref?.();
+      } catch {
+        if (local.directory !== null) rmSync(local.directory, { recursive: true, force: true });
+        throw new AttemptAskUserBridgeError("registration_failed", "endpoint_unavailable");
+      }
+      route = {
         ...input,
         capability,
+        endpoint: local.endpoint,
+        directory: local.directory,
+        listener,
         callIds: new Set(),
         pending: false,
         revoked: false,
@@ -143,6 +210,71 @@ export function createAttemptAskUserBridge(options: {
       for (const route of [...byCapability.values()]) revokeRoute(route);
     },
   };
+  return bridge;
+}
+
+async function handleIpcFrame(
+  bridge: AttemptAskUserBridge,
+  route: RouteState,
+  socket: LocalSocket,
+  bytes: Uint8Array,
+): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    writeIpcError(socket, undefined, "invalid_request");
+    return;
+  }
+  if (!isRecord(parsed) || parsed.kind !== "ask" || !isCallId(parsed.callId) || parsed.capability !== route.capability) {
+    writeIpcError(socket, isRecord(parsed) && isCallId(parsed.callId) ? parsed.callId : undefined, "invalid_request");
+    return;
+  }
+  try {
+    const form = validateAttentionForm(parsed.form);
+    const outcome = await bridge.forward({ capability: parsed.capability, callId: parsed.callId, form });
+    socket.write(`${JSON.stringify({ kind: "result", callId: parsed.callId, outcome })}\n`);
+    socket.end();
+  } catch (error) {
+    writeIpcError(
+      socket,
+      parsed.callId,
+      error instanceof AttemptAskUserBridgeError ? error.code : "unavailable",
+    );
+  }
+}
+
+function writeIpcError(
+  socket: LocalSocket,
+  callId: string | undefined,
+  error: AttemptAskUserBridgeErrorCode,
+): void {
+  socket.write(`${JSON.stringify({ kind: "error", ...(callId === undefined ? {} : { callId }), error })}\n`);
+  socket.end();
+}
+
+function createPrivateEndpoint(): { readonly endpoint: string; readonly directory: string | null } {
+  if (process.platform === "win32") return { endpoint: `\\\\.\\pipe\\kitten-desktop-ask-user-${crypto.randomUUID()}`, directory: null };
+  const directory = mkdtempSync(join(tmpdir(), "kitten-desktop-ask-user-"));
+  try {
+    chmodSync(directory, 0o700);
+    return { endpoint: join(directory, "bridge.sock"), directory };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  if (left.byteLength === 0) return right.slice();
+  const combined = new Uint8Array(left.byteLength + right.byteLength);
+  combined.set(left);
+  combined.set(right, left.byteLength);
+  return combined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isCapability(value: unknown): value is string {

@@ -66,7 +66,9 @@ describe("desktop direct ACP adapter", () => {
     const pair = transportPair();
     const prompts: string[] = [];
     const configChanges: Array<{ readonly configId: string; readonly value: string }> = [];
+    const sessionRequests: unknown[] = [];
     let closes = 0;
+    let cancellations = 0;
     let agentConnection!: AgentSideConnection;
     const configOptions = [
       selectOption("model", "model", "default", ["default", "gpt-5.6-luna"]),
@@ -78,7 +80,10 @@ describe("desktop direct ACP adapter", () => {
         agentCapabilities: {},
         agentInfo: { name: "desktop-test-agent", version: "1.0.0" },
       }),
-      newSession: () => ({ sessionId: "fresh-desktop-session", configOptions }),
+      newSession: (request) => {
+        sessionRequests.push(request);
+        return { sessionId: "fresh-desktop-session", configOptions };
+      },
       setSessionConfigOption: (request) => {
         configChanges.push({ configId: request.configId, value: String(request.value) });
         return { configOptions };
@@ -108,14 +113,17 @@ describe("desktop direct ACP adapter", () => {
         return { stopReason: "end_turn" };
       },
       authenticate: () => ({}),
-      cancel: () => {},
+      cancel: () => { cancellations += 1; },
     };
     agentConnection = new AgentSideConnection(() => agent, pair.agent);
     const transport: DesktopAcpTransport = {
       stream: pair.client,
       async close() { closes += 1; },
     };
-    const factory = createDesktopAcpConnectionFactory([RUNTIME], () => transport);
+    const factory = createDesktopAcpConnectionFactory([RUNTIME], () => transport, {
+      command: "/usr/local/bin/bun",
+      args: ["/app/desktop.js", "--kitten-desktop-ask-user-mcp"],
+    });
 
     const connection = await factory.connect({
       profileId: PROFILE_ID,
@@ -124,8 +132,26 @@ describe("desktop direct ACP adapter", () => {
     });
     const activities: unknown[] = [];
     const unsubscribe = connection.subscribeActivity((activity) => { activities.push(activity); });
-    const session = await connection.newSession(sessionInput());
+    const session = await connection.newSession({
+      ...sessionInput(),
+      askUserRoute: {
+        capability: "c".repeat(43),
+        endpoint: "/tmp/kitten-desktop-ask-user.sock",
+      },
+    });
     expect(session.sessionId).toBe("fresh-desktop-session");
+    expect(sessionRequests).toMatchObject([{
+      cwd: "/tmp/kitten-card",
+      mcpServers: [{
+        name: "kitten-ask-user",
+        command: "/usr/local/bin/bun",
+        args: ["/app/desktop.js", "--kitten-desktop-ask-user-mcp"],
+        env: [
+          { name: "KITTEN_DESKTOP_ASK_USER_ENDPOINT", value: "/tmp/kitten-desktop-ask-user.sock" },
+          { name: "KITTEN_DESKTOP_ASK_USER_CAPABILITY", value: "c".repeat(43) },
+        ],
+      }],
+    }]);
     expect(configChanges).toEqual([
       { configId: "model", value: "gpt-5.6-luna" },
       { configId: "reasoning", value: "high" },
@@ -137,6 +163,8 @@ describe("desktop direct ACP adapter", () => {
     expect(activities.map((entry) => (entry as { activity: { kind: string } }).activity.kind)).toEqual([
       "agent_message", "tool_call", "plan", "usage",
     ]);
+    await connection.cancel?.({ sessionId: session.sessionId });
+    expect(cancellations).toBe(1);
 
     unsubscribe();
     await connection.close();

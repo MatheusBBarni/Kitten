@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { AttemptGeneration, AttemptId, QuestionId } from "@kitten/engine";
+import type { AttentionCoordinator } from "../attention/attentionCoordinator.ts";
 import type { DesktopAttemptCoordinator } from "../attempts/attemptCoordinator.ts";
 import type { EventJournal } from "../persistence/eventJournal.ts";
 import { workflowIds, type CardProjection } from "../workflow/workflowTypes.ts";
@@ -102,5 +104,66 @@ describe("desktop inspector RPC", () => {
       status: "rejected",
       reason: { code: "not_ready" },
     });
+  });
+
+  test("version-fences stop requests and cancels only the card's live attempt", async () => {
+    const attemptId = "attempt-inspector-rpc" as AttemptId;
+    const generation = 3 as AttemptGeneration;
+    const stops: unknown[] = [];
+    const service = {
+      async start() { return { status: "rejected", reason: { code: "unused", message: "unused" } } as const; },
+      async stop(input: unknown) { stops.push(input); return { status: "ok" } as const; },
+    } as unknown as DesktopAttemptCoordinator;
+    const activeJournal = {
+      snapshot: () => ({
+        cards: [CARD],
+        attempts: [{
+          attemptId,
+          boardId: CARD.boardId,
+          cardId: CARD.cardId,
+          generation,
+          state: "running",
+          sessionId: "session-inspector-rpc",
+          failure: null,
+          createdAt: 1,
+          startedAt: 2,
+          terminalAt: null,
+        }],
+      }),
+    } as unknown as EventJournal;
+    const rpc = createDesktopInspectorRpc(activeJournal, service);
+
+    expect((await rpc.stopAttempt({
+      commandId: "stop-stale",
+      input: { cardId: CARD.cardId, expectedCardVersion: CARD.version - 1 },
+    })).result).toMatchObject({ status: "conflict", conflict: { code: "stale_card" } });
+    expect(stops).toEqual([]);
+
+    expect((await rpc.stopAttempt({
+      commandId: "stop-live",
+      input: { cardId: CARD.cardId, expectedCardVersion: CARD.version },
+    })).result).toEqual({ status: "ok" });
+    expect(stops).toEqual([{ attemptId, generation }]);
+  });
+
+  test("forwards structured attention answers to the durable coordinator", async () => {
+    const resolved: unknown[] = [];
+    const attention = {
+      resolve(input: unknown) { resolved.push(input); return {} as never; },
+    } as unknown as AttentionCoordinator;
+    const rpc = createDesktopInspectorRpc(journal(), coordinator(async () => ({
+      status: "rejected",
+      reason: { code: "card_not_found", message: "unused" },
+    })), attention);
+    const input = {
+      attemptId: "attempt-attention" as AttemptId,
+      generation: 2 as AttemptGeneration,
+      blockerId: "question-attention" as QuestionId,
+      expectedVersion: 4,
+      outcome: { kind: "submitted" as const, answers: { base: { selectedOptionIds: ["main"] } } },
+    };
+
+    expect((await rpc.answerAttention({ commandId: "answer-attention", input })).result).toEqual({ status: "ok" });
+    expect(resolved).toEqual([input]);
   });
 });

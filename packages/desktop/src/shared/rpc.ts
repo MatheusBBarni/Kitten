@@ -29,6 +29,7 @@ import type {
   ReviewCardRpcEnvelope,
   ReviewRpcRequest,
   StartAttemptRpcInput,
+  StopAttemptRpcInput,
 } from "../host/desktopRpc.ts";
 import type { ReviewCardInput } from "../host/reviewDisposition.ts";
 import type {
@@ -51,6 +52,7 @@ export type {
   InspectorCommandResultEnvelope,
   ReviewCardRpcEnvelope,
   StartAttemptRpcInput,
+  StopAttemptRpcInput,
 } from "../host/desktopRpc.ts";
 export type { ReviewCardInput } from "../host/reviewDisposition.ts";
 export type {
@@ -310,6 +312,10 @@ export type DesktopRpcSchema = {
       };
       startAttempt: {
         params: InspectorRpcRequest<StartAttemptRpcInput>;
+        response: InspectorCommandResultEnvelope;
+      };
+      stopAttempt: {
+        params: InspectorRpcRequest<StopAttemptRpcInput>;
         response: InspectorCommandResultEnvelope;
       };
       answerAttention: {

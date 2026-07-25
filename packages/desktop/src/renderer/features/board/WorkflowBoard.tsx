@@ -1,4 +1,4 @@
-import type { CSSProperties, FormEvent } from "react";
+import { useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -27,7 +27,7 @@ import type {
   StageId,
   StageProjection,
 } from "../../../workflow/workflowTypes.ts";
-import { AlertIcon, ArrowLeftIcon, ArrowRightIcon, DragHandleIcon, PlayIcon, SettingsIcon } from "../../components/Icons.tsx";
+import { AlertIcon, ArrowLeftIcon, ArrowRightIcon, DragHandleIcon, PauseIcon, PlayIcon, SettingsIcon, SpinnerIcon } from "../../components/Icons.tsx";
 import {
   cardMovementAffordance,
   stageConfigurationReason,
@@ -242,6 +242,8 @@ interface BoardCanvasProps {
   readonly onEditPath: () => void;
   readonly onMoveCard: (card: CardProjection, targetStageId: StageId) => void;
   readonly onSelectCard: (card: CardProjection) => void;
+  readonly onStartCard?: (card: CardProjection) => void;
+  readonly onStopCard?: (card: CardProjection) => void;
   readonly onDragStart: (stageId: StageId) => void;
   readonly onDragEnd: () => void;
   readonly draggedStageId: StageId | null;
@@ -278,6 +280,11 @@ interface SortableStageColumnProps {
   readonly onReorder: (intent: StageReorderIntent) => void;
   readonly onMoveCard: (card: CardProjection, targetStageId: StageId) => void;
   readonly onSelectCard: (card: CardProjection) => void;
+  readonly onStartCard: (card: CardProjection) => void;
+  readonly onStopCard: (card: CardProjection) => void;
+  readonly draggedCard: CardProjection | null;
+  readonly onCardDragStart: (card: CardProjection) => void;
+  readonly onCardDragEnd: () => void;
 }
 
 function SortableStageColumn({
@@ -294,6 +301,11 @@ function SortableStageColumn({
   onReorder,
   onMoveCard,
   onSelectCard,
+  onStartCard,
+  onStopCard,
+  draggedCard,
+  onCardDragStart,
+  onCardDragEnd,
 }: SortableStageColumnProps) {
   const board = projection.board!;
   const configurationReason = stageConfigurationReason(stage, catalog);
@@ -319,6 +331,22 @@ function SortableStageColumn({
       data-dragging={isDragging}
       data-drop-target={isOver && !isDragging}
       className="stage-column relative data-[dragging=true]:border-dashed data-[dragging=true]:opacity-30 data-[drop-target=true]:ring-2 data-[drop-target=true]:ring-[var(--accent)] data-[drop-target=true]:ring-offset-2 data-[drop-target=true]:ring-offset-[var(--background)]"
+      onDragOver={(event: ReactDragEvent<HTMLLIElement>) => {
+        if (draggedCard === null) return;
+        const movement = cardMovementAffordance(projection, draggedCard);
+        if (movement.allowed && movement.targetStageId === stage.stageId) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }
+      }}
+      onDrop={(event: ReactDragEvent<HTMLLIElement>) => {
+        if (draggedCard === null) return;
+        const movement = cardMovementAffordance(projection, draggedCard);
+        if (!movement.allowed || movement.targetStageId !== stage.stageId) return;
+        event.preventDefault();
+        onMoveCard(draggedCard, stage.stageId);
+        onCardDragEnd();
+      }}
     >
       <header className="stage-header relative">
         <button
@@ -388,36 +416,50 @@ function SortableStageColumn({
             <li key={card.cardId}>
               <Card
                 id={`card-${card.cardId}`}
-                tabIndex={-1}
-                className={`workflow-card${selected ? " is-selected" : ""}${card.executionStatus === "needs_attention" ? " needs-attention" : ""}`}
+                draggable={movement.allowed && !busy}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", card.cardId);
+                  onCardDragStart(card);
+                }}
+                onDragEnd={onCardDragEnd}
+                className={`workflow-card relative${movement.allowed && !busy ? " cursor-grab active:cursor-grabbing" : ""}${selected ? " is-selected" : ""}${card.executionStatus === "needs_attention" ? " needs-attention" : ""}`}
                 aria-label={`${card.title}, ${statusLabel(card.executionStatus)}`}
               >
-                <Button
-                  variant="ghost"
-                  className="card-title-button"
+                <button
+                  type="button"
+                  className="absolute inset-0 z-0 rounded-[inherit] bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-2"
                   aria-pressed={selected}
-                  onPress={() => onSelectCard(card)}
+                  onClick={() => onSelectCard(card)}
+                  aria-label={`Open ${card.title}`}
                 >
-                  <span className="card-title">{card.title}</span>
-                </Button>
-                {card.description.trim().length === 0 ? null : <p className="card-description">{card.description}</p>}
-                <div className="card-meta">
+                  <span className="sr-only">Open {card.title}</span>
+                </button>
+                <span className="card-title pointer-events-none relative z-[1]">{card.title}</span>
+                {card.description.trim().length === 0 ? null : <p className="card-description pointer-events-none relative z-[1]">{card.description}</p>}
+                <div className="card-meta pointer-events-none relative z-[1]">
                   <span className="card-key">{cardKey(card.cardId)}</span>
                   <Chip size="sm" variant="soft" color={statusColor(card.executionStatus)}>
-                    {statusLabel(card.executionStatus)}
+                    {card.executionStatus === "running" ? (
+                      <span className="inline-flex items-center gap-1"><SpinnerIcon className="animate-spin motion-reduce:animate-none" />Working</span>
+                    ) : statusLabel(card.executionStatus)}
                   </Chip>
                 </div>
-                <div className="card-actions">
+                <div className="card-actions relative z-10">
                   <span className="truncate text-xs text-muted">{card.provider} · {card.model}</span>
-                  {movement.targetStageId === null ? null : (
+                  {card.executionStatus === "running" || card.executionStatus === "needs_attention" ? (
                     <Button
                       isIconOnly
                       size="sm"
                       variant="ghost"
-                      isDisabled={busy || !movement.allowed}
-                      aria-label={movement.allowed ? `Move ${card.title} to next stage` : movement.reason}
-                      onPress={() => onMoveCard(card, movement.targetStageId!)}
+                      isDisabled={busy}
+                      aria-label={`Stop ${card.title}`}
+                      onPress={() => onStopCard(card)}
                     >
+                      <PauseIcon />
+                    </Button>
+                  ) : (
+                    <Button isIconOnly size="sm" variant="ghost" isDisabled={busy} aria-label={`Start ${card.title}`} onPress={() => onStartCard(card)}>
                       <PlayIcon />
                     </Button>
                   )}
@@ -443,10 +485,13 @@ export function BoardCanvas({
   onEditPath,
   onMoveCard,
   onSelectCard,
+  onStartCard = onSelectCard,
+  onStopCard = () => {},
   onDragStart,
   onDragEnd,
   draggedStageId,
 }: BoardCanvasProps) {
+  const [draggedCard, setDraggedCard] = useState<CardProjection | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -538,6 +583,11 @@ export function BoardCanvas({
                 onReorder={onReorder}
                 onMoveCard={onMoveCard}
                 onSelectCard={onSelectCard}
+                onStartCard={onStartCard}
+                onStopCard={onStopCard}
+                draggedCard={draggedCard}
+                onCardDragStart={setDraggedCard}
+                onCardDragEnd={() => setDraggedCard(null)}
               />
             ))}
           </ol>

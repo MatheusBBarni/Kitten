@@ -13,6 +13,7 @@ import {
   PathArrow,
   Pin,
   Play,
+  Pause,
   Plus,
   Settings,
   TaskList,
@@ -20,6 +21,7 @@ import {
   ViewColumns3,
   WarningTriangle,
   Xmark,
+  RefreshDouble,
 } from "iconoir-react";
 
 type IconProps = Omit<SVGProps<SVGSVGElement>, "children">;
@@ -54,6 +56,8 @@ export const ArrowLeftIcon = applicationIcon(ArrowLeft);
 export const ArrowRightIcon = applicationIcon(ArrowRight);
 export const AlertIcon = applicationIcon(WarningTriangle);
 export const PlayIcon = applicationIcon(Play);
+export const PauseIcon = applicationIcon(Pause);
+export const SpinnerIcon = applicationIcon(RefreshDouble);
 export const XIcon = applicationIcon(Xmark);
 export const CheckIcon = applicationIcon(Check);
 export const TaskIcon = applicationIcon(TaskList);

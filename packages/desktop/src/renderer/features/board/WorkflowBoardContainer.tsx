@@ -29,6 +29,7 @@ import { AlertIcon, PlusIcon, TaskIcon } from "../../components/Icons.tsx";
 import { useWorkflowBoardController } from "./useWorkflowBoardController.ts";
 import { TaskCreateModal } from "./TaskCreateModal.tsx";
 import { PathEditorModal } from "./PathEditorModal.tsx";
+import { useTaskRunControls } from "./useTaskRunControls.ts";
 
 export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient }) {
   const [setupMode, setSetupMode] = useState<SetupMode>("choice");
@@ -53,6 +54,7 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
       setStageDialogMode(null);
     },
   });
+  const runControls = useTaskRunControls(client);
   const {
     projection,
     catalog,
@@ -238,7 +240,7 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
               projection={projection}
               catalog={catalog}
               selectedCardId={selectedCardId}
-              busy={busy}
+              busy={busy || runControls.busy}
               draggedStageId={draggedStageId}
               onDragStart={setDraggedStageId}
               onDragEnd={() => setDraggedStageId(null)}
@@ -257,6 +259,11 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
               onSelectCard={(card) => {
                 setSelectedCardId(card.cardId);
               }}
+              onStartCard={(card) => {
+                setSelectedCardId(card.cardId);
+                runControls.start(card);
+              }}
+              onStopCard={runControls.stop}
             />
             {selectedCard !== null ? (
               <CardInspector

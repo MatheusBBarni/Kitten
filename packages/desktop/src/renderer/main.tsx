@@ -83,6 +83,9 @@ export async function createElectrobunDesktopClient(): Promise<DesktopRpcClient>
     startAttempt(commandId, input) {
       return rpc.request.startAttempt({ commandId, input });
     },
+    stopAttempt(commandId, input) {
+      return rpc.request.stopAttempt({ commandId, input });
+    },
     queueFollowUp(commandId, input) {
       return rpc.request.queueFollowUp({ commandId, input });
     },

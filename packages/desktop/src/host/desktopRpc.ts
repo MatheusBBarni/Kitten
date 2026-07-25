@@ -8,6 +8,8 @@ import type {
 } from "../attempts/attemptCoordinator.ts";
 import type { AttemptGeneration, AttemptId, QuestionId } from "@kitten/engine";
 import type { AttentionOutcome } from "../attention/contracts.ts";
+import type { AttentionCoordinator } from "../attention/attentionCoordinator.ts";
+import { AttentionCoordinatorError } from "../attention/attentionCoordinator.ts";
 import type { CardId } from "../workflow/workflowTypes.ts";
 import type { EventJournal } from "../persistence/eventJournal.ts";
 import type {
@@ -49,6 +51,11 @@ export interface StartAttemptRpcInput {
   readonly cardId: CardId;
   readonly expectedCardVersion: number;
   readonly initialPrompt: string;
+}
+
+export interface StopAttemptRpcInput {
+  readonly cardId: CardId;
+  readonly expectedCardVersion: number;
 }
 
 export interface AnswerAttentionRpcInput {
@@ -95,6 +102,7 @@ export interface InspectorCommandResultEnvelope {
 
 export interface DesktopInspectorRpc {
   startAttempt(request: InspectorRpcRequest<StartAttemptRpcInput>): Promise<InspectorCommandResultEnvelope>;
+  stopAttempt(request: InspectorRpcRequest<StopAttemptRpcInput>): Promise<InspectorCommandResultEnvelope>;
   answerAttention(request: InspectorRpcRequest<AnswerAttentionRpcInput>): Promise<InspectorCommandResultEnvelope>;
 }
 
@@ -139,6 +147,7 @@ export function createDesktopFollowUpRpc(coordinator: DesktopAttemptCoordinator)
 export function createDesktopInspectorRpc(
   journal: EventJournal,
   coordinator: DesktopAttemptCoordinator,
+  attention?: AttentionCoordinator,
 ): DesktopInspectorRpc {
   return {
     async startAttempt(request) {
@@ -179,11 +188,48 @@ export function createDesktopInspectorRpc(
         reason: { code: result.failure.code, message: result.failure.message },
       });
     },
+    async stopAttempt(request) {
+      if (request.commandId.trim().length === 0) throw new Error("Inspector RPC commandId must be non-empty");
+      const snapshot = journal.snapshot();
+      const card = snapshot.cards.find(({ cardId }) => cardId === request.input.cardId);
+      if (card === undefined) return inspectorEnvelope(request.commandId, {
+        status: "rejected",
+        reason: { code: "card_not_found", message: "The task no longer exists on this board." },
+      });
+      if (card.version !== request.input.expectedCardVersion) return inspectorEnvelope(request.commandId, {
+        status: "conflict",
+        conflict: { kind: "inspector_command", code: "stale_card", message: "The task changed before its run could be stopped." },
+      });
+      const attempt = [...snapshot.attempts]
+        .reverse()
+        .find((candidate) => candidate.cardId === card.cardId && (candidate.state === "running" || candidate.state === "needs_attention"));
+      if (attempt === undefined) return inspectorEnvelope(request.commandId, {
+        status: "rejected",
+        reason: { code: "attempt_not_active", message: "The task has no active run to stop." },
+      });
+      const result = await coordinator.stop({ attemptId: attempt.attemptId, generation: attempt.generation });
+      return inspectorEnvelope(request.commandId, result.status === "ok"
+        ? { status: "ok" }
+        : { status: "rejected", reason: result.reason });
+    },
     async answerAttention(request) {
-      return inspectorEnvelope(request.commandId, {
+      if (request.commandId.trim().length === 0) throw new Error("Inspector RPC commandId must be non-empty");
+      if (attention === undefined) return inspectorEnvelope(request.commandId, {
         status: "rejected",
         reason: { code: "not_ready", message: "Answering attention requests is not ready in this desktop host." },
       });
+      try {
+        attention.resolve(request.input);
+        return inspectorEnvelope(request.commandId, { status: "ok" });
+      } catch (error) {
+        return inspectorEnvelope(request.commandId, {
+          status: "rejected",
+          reason: {
+            code: error instanceof AttentionCoordinatorError ? error.code : "attention_failed",
+            message: error instanceof Error ? error.message : "The attention response could not be recorded.",
+          },
+        });
+      }
     },
   };
 }

@@ -188,14 +188,19 @@ describe("WorkflowBoard", () => {
     expect(markup).toContain("Running task");
     expect(markup).toContain("Blocked task");
     expect(markup).toContain("Ready task");
-    expect(markup).toContain("Stage Lock: movement is disabled while Execution Status is running.");
-    expect(markup).toContain("Stage Lock: movement is disabled while Execution Status is needs_attention.");
+    expect(markup).toContain('aria-label="Open Running task"');
+    expect(markup).toContain('aria-label="Stop Running task"');
+    expect(markup).toContain('aria-label="Stop Blocked task"');
+    expect(markup).toContain('aria-label="Start Ready task"');
+    expect(markup).toContain('draggable="false"');
+    expect(markup).toContain('draggable="true"');
+    expect(markup).toContain("Working");
     expect(markup).toContain("needs attention");
     expect(markup).toContain("aria-pressed=\"true\"");
     expect(markup).toContain("Move Backlog earlier");
     expect(markup).toContain("Move Backlog later");
     expect(markup).toContain("Next stage: Doing");
-    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   test("announces typed stale workflow and card conflicts with recovery copy", () => {

@@ -61,12 +61,22 @@ export type StartAttemptResult =
 
 export interface DesktopAttemptCoordinator {
   start(cardId: CardId, initialPrompt?: string): Promise<StartAttemptResult>;
+  stop(input: StopAttemptInput): Promise<StopAttemptResult>;
   release(attemptId: AttemptId): Promise<boolean>;
   queueFollowUp(input: QueueFollowUpInput): FollowUpQueueResult;
   removeQueuedFollowUp(input: RemoveQueuedFollowUpInput): FollowUpQueueResult;
   settleTurn(input: SettleFollowUpTurnInput): FollowUpQueueResult;
   confirmQueuedFollowUp(input: ConfirmQueuedFollowUpInput): Promise<FollowUpQueueResult>;
 }
+
+export interface StopAttemptInput {
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+}
+
+export type StopAttemptResult =
+  | { readonly status: "ok" }
+  | { readonly status: "rejected"; readonly reason: { readonly code: string; readonly message: string } };
 
 export interface FollowUpFence {
   readonly attemptId: AttemptId;
@@ -359,7 +369,9 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
         effort: context.profile.effort,
         skillContent: context.skill.content,
         profile,
-        ...(askUserRoute === undefined ? {} : { askUserRoute: { capability: askUserRoute.capability } }),
+        ...(askUserRoute === undefined ? {} : {
+          askUserRoute: { capability: askUserRoute.capability, endpoint: askUserRoute.endpoint },
+        }),
       });
       if (started.status === "failed") {
         const failure: AttemptStartupFailure = { ...started.failure, occurredAt: Math.max(createdAt, now()) };
@@ -577,6 +589,30 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
 
     async release(attemptId) {
       return releaseActive(active, options.scheduler, attemptId);
+    },
+
+    async stop(input) {
+      const attempt = options.journal.snapshot().attempts.find(({ attemptId }) => attemptId === input.attemptId);
+      if (attempt === undefined) {
+        return { status: "rejected", reason: { code: "unknown_attempt", message: "The active run no longer exists." } };
+      }
+      if (attempt.generation !== input.generation) {
+        return { status: "rejected", reason: { code: "stale_generation", message: "The active run changed before it could be stopped." } };
+      }
+      if (isDirectAcpTerminalState(attempt.state)) {
+        return { status: "rejected", reason: { code: "attempt_terminal", message: "The run has already finished." } };
+      }
+      const live = active.get(input.attemptId);
+      if (live === undefined || live.session.connection.cancel === undefined) {
+        return { status: "rejected", reason: { code: "cancellation_unavailable", message: "This provider cannot stop the active run." } };
+      }
+      try {
+        await live.session.connection.cancel({ sessionId: live.session.sessionId });
+        live.revokeAskUser();
+        return { status: "ok" };
+      } catch {
+        return { status: "rejected", reason: { code: "cancellation_failed", message: "The provider did not stop the active run." } };
+      }
     },
   };
 }

@@ -8,6 +8,7 @@ import type {
   ReviewCardInput,
   ReviewCardRpcEnvelope,
   StartAttemptRpcInput,
+  StopAttemptRpcInput,
   WorkflowBoardEnvelope,
   WorkflowCatalogEnvelope,
   WorkspaceEnvelope,
@@ -36,6 +37,7 @@ export interface DesktopRpcClient {
   pickRepositoryDirectory?(): Promise<RepositoryDirectoryPickerEnvelope>;
   executeWorkflowCommand(commandId: string, command: WorkflowCommand): Promise<WorkflowCommandEnvelope>;
   startAttempt(commandId: string, input: StartAttemptRpcInput): Promise<InspectorCommandResultEnvelope>;
+  stopAttempt?(commandId: string, input: StopAttemptRpcInput): Promise<InspectorCommandResultEnvelope>;
   queueFollowUp(commandId: string, input: QueueFollowUpInput): Promise<FollowUpRpcResultEnvelope>;
   removeQueuedFollowUp(commandId: string, input: RemoveQueuedFollowUpInput): Promise<FollowUpRpcResultEnvelope>;
   confirmQueuedFollowUp(commandId: string, input: ConfirmQueuedFollowUpInput): Promise<FollowUpRpcResultEnvelope>;

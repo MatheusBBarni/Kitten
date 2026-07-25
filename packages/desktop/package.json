@@ -29,12 +29,14 @@
     "@heroui/react": "3.2.2",
     "@heroui/styles": "3.2.2",
     "@kitten/engine": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@tanstack/react-query": "5.90.3",
     "iconoir-react": "7.11.1",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "tailwindcss": "4.3.2",
-    "zustand": "5.0.12"
+    "zustand": "5.0.12",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "20.10.6",

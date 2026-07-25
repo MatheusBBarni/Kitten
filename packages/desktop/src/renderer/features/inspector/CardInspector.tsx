@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Chip, Drawer } from "@heroui/react";
 import type { CardInspectorProjection } from "../../../attempts/inspectorProjection.ts";
 import type { CardProjection } from "../../../workflow/workflowTypes.ts";
@@ -10,7 +10,7 @@ import { AttemptTimeline } from "./AttemptTimeline.tsx";
 import { PersistentComposer } from "./PersistentComposer.tsx";
 import { TaskEditModal } from "./TaskEditModal.tsx";
 import type { CardEditInput } from "../board/boardInteractions.ts";
-import { EditIcon } from "../../components/Icons.tsx";
+import { EditIcon, SpinnerIcon } from "../../components/Icons.tsx";
 import { useInspectorCommands, type InspectorFeedback } from "./useInspectorCommands.ts";
 
 export interface DraftStore {
@@ -67,7 +67,6 @@ export function CardInspector({
   const bindingRef = useRef<ReturnType<typeof bindCardInspectorRenderer> | null>(null);
 
   const acceptEnvelope = useCallback((envelope: CardInspectorEnvelope) => {
-    const scrollTop = historyRef.current?.scrollTop ?? 0;
     if (envelope.result.status === "ok") {
       setProjection(envelope.result.projection);
       setUnavailable(false);
@@ -76,11 +75,6 @@ export function CardInspector({
       setFeedback({
         tone: "error",
         message: "The card inspector is unavailable. Your unsent draft is saved; wait for the desktop host to reconnect.",
-      });
-    }
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        if (historyRef.current !== null) historyRef.current.scrollTop = scrollTop;
       });
     }
   }, []);
@@ -121,27 +115,35 @@ export function CardInspector({
 
   const status = projectedCard.executionStatus.replaceAll("_", " ");
 
+  useLayoutEffect(() => {
+    const history = historyRef.current;
+    if (history === null) return;
+    history.scrollTop = blocker === null ? history.scrollHeight : 0;
+  }, [blocker, projection?.revision]);
+
   return (
     <>
       <Drawer.Backdrop isOpen={isOpen} onOpenChange={onOpenChange} isDismissable={!editing}>
         <Drawer.Content placement="right">
           <Drawer.Dialog className="h-full max-h-dvh w-screen max-w-none sm:w-[min(56rem,72vw)] sm:max-w-[calc(100vw-1rem)]" aria-labelledby="card-inspector-title">
             <Drawer.CloseTrigger />
-            <Drawer.Header className="task-drawer-header">
+            <Drawer.Header className="task-drawer-header pr-12">
               <div className="task-drawer-heading-row">
                 <div className="task-drawer-heading">
                   <p className="eyebrow">Task details</p>
                   <Drawer.Heading id="card-inspector-title">{projectedCard.title}</Drawer.Heading>
                 </div>
                 {onSaveTask === undefined ? null : (
-                  <Button variant="secondary" size="sm" onPress={() => setEditing(true)} isDisabled={taskBusy}>
+                  <Button className="mr-6" variant="secondary" size="sm" onPress={() => setEditing(true)} isDisabled={taskBusy}>
                     <EditIcon />Edit task
                   </Button>
                 )}
               </div>
               <dl className="inspector-status">
                 <div><dt>Stage</dt><dd>{projection?.attempts.at(-1)?.context.stage.label ?? "Current board stage"}</dd></div>
-                <div><dt>Status</dt><dd><Chip size="sm" variant="soft">{status}</Chip></dd></div>
+                <div><dt>Status</dt><dd><Chip size="sm" variant="soft">{projectedCard.executionStatus === "running" ? (
+                  <span className="inline-flex items-center gap-1"><SpinnerIcon className="animate-spin motion-reduce:animate-none" />Working</span>
+                ) : status}</Chip></dd></div>
                 <div><dt>Provider</dt><dd>{projectedCard.provider}</dd></div>
                 <div><dt>Model</dt><dd>{projectedCard.model}</dd></div>
               </dl>

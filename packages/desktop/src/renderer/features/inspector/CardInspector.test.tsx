@@ -119,6 +119,24 @@ describe("selected-card inspector binding", () => {
     await waitFor(() => expect(fake.starts).toEqual(["Review the latest UI changes"]));
   });
 
+  test("keeps the newest cockpit activity in view when history refreshes", async () => {
+    const fake = fakeClient();
+    const prior = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 640 });
+    try {
+      const view = renderInspector(
+        <CardInspector client={fake.client} card={inspectorCard()} isOpen />,
+      );
+      await view.findByText("Orchestrated Work History");
+      const history = document.querySelector<HTMLElement>(".inspector-history-scroll");
+      if (history === null) throw new Error("missing inspector history surface");
+      await waitFor(() => expect(history.scrollTop).toBe(640));
+    } finally {
+      if (prior === undefined) delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+      else Object.defineProperty(HTMLElement.prototype, "scrollHeight", prior);
+    }
+  });
+
   test("composes sorted attempt, queue, and blocker projections for one card", () => {
     const latest = inspectorProjection({ queue: "active", blocker: "active" });
     const olderAttemptId = "attempt-older-renderer" as AttemptId;

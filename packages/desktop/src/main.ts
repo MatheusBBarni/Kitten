@@ -62,6 +62,7 @@ import { createEventJournal } from "./persistence/eventJournal.ts";
 import { migrateDatabase } from "./persistence/migrations.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "./persistence/sqliteDatabase.ts";
 import { createWorkflowCommandHandler } from "./workflow/workflowCommands.ts";
+import { workflowIds } from "./workflow/workflowTypes.ts";
 import { readCatalogProjection, replaceCatalogProjection } from "./catalog/catalogProjection.ts";
 import type { SkillCatalog } from "./catalog/contracts.ts";
 import {
@@ -75,6 +76,10 @@ import {
   writeProjectBoardConfig,
 } from "./host/projectBoardConfig.ts";
 import { createCardWorktreeService } from "./worktrees/cardWorktreeService.ts";
+import { createAttentionCoordinator } from "./attention/attentionCoordinator.ts";
+import { createAttemptAskUserBridge } from "./attention/attemptAskUserBridge.ts";
+import { DESKTOP_ASK_USER_MCP_MODE_FLAG, runDesktopAskUserMcp } from "./attention/desktopAskUserMcpServer.ts";
+import { createCardNotificationService } from "./notifications/cardNotificationService.ts";
 
 export interface DesktopWindowPort {
   sendHostMessage(message: HostMessageEnvelope): void;
@@ -98,6 +103,7 @@ export interface DesktopWindowFactory {
     onRemoveQueuedFollowUp(params: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
     onConfirmQueuedFollowUp(params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
     onStartAttempt(params: Parameters<DesktopInspectorRpc["startAttempt"]>[0]): ReturnType<DesktopInspectorRpc["startAttempt"]>;
+    onStopAttempt(params: Parameters<DesktopInspectorRpc["stopAttempt"]>[0]): ReturnType<DesktopInspectorRpc["stopAttempt"]>;
     onAnswerAttention(params: Parameters<DesktopInspectorRpc["answerAttention"]>[0]): ReturnType<DesktopInspectorRpc["answerAttention"]>;
     onReviewCard(params: Parameters<DesktopReviewRpc["reviewCard"]>[0]): ReturnType<DesktopReviewRpc["reviewCard"]>;
     onGetSettings(params: { readonly knownRevision?: number }): Promise<SettingsEnvelope>;
@@ -322,6 +328,11 @@ export function startDesktopShell(options: {
         ? unavailableInspectorCommand(request.commandId)
         : options.inspectorRpc.startAttempt(request);
     },
+    async onStopAttempt(request) {
+      return options.inspectorRpc === undefined
+        ? unavailableInspectorCommand(request.commandId)
+        : options.inspectorRpc.stopAttempt(request);
+    },
     async onAnswerAttention(request) {
       return options.inspectorRpc === undefined
         ? unavailableInspectorCommand(request.commandId)
@@ -521,7 +532,8 @@ export async function main(): Promise<DesktopShell> {
     acpProviders,
     onCatalogChanged: syncCatalog,
   });
-  const boardRpc = createDesktopBoardRpc(journal, createWorkflowCommandHandler(journal), {
+  const workflowCommands = createWorkflowCommandHandler(journal);
+  const boardRpc = createDesktopBoardRpc(journal, workflowCommands, {
     onRepositoryBound(repositoryPath) {
       settingsRpc.replaceProjectRoots(defaultProjectSkillRoots(repositoryPath));
     },
@@ -541,9 +553,34 @@ export async function main(): Promise<DesktopShell> {
     }
   }
   let shell: DesktopShell | null = null;
+  const attention = createAttentionCoordinator({
+    journal,
+    notifications: createCardNotificationService({
+      deliver(payload) {
+        Utils.showNotification({ title: payload.title, body: payload.body });
+      },
+    }),
+  });
+  const askUserBridge = createAttemptAskUserBridge({ journal, attention });
   const activityIngestor = createActivityIngestor({
     journal,
     onCommitted({ event, inspector, delta }) {
+      if (event.activity.kind === "attempt_state" && event.activity.state === "succeeded") {
+        const snapshot = journal.snapshot();
+        const attempt = snapshot.attempts.find(({ attemptId }) => attemptId === inspector.attemptId);
+        const card = snapshot.cards.find(({ cardId }) => cardId === inspector.cardId);
+        const board = snapshot.boards.find(({ boardId }) => boardId === inspector.boardId);
+        if (attempt?.state === "succeeded" && card?.executionStatus === "running" && board !== undefined) {
+          workflowCommands.execute({
+            kind: "record_agent_success",
+            mutationId: workflowIds.mutation(`agent-success:${crypto.randomUUID()}`),
+            boardId: board.boardId,
+            expectedWorkflowVersion: board.workflowVersion,
+            cardId: card.cardId,
+            expectedCardVersion: card.version,
+          });
+        }
+      }
       shell?.publish(createAttemptActivityMessage({
         messageId: `attempt:${event.eventId}`,
         revision: delta.revision,
@@ -560,8 +597,13 @@ export async function main(): Promise<DesktopShell> {
     journal,
     scheduler: settingsRpc.scheduler,
     worktrees: createCardWorktreeService(journal),
-    directAcp: createDirectAcpAttemptStarter(createDesktopAcpConnectionFactory(runtimeProfiles)),
+    directAcp: createDirectAcpAttemptStarter(createDesktopAcpConnectionFactory(runtimeProfiles, undefined, {
+      command: process.execPath,
+      args: [import.meta.path, DESKTOP_ASK_USER_MCP_MODE_FLAG],
+    })),
     activityIngestor,
+    askUserBridge,
+    hasActiveAttention: (attemptId) => attention.hasActive(attemptId),
     getCatalog: () => {
       if (currentCatalog === null) throw new Error("The Workflow Skill catalog is not ready.");
       return currentCatalog;
@@ -591,7 +633,7 @@ export async function main(): Promise<DesktopShell> {
     boardRpc,
     settingsRpc,
     getCardInspector: (cardId) => getCardInspectorProjection(journal, cardId),
-    inspectorRpc: createDesktopInspectorRpc(journal, attemptCoordinator),
+    inspectorRpc: createDesktopInspectorRpc(journal, attemptCoordinator, attention),
     followUpRpc: createDesktopFollowUpRpc(attemptCoordinator),
     async getSnapshot() {
       const snapshot = journal.snapshot();
@@ -636,6 +678,7 @@ export async function main(): Promise<DesktopShell> {
     publish: shell.publish,
     stop() {
       shell.stop();
+      askUserBridge.dispose();
       if (!databaseClosed) {
         databaseClosed = true;
         closeSqliteDatabase(database);
@@ -645,5 +688,6 @@ export async function main(): Promise<DesktopShell> {
 }
 
 if (import.meta.main) {
-  await main();
+  if (process.argv.includes(DESKTOP_ASK_USER_MCP_MODE_FLAG)) await runDesktopAskUserMcp();
+  else await main();
 }

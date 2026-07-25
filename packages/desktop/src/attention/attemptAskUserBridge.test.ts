@@ -11,7 +11,9 @@ import {
 } from "./testSupport.ts";
 
 const databases: ReturnType<typeof createAttentionFixture>["database"][] = [];
+const bridges: ReturnType<typeof createAttemptAskUserBridge>[] = [];
 afterEach(() => {
+  while (bridges.length > 0) bridges.pop()?.dispose();
   while (databases.length > 0) closeSqliteDatabase(databases.pop()!);
 });
 
@@ -34,6 +36,7 @@ function fixture() {
     attention,
     createCapability: () => "c".repeat(43),
   });
+  bridges.push(bridge);
   return { ...value, attention, bridge };
 }
 

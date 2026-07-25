@@ -37,37 +37,36 @@ function draftStateLabel(draft: FollowUpDraft): string {
 
 function transcriptContent(entry: InspectorTranscriptEntry): React.ReactNode {
   if (entry.kind === "agent") {
-    return <><strong>Agent message</strong><p className="transcript-text">{entry.text}</p></>;
+    return <div className="grid gap-1"><span className="text-xs text-muted">Agent</span><p className="transcript-text m-0 text-sm leading-6 text-foreground">{entry.text}</p></div>;
   }
   if (entry.kind === "user") {
-    return <><strong>Operator message</strong><p className="transcript-text">{entry.text}</p></>;
+    return <div className="rounded-md bg-[var(--accent-soft)] px-3 py-2 text-[var(--accent-soft-foreground)]"><p className="transcript-text m-0 text-sm leading-6">{entry.text}</p></div>;
   }
   if (entry.kind === "tool") {
+    const title = entry.call.title ?? entry.call.kind ?? "Tool";
+    const status = entry.call.status ?? "updated";
     return (
-      <>
-        <strong>Tool activity</strong>
-        <p>{entry.call.kind ?? "tool"}: {entry.call.status ?? "updated"}</p>
+      <div className="grid gap-1 text-sm">
+        <p className="m-0"><span className="text-[var(--accent)]">●</span> <strong>{title}</strong> <span className="text-muted">· {status.replaceAll("_", " ")}</span></p>
         {entry.call.locations === undefined || entry.call.locations.length === 0 ? null : (
-          <ul>{entry.call.locations.map((location) => <li key={location}>{location}</li>)}</ul>
+          <ul className="m-0 list-none p-0 text-xs text-muted">{entry.call.locations.map((location) => <li key={location}>└ {location}</li>)}</ul>
         )}
-      </>
+      </div>
     );
   }
   if (entry.kind === "terminal") {
-    return <><strong>Terminal outcome</strong><p>Attempt {entry.outcome}.</p></>;
+    return <p className="m-0 text-sm"><strong>Run {entry.outcome}</strong></p>;
   }
   if (entry.activity.kind === "plan") {
     return (
       <>
-        <strong>Plan activity</strong>
-        <ol>{entry.activity.entries.map((plan, index) => <li key={`${plan.content}:${index}`}>{plan.content}: {plan.status}</li>)}</ol>
+        <strong className="text-xs text-muted">Plan</strong>
+        <ol className="mt-1 grid gap-1 pl-5 text-sm">{entry.activity.entries.map((plan, index) => <li key={`${plan.content}:${index}`}>{plan.content} <span className="text-muted">· {plan.status}</span></li>)}</ol>
       </>
     );
   }
-  if (entry.activity.kind === "usage") {
-    return <><strong>Usage activity</strong><p>{entry.activity.used} of {entry.activity.size} context units used.</p></>;
-  }
-  return <><strong>Attempt activity</strong><p>State changed to {entry.activity.state}.</p></>;
+  if (entry.activity.kind === "usage") return null;
+  return <p className="m-0 text-xs text-muted">Run state changed to {entry.activity.state}.</p>;
 }
 
 function itemsForAttempt(
@@ -76,12 +75,15 @@ function itemsForAttempt(
   blockers: readonly AttentionBlockerProjection[],
   projection: CardInspectorProjection,
 ): readonly TimelineItem[] {
-  const items: TimelineItem[] = attempt.entries.map((entry) => ({
-    key: `entry:${entry.evidence.eventIds.join(":")}`,
-    occurredAt: entry.evidence.firstOccurredAt,
-    priority: 1,
-    content: transcriptContent(entry),
-  }));
+  const items: TimelineItem[] = attempt.entries.flatMap((entry) => {
+    const content = transcriptContent(entry);
+    return content === null ? [] : [{
+      key: `entry:${entry.evidence.eventIds.join(":")}`,
+      occurredAt: entry.evidence.firstOccurredAt,
+      priority: 1,
+      content,
+    }];
+  });
 
   for (const draft of queue?.drafts ?? []) {
     items.push({
@@ -186,9 +188,9 @@ function AttemptHistory({
           ) : (
             <ol className="timeline-events" aria-label={`${title} chronological events`}>
               {items.map((item) => (
-                <li key={item.key} className="timeline-event">
-                  <time dateTime={new Date(item.occurredAt).toISOString()}>{new Date(item.occurredAt).toLocaleString()}</time>
+                <li key={item.key} className="grid gap-1 border-t border-separator pt-3 first:border-t-0 first:pt-0">
                   <div>{item.content}</div>
+                  <time className="text-[0.6875rem] text-muted" dateTime={new Date(item.occurredAt).toISOString()}>{new Date(item.occurredAt).toLocaleString()}</time>
                 </li>
               ))}
             </ol>

@@ -96,6 +96,37 @@ describe("attempt admission integration", () => {
     expect(scheduler.activeCount).toBe(0);
   });
 
+  test("stops only the live generation through provider cancellation", async () => {
+    const fixture = createFixture([CARD_ONE]);
+    const cancellations: string[] = [];
+    const coordinator = fixture.coordinator({
+      async connect() {
+        return {
+          async newSession() { return { sessionId: "session-stop" }; },
+          async prompt() { return { stopReason: "end_turn" }; },
+          subscribeActivity() { return () => {}; },
+          cancel({ sessionId }) { cancellations.push(sessionId); },
+          close() {},
+        };
+      },
+    });
+    const started = await coordinator.start(CARD_ONE);
+    if (started.status !== "started") throw new Error("expected started attempt");
+
+    expect(await coordinator.stop({
+      attemptId: started.attempt.attemptId,
+      generation: (Number(started.attempt.generation) + 1) as typeof started.attempt.generation,
+    })).toMatchObject({ status: "rejected", reason: { code: "stale_generation" } });
+    expect(cancellations).toEqual([]);
+
+    expect(await coordinator.stop({
+      attemptId: started.attempt.attemptId,
+      generation: started.attempt.generation,
+    })).toEqual({ status: "ok" });
+    expect(cancellations).toEqual(["session-stop"]);
+    await coordinator.release(started.attempt.attemptId);
+  });
+
   test("uses distinct sessions and increasing generations without loadSession after a failed startup commit", async () => {
     const fixture = createFixture([CARD_ONE]);
     let rejectFirstStartedCommit = true;
