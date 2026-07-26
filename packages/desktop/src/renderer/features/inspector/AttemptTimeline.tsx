@@ -6,7 +6,6 @@ import type {
   InspectorTranscriptEntry,
 } from "../../../attempts/inspectorProjection.ts";
 import type { AttentionBlockerProjection, AttentionOutcome } from "../../../attention/contracts.ts";
-import type { FollowUpDraft, FollowUpQueueProjection } from "../../../attempts/followUpQueue.ts";
 import { ChevronDownIcon } from "../../components/Icons.tsx";
 
 interface AttemptTimelineProps {
@@ -25,14 +24,6 @@ function outcomeLabel(outcome: AttentionOutcome): string {
   if (outcome.kind === "skipped") return "Question skipped";
   if (outcome.kind === "timed_out") return "Question timed out";
   return "Question cancelled";
-}
-
-function draftStateLabel(draft: FollowUpDraft): string {
-  if (draft.state === "awaiting_confirmation") return "Awaiting confirmation";
-  if (draft.state === "confirmed") return "Confirmed";
-  if (draft.state === "dispatched") return "Dispatched";
-  if (draft.state === "removed") return "Removed";
-  return "Queued";
 }
 
 function transcriptContent(entry: InspectorTranscriptEntry): React.ReactNode {
@@ -71,7 +62,6 @@ function transcriptContent(entry: InspectorTranscriptEntry): React.ReactNode {
 
 function itemsForAttempt(
   attempt: AttemptInspectorProjection,
-  queue: FollowUpQueueProjection | undefined,
   blockers: readonly AttentionBlockerProjection[],
   projection: CardInspectorProjection,
 ): readonly TimelineItem[] {
@@ -84,21 +74,6 @@ function itemsForAttempt(
       content,
     }];
   });
-
-  for (const draft of queue?.drafts ?? []) {
-    items.push({
-      key: `draft:${draft.queueId}`,
-      occurredAt: draft.createdAt,
-      priority: 2,
-      content: (
-        <>
-          <strong>Operator follow-up</strong>
-          <p className="transcript-text">{draft.text}</p>
-          <p className="event-state">{draftStateLabel(draft)}</p>
-        </>
-      ),
-    });
-  }
 
   for (const blocker of blockers) {
     items.push({
@@ -154,9 +129,8 @@ function AttemptHistory({
   readonly attempt: AttemptInspectorProjection;
   readonly projection: CardInspectorProjection;
 }) {
-  const queue = projection.followUpQueues.find(({ attemptId }) => attemptId === attempt.attemptId);
   const blockers = projection.attentionBlockers.filter(({ attemptId }) => attemptId === attempt.attemptId);
-  const items = itemsForAttempt(attempt, queue, blockers, projection);
+  const items = itemsForAttempt(attempt, blockers, projection);
   const title = `Attempt ${Number(attempt.generation)}`;
 
   return (

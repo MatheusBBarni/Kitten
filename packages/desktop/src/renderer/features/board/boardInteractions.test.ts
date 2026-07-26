@@ -23,6 +23,7 @@ import {
   createBrowserIdentityFactory,
   createCardCommand,
   createStageWithCatalogSkill,
+  deleteStageCommand,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
@@ -242,6 +243,12 @@ describe("board interactions", () => {
       kind: "connect_stages",
       edges: [],
     });
+    expect(deleteStageCommand(projection, stages[0]!, identities)).toMatchObject({
+      kind: "delete_stage",
+      stageId: firstStageId,
+      expectedWorkflowVersion: 3,
+    });
+    expect(deleteStageCommand({ ...projection, cards: [card("idle")] }, stages[0]!, identities)).toBeNull();
     expect(moveCardCommand(projection, card("running"), secondStageId, identities)).toBeNull();
     expect(moveCardCommand(projection, card("idle"), firstStageId, identities)).toBeNull();
     expect(moveCardCommand(projection, card("idle"), secondStageId, identities)).toMatchObject({ kind: "move_card" });

@@ -76,6 +76,7 @@ import {
   type UpdateOutcome,
 } from "./update.ts"
 import { KITTEN_VERSION } from "./version.ts"
+import { dispatchWorkflowApiCli } from "./workflowApiCli.ts"
 
 export { renderCockpit }
 
@@ -909,7 +910,8 @@ if (import.meta.main) {
     !await dispatchStandaloneRecordMode(process.argv) &&
     !await dispatchReservedChildMode(process.argv, process.env)
   ) {
-    const preBootFlagHandled = await dispatchPreBootCliFlags(process.argv)
+    const workflowApiHandled = await dispatchWorkflowApiCli(process.argv)
+    const preBootFlagHandled = workflowApiHandled || await dispatchPreBootCliFlags(process.argv)
     if (!preBootFlagHandled && wantsSelfCheck(process.argv)) {
       try {
         const { frame, reloadProbe, mcp } = await runSelfCheck({

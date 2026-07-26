@@ -75,6 +75,7 @@ import {
   findBoardForRepository,
   writeProjectBoardConfig,
 } from "./host/projectBoardConfig.ts";
+import { createWorkflowApiServer } from "./host/workflowApiServer.ts";
 import { createCardWorktreeService } from "./worktrees/cardWorktreeService.ts";
 import { createAttentionCoordinator } from "./attention/attentionCoordinator.ts";
 import { createAttemptAskUserBridge } from "./attention/attemptAskUserBridge.ts";
@@ -672,12 +673,25 @@ export async function main(): Promise<DesktopShell> {
       });
     },
   });
+  const workflowApi = createWorkflowApiServer({
+    boardRpc,
+    getSnapshot: () => journal.snapshot(),
+    homePath: Utils.paths.home,
+    onProjectionCommitted(projection) {
+      shell?.publish(assertHostMessage({
+        kind: "projection_committed",
+        messageId: `workflow-api:${crypto.randomUUID()}`,
+        revision: projection.revision,
+      }));
+    },
+  });
 
   let databaseClosed = false;
   return {
     publish: shell.publish,
     stop() {
       shell.stop();
+      workflowApi.stop();
       askUserBridge.dispose();
       if (!databaseClosed) {
         databaseClosed = true;

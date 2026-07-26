@@ -8,12 +8,14 @@ interface DesktopViewState {
   readonly activeBoardId: string | undefined;
   readonly boardMode: BoardMode;
   readonly projectSetupOpen: boolean;
+  readonly collapsedProjectKeys: Readonly<Record<string, true>>;
   setRoute(route: DesktopRoute): void;
   selectBoard(boardId: string): void;
   beginProjectSetup(): void;
   finishProjectSetup(boardId: string): void;
   cancelProjectSetup(): void;
   setInitialBoard(boardId: string): void;
+  toggleProjectExpanded(projectKey: string): void;
 }
 
 export const useDesktopViewStore = create<DesktopViewState>()((set) => ({
@@ -21,6 +23,7 @@ export const useDesktopViewStore = create<DesktopViewState>()((set) => ({
   activeBoardId: undefined,
   boardMode: "active",
   projectSetupOpen: false,
+  collapsedProjectKeys: {},
   setRoute: (route) => set({ route }),
   selectBoard: (activeBoardId) => set({ activeBoardId, boardMode: "active", projectSetupOpen: false }),
   beginProjectSetup: () => set({ boardMode: "new", projectSetupOpen: true }),
@@ -31,6 +34,13 @@ export const useDesktopViewStore = create<DesktopViewState>()((set) => ({
       ? { activeBoardId }
       : state
   )),
+  toggleProjectExpanded: (projectKey) => set((state) => {
+    if (state.collapsedProjectKeys[projectKey] === true) {
+      const { [projectKey]: _removed, ...collapsedProjectKeys } = state.collapsedProjectKeys;
+      return { collapsedProjectKeys };
+    }
+    return { collapsedProjectKeys: { ...state.collapsedProjectKeys, [projectKey]: true } };
+  }),
 }));
 
 export function resetDesktopViewStore(): void {

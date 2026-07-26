@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FollowUpQueueId } from "../../../attempts/followUpQueue.ts";
 import { PersistentComposer, type ComposerLifecycleStatus } from "./PersistentComposer.tsx";
-import { inspectorProjection, TEST_ATTEMPT_ID, TEST_GENERATION, TEST_QUEUE_ID } from "./testSupport.ts";
+import { TEST_ATTEMPT_ID, TEST_GENERATION } from "./testSupport.ts";
 
 function descendants(node: ReactNode, type: string): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(node)) return node.flatMap((child) => descendants(child, type));
@@ -39,15 +38,12 @@ function composer(input: Partial<Parameters<typeof PersistentComposer>[0]> = {})
     status: "idle",
     attemptId: TEST_ATTEMPT_ID,
     generation: TEST_GENERATION,
-    queue: null,
     draft: "Inspect the renderer",
     blockerActive: false,
     busy: false,
     onDraftChange() {},
     onStartAttempt() {},
-    onQueueFollowUp() {},
-    onRemoveQueuedFollowUp() {},
-    onConfirmQueuedFollowUp() {},
+    onSendDirection() {},
     ...input,
   });
 }
@@ -64,40 +60,28 @@ describe("PersistentComposer", () => {
     }
   });
 
-  test("routes idle text only to startAttempt and running text only to queueFollowUp", () => {
+  test("routes idle text only to startAttempt and running text only to sendDirection", () => {
     const starts: string[] = [];
-    const queues: string[] = [];
+    const directions: string[] = [];
     const submit = (view: ReactNode) => (
       descendants(view, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void
     )({ preventDefault() {} });
 
-    submit(composer({ status: "idle", onStartAttempt: (text) => starts.push(text), onQueueFollowUp: (text) => queues.push(text) }));
-    submit(composer({ status: "running", onStartAttempt: (text) => starts.push(text), onQueueFollowUp: (text) => queues.push(text) }));
-    submit(composer({ status: "needs_attention", blockerActive: true, onStartAttempt: (text) => starts.push(text), onQueueFollowUp: (text) => queues.push(text) }));
+    submit(composer({ status: "idle", onStartAttempt: (text) => starts.push(text), onSendDirection: (text) => directions.push(text) }));
+    submit(composer({ status: "running", onStartAttempt: (text) => starts.push(text), onSendDirection: (text) => directions.push(text) }));
+    submit(composer({ status: "needs_attention", blockerActive: true, onStartAttempt: (text) => starts.push(text), onSendDirection: (text) => directions.push(text) }));
 
     expect(starts).toEqual(["Inspect the renderer"]);
-    expect(queues).toEqual(["Inspect the renderer"]);
+    expect(directions).toEqual(["Inspect the renderer"]);
   });
 
-  test("renders FIFO removal and explicit head confirmation without automatic dispatch", () => {
-    const queue = inspectorProjection({ queue: "settled" }).followUpQueues[0]!;
-    const removed: FollowUpQueueId[] = [];
-    const confirmed: FollowUpQueueId[] = [];
-    const view = composer({
-      status: "running",
-      queue,
-      onRemoveQueuedFollowUp: (queueId) => removed.push(queueId),
-      onConfirmQueuedFollowUp: (queueId) => confirmed.push(queueId),
-    });
+  test("uses cockpit-like immediate send language without confirmation controls", () => {
+    const view = composer({ status: "running" });
     const markup = renderToStaticMarkup(view);
-    expect(markup).toContain("Ready for confirmation");
-    expect(markup).toContain("Remove draft");
-    expect(markup).toContain("Send confirmed follow-up");
-    expect(confirmed).toEqual([]);
-
-    (action(view, "Remove draft").props.onPress as () => void)();
-    (action(view, "Send confirmed follow-up").props.onPress as () => void)();
-    expect(removed).toEqual([TEST_QUEUE_ID]);
-    expect(confirmed).toEqual([TEST_QUEUE_ID]);
+    expect(markup).toContain("Steer active task");
+    expect(markup).toContain("Press Enter to send a direction");
+    expect(markup).toContain("Send message");
+    expect(markup).not.toContain("Queue a follow-up");
+    expect(markup).not.toContain("confirmation");
   });
 });

@@ -34,9 +34,20 @@ const projection: WorkflowBoardProjection = {
 
 describe("PathEditorModal", () => {
   test("routes non-adjacent and backward connections outside the stage cards", () => {
-    expect(workflowConnectionPath(stages, stageIds[0]!, stageIds[2]!)).toContain(" 72");
-    expect(workflowConnectionPath(stages, stageIds[2]!, stageIds[1]!)).toContain(" 312");
+    expect(workflowConnectionPath(stages, stageIds[0]!, stageIds[2]!)).toContain(" 88");
+    expect(workflowConnectionPath(stages, stageIds[2]!, stageIds[1]!)).toContain(" 296");
     expect(workflowConnectionPath(stages, stageIds[0]!, stageIds[1]!)).not.toContain(" L ");
+  });
+
+  test("uses the dragged geometry instead of the original stage order", () => {
+    const positions = {
+      [stageIds[0]!]: { x: 48, y: 136 },
+      [stageIds[1]!]: { x: 320, y: 256 },
+      [stageIds[2]!]: { x: 592, y: 136 },
+    };
+
+    expect(workflowConnectionPath(stages, stageIds[0]!, stageIds[2]!, positions)).not.toContain(" L ");
+    expect(workflowConnectionPath(stages, stageIds[2]!, stageIds[0]!, positions)).toContain(" L ");
   });
 
   test("constrains freely dragged stage cards to the canvas", () => {

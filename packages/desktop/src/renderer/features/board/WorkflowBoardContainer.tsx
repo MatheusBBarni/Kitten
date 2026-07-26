@@ -14,6 +14,7 @@ import {
   createBlankBoard,
   createCardCommand,
   createStageWithCatalogSkill,
+  deleteStageCommand,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
@@ -249,6 +250,10 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
                 setStageBeingConfigured(stage.stageId);
                 setStageLabel(stage.label);
                 setStageSkillId(stage.defaultSkillId);
+              }}
+              onDeleteStage={(stage) => {
+                const command = deleteStageCommand(projection, stage, controller.identities.current);
+                if (command !== null) runCommand(command);
               }}
               onReorder={(intent) => runCommand(reorderStagesCommand(intent, controller.identities.current))}
               onEditPath={() => setPathEditorBoardId(projection.board?.boardId ?? null)}

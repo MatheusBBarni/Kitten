@@ -145,8 +145,10 @@ class DesktopAcpConnection implements DirectAcpConnection {
     }
     const session = this.session;
     if (session === null) throw new Error("The ACP session context is unavailable.");
-    const firstPrompt = this.nextSequence === 3;
-    if (firstPrompt) this.suppressInitialUserMessage = true;
+    // The host persists every operator direction before it reaches ACP. Suppress
+    // adapter echoes for every prompt so the timeline never duplicates a message
+    // or stores the expanded Skill payload as if the operator wrote it.
+    this.suppressInitialUserMessage = true;
     let result;
     try {
       result = await this.connection.prompt({
@@ -171,6 +173,10 @@ class DesktopAcpConnection implements DirectAcpConnection {
   subscribeActivity(listener: (input: unknown) => void | Promise<void>): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  reserveActivitySequence(): void {
+    this.nextSequence += 1;
   }
 
   async cancel(input: { readonly sessionId: string }): Promise<void> {

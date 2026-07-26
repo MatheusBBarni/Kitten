@@ -253,6 +253,23 @@ export function reorderStagesCommand(
   };
 }
 
+export function deleteStageCommand(
+  projection: WorkflowBoardProjection,
+  stage: StageProjection,
+  identities: IdentityFactory,
+): Extract<WorkflowCommand, { kind: "delete_stage" }> | null {
+  const board = projection.board;
+  if (board === null || !projection.stages.some(({ stageId }) => stageId === stage.stageId)) return null;
+  if (projection.cards.some(({ stageId }) => stageId === stage.stageId)) return null;
+  return {
+    kind: "delete_stage",
+    mutationId: mutationId(identities),
+    boardId: board.boardId,
+    expectedWorkflowVersion: board.workflowVersion,
+    stageId: stage.stageId,
+  };
+}
+
 export function connectStagesCommand(
   projection: WorkflowBoardProjection,
   identities: IdentityFactory,

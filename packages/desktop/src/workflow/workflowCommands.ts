@@ -131,6 +131,7 @@ function workflowState(
 
 function workflowProjectionChanges(
   board: BoardProjection,
+  currentStages: readonly StageProjection[],
   currentEdges: readonly EdgeProjection[],
   stages: readonly StageProjection[],
   edges: readonly EdgeProjection[],
@@ -144,11 +145,14 @@ function workflowProjectionChanges(
     updatedAt: occurredAt,
   }));
   const nextEdges = edges.map((edge) => ({ ...edge, workflowVersion }));
+  const stageIds = new Set(stages.map(({ stageId }) => stageId));
+  const removedStages = currentStages.filter(({ stageId }) => !stageIds.has(stageId));
   return [
     { entity: "board", operation: "upsert", value: nextBoard },
     ...nextStages.map((value): ProjectionChange => ({ entity: "stage", operation: "upsert", value })),
     ...currentEdges.map((value): ProjectionChange => ({ entity: "edge", operation: "delete", value })),
     ...nextEdges.map((value): ProjectionChange => ({ entity: "edge", operation: "upsert", value })),
+    ...removedStages.map((value): ProjectionChange => ({ entity: "stage", operation: "delete", value })),
   ];
 }
 
@@ -280,6 +284,7 @@ export function createWorkflowCommandHandler(
           };
           changes = workflowProjectionChanges(
             state.board,
+            state.stages,
             state.edges,
             [...state.stages, stage],
             state.edges,
@@ -309,7 +314,26 @@ export function createWorkflowCommandHandler(
                   defaultSkillId: command.defaultSkillId,
                   configured: command.defaultSkillId !== null,
                 });
-          changes = workflowProjectionChanges(state.board, state.edges, stages, state.edges, occurredAt);
+          changes = workflowProjectionChanges(state.board, state.stages, state.edges, stages, state.edges, occurredAt);
+          preconditions.push({
+            entity: "board", id: command.boardId, expectedVersion: command.expectedWorkflowVersion,
+          });
+          break;
+        }
+        case "delete_stage": {
+          const stale = workflowConflict(command, state.board, command.expectedWorkflowVersion);
+          if (stale !== null) return stale;
+          if (state.board === undefined) return reject(command, "board_not_found", "Board does not exist");
+          const stage = state.stages.find((candidate) => candidate.stageId === command.stageId);
+          if (stage === undefined) return reject(command, "stage_not_found", "Stage does not exist on this board");
+          if (journal.snapshot().cards.some((card) => card.stageId === stage.stageId)) {
+            return reject(command, "stage_not_empty", "Move or remove every task in this stage before deleting it");
+          }
+          const stages = state.stages
+            .filter((candidate) => candidate.stageId !== stage.stageId)
+            .map((candidate, position) => ({ ...candidate, position }));
+          const edges = state.edges.filter((edge) => edge.sourceStageId !== stage.stageId && edge.targetStageId !== stage.stageId);
+          changes = workflowProjectionChanges(state.board, state.stages, state.edges, stages, edges, occurredAt);
           preconditions.push({
             entity: "board", id: command.boardId, expectedVersion: command.expectedWorkflowVersion,
           });
@@ -329,7 +353,7 @@ export function createWorkflowCommandHandler(
           if (!validation.valid) {
             return reject(command, "invalid_workflow", validation.error.message);
           }
-          changes = workflowProjectionChanges(state.board, state.edges, state.stages, edges, occurredAt);
+          changes = workflowProjectionChanges(state.board, state.stages, state.edges, state.stages, edges, occurredAt);
           preconditions.push({
             entity: "board", id: command.boardId, expectedVersion: command.expectedWorkflowVersion,
           });
@@ -347,7 +371,7 @@ export function createWorkflowCommandHandler(
             ...byId.get(stageId)!,
             position,
           }));
-          changes = workflowProjectionChanges(state.board, state.edges, stages, state.edges, occurredAt);
+          changes = workflowProjectionChanges(state.board, state.stages, state.edges, stages, state.edges, occurredAt);
           preconditions.push({
             entity: "board", id: command.boardId, expectedVersion: command.expectedWorkflowVersion,
           });

@@ -1,6 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
 import type { AttentionOutcome } from "../../../attention/contracts.ts";
-import type { FollowUpQueueId, FollowUpQueueProjection } from "../../../attempts/followUpQueue.ts";
 import type { AttentionBlockerProjection } from "../../../attention/contracts.ts";
 import type { CardProjection } from "../../../workflow/workflowTypes.ts";
 import type { DesktopRpcClient } from "../../client.ts";
@@ -39,7 +38,7 @@ export function useInspectorCommands(input: {
     readonly attemptId: Parameters<DesktopRpcClient["queueFollowUp"]>[1]["attemptId"];
     readonly generation: Parameters<DesktopRpcClient["queueFollowUp"]>[1]["generation"];
   } | null;
-  readonly queue: FollowUpQueueProjection | null;
+  readonly queueVersion: number;
   readonly blocker: AttentionBlockerProjection | null;
   readonly refresh: () => Promise<void>;
   readonly onFeedback: (feedback: InspectorFeedback) => void;
@@ -67,40 +66,16 @@ export function useInspectorCommands(input: {
     onSuccess: ({ result }) => finish(result, "Run started with the saved initial message.", true),
     onError: fail,
   });
-  const queueFollowUp = useMutation({
+  const sendDirection = useMutation({
     mutationFn: (text: string) => {
       if (input.attempt === null) throw new Error("No active attempt");
-      return input.client.queueFollowUp(commandId("queue"), {
+      return input.client.queueFollowUp(commandId("steer"), {
         ...input.attempt,
-        expectedQueueVersion: input.queue?.version ?? 0,
+        expectedQueueVersion: input.queueVersion,
         text,
       });
     },
-    onSuccess: ({ result }) => finish(result, "Follow-up queued. Confirm it after the active turn settles.", true),
-    onError: fail,
-  });
-  const removeFollowUp = useMutation({
-    mutationFn: (queueId: FollowUpQueueId) => {
-      if (input.attempt === null || input.queue === null) throw new Error("No active queue");
-      return input.client.removeQueuedFollowUp(commandId("remove"), {
-        ...input.attempt,
-        expectedQueueVersion: input.queue.version,
-        queueId,
-      });
-    },
-    onSuccess: ({ result }) => finish(result, "Queued follow-up removed."),
-    onError: fail,
-  });
-  const confirmFollowUp = useMutation({
-    mutationFn: (queueId: FollowUpQueueId) => {
-      if (input.attempt === null || input.queue === null || input.blocker !== null) throw new Error("Follow-up is blocked");
-      return input.client.confirmQueuedFollowUp(commandId("confirm"), {
-        ...input.attempt,
-        expectedQueueVersion: input.queue.version,
-        queueId,
-      });
-    },
-    onSuccess: ({ result }) => finish(result, "Confirmed follow-up dispatched once."),
+    onSuccess: ({ result }) => finish(result, "Direction accepted for the active task.", true),
     onError: fail,
   });
   const answerAttention = useMutation({
@@ -114,14 +89,10 @@ export function useInspectorCommands(input: {
 
   return {
     busy: start.isPending
-      || queueFollowUp.isPending
-      || removeFollowUp.isPending
-      || confirmFollowUp.isPending
+      || sendDirection.isPending
       || answerAttention.isPending,
     startAttempt: start.mutate,
-    queueFollowUp: queueFollowUp.mutate,
-    removeQueuedFollowUp: removeFollowUp.mutate,
-    confirmQueuedFollowUp: confirmFollowUp.mutate,
+    sendDirection: sendDirection.mutate,
     answerAttention: answerAttention.mutate,
   };
 }

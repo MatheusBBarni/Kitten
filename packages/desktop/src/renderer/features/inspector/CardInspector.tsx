@@ -106,7 +106,7 @@ export function CardInspector({
     attempt: latestAttempt === null
       ? null
       : { attemptId: latestAttempt.attemptId, generation: latestAttempt.generation },
-    queue,
+    queueVersion: queue?.version ?? 0,
     blocker,
     refresh: () => bindingRef.current?.refresh() ?? Promise.resolve(),
     onFeedback: setFeedback,
@@ -188,7 +188,6 @@ export function CardInspector({
                 status={projectedCard.executionStatus}
                 attemptId={latestAttempt?.attemptId ?? null}
                 generation={latestAttempt?.generation ?? null}
-                queue={queue}
                 draft={draft}
                 blockerActive={blocker !== null}
                 busy={commands.busy}
@@ -196,9 +195,7 @@ export function CardInspector({
                 feedbackId={feedback === null ? undefined : feedbackId}
                 onDraftChange={setDraft}
                 onStartAttempt={commands.startAttempt}
-                onQueueFollowUp={commands.queueFollowUp}
-                onRemoveQueuedFollowUp={commands.removeQueuedFollowUp}
-                onConfirmQueuedFollowUp={commands.confirmQueuedFollowUp}
+                onSendDirection={commands.sendDirection}
               />
             </Drawer.Body>
           </Drawer.Dialog>

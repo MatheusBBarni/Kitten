@@ -500,6 +500,7 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
             });
         appendFollowUpQueue(options.journal, createFollowUpEventId("created"), "created", projection, input.expectedQueueVersion);
         recordFollowUp(options, "follow_up_created", input, "committed");
+        recordAcceptedDirection(options, resolved.active, input, input.text, now);
         return { status: "ok", projection };
       } catch (error) {
         return mapFollowUpError(options, input, error);
@@ -648,19 +649,87 @@ async function dispatchInitialPrompt(input: {
     }
   }
 
-  let terminal: DirectAcpAttemptState = "succeeded";
+  const terminal = await promptTurn(input, input.prompt);
+  if (terminal !== "succeeded") {
+    await commitPromptTerminal(input, terminal);
+    await releaseActive(input.active, input.scheduler, input.attemptId);
+    return;
+  }
+  await dispatchAcceptedDirections(input);
+}
+
+/**
+ * ACP permits one prompt at a time. Directions are accepted immediately, rendered
+ * in the durable history, and then dispatched automatically at the next settled
+ * turn. The internal projection is deliberately not exposed as a confirmation UI.
+ */
+async function dispatchAcceptedDirections(
+  input: Parameters<typeof dispatchInitialPrompt>[0],
+): Promise<void> {
+  while (input.active.has(input.attemptId)) {
+    const current = input.journal.snapshot().followUpQueues.find((queue) => queue.attemptId === input.attemptId);
+    if (current === undefined) {
+      await commitPromptTerminal(input, "succeeded");
+      await releaseActive(input.active, input.scheduler, input.attemptId);
+      return;
+    }
+    if (current.turnState === "dispatching") return;
+
+    let settled = current;
+    try {
+      if (settled.turnState === "active") {
+        settled = settleFollowUpTurn(settled, Math.max(0, input.now()));
+        appendFollowUpQueue(input.journal, activityEventId("direction-ready"), "head_ready", settled, current.version);
+      }
+      const head = awaitingConfirmationHead(settled);
+      if (head === null) {
+        await commitPromptTerminal(input, "succeeded");
+        await releaseActive(input.active, input.scheduler, input.attemptId);
+        return;
+      }
+      const dispatching = confirmFollowUpHead(settled, head.queueId, Math.max(0, input.now()));
+      appendFollowUpQueue(input.journal, activityEventId("direction-dispatch"), "confirmed", dispatching, settled.version);
+      const live = input.active.get(input.attemptId);
+      if (live === undefined) return;
+      live.turnState = "dispatching";
+
+      const terminal = await promptTurn(input, head.text);
+      if (terminal !== "succeeded") {
+        await commitPromptTerminal(input, terminal);
+        await releaseActive(input.active, input.scheduler, input.attemptId);
+        return;
+      }
+
+      const latest = input.journal.snapshot().followUpQueues.find((queue) => queue.attemptId === input.attemptId);
+      if (latest === undefined) {
+        await commitPromptTerminal(input, "failed");
+        await releaseActive(input.active, input.scheduler, input.attemptId);
+        return;
+      }
+      const dispatched = markFollowUpDispatched(latest, head.queueId, Math.max(0, input.now()));
+      appendFollowUpQueue(input.journal, activityEventId("direction-dispatched"), "dispatched", dispatched, latest.version);
+      live.turnState = "settled";
+    } catch {
+      await commitPromptTerminal(input, "failed");
+      await releaseActive(input.active, input.scheduler, input.attemptId);
+      return;
+    }
+  }
+}
+
+async function promptTurn(
+  input: Parameters<typeof dispatchInitialPrompt>[0],
+  prompt: string,
+): Promise<DirectAcpAttemptState> {
   try {
     const result = await input.session.connection.prompt({
       sessionId: input.session.sessionId,
-      prompt: input.prompt,
+      prompt,
     });
-    terminal = result.stopReason === "cancelled" ? "cancelled" : result.stopReason === "refusal" ? "failed" : "succeeded";
+    return result.stopReason === "cancelled" ? "cancelled" : result.stopReason === "refusal" ? "failed" : "succeeded";
   } catch {
-    terminal = "failed";
+    return "failed";
   }
-
-  await commitPromptTerminal(input, terminal);
-  await releaseActive(input.active, input.scheduler, input.attemptId);
 }
 
 async function commitPromptTerminal(
@@ -788,6 +857,33 @@ function recordFollowUp(
     generation: input.generation,
     outcome,
   });
+}
+
+function recordAcceptedDirection(
+  options: CreateAttemptCoordinatorOptions,
+  active: ActiveAttempt,
+  input: Pick<FollowUpFence, "attemptId" | "generation">,
+  text: string,
+  now: () => number,
+): void {
+  const inspector = options.journal.snapshot().attemptInspectors
+    .find(({ attemptId }) => attemptId === input.attemptId);
+  if (options.activityIngestor === undefined || inspector === undefined) return;
+  // ACP owns the sequence counter for streamed events. Reserving this slot keeps
+  // the immediate host-persisted direction in that same monotonic sequence.
+  active.session.connection.reserveActivitySequence?.();
+  void options.activityIngestor.ingest({
+    eventId: activityEventId("direction"),
+    attemptId: input.attemptId,
+    generation: input.generation,
+    sequence: inspector.nextSequence,
+    occurredAt: Math.max(0, now()),
+    activity: {
+      kind: "user_message",
+      messageId: `direction:${input.attemptId}:${input.generation}:${crypto.randomUUID()}`,
+      text,
+    },
+  }, { attemptId: input.attemptId, generation: input.generation });
 }
 
 async function releaseActive(

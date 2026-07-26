@@ -176,6 +176,7 @@ describe("WorkflowBoard", () => {
         busy={false}
         draggedStageId={null}
         onConfigureStage={noop}
+        onDeleteStage={noop}
         onReorder={noop}
         onEditPath={noop}
         onMoveCard={noop}
@@ -197,10 +198,9 @@ describe("WorkflowBoard", () => {
     expect(markup).toContain("Working");
     expect(markup).toContain("needs attention");
     expect(markup).toContain("aria-pressed=\"true\"");
-    expect(markup).toContain("Move Backlog earlier");
-    expect(markup).toContain("Move Backlog later");
+    expect(markup).toContain('aria-label="Open actions for Backlog"');
+    expect(markup).not.toContain('aria-label="Move Backlog earlier"');
     expect(markup).toContain("Next stage: Doing");
-    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   test("announces typed stale workflow and card conflicts with recovery copy", () => {
@@ -303,6 +303,7 @@ describe("WorkflowBoard", () => {
         busy={false}
         draggedStageId={null}
         onConfigureStage={noop}
+        onDeleteStage={noop}
         onReorder={noop}
         onEditPath={noop}
         onMoveCard={noop}
@@ -325,6 +326,7 @@ describe("WorkflowBoard", () => {
         busy={false}
         draggedStageId={backlogId}
         onConfigureStage={noop}
+        onDeleteStage={noop}
         onReorder={noop}
         onEditPath={noop}
         onMoveCard={noop}
@@ -336,9 +338,9 @@ describe("WorkflowBoard", () => {
 
     expect(markup).toContain("Connect path");
     expect(markup).toContain("Configure Backlog");
-    expect(markup).toContain("Move Backlog later");
+    expect(markup).toContain('aria-label="Open actions for Backlog"');
     expect(markup).toContain("Drag Backlog to reorder");
-    expect(markup).toContain("absolute inset-0 cursor-grab");
+    expect(markup).toContain("absolute inset-0 z-0 cursor-grab");
     expect(markup).toContain("Running task");
   });
 });

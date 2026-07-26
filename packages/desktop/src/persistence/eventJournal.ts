@@ -199,6 +199,7 @@ export interface ReviewDispositionEventPayload {
 export type ProjectionChange =
   | { readonly entity: "board"; readonly operation: "upsert"; readonly value: BoardProjection }
   | { readonly entity: "stage"; readonly operation: "upsert"; readonly value: StageProjection }
+  | { readonly entity: "stage"; readonly operation: "delete"; readonly value: StageProjection }
   | { readonly entity: "edge"; readonly operation: "upsert"; readonly value: EdgeProjection }
   | { readonly entity: "edge"; readonly operation: "delete"; readonly value: EdgeProjection }
   | { readonly entity: "card"; readonly operation: "upsert"; readonly value: CardProjection }
@@ -683,6 +684,7 @@ const WORKFLOW_COMMAND_KINDS: readonly WorkflowCommandKind[] = [
   "bind_repository",
   "create_stage",
   "update_stage",
+  "delete_stage",
   "assign_stage_skill",
   "connect_stages",
   "reorder_stages",
@@ -703,7 +705,7 @@ function parseProjectionChange(value: unknown): ProjectionChange {
       if (operation !== "upsert") throw new JournalValidationError("board changes must be upserts");
       return { entity, operation, value: parseBoardProjection(value.value) };
     case "stage":
-      if (operation !== "upsert") throw new JournalValidationError("stage changes must be upserts");
+      if (operation !== "upsert" && operation !== "delete") throw new JournalValidationError("stage change operation is unsupported");
       return { entity, operation, value: parseStageProjection(value.value) };
     case "edge":
       if (operation !== "upsert" && operation !== "delete") {
@@ -1217,6 +1219,12 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
     }
     case "stage": {
       const value = change.value;
+      if (change.operation === "delete") {
+        database.query<void, [string, string]>(`
+          DELETE FROM workflow_stages WHERE stage_id = ? AND board_id = ?
+        `).run(value.stageId, value.boardId);
+        return;
+      }
       database.query<void, [string, string, string, number, string | null, number, number, number]>(`
         INSERT INTO workflow_stages(
           stage_id, board_id, label, position, default_skill_id, configured, workflow_version, updated_at

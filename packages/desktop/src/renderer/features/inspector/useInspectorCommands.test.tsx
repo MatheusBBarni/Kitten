@@ -5,14 +5,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import "../../settings/testDom.ts";
 import type { DesktopRpcClient } from "../../client.ts";
 import { createDesktopQueryClient } from "../../query/desktopQueries.ts";
-import {
-  attentionBlocker,
-  inspectorCard,
-  inspectorProjection,
-  TEST_ATTEMPT_ID,
-  TEST_GENERATION,
-  TEST_QUEUE_ID,
-} from "./testSupport.ts";
+import { attentionBlocker, inspectorCard, TEST_ATTEMPT_ID, TEST_GENERATION } from "./testSupport.ts";
 import { useInspectorCommands, type InspectorFeedback } from "./useInspectorCommands.ts";
 
 afterEach(cleanup);
@@ -26,7 +19,7 @@ function ok(commandId: string, kind: "inspector_command_result" | "follow_up_com
 }
 
 describe("inspector command mutations", () => {
-  test("routes start, queue, remove, confirm, and attention commands through React Query", async () => {
+  test("routes start, immediate direction, and attention commands through React Query", async () => {
     const calls: string[] = [];
     const feedback: InspectorFeedback[] = [];
     let refreshes = 0;
@@ -34,17 +27,13 @@ describe("inspector command mutations", () => {
     const client = {
       async startAttempt(commandId: string) { calls.push("start"); return ok(commandId, "inspector_command_result"); },
       async queueFollowUp(commandId: string) { calls.push("queue"); return ok(commandId, "follow_up_command_result"); },
-      async removeQueuedFollowUp(commandId: string) { calls.push("remove"); return ok(commandId, "follow_up_command_result"); },
-      async confirmQueuedFollowUp(commandId: string) { calls.push("confirm"); return ok(commandId, "follow_up_command_result"); },
       async answerAttention(commandId: string) { calls.push("attention"); return ok(commandId, "inspector_command_result"); },
     } as unknown as DesktopRpcClient;
-    const projection = inspectorProjection({ queue: "settled" });
-    const queue = projection.followUpQueues[0]!;
     const base = {
       client,
       card: inspectorCard("running"),
       attempt: { attemptId: TEST_ATTEMPT_ID, generation: TEST_GENERATION },
-      queue,
+      queueVersion: 0,
       blocker: null,
       refresh: async () => { refreshes += 1; },
       onFeedback: (entry: InspectorFeedback) => { feedback.push(entry); },
@@ -54,16 +43,14 @@ describe("inspector command mutations", () => {
 
     act(() => {
       view.result.current.startAttempt("Start message");
-      view.result.current.queueFollowUp("Next message");
-      view.result.current.removeQueuedFollowUp(TEST_QUEUE_ID);
-      view.result.current.confirmQueuedFollowUp(TEST_QUEUE_ID);
+      view.result.current.sendDirection("Next message");
     });
-    await waitFor(() => expect(calls).toEqual(["start", "queue", "remove", "confirm"]));
-    await waitFor(() => expect(refreshes).toBe(4));
+    await waitFor(() => expect(calls).toEqual(["start", "queue"]));
+    await waitFor(() => expect(refreshes).toBe(2));
     expect(consumed).toBe(2);
     expect(feedback.every(({ tone }) => tone === "status")).toBeTrue();
 
-    const attention = renderHook(() => useInspectorCommands({ ...base, queue: null, blocker: attentionBlocker() }), { wrapper });
+    const attention = renderHook(() => useInspectorCommands({ ...base, blocker: attentionBlocker() }), { wrapper });
     act(() => attention.result.current.answerAttention({ kind: "skipped" }));
     await waitFor(() => expect(calls.at(-1)).toBe("attention"));
   });
@@ -87,7 +74,7 @@ describe("inspector command mutations", () => {
       client,
       card: inspectorCard("idle"),
       attempt: null,
-      queue: null,
+      queueVersion: 0,
       blocker: null,
       refresh: async () => {},
       onFeedback: (entry) => { feedback.push(entry); },
@@ -96,14 +83,12 @@ describe("inspector command mutations", () => {
 
     act(() => {
       view.result.current.startAttempt("Start");
-      view.result.current.queueFollowUp("No attempt");
-      view.result.current.removeQueuedFollowUp(TEST_QUEUE_ID);
-      view.result.current.confirmQueuedFollowUp(TEST_QUEUE_ID);
+      view.result.current.sendDirection("No attempt");
       view.result.current.answerAttention({ kind: "cancelled" });
     });
-    await waitFor(() => expect(feedback).toHaveLength(5));
+    await waitFor(() => expect(feedback).toHaveLength(3));
     expect(feedback.some(({ message }) => message === "Task changed.")).toBeTrue();
-    expect(feedback.filter(({ message }) => message.includes("desktop host did not finish"))).toHaveLength(4);
+    expect(feedback.filter(({ message }) => message.includes("desktop host did not finish"))).toHaveLength(2);
     expect(consumed).toBe(0);
   });
 });

@@ -16,7 +16,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Alert, Button, Card, Chip, Input, Label, Modal, TextField } from "@heroui/react";
+import { Alert, Button, Card, Chip, Dropdown, Input, Label, Modal, TextField } from "@heroui/react";
 import type {
   WorkflowBoardProjection,
   WorkflowCatalogProjection,
@@ -27,7 +27,7 @@ import type {
   StageId,
   StageProjection,
 } from "../../../workflow/workflowTypes.ts";
-import { AlertIcon, ArrowLeftIcon, ArrowRightIcon, DragHandleIcon, PauseIcon, PlayIcon, SettingsIcon, SpinnerIcon } from "../../components/Icons.tsx";
+import { AlertIcon, DragHandleIcon, EditIcon, MoreIcon, PathIcon, PauseIcon, PlayIcon, SettingsIcon, SpinnerIcon, TrashIcon } from "../../components/Icons.tsx";
 import {
   cardMovementAffordance,
   stageConfigurationReason,
@@ -238,6 +238,7 @@ interface BoardCanvasProps {
   readonly selectedCardId: CardId | null;
   readonly busy: boolean;
   readonly onConfigureStage: (stage: StageProjection) => void;
+  readonly onDeleteStage: (stage: StageProjection) => void;
   readonly onReorder: (intent: StageReorderIntent) => void;
   readonly onEditPath: () => void;
   readonly onMoveCard: (card: CardProjection, targetStageId: StageId) => void;
@@ -277,7 +278,9 @@ interface SortableStageColumnProps {
   readonly busy: boolean;
   readonly successorLabel: string | null;
   readonly onConfigureStage: (stage: StageProjection) => void;
+  readonly onDeleteStage: (stage: StageProjection) => void;
   readonly onReorder: (intent: StageReorderIntent) => void;
+  readonly onEditPath: () => void;
   readonly onMoveCard: (card: CardProjection, targetStageId: StageId) => void;
   readonly onSelectCard: (card: CardProjection) => void;
   readonly onStartCard: (card: CardProjection) => void;
@@ -298,7 +301,9 @@ function SortableStageColumn({
   busy,
   successorLabel,
   onConfigureStage,
+  onDeleteStage,
   onReorder,
+  onEditPath,
   onMoveCard,
   onSelectCard,
   onStartCard,
@@ -351,7 +356,7 @@ function SortableStageColumn({
       <header className="stage-header relative">
         <button
           type="button"
-          className="absolute inset-0 cursor-grab touch-none rounded-[inherit] bg-transparent hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+          className="absolute inset-0 z-0 cursor-grab touch-none rounded-[inherit] bg-transparent hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
           aria-label={`Drag ${stage.label} to reorder`}
           disabled={busy}
           {...attributes}
@@ -363,33 +368,40 @@ function SortableStageColumn({
           <h3 className="truncate">{stage.label}</h3>
           <span className="stage-count" aria-label={`${stageCards.length} cards`}>{stageCards.length}</span>
         </div>
-        <div className="relative flex items-center gap-1" aria-label={`Reorder ${stage.label}`}>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Move ${stage.label} earlier`}
-            isDisabled={busy || index === 0}
-            onPress={() => {
-              const intent = keyboardStageReorderIntent(board, stages, stage.stageId, "previous");
-              if (intent !== null) onReorder(intent);
-            }}
-          >
-            <ArrowLeftIcon />
-          </Button>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Move ${stage.label} later`}
-            isDisabled={busy || index === stages.length - 1}
-            onPress={() => {
-              const intent = keyboardStageReorderIntent(board, stages, stage.stageId, "next");
-              if (intent !== null) onReorder(intent);
-            }}
-          >
-            <ArrowRightIcon />
-          </Button>
+        <div className="relative z-10" aria-label={`Actions for ${stage.label}`}>
+          <Dropdown>
+            <Dropdown.Trigger
+              aria-label={`Open actions for ${stage.label}`}
+              className="grid size-8 place-items-center rounded-md text-muted hover:bg-[var(--surface-hover)] hover:text-foreground"
+              isDisabled={busy}
+            >
+              <MoreIcon />
+            </Dropdown.Trigger>
+            <Dropdown.Popover placement="bottom end">
+              <Dropdown.Menu
+                aria-label={`Actions for ${stage.label}`}
+                onAction={(key) => {
+                  if (key === "edit") onConfigureStage(stage);
+                  if (key === "delete") onDeleteStage(stage);
+                  if (key === "path") onEditPath();
+                  if (key === "previous") {
+                    const intent = keyboardStageReorderIntent(board, stages, stage.stageId, "previous");
+                    if (intent !== null) onReorder(intent);
+                  }
+                  if (key === "next") {
+                    const intent = keyboardStageReorderIntent(board, stages, stage.stageId, "next");
+                    if (intent !== null) onReorder(intent);
+                  }
+                }}
+              >
+                <Dropdown.Item id="edit" textValue="Edit stage"><EditIcon />Edit stage</Dropdown.Item>
+                <Dropdown.Item id="delete" textValue="Remove empty stage" isDisabled={stageCards.length > 0}><TrashIcon />Remove stage</Dropdown.Item>
+                <Dropdown.Item id="path" textValue="Edit workflow path"><PathIcon />Edit workflow path</Dropdown.Item>
+                <Dropdown.Item id="previous" textValue="Move stage earlier" isDisabled={index === 0}>Move earlier</Dropdown.Item>
+                <Dropdown.Item id="next" textValue="Move stage later" isDisabled={index === stages.length - 1}>Move later</Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
         </div>
       </header>
 
@@ -481,6 +493,7 @@ export function BoardCanvas({
   selectedCardId,
   busy,
   onConfigureStage,
+  onDeleteStage,
   onReorder,
   onEditPath,
   onMoveCard,
@@ -580,7 +593,9 @@ export function BoardCanvas({
                     : stages.find(({ stageId }) => stageId === arrow.targetStageId)?.label ?? null;
                 })()}
                 onConfigureStage={onConfigureStage}
+                onDeleteStage={onDeleteStage}
                 onReorder={onReorder}
+                onEditPath={onEditPath}
                 onMoveCard={onMoveCard}
                 onSelectCard={onSelectCard}
                 onStartCard={onStartCard}

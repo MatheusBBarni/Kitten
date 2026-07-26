@@ -13,6 +13,7 @@ import type { WorkspaceBoardSummary, WorkspaceProjection } from "../../../shared
 import {
   ArchiveIcon,
   BoardIcon,
+  ChevronDownIcon,
   EditIcon,
   FolderIcon,
   MoreIcon,
@@ -21,6 +22,7 @@ import {
   PlusIcon,
   TrashIcon,
 } from "../../components/Icons.tsx";
+import { useDesktopViewStore } from "../../state/desktopViewStore.ts";
 
 const PREFERENCES_KEY = "kitten:project-sidebar-preferences:v1";
 
@@ -85,6 +87,12 @@ function projectPreferenceKey(repositoryPath: string): string {
   return `project:${normalizedRepositoryPath(repositoryPath)}`;
 }
 
+function projectTreeId(projectKey: string): string {
+  let hash = 0;
+  for (const character of projectKey) hash = ((hash * 31) + character.codePointAt(0)!) >>> 0;
+  return `project-boards-${hash.toString(36)}`;
+}
+
 function boardDisplayName(
   board: WorkspaceBoardSummary,
   projectBoards: readonly WorkspaceBoardSummary[],
@@ -140,6 +148,8 @@ export function ProjectSidebar({
   const [renaming, setRenaming] = useState<SidebarTarget | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<SidebarTarget | null>(null);
+  const collapsedProjectKeys = useDesktopViewStore((state) => state.collapsedProjectKeys);
+  const toggleProjectExpanded = useDesktopViewStore((state) => state.toggleProjectExpanded);
 
   useEffect(() => writePreferences(preferences), [preferences]);
 
@@ -199,19 +209,29 @@ export function ProjectSidebar({
         <ul className="m-0 grid list-none gap-2 p-0">
           {groupedProjects.map((project) => {
             const containsActiveBoard = project.boards.some(({ boardId }) => boardId === activeBoardId);
+            const expanded = query.trim().length > 0 || collapsedProjectKeys[project.key] !== true;
             return (
               <li key={project.key} className="min-w-0">
                 <div
                   data-active={containsActiveBoard}
                   className="grid min-h-12 grid-cols-[minmax(0,1fr)_2.5rem] items-center rounded-md text-foreground data-[active=true]:font-semibold"
                 >
-                  <div className="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)] items-center gap-2 px-3 py-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="grid min-h-full min-w-0 grid-cols-[1rem_1rem_minmax(0,1fr)] items-center gap-2 rounded-[inherit] border-0 bg-transparent px-3 py-2 text-left text-inherit"
+                    aria-expanded={expanded}
+                    aria-controls={projectTreeId(project.key)}
+                    onPress={() => toggleProjectExpanded(project.key)}
+                    isDisabled={busy}
+                  >
+                    <ChevronDownIcon className={`transition-transform duration-150 ${expanded ? "" : "-rotate-90"}`} />
                     <FolderIcon />
                     <span className="min-w-0">
                       <span className="block truncate text-sm leading-5">{project.name}</span>
                       <span className="block text-xs font-normal text-muted">{project.boards.length} {project.boards.length === 1 ? "board" : "boards"}</span>
                     </span>
-                  </div>
+                  </Button>
                   <Dropdown>
                     <Dropdown.Trigger
                       aria-label={`Project actions for ${project.name}`}
@@ -247,7 +267,7 @@ export function ProjectSidebar({
                   </Dropdown>
                 </div>
 
-                <ul className="ml-5 grid list-none gap-1 border-l border-[var(--border)] py-1 pl-2">
+                {expanded ? <ul id={projectTreeId(project.key)} className="ml-5 grid list-none gap-1 border-l border-[var(--border)] py-1 pl-2">
                   {project.boards.map((board) => {
                     const selected = board.boardId === activeBoardId;
                     const preference = preferences[board.boardId] ?? {};
@@ -308,7 +328,7 @@ export function ProjectSidebar({
                       </li>
                     );
                   })}
-                </ul>
+                </ul> : null}
               </li>
             );
           })}

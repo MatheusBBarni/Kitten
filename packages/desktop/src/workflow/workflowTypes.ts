@@ -115,6 +115,10 @@ export type WorkflowCommand =
       readonly label: string;
     })
   | (VersionedWorkflowMutation & {
+      readonly kind: "delete_stage";
+      readonly stageId: StageId;
+    })
+  | (VersionedWorkflowMutation & {
       readonly kind: "assign_stage_skill";
       readonly stageId: StageId;
       readonly defaultSkillId: SkillId | null;
@@ -183,6 +187,7 @@ export type WorkflowConflict =
 export type WorkflowRejectionKind =
   | "board_not_found"
   | "stage_not_found"
+  | "stage_not_empty"
   | "card_not_found"
   | "duplicate_stage"
   | "duplicate_card"

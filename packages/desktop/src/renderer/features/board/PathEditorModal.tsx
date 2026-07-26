@@ -96,20 +96,34 @@ export function workflowConnectionPath(
 ): string {
   const source = stagePoint(stages, sourceStageId, "output", positions);
   const target = stagePoint(stages, targetStageId, "input", positions);
-  const sourceIndex = stages.findIndex((stage) => stage.stageId === sourceStageId);
-  const targetIndex = stages.findIndex((stage) => stage.stageId === targetStageId);
-  if (targetIndex === sourceIndex + 1) {
-    const bend = Math.max(40, (target.x - source.x) * 0.42);
+  const sourcePosition = positions[sourceStageId] ?? initialNodePositions(stages)[sourceStageId]!;
+  const targetPosition = positions[targetStageId] ?? initialNodePositions(stages)[targetStageId]!;
+  const forward = target.x > source.x;
+  const blockingNode = Object.entries(positions).some(([stageId, position]) => {
+    if (stageId === sourceStageId || stageId === targetStageId) return false;
+    const overlapsSpan = position.x < target.x && position.x + NODE_WIDTH > source.x;
+    const overlapsCorridor = position.y < Math.max(source.y, target.y) + NODE_HEIGHT / 2
+      && position.y + NODE_HEIGHT > Math.min(source.y, target.y) - NODE_HEIGHT / 2;
+    return overlapsSpan && overlapsCorridor;
+  });
+  if (forward && !blockingNode) {
+    const bend = Math.min(160, Math.max(48, (target.x - source.x) * 0.38));
     return `M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${target.x - bend} ${target.y}, ${target.x} ${target.y}`;
   }
 
-  const forward = targetIndex > sourceIndex;
-  const span = Math.abs(targetIndex - sourceIndex);
-  const laneOffset = Math.min(Math.max(0, span - 2), 4) * 8;
-  const occupied = Object.values(positions);
-  const topRailY = Math.max(20, Math.min(...occupied.map(({ y }) => y)) - 64);
-  const bottomRailY = Math.min(CANVAS_HEIGHT - 20, Math.max(...occupied.map(({ y }) => y + NODE_HEIGHT)) + 64);
-  const railY = forward ? topRailY + laneOffset : bottomRailY - laneOffset;
+  const occupied = stages.map((stage, index) => positions[stage.stageId] ?? {
+    x: CANVAS_PADDING + index * (NODE_WIDTH + NODE_GAP),
+    y: DEFAULT_NODE_TOP,
+  });
+  const topRailY = Math.max(24, Math.min(...occupied.map(({ y }) => y)) - 48);
+  const bottomRailY = Math.min(CANVAS_HEIGHT - 24, Math.max(...occupied.map(({ y }) => y + NODE_HEIGHT)) + 48);
+  // Route around the side that is closest to the direction of travel. This is
+  // derived from the canvas geometry (not the original stage order), so moving
+  // a stage immediately produces the shortest unambiguous path.
+  const sourceBelowTarget = sourcePosition.y > targetPosition.y;
+  const railY = forward
+    ? (sourceBelowTarget ? bottomRailY : topRailY)
+    : (sourceBelowTarget ? topRailY : bottomRailY);
   const sourceTurnX = source.x + 44;
   const targetTurnX = target.x - 44;
   return `M ${source.x} ${source.y} C ${sourceTurnX} ${source.y}, ${sourceTurnX} ${railY}, ${sourceTurnX} ${railY} L ${targetTurnX} ${railY} C ${targetTurnX} ${railY}, ${targetTurnX} ${target.y}, ${target.x} ${target.y}`;

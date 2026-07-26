@@ -3,11 +3,13 @@ import "../../settings/testDom.ts";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { workflowIds } from "../../../workflow/workflowTypes.ts";
+import { resetDesktopViewStore } from "../../state/desktopViewStore.ts";
 import { ProjectSidebar } from "./ProjectSidebar.tsx";
 
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  resetDesktopViewStore();
 });
 
 const boardId = workflowIds.board("board-project-sidebar");
@@ -34,6 +36,31 @@ const workspace = {
 };
 
 describe("ProjectSidebar", () => {
+  test("collapses and expands a project's board tree without hiding the project", async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <ProjectSidebar
+        workspace={workspace}
+        activeBoardId={boardId}
+        busy={false}
+        onOpenProject={() => {}}
+        onAddBoard={() => {}}
+        onSelectBoard={() => {}}
+        onEditPath={() => {}}
+      />,
+    );
+
+    const toggle = view.getByRole("button", { name: /kitten.*2 boards/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(view.getByRole("button", { name: "Main board" })).toBeDefined();
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(view.getByText("kitten")).toBeDefined();
+    expect(view.queryByRole("button", { name: "Main board" })).toBeNull();
+    await user.click(toggle);
+    expect(view.getByRole("button", { name: "Main board" })).toBeDefined();
+  });
+
   test("groups multiple boards under one project and exposes board actions", async () => {
     const user = userEvent.setup();
     const pathRequests: string[] = [];

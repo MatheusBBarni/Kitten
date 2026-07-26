@@ -175,6 +175,38 @@ describe("workflow board and stage commands", () => {
     }
   });
 
+  test("removes only an empty stage and its incident path edges", () => {
+    const harness = commandHarness();
+    try {
+      const workflowVersion = buildLinearWorkflow(harness);
+      expect(harness.commands.execute({
+        kind: "delete_stage",
+        mutationId: mutation("delete-review"),
+        boardId: BOARD_ID,
+        expectedWorkflowVersion: workflowVersion,
+        stageId: REVIEW_ID,
+      })).toMatchObject({ status: "committed" });
+      expect(harness.journal.snapshot().stages.map(({ stageId, position }) => [stageId, position])).toEqual([
+        [BACKLOG_ID, 0],
+        [DOING_ID, 1],
+      ]);
+      expect(harness.journal.snapshot().edges).toEqual([
+        { boardId: BOARD_ID, sourceStageId: BACKLOG_ID, targetStageId: DOING_ID, workflowVersion: 6 },
+      ]);
+
+      expect(harness.commands.execute(createCard(6)).status).toBe("committed");
+      expect(harness.commands.execute({
+        kind: "delete_stage",
+        mutationId: mutation("delete-backlog"),
+        boardId: BOARD_ID,
+        expectedWorkflowVersion: 6,
+        stageId: BACKLOG_ID,
+      })).toMatchObject({ status: "rejected", rejection: { kind: "stage_not_empty" } });
+    } finally {
+      closeSqliteDatabase(harness.database);
+    }
+  });
+
   test("rejects invalid paths and stage orders without changing journal or projections", () => {
     const harness = commandHarness();
     try {

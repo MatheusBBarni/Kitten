@@ -4,7 +4,7 @@ import { AttemptTimeline } from "./AttemptTimeline.tsx";
 import { inspectorAttempt, inspectorProjection } from "./testSupport.ts";
 
 describe("AttemptTimeline", () => {
-  test("renders durable context and chronological message, activity, question, operator, queue, and terminal evidence", () => {
+  test("renders cockpit-style chronological message, activity, question, and terminal evidence", () => {
     const projection = inspectorProjection({
       status: "failed",
       terminalOutcome: "interrupted",
@@ -21,8 +21,8 @@ describe("AttemptTimeline", () => {
     expect(markup).toContain(">Plan<");
     expect(markup).toContain("Keep the draft safe.");
     expect(markup).toContain(">read<");
-    expect(markup).toContain("Operator follow-up");
-    expect(markup).toContain("Awaiting confirmation");
+    expect(markup).not.toContain("Operator follow-up");
+    expect(markup).not.toContain("Awaiting confirmation");
     expect(markup).toContain("Attention question");
     expect(markup).toContain("Attention outcome");
     expect(markup).toContain("Question skipped");
@@ -30,8 +30,7 @@ describe("AttemptTimeline", () => {
 
     expect(markup.indexOf(">Agent<")).toBeLessThan(markup.indexOf("Keep the draft safe."));
     expect(markup.indexOf("Keep the draft safe.")).toBeLessThan(markup.indexOf(">read<"));
-    expect(markup.indexOf(">read<")).toBeLessThan(markup.indexOf("Operator follow-up"));
-    expect(markup.indexOf("Operator follow-up")).toBeLessThan(markup.indexOf("Attention question"));
+    expect(markup.indexOf(">read<")).toBeLessThan(markup.indexOf("Attention question"));
   });
 
   test("expands only the newest transcript and preserves older chronology", () => {

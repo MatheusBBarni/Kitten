@@ -243,6 +243,54 @@ describe("attempt admission integration", () => {
       { kind: "terminal", outcome: "succeeded" },
     ]);
   });
+
+  test("accepts a direction immediately and dispatches it after the active turn without confirmation", async () => {
+    const fixture = createFixture([CARD_ONE]);
+    const prompts: string[] = [];
+    let releaseInitial: (() => void) | undefined;
+    const initialSettled = new Promise<void>((resolve) => { releaseInitial = resolve; });
+    const coordinator = fixture.coordinator({
+      async connect() {
+        return {
+          async newSession() { return { sessionId: "session-steer" }; },
+          async prompt({ prompt }) {
+            prompts.push(prompt);
+            if (prompts.length === 1) await initialSettled;
+            return { stopReason: "end_turn" };
+          },
+          subscribeActivity() { return () => {}; },
+          close() {},
+        };
+      },
+    }, createGlobalAttemptScheduler(), fixture.journal, {
+      activityIngestor: createActivityIngestor({ journal: fixture.journal }),
+    });
+
+    const started = await coordinator.start(CARD_ONE, "Initial direction");
+    if (started.status !== "started") throw new Error("expected started attempt");
+    for (let count = 0; count < 20 && prompts.length === 0; count += 1) await Promise.resolve();
+    expect(prompts).toEqual(["Initial direction"]);
+
+    expect(coordinator.queueFollowUp({
+      attemptId: started.attempt.attemptId,
+      generation: started.attempt.generation,
+      expectedQueueVersion: 0,
+      queueId: "direction-1" as FollowUpQueueId,
+      text: "Check the changed panel too",
+    }).status).toBe("ok");
+    expect(fixture.journal.snapshot().attemptInspectors[0]?.entries).toMatchObject([
+      { kind: "user", text: "Initial direction" },
+      { kind: "user", text: "Check the changed panel too" },
+    ]);
+
+    releaseInitial?.();
+    for (let count = 0; count < 40 && fixture.journal.snapshot().attemptInspectors[0]?.terminalOutcome !== "succeeded"; count += 1) {
+      await Promise.resolve();
+    }
+    expect(prompts).toEqual(["Initial direction", "Check the changed panel too"]);
+    expect(fixture.journal.snapshot().attemptInspectors[0]?.terminalOutcome).toBe("succeeded");
+    expect(fixture.journal.snapshot().followUpQueues[0]?.drafts.map(({ state }) => state)).toEqual(["dispatched"]);
+  });
 });
 
 describe("confirmable non-cancelling follow-ups", () => {

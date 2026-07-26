@@ -19,6 +19,8 @@ export interface DirectAcpConnection {
   prompt(input: { readonly sessionId: string; readonly prompt: string }): Promise<DirectAcpPromptResult>;
   cancel?(input: { readonly sessionId: string }): void | Promise<void>;
   subscribeActivity(listener: (input: unknown) => void | Promise<void>): () => void;
+  /** Reserve the next activity sequence for a host-persisted operator message. */
+  reserveActivitySequence?(): void;
   close(): void | Promise<void>;
 }
 
