@@ -251,7 +251,22 @@ interface BoardCanvasProps {
 }
 
 function statusLabel(status: CardProjection["executionStatus"]): string {
-  return status.replaceAll("_", " ");
+  switch (status) {
+    case "needs_attention":
+      return "Attention required";
+    case "ready_for_review":
+      return "Ready for review";
+    case "running":
+      return "Running";
+    case "failed":
+      return "Failed";
+    case "completed":
+      return "Completed";
+    case "cancelled":
+      return "Cancelled";
+    case "idle":
+      return "Idle";
+  }
 }
 
 function statusColor(status: CardProjection["executionStatus"]): "default" | "accent" | "success" | "warning" | "danger" {
@@ -260,6 +275,15 @@ function statusColor(status: CardProjection["executionStatus"]): "default" | "ac
   if (status === "needs_attention" || status === "ready_for_review") return "warning";
   if (status === "failed" || status === "cancelled") return "danger";
   return "default";
+}
+
+function statusTone(status: CardProjection["executionStatus"]): string {
+  if (status === "needs_attention") return "text-[var(--kitten-status-attention)]";
+  if (status === "ready_for_review") return "text-[var(--kitten-status-review)]";
+  if (status === "failed" || status === "cancelled") return "text-[var(--kitten-status-failure)]";
+  if (status === "running") return "text-[var(--kitten-status-running)]";
+  if (status === "completed") return "text-[var(--kitten-status-success)]";
+  return "text-muted";
 }
 
 function cardKey(cardId: string): string {
@@ -439,6 +463,8 @@ function SortableStageColumn({
                 aria-label={`${card.title}, ${statusLabel(card.executionStatus)}`}
               >
                 <button
+                  id={`card-open-${card.cardId}`}
+                  data-desktop-card-id={card.cardId}
                   type="button"
                   className="absolute inset-0 z-0 rounded-[inherit] bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-2"
                   aria-pressed={selected}
@@ -451,9 +477,14 @@ function SortableStageColumn({
                 {card.description.trim().length === 0 ? null : <p className="card-description pointer-events-none relative z-[1]">{card.description}</p>}
                 <div className="card-meta pointer-events-none relative z-[1]">
                   <span className="card-key">{cardKey(card.cardId)}</span>
-                  <Chip size="sm" variant="soft" color={statusColor(card.executionStatus)}>
+                  <Chip
+                    size="sm"
+                    variant="soft"
+                    color={statusColor(card.executionStatus)}
+                    className={statusTone(card.executionStatus)}
+                  >
                     {card.executionStatus === "running" ? (
-                      <span className="inline-flex items-center gap-1"><SpinnerIcon className="animate-spin motion-reduce:animate-none" />Working</span>
+                      <span className="inline-flex items-center gap-1"><SpinnerIcon className="animate-spin motion-reduce:animate-none" />Running</span>
                     ) : statusLabel(card.executionStatus)}
                   </Chip>
                 </div>

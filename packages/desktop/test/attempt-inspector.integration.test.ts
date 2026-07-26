@@ -190,7 +190,7 @@ describe("fake ACP to durable inspector and typed RPC", () => {
     expect(isolatedEnvelope?.result).toEqual({
       status: "ok",
       projection: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         cardId: OTHER_CARD_ID,
         revision: journal.snapshot().revision,
         card: card(OTHER_CARD_ID, 4),
@@ -198,6 +198,7 @@ describe("fake ACP to durable inspector and typed RPC", () => {
         attemptStates: [],
         followUpQueues: [],
         attentionBlockers: [],
+        reviewEvidence: [],
       },
     });
 

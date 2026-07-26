@@ -90,9 +90,20 @@ export function AttentionBlockerPanel({
             ) : (
               <>
                 {field.mode === "single" ? (
-                  <RadioGroup className="attention-options" name={fieldName(field.id)} isRequired={field.required && !field.allowsCustom} isDisabled={busy}>
+                  <RadioGroup
+                    className="attention-options"
+                    name={fieldName(field.id)}
+                    aria-label={field.label}
+                    isRequired={field.required && !field.allowsCustom}
+                    isDisabled={busy}
+                  >
                     {field.options.map((option, optionIndex) => (
-                      <Radio key={option.id} value={option.id} autoFocus={fieldIndex === 0 && optionIndex === 0}>
+                      <Radio
+                        key={option.id}
+                        value={option.id}
+                        aria-label={option.label}
+                        autoFocus={fieldIndex === 0 && optionIndex === 0}
+                      >
                         <Radio.Content>
                           <Radio.Control><Radio.Indicator /></Radio.Control>
                           <span><strong>{option.label}</strong>{option.description === undefined ? null : <small>{option.description}</small>}</span>
@@ -107,6 +118,7 @@ export function AttentionBlockerPanel({
                         key={option.id}
                         name={fieldName(field.id)}
                         value={option.id}
+                        aria-label={option.label}
                         autoFocus={fieldIndex === 0 && optionIndex === 0}
                         isDisabled={busy}
                       >

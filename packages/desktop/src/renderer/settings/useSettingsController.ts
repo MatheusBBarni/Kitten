@@ -15,7 +15,13 @@ import { settingsUnavailableMessage } from "./settingsQueries.ts";
 import type { SettingsFeedbackValue } from "./SettingsView.tsx";
 
 type SettingsMutation =
-  | { readonly section: "preferences"; readonly revision: number; readonly theme: SettingsTheme }
+  | {
+      readonly section: "preferences";
+      readonly revision: number;
+      readonly theme: SettingsTheme;
+      readonly workflowMeasurementEnabled: boolean;
+      readonly successMessage: string;
+    }
   | {
       readonly section: "profile_defaults";
       readonly revision: number;
@@ -28,8 +34,7 @@ type SettingsMutation =
     }
   | { readonly section: "execution_limit"; readonly revision: number; readonly limit: number };
 
-const successMessages: Readonly<Record<SettingsSection, string>> = {
-  preferences: "Theme preference saved.",
+const successMessages: Readonly<Record<Exclude<SettingsSection, "preferences">, string>> = {
   profile_defaults: "Task defaults saved.",
   catalog_roots: "Catalog roots saved and scanned.",
   execution_limit: "Automatic execution limit saved.",
@@ -49,6 +54,7 @@ export function useSettingsController(client: DesktopRpcClient) {
         return client.updatePreferences(commandId(input.section), {
           expectedRevision: input.revision,
           theme: input.theme,
+          workflowMeasurementEnabled: input.workflowMeasurementEnabled,
         });
       }
       if (input.section === "profile_defaults") {
@@ -74,7 +80,12 @@ export function useSettingsController(client: DesktopRpcClient) {
           kind: "desktop_settings",
           result: { status: "ok", projection: envelope.result.projection },
         });
-        setFeedback({ tone: "status", message: successMessages[input.section] });
+        setFeedback({
+          tone: "status",
+          message: input.section === "preferences"
+            ? input.successMessage
+            : successMessages[input.section],
+        });
         return;
       }
       if (envelope.result.status === "conflict") {
@@ -109,7 +120,28 @@ export function useSettingsController(client: DesktopRpcClient) {
     busySection: mutation.isPending ? mutation.variables?.section ?? null : null,
     retry: query.refetch,
     saveTheme(theme: SettingsTheme) {
-      if (revision !== undefined) mutation.mutate({ section: "preferences", revision, theme });
+      if (revision !== undefined && projection !== null) {
+        mutation.mutate({
+          section: "preferences",
+          revision,
+          theme,
+          workflowMeasurementEnabled: projection.preferences.workflowMeasurementEnabled,
+          successMessage: "Theme preference saved.",
+        });
+      }
+    },
+    saveWorkflowMeasurement(workflowMeasurementEnabled: boolean) {
+      if (revision !== undefined && projection !== null) {
+        mutation.mutate({
+          section: "preferences",
+          revision,
+          theme: projection.preferences.theme,
+          workflowMeasurementEnabled,
+          successMessage: workflowMeasurementEnabled
+            ? "Local workflow measurement enabled."
+            : "Local workflow measurement disabled.",
+        });
+      }
     },
     saveProfileDefaults(defaults: Omit<UpdateProfileDefaultsInput, "expectedRevision">) {
       if (revision !== undefined) mutation.mutate({ section: "profile_defaults", revision, defaults });

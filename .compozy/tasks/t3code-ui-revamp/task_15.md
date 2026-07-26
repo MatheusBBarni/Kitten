@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add commands, Settings restoration, and critical-path accessibility
 type: frontend
 complexity: high

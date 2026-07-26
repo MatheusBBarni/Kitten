@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { toAttemptGeneration, toOpaqueId, type AttemptId } from "@kitten/engine";
+import {
+  createFollowUpQueue,
+  followUpQueueFence,
+  markFollowUpDispatching,
+  queuedFollowUpHead,
+  type FollowUpQueueId,
+} from "../attempts/followUpQueue.ts";
 import { createAttentionCoordinator } from "../attention/attentionCoordinator.ts";
 import { ATTENTION_ATTEMPT_ID, ATTENTION_FORM, ATTENTION_GENERATION, createAttentionFixture } from "../attention/testSupport.ts";
 import { createCardNotificationService } from "../notifications/cardNotificationService.ts";
@@ -9,6 +16,76 @@ import type { LifecycleDiagnostic } from "./lifecycleDiagnostics.ts";
 import { recoverInterruptedAttempts } from "./recovery.ts";
 
 describe("startup attempt recovery", () => {
+  test("converts an unresolved queue dispatch to visible interruption without promoting or retrying it", () => {
+    const { database, journal } = createAttentionFixture();
+    try {
+      let queue = createFollowUpQueue({
+        boardId: journal.snapshot().boards[0]!.boardId,
+        cardId: journal.snapshot().cards[0]!.cardId,
+        attemptId: ATTENTION_ATTEMPT_ID,
+        generation: ATTENTION_GENERATION,
+        queueId: "queue-recovery-1" as FollowUpQueueId,
+        text: "sensitive recovery prompt",
+        occurredAt: 150,
+      });
+      journal.append({
+        eventId: "queue-recovery-enqueued",
+        boardId: queue.boardId,
+        cardId: queue.cardId,
+        actor: "operator",
+        kind: "follow_up_queue_committed",
+        occurredAt: queue.updatedAt,
+        payload: { operation: "enqueued", queue },
+      }, {
+        preconditions: [{ entity: "follow_up_queue", id: queue.attemptId, expectedVersion: 0 }],
+      });
+      queue = markFollowUpDispatching(
+        queue,
+        queue.drafts[0]!.queueId,
+        160,
+        followUpQueueFence(queue),
+      );
+      journal.append({
+        eventId: "queue-recovery-dispatching",
+        boardId: queue.boardId,
+        cardId: queue.cardId,
+        actor: "system",
+        kind: "follow_up_queue_committed",
+        occurredAt: queue.updatedAt,
+        payload: { operation: "dispatching", queue },
+      }, {
+        preconditions: [{ entity: "follow_up_queue", id: queue.attemptId, expectedVersion: 1 }],
+      });
+
+      const diagnostics: LifecycleDiagnostic[] = [];
+      recoverInterruptedAttempts({
+        journal,
+        now: () => 200,
+        createEventId: () => "recovery-with-queue",
+        diagnostics: { record: (diagnostic) => diagnostics.push(diagnostic) },
+      });
+
+      const recovered = journal.snapshot().followUpQueues[0]!;
+      expect(recovered).toMatchObject({ schemaVersion: 2, version: 3 });
+      expect(recovered.drafts[0]).toMatchObject({
+        queueId: "queue-recovery-1",
+        state: "interrupted",
+        dispatchingAt: 160,
+        interruptedAt: 200,
+      });
+      expect(recovered.drafts[0]).not.toHaveProperty("error");
+      expect(queuedFollowUpHead(recovered)).toBeNull();
+      expect(JSON.stringify(diagnostics)).not.toContain("sensitive recovery prompt");
+
+      const revision = journal.snapshot().revision;
+      expect(recoverInterruptedAttempts({ journal, now: () => 250 }))
+        .toEqual({ interruptedAttemptIds: [], deltas: [] });
+      expect(journal.snapshot().revision).toBe(revision);
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
   test("interrupts a running attempt exactly once, preserves stage and evidence, and emits content-free diagnostics", () => {
     const { database, journal } = createAttentionFixture();
     try {

@@ -10,6 +10,7 @@ import {
   SettingsFeedback,
   SettingsLoadingState,
   SettingsUnavailableState,
+  WorkflowMeasurementPanel,
 } from "./SettingsView.tsx";
 
 const READY_ID = "profile-ready" as ProfileId;
@@ -60,6 +61,19 @@ describe("settings renderer states", () => {
     expect(unavailable).toContain("Retry settings");
     expect(conflict).toContain("role=\"alert\"");
     expect(conflict).toContain("refreshed values");
+  });
+
+  test("renders an accessible default-off local-only measurement disclosure", () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowMeasurementPanel enabled={false} busy={false} onChange={() => {}} />,
+    );
+    expect(markup).toContain("Local workflow measurement");
+    expect(markup).toContain("Off by default");
+    expect(markup).toContain("on this device");
+    expect(markup).toContain("never sends measurements over the network");
+    expect(markup).toContain("type=\"checkbox\"");
+    expect(markup).not.toContain("checked=\"\"");
+    expect(markup).toContain("aria-describedby=\"workflow-measurement-description\"");
   });
 
   test("renders ready and unavailable profiles with an explicit future-card default", () => {

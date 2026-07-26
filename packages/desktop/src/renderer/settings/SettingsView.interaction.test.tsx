@@ -28,7 +28,7 @@ function projection(overrides: Partial<DesktopSettingsProjection> = {}): Desktop
   return {
     kind: "desktop_settings_projection",
     revision: 0,
-    preferences: { theme: "system" },
+    preferences: { theme: "system", workflowMeasurementEnabled: false },
     profileDefaults: { profileId: null, model: null, effort: null, appliesTo: "future_cards" },
     acpProviders,
     profiles: [{
@@ -83,7 +83,14 @@ function fakeClient(initial = projection()) {
     },
     async updatePreferences(commandId: string, input: UpdatePreferencesInput) {
       calls.push({ method: "preferences", input });
-      return result(commandId, projection({ ...current, revision: current.revision + 1, preferences: { theme: input.theme } }));
+      return result(commandId, projection({
+        ...current,
+        revision: current.revision + 1,
+        preferences: {
+          theme: input.theme,
+          workflowMeasurementEnabled: input.workflowMeasurementEnabled,
+        },
+      }));
     },
     async updateProfileDefaults(commandId: string, input: UpdateProfileDefaultsInput) {
       calls.push({ method: "profile", input });
@@ -109,12 +116,11 @@ function fakeClient(initial = projection()) {
     async getDesktopSnapshot() { return unused(); },
     async getCardInspector() { return unused(); },
     async getBoard() { return unused(); },
+    async getReviewManifest() { return unused(); },
+    async getReviewDiffChunk() { return unused(); },
     async getCatalog() { return unused(); },
     async executeWorkflowCommand() { return unused(); },
-    async startAttempt() { return unused(); },
-    async queueFollowUp() { return unused(); },
-    async removeQueuedFollowUp() { return unused(); },
-    async confirmQueuedFollowUp() { return unused(); },
+    async submitCardPrompt() { return unused(); },
     async answerAttention() { return unused(); },
     dispose() {},
   };
@@ -187,6 +193,19 @@ describe("settings renderer interactions", () => {
     await choose("Theme", "Dark");
     await view.findByText("Theme preference saved.");
     expect(fake.calls[0]).toMatchObject({ method: "preferences", input: { expectedRevision: 0, theme: "dark" } });
+
+    await user.click(view.getByRole("checkbox", {
+      name: "Store content-free workflow measurement locally",
+    }));
+    await view.findByText("Local workflow measurement enabled.");
+    expect(fake.calls[1]).toMatchObject({
+      method: "preferences",
+      input: {
+        expectedRevision: 1,
+        theme: "dark",
+        workflowMeasurementEnabled: true,
+      },
+    });
 
     await choose("Agent", "Codex");
     fireEvent.submit(view.getByRole("button", { name: "Save task defaults" }).closest("form")!);

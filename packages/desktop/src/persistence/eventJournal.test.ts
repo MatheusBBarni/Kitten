@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +9,8 @@ import {
   DuplicateJournalEventError,
   JournalValidationError,
   createEventJournal,
+  type EvidenceBoundReviewDispositionProjection,
+  type EventJournalTransaction,
   type BoardProjection,
   type CardProjection,
   type EdgeProjection,
@@ -15,6 +18,7 @@ import {
   type StageProjection,
 } from "./eventJournal.ts";
 import {
+  DESKTOP_MIGRATIONS,
   migrateDatabase,
   readAppliedMigrations,
   type SqliteMigration,
@@ -22,6 +26,10 @@ import {
 import { rebuildProjections } from "./projectionRebuilder.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "./sqliteDatabase.ts";
 import { workflowIds } from "../workflow/workflowTypes.ts";
+import {
+  parseFollowUpQueueProjection,
+} from "../attempts/followUpQueue.ts";
+import type { ReviewEvidenceRecord } from "./reviewEvidencePersistence.ts";
 
 const BOARD: BoardProjection = {
   boardId: workflowIds.board("board-1"),
@@ -73,6 +81,93 @@ const CARD: CardProjection = {
   createdAt: 120,
   updatedAt: 120,
 };
+
+function hash(bytes: Uint8Array | string): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function evidence(
+  evidenceId: string,
+  createdAt: number,
+  patchText = `patch:${evidenceId}\n`,
+  generation = 1,
+): ReviewEvidenceRecord {
+  const patchBlob = new TextEncoder().encode(patchText);
+  const patchDigest = hash(patchBlob);
+  return {
+    evidenceId,
+    boardId: BOARD.boardId,
+    cardId: CARD.cardId,
+    attemptId: `attempt-${generation}` as ReviewEvidenceRecord["attemptId"],
+    generation: generation as ReviewEvidenceRecord["generation"],
+    worktreeBindingId: `binding-${generation}`,
+    baseCommit: "a".repeat(40),
+    headCommit: "b".repeat(40),
+    policyVersion: 1,
+    evidenceDigest: hash(`evidence:${evidenceId}:${patchText}:${generation}`),
+    fileCount: 1,
+    totalPatchBytes: patchBlob.byteLength,
+    createdAt,
+    files: [{
+      evidenceId,
+      fileIndex: 0,
+      fileId: `file-${evidenceId}`,
+      status: "modified",
+      oldPath: "src/example.ts",
+      newPath: "src/example.ts",
+      oldMode: "100644",
+      newMode: "100644",
+      isBinary: false,
+      additions: 1,
+      deletions: 0,
+      patchByteLength: patchBlob.byteLength,
+      patchDigest,
+      contentDigest: hash(`content:${evidenceId}`),
+      patchBlob,
+    }],
+  };
+}
+
+function referenceFor(value: ReviewEvidenceRecord) {
+  return {
+    evidenceId: value.evidenceId,
+    boardId: value.boardId,
+    cardId: value.cardId,
+    attemptId: value.attemptId,
+    generation: value.generation,
+    worktreeBindingId: value.worktreeBindingId,
+    evidenceDigest: value.evidenceDigest,
+    createdAt: value.createdAt,
+  };
+}
+
+function boundDisposition(
+  reviewId: string,
+  value: ReviewEvidenceRecord,
+  disposition: EvidenceBoundReviewDispositionProjection["disposition"],
+  reviewedCardVersion: number,
+): EvidenceBoundReviewDispositionProjection {
+  return {
+    reviewId,
+    boardId: value.boardId,
+    cardId: value.cardId,
+    evidenceId: value.evidenceId,
+    evidenceDigest: value.evidenceDigest,
+    attemptId: value.attemptId,
+    generation: value.generation,
+    worktreeBindingId: value.worktreeBindingId,
+    disposition,
+    reviewer: "operator",
+    reviewedCardVersion,
+    occurredAt: value.createdAt + 1,
+  };
+}
+
+function seedCard(journal: ReturnType<typeof createEventJournal>): void {
+  journal.append(event("board_upserted", BOARD));
+  journal.append(event("stage_upserted", BACKLOG));
+  journal.append(event("card_upserted", CARD));
+}
 
 type ProjectionJournalEvent = Extract<JournalEvent, {
   kind: "board_upserted" | "stage_upserted" | "edge_upserted" | "card_upserted";
@@ -136,11 +231,11 @@ describe("desktop SQLite factory and migrations", () => {
     const database = openSqliteDatabase({ filename: ":memory:" });
     try {
       expect(migrateDatabase(database, { now: () => 55 })).toEqual({
-        currentVersion: 8,
-        appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8],
+        currentVersion: 9,
+        appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9],
       });
       expect(migrateDatabase(database, { now: () => 99 })).toEqual({
-        currentVersion: 8,
+        currentVersion: 9,
         appliedVersions: [],
       });
       expect(readAppliedMigrations(database)).toEqual([
@@ -152,6 +247,7 @@ describe("desktop SQLite factory and migrations", () => {
         { version: 6, name: "durable_confirmable_follow_up_queue" },
         { version: 7, name: "durable_attention_blockers_and_notification_results" },
         { version: 8, name: "interrupted_attempt_recovery_and_review_dispositions" },
+        { version: 9, name: "immutable_review_evidence_and_queue_v2" },
       ]);
 
       const tables = database.query<{ name: string }, []>(`
@@ -168,6 +264,8 @@ describe("desktop SQLite factory and migrations", () => {
         "journal_events",
         "projection_metadata",
         "review_dispositions",
+        "review_evidence",
+        "review_evidence_files",
         "run_contexts",
         "schema_migrations",
         "skill_catalog_diagnostics",
@@ -178,6 +276,125 @@ describe("desktop SQLite factory and migrations", () => {
         "workflow_stages",
       ]);
       expect(tables).toContain("attempts");
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
+  test("upgrades a version-8 database once and normalizes legacy queue rows", () => {
+    const database = openSqliteDatabase({ filename: ":memory:" });
+    try {
+      expect(migrateDatabase(database, {
+        migrations: DESKTOP_MIGRATIONS.slice(0, 8),
+        now: () => 8,
+      })).toEqual({
+        currentVersion: 8,
+        appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8],
+      });
+      database.query<void, [string, string, number, number, number]>(`
+        INSERT INTO boards(board_id, repository_path, workflow_version, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(BOARD.boardId, BOARD.repositoryPath, 1, 1, 1);
+      database.query<void, [string, string, string, number, null, number, number, number]>(`
+        INSERT INTO workflow_stages(
+          stage_id, board_id, label, position, default_skill_id,
+          configured, workflow_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(BACKLOG.stageId, BOARD.boardId, BACKLOG.label, 0, null, 1, 1, 1);
+      database.query<void, [
+        string, string, string, string, string, string, string, string,
+        null, number, string, number, number, number,
+      ]>(`
+        INSERT INTO cards(
+          card_id, board_id, stage_id, title, description, provider, model, effort,
+          skill_override_id, runnable, execution_status, version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        CARD.cardId, BOARD.boardId, BACKLOG.stageId, CARD.title, CARD.description,
+        CARD.provider, CARD.model, CARD.effort, null, 1, CARD.executionStatus, 1, 1, 1,
+      );
+      database.run(`
+        INSERT INTO attempts(
+          attempt_id, board_id, card_id, generation, state, session_id,
+          failure_json, created_at, started_at, terminal_at
+        ) VALUES (
+          'attempt-legacy', '${BOARD.boardId}', '${CARD.cardId}', 1, 'succeeded',
+          NULL, NULL, 1, 1, 2
+        )
+      `);
+      const legacy = {
+        schemaVersion: 1,
+        boardId: BOARD.boardId,
+        cardId: CARD.cardId,
+        attemptId: "attempt-legacy",
+        generation: 1,
+        version: 3,
+        turnState: "dispatching",
+        drafts: [{
+          queueId: "queue-legacy",
+          text: "explicit legacy submission",
+          state: "confirmed",
+          createdAt: 1,
+          updatedAt: 2,
+          confirmedAt: 2,
+          dispatchedAt: null,
+          removedAt: null,
+        }],
+        updatedAt: 2,
+      };
+      database.query<void, [string, string, string, number, number, string, number]>(`
+        INSERT INTO follow_up_queue_projections(
+          attempt_id, board_id, card_id, generation, version, projection_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "attempt-legacy",
+        BOARD.boardId,
+        CARD.cardId,
+        1,
+        3,
+        JSON.stringify(legacy),
+        2,
+      );
+      database.run(`
+        INSERT INTO review_dispositions(
+          review_id, board_id, card_id, disposition, reviewer,
+          reviewed_card_version, occurred_at
+        ) VALUES (
+          'legacy-review', '${BOARD.boardId}', '${CARD.cardId}',
+          'approved', 'operator', 1, 3
+        )
+      `);
+
+      expect(migrateDatabase(database, { now: () => 9 })).toEqual({
+        currentVersion: 9,
+        appliedVersions: [9],
+      });
+      expect(migrateDatabase(database, { now: () => 10 })).toEqual({
+        currentVersion: 9,
+        appliedVersions: [],
+      });
+      const persisted = database.query<{ projectionJson: string }, []>(`
+        SELECT projection_json AS projectionJson FROM follow_up_queue_projections
+      `).get()!;
+      expect(parseFollowUpQueueProjection(persisted.projectionJson)).toMatchObject({
+        schemaVersion: 2,
+        version: 3,
+        drafts: [{ queueId: "queue-legacy", state: "interrupted" }],
+      });
+      expect(createEventJournal(database).snapshot().reviewDispositions).toEqual([{
+        reviewId: "legacy-review",
+        boardId: BOARD.boardId,
+        cardId: CARD.cardId,
+        evidenceId: null,
+        evidenceDigest: null,
+        attemptId: null,
+        generation: null,
+        worktreeBindingId: null,
+        disposition: "approved",
+        reviewer: "operator",
+        reviewedCardVersion: 1,
+        occurredAt: 3,
+      }]);
     } finally {
       closeSqliteDatabase(database);
     }
@@ -325,7 +542,336 @@ describe("immutable event journal", () => {
   });
 });
 
+describe("immutable review evidence persistence", () => {
+  test("persists exact replays idempotently and rejects identity reuse with different metadata or bytes", () => {
+    const database = migratedMemoryDatabase();
+    const journal = createEventJournal(database);
+    const first = evidence("evidence-idempotent", 300);
+    try {
+      expect(journal.immediate((transaction) => (
+        transaction.persistReviewEvidence(first)
+      ))).toBe("inserted");
+      expect(journal.immediate((transaction) => (
+        transaction.persistReviewEvidence(first)
+      ))).toBe("idempotent");
+      expect(() => journal.immediate((transaction) => (
+        transaction.persistReviewEvidence({
+          ...first,
+          baseCommit: "c".repeat(40),
+        })
+      ))).toThrow("Review evidence identity conflict");
+      const conflictingPatch = new TextEncoder().encode("different patch bytes\n");
+      expect(() => journal.immediate((transaction) => (
+        transaction.persistReviewEvidence({
+          ...first,
+          totalPatchBytes: conflictingPatch.byteLength,
+          files: [{
+            ...first.files[0]!,
+            patchByteLength: conflictingPatch.byteLength,
+            patchDigest: hash(conflictingPatch),
+            patchBlob: conflictingPatch,
+          }],
+        })
+      ))).toThrow("Review evidence identity conflict");
+      expect(journal.reviewEvidence(first.evidenceId)).toEqual(first);
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
+  test("rejects invalid identities, counts, ordering, duplicate IDs, totals, and foreign keys", () => {
+    const database = migratedMemoryDatabase();
+    const journal = createEventJournal(database);
+    const valid = evidence("evidence-invalid-cases", 300);
+    const secondFile = {
+      ...valid.files[0]!,
+      fileIndex: 1,
+      fileId: "file-second",
+    };
+    try {
+      for (const candidate of [
+        { ...valid, evidenceId: "" },
+        { ...valid, fileCount: -1 },
+        { ...valid, fileCount: 2 },
+        { ...valid, totalPatchBytes: valid.totalPatchBytes + 1 },
+        {
+          ...valid,
+          fileCount: 2,
+          totalPatchBytes: valid.totalPatchBytes * 2,
+          files: [valid.files[0]!, { ...secondFile, fileIndex: 0 }],
+        },
+        {
+          ...valid,
+          fileCount: 2,
+          totalPatchBytes: valid.totalPatchBytes * 2,
+          files: [valid.files[0]!, { ...secondFile, fileId: valid.files[0]!.fileId }],
+        },
+      ]) {
+        expect(() => journal.immediate((transaction) => (
+          transaction.persistReviewEvidence(candidate)
+        ))).toThrow();
+      }
+      expect(() => database.run(`
+        INSERT INTO review_evidence_files(
+          evidence_id, file_index, file_id, status, old_path, new_path,
+          old_mode, new_mode, is_binary, additions, deletions, patch_size,
+          patch_digest, content_digest, patch_blob
+        ) VALUES (
+          'missing-evidence', 0, 'file-orphan', 'modified', 'a', 'a',
+          '100644', '100644', 0, 1, 0, 1, '${"a".repeat(64)}', NULL, x'00'
+        )
+      `)).toThrow("FOREIGN KEY");
+      expect(() => database.run(`
+        INSERT INTO review_evidence(
+          evidence_id, board_id, card_id, attempt_id, generation, worktree_binding_id,
+          base_commit, head_commit, policy_version, evidence_digest,
+          file_count, patch_bytes, created_at
+        ) VALUES (
+          'negative-count', 'board', 'card', 'attempt', 0, 'binding',
+          'base', 'head', 1, '${"b".repeat(64)}', -1, 0, 1
+        )
+      `)).toThrow("CHECK constraint");
+      expect(journal.snapshot().reviewEvidenceByCard).toEqual({});
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
+  test("rejects updates and deletes for manifests and file rows", () => {
+    const database = migratedMemoryDatabase();
+    const journal = createEventJournal(database);
+    const value = evidence("evidence-immutable", 300);
+    try {
+      journal.immediate((transaction) => transaction.persistReviewEvidence(value));
+      expect(() => database.query(`
+        UPDATE review_evidence SET head_commit = 'changed' WHERE evidence_id = ?
+      `).run(value.evidenceId)).toThrow("review evidence is immutable");
+      expect(() => database.query(`
+        DELETE FROM review_evidence WHERE evidence_id = ?
+      `).run(value.evidenceId)).toThrow("review evidence is immutable");
+      expect(() => database.query(`
+        UPDATE review_evidence_files SET old_path = 'changed'
+        WHERE evidence_id = ? AND file_index = 0
+      `).run(value.evidenceId)).toThrow("review evidence files are immutable");
+      expect(() => database.query(`
+        DELETE FROM review_evidence_files WHERE evidence_id = ? AND file_index = 0
+      `).run(value.evidenceId)).toThrow("review evidence files are immutable");
+      expect(journal.reviewEvidence(value.evidenceId)).toEqual(value);
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
+  test("rolls back evidence, reference, lifecycle, and disposition after a later write fails", () => {
+    const database = migratedMemoryDatabase();
+    const journal = createEventJournal(database);
+    const value = evidence("evidence-rollback", 300);
+    try {
+      seedCard(journal);
+      const before = journal.snapshot();
+      const ready = {
+        ...CARD,
+        executionStatus: "ready_for_review" as const,
+        version: CARD.version + 1,
+        updatedAt: value.createdAt,
+      };
+      const disposition = boundDisposition(
+        "review-rollback",
+        value,
+        "changes_requested",
+        ready.version,
+      );
+      expect(() => journal.immediate((transaction) => {
+        transaction.persistReviewEvidence(value);
+        transaction.append({
+          eventId: `evidence:${value.evidenceId}`,
+          boardId: value.boardId,
+          cardId: value.cardId,
+          actor: "system",
+          kind: "review_evidence_committed",
+          occurredAt: value.createdAt,
+          payload: {
+            evidence: referenceFor(value),
+            changes: [{ entity: "card", operation: "upsert", value: ready }],
+          },
+        });
+        transaction.append({
+          eventId: `review:${disposition.reviewId}`,
+          boardId: disposition.boardId,
+          cardId: disposition.cardId,
+          actor: "operator",
+          kind: "review_disposition_committed",
+          occurredAt: disposition.occurredAt,
+          payload: {
+            changes: [{
+              entity: "review_disposition",
+              operation: "insert",
+              value: disposition,
+            }],
+          },
+        });
+        transaction.persistReviewEvidence({ ...value, headCommit: "c".repeat(40) });
+      })).toThrow("Review evidence identity conflict");
+      expect(journal.snapshot()).toEqual(before);
+      expect(journal.reviewEvidence(value.evidenceId)).toBeNull();
+      expect(journal.eventById(`evidence:${value.evidenceId}`)).toBeNull();
+      expect(journal.eventById(`review:${disposition.reviewId}`)).toBeNull();
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
+  test("keeps transaction operations scoped to one synchronous immediate callback", () => {
+    const database = migratedMemoryDatabase();
+    const journal = createEventJournal(database);
+    const value = evidence("evidence-transaction-scope", 300);
+    let leaked: EventJournalTransaction | undefined;
+    try {
+      journal.immediate((transaction) => {
+        leaked = transaction;
+      });
+      expect(() => leaked!.persistReviewEvidence(value)).toThrow(
+        "require an active immediate callback",
+      );
+      expect(() => journal.immediate(async (transaction) => {
+        transaction.persistReviewEvidence(value);
+      })).toThrow("must be synchronous");
+      expect(journal.reviewEvidence(value.evidenceId)).toBeNull();
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+
+  test("rebuilds repeated change requests and eventual approval without patch blobs", () => {
+    const database = migratedMemoryDatabase();
+    const journal = createEventJournal(database);
+    const rounds = [
+      evidence("evidence-round-1", 300, "round one patch\n", 1),
+      evidence("evidence-round-2", 400, "round two patch\n", 2),
+      evidence("evidence-round-3", 500, "round three patch\n", 3),
+    ];
+    try {
+      seedCard(journal);
+      let currentCard = CARD;
+      rounds.forEach((value, index) => {
+        currentCard = {
+          ...currentCard,
+          executionStatus: "ready_for_review",
+          version: currentCard.version + 1,
+          updatedAt: value.createdAt,
+        };
+        journal.immediate((transaction) => {
+          transaction.persistReviewEvidence(value);
+          transaction.append({
+            eventId: `evidence:${value.evidenceId}`,
+            boardId: value.boardId,
+            cardId: value.cardId,
+            actor: "system",
+            kind: "review_evidence_committed",
+            occurredAt: value.createdAt,
+            payload: {
+              evidence: referenceFor(value),
+              changes: [{ entity: "card", operation: "upsert", value: currentCard }],
+            },
+          });
+          const disposition = boundDisposition(
+            `review-round-${index + 1}`,
+            value,
+            index === rounds.length - 1 ? "approved" : "changes_requested",
+            currentCard.version,
+          );
+          const completed = {
+            ...currentCard,
+            executionStatus: "completed" as const,
+            version: currentCard.version + 1,
+            updatedAt: disposition.occurredAt,
+          };
+          transaction.append({
+            eventId: `review:${disposition.reviewId}`,
+            boardId: disposition.boardId,
+            cardId: disposition.cardId,
+            actor: "operator",
+            kind: "review_disposition_committed",
+            occurredAt: disposition.occurredAt,
+            payload: {
+              changes: [
+                {
+                  entity: "review_disposition",
+                  operation: "insert",
+                  value: disposition,
+                },
+                ...(disposition.disposition === "approved"
+                  ? [{ entity: "card" as const, operation: "upsert" as const, value: completed }]
+                  : []),
+              ],
+            },
+          });
+          if (disposition.disposition === "approved") currentCard = completed;
+        });
+      });
+
+      const live = journal.snapshot();
+      expect(live.reviewDispositions.map(({ disposition }) => disposition)).toEqual([
+        "changes_requested",
+        "changes_requested",
+        "approved",
+      ]);
+      expect(live.reviewEvidenceByCard[CARD.cardId]?.evidenceId).toBe("evidence-round-3");
+      const serializedSnapshot = JSON.stringify(live);
+      expect(serializedSnapshot).not.toContain("round one patch");
+      expect(serializedSnapshot).not.toContain("round two patch");
+      expect(serializedSnapshot).not.toContain("round three patch");
+      expect(JSON.stringify(journal.events())).not.toContain("round three patch");
+      expect(rebuildProjections(database)).toEqual(live);
+    } finally {
+      closeSqliteDatabase(database);
+    }
+  });
+});
+
 describe("snapshot, reopen, and deterministic projection rebuild", () => {
+  test("reopens the latest evidence summary by created time then evidence identity", () => {
+    withTemporaryDatabase((filename) => {
+      const database = openSqliteDatabase({ filename });
+      migrateDatabase(database);
+      const journal = createEventJournal(database);
+      const older = evidence("evidence-a", 300);
+      const tiedLower = evidence("evidence-b", 400);
+      const tiedHigher = evidence("evidence-c", 400);
+      journal.immediate((transaction) => {
+        transaction.persistReviewEvidence(tiedHigher);
+        transaction.persistReviewEvidence(older);
+        transaction.persistReviewEvidence(tiedLower);
+      });
+      expect(journal.snapshot().reviewEvidenceByCard[CARD.cardId]).toMatchObject({
+        evidenceId: tiedHigher.evidenceId,
+        createdAt: 400,
+      });
+      closeSqliteDatabase(database);
+
+      const reopened = openSqliteDatabase({ filename });
+      try {
+        expect(createEventJournal(reopened).snapshot().reviewEvidenceByCard[CARD.cardId]).toEqual({
+          evidenceId: tiedHigher.evidenceId,
+          boardId: tiedHigher.boardId,
+          cardId: tiedHigher.cardId,
+          attemptId: tiedHigher.attemptId,
+          generation: tiedHigher.generation,
+          worktreeBindingId: tiedHigher.worktreeBindingId,
+          baseCommit: tiedHigher.baseCommit,
+          headCommit: tiedHigher.headCommit,
+          policyVersion: tiedHigher.policyVersion,
+          evidenceDigest: tiedHigher.evidenceDigest,
+          fileCount: tiedHigher.fileCount,
+          totalPatchBytes: tiedHigher.totalPatchBytes,
+          createdAt: tiedHigher.createdAt,
+        });
+      } finally {
+        closeSqliteDatabase(reopened);
+      }
+    });
+  });
+
   test("returns a committed delta and reopens the same comparison-friendly snapshot", () => {
     withTemporaryDatabase((filename) => {
       const database = openSqliteDatabase({ filename });

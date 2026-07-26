@@ -104,11 +104,10 @@ class QueueClient implements DesktopRpcClient {
   async getDesktopSnapshot(): Promise<never> { throw new Error("not used"); }
   async getCardInspector(): Promise<never> { throw new Error("not used"); }
   async getBoard(): Promise<never> { throw new Error("not used"); }
+  async getReviewManifest(): Promise<never> { throw new Error("not used"); }
+  async getReviewDiffChunk(): Promise<never> { throw new Error("not used"); }
   async getCatalog(): Promise<never> { throw new Error("not used"); }
-  async startAttempt(): Promise<never> { throw new Error("not used"); }
-  async queueFollowUp(): Promise<never> { throw new Error("not used"); }
-  async removeQueuedFollowUp(): Promise<never> { throw new Error("not used"); }
-  async confirmQueuedFollowUp(): Promise<never> { throw new Error("not used"); }
+  async submitCardPrompt(): Promise<never> { throw new Error("not used"); }
   async answerAttention(): Promise<never> { throw new Error("not used"); }
   async getSettings(): Promise<never> { throw new Error("not used"); }
   async updatePreferences(): Promise<never> { throw new Error("not used"); }

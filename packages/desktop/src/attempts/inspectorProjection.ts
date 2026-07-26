@@ -104,7 +104,7 @@ export interface AttemptInspectorProjection {
 }
 
 export interface CardInspectorProjection {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly cardId: CardId;
   readonly revision: number;
   readonly card: CardProjection;
@@ -112,6 +112,18 @@ export interface CardInspectorProjection {
   readonly attemptStates: readonly InspectorAttemptState[];
   readonly followUpQueues: readonly FollowUpQueueProjection[];
   readonly attentionBlockers: readonly AttentionBlockerProjection[];
+  readonly reviewEvidence: readonly InspectorReviewEvidenceSummary[];
+}
+
+export interface InspectorReviewEvidenceSummary {
+  readonly evidenceId: string;
+  readonly evidenceDigest: string;
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+  readonly worktreeBindingId: string;
+  readonly fileCount: number;
+  readonly totalPatchBytes: number;
+  readonly createdAt: number;
 }
 
 export interface InspectorAttemptState {

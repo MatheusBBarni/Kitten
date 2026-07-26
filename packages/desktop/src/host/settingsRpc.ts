@@ -30,11 +30,13 @@ export interface CreateDesktopSettingsRpcOptions {
   readonly profiles?: readonly CertifiedDirectAcpProfile[];
   readonly acpProviders?: readonly AcpProviderProjection[];
   readonly initialTheme?: SettingsTheme;
+  readonly initialWorkflowMeasurementEnabled?: boolean;
   readonly initialProfileDefaults?: Omit<FutureCardProfileDefaults, "appliesTo">;
   readonly initialProjectRoots?: readonly string[];
   readonly initialUserRoots?: readonly string[];
   readonly discoverCatalog?: (input: DiscoverSkillCatalogInput) => SkillCatalog;
   readonly onCatalogChanged?: (catalog: SkillCatalog) => void;
+  readonly onWorkflowMeasurementEnabledChanged?: (enabled: boolean) => void;
 }
 
 const FUTURE_CARD_DEFAULTS: FutureCardProfileDefaults = Object.freeze({
@@ -82,6 +84,7 @@ export function createDesktopSettingsRpc(
   const catalogId = options.catalogId ?? "default";
   let revision = 0;
   let theme: SettingsTheme = options.initialTheme ?? "system";
+  let workflowMeasurementEnabled = options.initialWorkflowMeasurementEnabled ?? false;
   let profileDefaults: FutureCardProfileDefaults = {
     ...(options.initialProfileDefaults ?? FUTURE_CARD_DEFAULTS),
     appliesTo: "future_cards",
@@ -94,7 +97,7 @@ export function createDesktopSettingsRpc(
   const projection = (): DesktopSettingsProjection => ({
     kind: "desktop_settings_projection",
     revision,
-    preferences: { theme },
+    preferences: { theme, workflowMeasurementEnabled },
     profileDefaults: { ...profileDefaults },
     profiles: profiles.map(profileProjection),
     acpProviders: acpProviders.map((provider) => ({
@@ -177,8 +180,26 @@ export function createDesktopSettingsRpc(
             rejection: { code: "invalid_theme", message: "Choose System, Light, or Dark theme." },
           };
         }
-        const changed = theme !== input.theme;
+        if (typeof input.workflowMeasurementEnabled !== "boolean") {
+          return {
+            status: "rejected",
+            rejection: {
+              code: "invalid_measurement_preference",
+              message: "Local workflow measurement must be explicitly enabled or disabled.",
+            },
+          };
+        }
+        const measurementChanged = workflowMeasurementEnabled !== input.workflowMeasurementEnabled;
+        const changed = theme !== input.theme || measurementChanged;
         theme = input.theme;
+        workflowMeasurementEnabled = input.workflowMeasurementEnabled;
+        if (measurementChanged) {
+          try {
+            options.onWorkflowMeasurementEnabledChanged?.(workflowMeasurementEnabled);
+          } catch {
+            // Settings remain authoritative if optional measurement cannot reconfigure.
+          }
+        }
         return { changed, sections: ["preferences"] };
       });
     },

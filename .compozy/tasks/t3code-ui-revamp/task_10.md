@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add renderer workbench state and board-context restoration
 type: frontend
 complexity: high

@@ -96,6 +96,8 @@ describe("Workflow Board fake typed RPC", () => {
       getBoard() {
         return boardRpc.getBoard({});
       },
+      async getReviewManifest() { throw new Error("not used by board integration"); },
+      async getReviewDiffChunk() { throw new Error("not used by board integration"); },
       async getCatalog() {
         return createWorkflowCatalogEnvelope({ status: "ok", projection: catalog });
       },
@@ -112,10 +114,7 @@ describe("Workflow Board fake typed RPC", () => {
         }
         return envelope;
       },
-      async startAttempt() { throw new Error("not used by board integration"); },
-      async queueFollowUp() { throw new Error("not used by board integration"); },
-      async removeQueuedFollowUp() { throw new Error("not used by board integration"); },
-      async confirmQueuedFollowUp() { throw new Error("not used by board integration"); },
+      async submitCardPrompt() { throw new Error("not used by board integration"); },
       async answerAttention() { throw new Error("not used by board integration"); },
       async getSettings() { throw new Error("not used by board integration"); },
       async updatePreferences() { throw new Error("not used by board integration"); },
@@ -227,6 +226,15 @@ describe("Workflow Board fake typed RPC", () => {
       const cardCreated = await executeBoardCommand(client, createCardCommand, identities);
       expect(cardCreated.status).toBe("ok");
       if (cardCreated.status !== "ok") throw new Error("card create failed");
+      expect(await boardRpc.getSupervision({})).toMatchObject({
+        result: {
+          status: "ok",
+          projection: {
+            revision: cardCreated.projection.revision,
+            counts: { settled: 1 },
+          },
+        },
+      });
       expect(await boardRpc.executeWorkflowCommand({
         commandId: "idempotent-card",
         command: createCardCommand,
@@ -239,6 +247,33 @@ describe("Workflow Board fake typed RPC", () => {
       expect(moved.status).toBe("ok");
       if (moved.status !== "ok") throw new Error("card move failed");
       expect(moved.projection.cards[0]?.stageId).toBe(targetStageId);
+      const movedCard = moved.projection.cards[0]!;
+      const running = await boardRpc.executeWorkflowCommand({
+        commandId: "card-running",
+        command: {
+          kind: "set_card_execution_status",
+          mutationId: workflowIds.mutation("mutation-card-running"),
+          boardId: movedCard.boardId,
+          cardId: movedCard.cardId,
+          expectedCardVersion: movedCard.version,
+          executionStatus: "running",
+        },
+      });
+      expect(running).toMatchObject({ result: { status: "ok", outcome: "committed" } });
+      const runningProjection = await boardRpc.getSupervision({});
+      expect(runningProjection).toMatchObject({
+        result: {
+          status: "ok",
+          projection: {
+            revision: journal.snapshot().revision,
+            counts: { running: 1, settled: 0 },
+          },
+        },
+      });
+      if (runningProjection.result.status !== "ok") throw new Error("supervision query failed");
+      expect(
+        runningProjection.result.projection.groups.find(({ status }) => status === "running")?.items,
+      ).toEqual([expect.objectContaining({ cardId, attemptId: null, generation: null })]);
 
       await Bun.sleep(0);
       expect(observedBoards.at(-1)?.revision).toBe(moved.projection.revision);

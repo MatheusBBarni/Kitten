@@ -2,8 +2,12 @@ import type { AttemptGeneration, AttemptId } from "@kitten/engine";
 import type { BoardId, CardId } from "../workflow/workflowTypes.ts";
 
 export type FollowUpQueueId = string & { readonly __brand: "FollowUpQueueId" };
-export type FollowUpDraftState = "queued" | "awaiting_confirmation" | "confirmed" | "dispatched" | "removed";
-export type FollowUpTurnState = "active" | "settled" | "dispatching";
+export type FollowUpDraftState =
+  | "queued"
+  | "dispatching"
+  | "dispatched"
+  | "removed"
+  | "interrupted";
 
 export interface FollowUpDraft {
   readonly queueId: FollowUpQueueId;
@@ -11,50 +15,70 @@ export interface FollowUpDraft {
   readonly state: FollowUpDraftState;
   readonly createdAt: number;
   readonly updatedAt: number;
-  readonly confirmedAt: number | null;
+  readonly dispatchingAt: number | null;
   readonly dispatchedAt: number | null;
   readonly removedAt: number | null;
+  readonly interruptedAt: number | null;
 }
 
 export interface FollowUpQueueProjection {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly boardId: BoardId;
   readonly cardId: CardId;
   readonly attemptId: AttemptId;
   readonly generation: AttemptGeneration;
   readonly version: number;
-  readonly turnState: FollowUpTurnState;
   readonly drafts: readonly FollowUpDraft[];
   readonly updatedAt: number;
 }
 
-export type FollowUpQueueOperation = "created" | "removed" | "head_ready" | "confirmed" | "dispatched";
+export interface FollowUpQueueFence {
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+  readonly expectedVersion: number;
+}
+
+export type FollowUpQueueOperation =
+  | "enqueued"
+  | "dispatching"
+  | "dispatched"
+  | "removed"
+  | "interrupted"
+  | "retried";
 
 const DRAFT_STATES: readonly FollowUpDraftState[] = [
-  "queued", "awaiting_confirmation", "confirmed", "dispatched", "removed",
+  "queued",
+  "dispatching",
+  "dispatched",
+  "removed",
+  "interrupted",
 ];
-const TURN_STATES: readonly FollowUpTurnState[] = ["active", "settled", "dispatching"];
+const LEGACY_DRAFT_STATES = [
+  "queued",
+  "awaiting_confirmation",
+  "confirmed",
+  "dispatched",
+  "removed",
+] as const;
+const LEGACY_TURN_STATES = ["active", "settled", "dispatching"] as const;
 
 export function createFollowUpQueue(input: {
   readonly boardId: BoardId;
   readonly cardId: CardId;
   readonly attemptId: AttemptId;
   readonly generation: AttemptGeneration;
-  readonly turnState: Exclude<FollowUpTurnState, "dispatching">;
   readonly queueId: FollowUpQueueId;
   readonly text: string;
   readonly occurredAt: number;
 }): FollowUpQueueProjection {
-  const draft = createDraft(input.queueId, input.text, input.turnState === "settled", input.occurredAt);
   return validateFollowUpQueueProjection({
-    schemaVersion: 1,
+    schemaVersion: 2,
     boardId: input.boardId,
     cardId: input.cardId,
     attemptId: input.attemptId,
     generation: input.generation,
     version: 1,
-    turnState: input.turnState,
-    drafts: [draft],
+    drafts: [createDraft(input.queueId, input.text, input.occurredAt)],
     updatedAt: input.occurredAt,
   });
 }
@@ -62,14 +86,18 @@ export function createFollowUpQueue(input: {
 export function enqueueFollowUp(
   current: FollowUpQueueProjection,
   input: { readonly queueId: FollowUpQueueId; readonly text: string; readonly occurredAt: number },
+  fence: FollowUpQueueFence,
 ): FollowUpQueueProjection {
+  assertFollowUpQueueFence(current, fence);
   if (current.drafts.some((draft) => draft.queueId === input.queueId)) {
-    throw new FollowUpQueueTransitionError("duplicate_queue_id", `Queue identity ${input.queueId} already exists`);
+    throw new FollowUpQueueTransitionError(
+      "duplicate_queue_id",
+      `Queue identity ${input.queueId} already exists`,
+    );
   }
-  const awaiting = current.turnState === "settled" && activeDrafts(current).length === 0;
   return next(current, input.occurredAt, [
     ...current.drafts,
-    createDraft(input.queueId, input.text, awaiting, input.occurredAt),
+    createDraft(input.queueId, input.text, input.occurredAt),
   ]);
 }
 
@@ -77,46 +105,45 @@ export function removeFollowUp(
   current: FollowUpQueueProjection,
   queueId: FollowUpQueueId,
   occurredAt: number,
+  fence: FollowUpQueueFence,
 ): FollowUpQueueProjection {
+  assertFollowUpQueueFence(current, fence);
   const target = current.drafts.find((draft) => draft.queueId === queueId);
-  if (target === undefined) throw new FollowUpQueueTransitionError("queue_not_found", `Queue identity ${queueId} is unknown`);
-  if (target.state !== "queued" && target.state !== "awaiting_confirmation") {
-    throw new FollowUpQueueTransitionError("invalid_state", `Queue identity ${queueId} cannot be removed from ${target.state}`);
+  if (target === undefined) {
+    throw new FollowUpQueueTransitionError("queue_not_found", `Queue identity ${queueId} is unknown`);
   }
-  let drafts: readonly FollowUpDraft[] = current.drafts.map((draft): FollowUpDraft => draft.queueId === queueId
-    ? { ...draft, state: "removed", removedAt: occurredAt, updatedAt: occurredAt }
-    : draft);
-  if (target.state === "awaiting_confirmation" && current.turnState === "settled") {
-    drafts = promoteHead(drafts, occurredAt);
+  if (target.state !== "queued" && target.state !== "interrupted") {
+    throw new FollowUpQueueTransitionError(
+      "invalid_state",
+      `Queue identity ${queueId} cannot be removed from ${target.state}`,
+    );
   }
-  return next(current, occurredAt, drafts);
+  const timestamp = transitionTimestamp(current, occurredAt);
+  return next(current, timestamp, current.drafts.map((draft): FollowUpDraft => (
+    draft.queueId === queueId
+      ? { ...draft, state: "removed", removedAt: timestamp, updatedAt: timestamp }
+      : draft
+  )));
 }
 
-export function settleFollowUpTurn(
-  current: FollowUpQueueProjection,
-  occurredAt: number,
-): FollowUpQueueProjection {
-  if (current.turnState === "dispatching") {
-    throw new FollowUpQueueTransitionError("invalid_state", "A dispatching turn cannot settle twice");
-  }
-  return next({ ...current, turnState: "settled" }, occurredAt, promoteHead(current.drafts, occurredAt));
-}
-
-export function confirmFollowUpHead(
+export function markFollowUpDispatching(
   current: FollowUpQueueProjection,
   queueId: FollowUpQueueId,
   occurredAt: number,
+  fence: FollowUpQueueFence,
 ): FollowUpQueueProjection {
-  const head = awaitingConfirmationHead(current);
-  if (head === null || head.queueId !== queueId) {
-    throw new FollowUpQueueTransitionError("stale_head", "The expected queue head is no longer awaiting confirmation");
+  assertFollowUpQueueFence(current, fence);
+  const head = unresolvedFollowUpHead(current);
+  if (head === null || head.queueId !== queueId || head.state !== "queued") {
+    throw new FollowUpQueueTransitionError(
+      "stale_head",
+      "Only the queued FIFO head may enter dispatching",
+    );
   }
-  if (current.turnState !== "settled") {
-    throw new FollowUpQueueTransitionError("turn_active", "The active prompt turn has not settled");
-  }
-  return next({ ...current, turnState: "dispatching" }, occurredAt, current.drafts.map((draft): FollowUpDraft => (
+  const timestamp = transitionTimestamp(current, occurredAt);
+  return next(current, timestamp, current.drafts.map((draft): FollowUpDraft => (
     draft.queueId === queueId
-      ? { ...draft, state: "confirmed", confirmedAt: occurredAt, updatedAt: occurredAt }
+      ? { ...draft, state: "dispatching", dispatchingAt: timestamp, updatedAt: timestamp }
       : draft
   )));
 }
@@ -125,70 +152,166 @@ export function markFollowUpDispatched(
   current: FollowUpQueueProjection,
   queueId: FollowUpQueueId,
   occurredAt: number,
+  fence: FollowUpQueueFence,
 ): FollowUpQueueProjection {
-  const target = current.drafts.find((draft) => draft.queueId === queueId);
-  if (current.turnState !== "dispatching" || target?.state !== "confirmed") {
-    throw new FollowUpQueueTransitionError("invalid_state", "Only the committed confirmed head can be dispatched");
+  assertFollowUpQueueFence(current, fence);
+  const head = unresolvedFollowUpHead(current);
+  if (head?.queueId !== queueId || head.state !== "dispatching") {
+    throw new FollowUpQueueTransitionError(
+      "stale_head",
+      "Only the dispatching FIFO head may be marked dispatched",
+    );
   }
-  const dispatched = current.drafts.map((draft): FollowUpDraft => draft.queueId === queueId
-    ? { ...draft, state: "dispatched", dispatchedAt: occurredAt, updatedAt: occurredAt }
-    : draft);
-  return next({ ...current, turnState: "settled" }, occurredAt, promoteHead(dispatched, occurredAt));
+  const timestamp = transitionTimestamp(current, occurredAt);
+  return next(current, timestamp, current.drafts.map((draft): FollowUpDraft => (
+    draft.queueId === queueId
+      ? { ...draft, state: "dispatched", dispatchedAt: timestamp, updatedAt: timestamp }
+      : draft
+  )));
 }
 
-export function awaitingConfirmationHead(current: FollowUpQueueProjection): FollowUpDraft | null {
-  return activeDrafts(current).find((draft) => draft.state === "awaiting_confirmation") ?? null;
+export function interruptFollowUpDispatch(
+  current: FollowUpQueueProjection,
+  queueId: FollowUpQueueId,
+  occurredAt: number,
+  fence: FollowUpQueueFence,
+): FollowUpQueueProjection {
+  assertFollowUpQueueFence(current, fence);
+  const head = unresolvedFollowUpHead(current);
+  if (head?.queueId !== queueId || head.state !== "dispatching") {
+    throw new FollowUpQueueTransitionError(
+      "stale_head",
+      "Only the dispatching FIFO head may be interrupted",
+    );
+  }
+  const timestamp = transitionTimestamp(current, occurredAt);
+  return next(current, timestamp, current.drafts.map((draft): FollowUpDraft => (
+    draft.queueId === queueId
+      ? { ...draft, state: "interrupted", interruptedAt: timestamp, updatedAt: timestamp }
+      : draft
+  )));
+}
+
+export function retryInterruptedFollowUp(
+  current: FollowUpQueueProjection,
+  queueId: FollowUpQueueId,
+  occurredAt: number,
+  fence: FollowUpQueueFence,
+): FollowUpQueueProjection {
+  assertFollowUpQueueFence(current, fence);
+  const head = unresolvedFollowUpHead(current);
+  if (head?.queueId !== queueId || head.state !== "interrupted") {
+    throw new FollowUpQueueTransitionError(
+      "stale_head",
+      "Only the interrupted FIFO head may be explicitly retried",
+    );
+  }
+  const timestamp = transitionTimestamp(current, occurredAt);
+  return next(current, timestamp, current.drafts.map((draft): FollowUpDraft => (
+    draft.queueId === queueId
+      ? {
+          ...draft,
+          state: "queued",
+          dispatchingAt: null,
+          interruptedAt: null,
+          updatedAt: timestamp,
+        }
+      : draft
+  )));
+}
+
+export function queuedFollowUpHead(current: FollowUpQueueProjection): FollowUpDraft | null {
+  const head = unresolvedFollowUpHead(current);
+  return head?.state === "queued" ? head : null;
+}
+
+export function unresolvedFollowUpHead(current: FollowUpQueueProjection): FollowUpDraft | null {
+  return current.drafts.find((draft) => (
+    draft.state === "queued"
+    || draft.state === "dispatching"
+    || draft.state === "interrupted"
+  )) ?? null;
+}
+
+export function followUpQueueFence(current: FollowUpQueueProjection): FollowUpQueueFence {
+  return {
+    attemptId: current.attemptId,
+    generation: current.generation,
+    expectedVersion: current.version,
+  };
+}
+
+export function assertFollowUpQueueFence(
+  current: FollowUpQueueProjection,
+  fence: FollowUpQueueFence,
+): void {
+  if (fence.attemptId !== current.attemptId) {
+    throw new FollowUpQueueTransitionError("stale_attempt", "Follow-up attempt identity is stale");
+  }
+  if (fence.generation !== current.generation) {
+    throw new FollowUpQueueTransitionError("stale_generation", "Follow-up attempt generation is stale");
+  }
+  if (fence.expectedVersion !== current.version) {
+    throw new FollowUpQueueTransitionError("stale_version", "Follow-up queue version is stale");
+  }
 }
 
 export function validateFollowUpQueueProjection(input: unknown): FollowUpQueueProjection {
   const value = record(input, "follow-up queue projection");
+  if (value.schemaVersion === 1) return migrateLegacyFollowUpQueueProjection(value);
+  if (value.schemaVersion !== 2) throw new Error("follow-up queue schemaVersion must be 1 or 2");
   exactKeys(value, [
-    "schemaVersion", "boardId", "cardId", "attemptId", "generation", "version", "turnState", "drafts", "updatedAt",
+    "schemaVersion",
+    "boardId",
+    "cardId",
+    "attemptId",
+    "generation",
+    "version",
+    "drafts",
+    "updatedAt",
   ]);
-  if (value.schemaVersion !== 1) throw new Error("follow-up queue schemaVersion must be 1");
-  const turnState = nonEmpty(value.turnState, "follow-up turnState") as FollowUpTurnState;
-  if (!TURN_STATES.includes(turnState)) throw new Error("follow-up turnState is unsupported");
-  if (!Array.isArray(value.drafts) || value.drafts.length === 0) throw new Error("follow-up drafts must be non-empty");
+  if (!Array.isArray(value.drafts) || value.drafts.length === 0) {
+    throw new Error("follow-up drafts must be non-empty");
+  }
   const drafts = value.drafts.map(validateDraft);
-  if (new Set(drafts.map((draft) => draft.queueId)).size !== drafts.length) {
-    throw new Error("follow-up queue identities must be unique");
-  }
-  const active = drafts.filter((draft) => draft.state === "queued" || draft.state === "awaiting_confirmation" || draft.state === "confirmed");
-  const awaiting = active.filter((draft) => draft.state === "awaiting_confirmation");
-  const confirmed = active.filter((draft) => draft.state === "confirmed");
-  if (awaiting.length > 1 || confirmed.length > 1 || (awaiting.length > 0 && confirmed.length > 0)) {
-    throw new Error("follow-up queue permits only one actionable head");
-  }
-  if (awaiting[0] !== undefined && active[0]?.queueId !== awaiting[0].queueId) {
-    throw new Error("only the FIFO head may await confirmation");
-  }
-  if (confirmed[0] !== undefined && (active[0]?.queueId !== confirmed[0].queueId || turnState !== "dispatching")) {
-    throw new Error("only the FIFO head may be confirmed while dispatching");
-  }
-  if (turnState === "settled" && active.length > 0 && awaiting.length !== 1) {
-    throw new Error("a settled queue must expose exactly one FIFO head");
-  }
-  if (turnState === "active" && (awaiting.length > 0 || confirmed.length > 0)) {
-    throw new Error("an active turn may contain only queued drafts");
+  validateDraftOrder(drafts);
+  const updatedAt = integer(value.updatedAt, "follow-up updatedAt");
+  if (drafts.some((draft) => draft.updatedAt > updatedAt)) {
+    throw new Error("follow-up queue updatedAt precedes a draft update");
   }
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     boardId: nonEmpty(value.boardId, "follow-up boardId") as BoardId,
     cardId: nonEmpty(value.cardId, "follow-up cardId") as CardId,
     attemptId: nonEmpty(value.attemptId, "follow-up attemptId") as AttemptId,
     generation: integer(value.generation, "follow-up generation") as AttemptGeneration,
     version: positiveInteger(value.version, "follow-up version"),
-    turnState,
     drafts: Object.freeze(drafts),
-    updatedAt: integer(value.updatedAt, "follow-up updatedAt"),
+    updatedAt,
   });
+}
+
+export function parseFollowUpQueueProjection(serialized: string): FollowUpQueueProjection {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    throw new Error("follow-up queue serialization is invalid JSON");
+  }
+  return validateFollowUpQueueProjection(parsed);
+}
+
+export function serializeFollowUpQueueProjection(projection: FollowUpQueueProjection): string {
+  return JSON.stringify(validateFollowUpQueueProjection(projection));
 }
 
 export type FollowUpQueueTransitionReason =
   | "duplicate_queue_id"
   | "queue_not_found"
+  | "stale_attempt"
+  | "stale_generation"
+  | "stale_version"
   | "stale_head"
-  | "turn_active"
   | "invalid_state";
 
 export class FollowUpQueueTransitionError extends Error {
@@ -198,31 +321,25 @@ export class FollowUpQueueTransitionError extends Error {
   }
 }
 
-function createDraft(queueId: FollowUpQueueId, text: string, awaiting: boolean, occurredAt: number): FollowUpDraft {
-  if (queueId.trim().length === 0) throw new FollowUpQueueTransitionError("queue_not_found", "Queue identity is invalid");
-  if (text.trim().length === 0) throw new FollowUpQueueTransitionError("invalid_state", "Follow-up text must be non-empty");
-  return {
+function createDraft(queueId: FollowUpQueueId, text: string, occurredAt: number): FollowUpDraft {
+  if (queueId.trim().length === 0) {
+    throw new FollowUpQueueTransitionError("queue_not_found", "Queue identity is invalid");
+  }
+  if (text.trim().length === 0) {
+    throw new FollowUpQueueTransitionError("invalid_state", "Follow-up text must be non-empty");
+  }
+  const timestamp = integer(occurredAt, "follow-up occurredAt");
+  return Object.freeze({
     queueId,
     text,
-    state: awaiting ? "awaiting_confirmation" : "queued",
-    createdAt: occurredAt,
-    updatedAt: occurredAt,
-    confirmedAt: null,
+    state: "queued",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    dispatchingAt: null,
     dispatchedAt: null,
     removedAt: null,
-  };
-}
-
-function activeDrafts(current: FollowUpQueueProjection): readonly FollowUpDraft[] {
-  return current.drafts.filter((draft) => draft.state === "queued" || draft.state === "awaiting_confirmation" || draft.state === "confirmed");
-}
-
-function promoteHead(drafts: readonly FollowUpDraft[], occurredAt: number): readonly FollowUpDraft[] {
-  const first = drafts.find((draft) => draft.state === "queued");
-  if (first === undefined) return drafts;
-  return drafts.map((draft): FollowUpDraft => draft.queueId === first.queueId
-    ? { ...draft, state: "awaiting_confirmation", updatedAt: occurredAt }
-    : draft);
+    interruptedAt: null,
+  });
 }
 
 function next(
@@ -234,42 +351,189 @@ function next(
     ...current,
     version: current.version + 1,
     drafts,
-    updatedAt: Math.max(current.updatedAt, occurredAt),
+    updatedAt: transitionTimestamp(current, occurredAt),
   });
+}
+
+function transitionTimestamp(current: FollowUpQueueProjection, occurredAt: number): number {
+  return Math.max(current.updatedAt, integer(occurredAt, "follow-up occurredAt"));
 }
 
 function validateDraft(input: unknown): FollowUpDraft {
   const value = record(input, "follow-up draft");
   exactKeys(value, [
-    "queueId", "text", "state", "createdAt", "updatedAt", "confirmedAt", "dispatchedAt", "removedAt",
+    "queueId",
+    "text",
+    "state",
+    "createdAt",
+    "updatedAt",
+    "dispatchingAt",
+    "dispatchedAt",
+    "removedAt",
+    "interruptedAt",
   ]);
   const state = nonEmpty(value.state, "follow-up draft state") as FollowUpDraftState;
   if (!DRAFT_STATES.includes(state)) throw new Error("follow-up draft state is unsupported");
   const createdAt = integer(value.createdAt, "follow-up createdAt");
   const updatedAt = integer(value.updatedAt, "follow-up updatedAt");
-  const confirmedAt = nullableInteger(value.confirmedAt, "follow-up confirmedAt");
+  const dispatchingAt = nullableInteger(value.dispatchingAt, "follow-up dispatchingAt");
   const dispatchedAt = nullableInteger(value.dispatchedAt, "follow-up dispatchedAt");
   const removedAt = nullableInteger(value.removedAt, "follow-up removedAt");
+  const interruptedAt = nullableInteger(value.interruptedAt, "follow-up interruptedAt");
   if (updatedAt < createdAt) throw new Error("follow-up updatedAt precedes creation");
-  if ((state === "confirmed" || state === "dispatched") !== (confirmedAt !== null)) {
-    throw new Error("follow-up confirmation evidence is inconsistent");
+  if ((state === "dispatching" || state === "dispatched" || state === "interrupted") && dispatchingAt === null) {
+    throw new Error("follow-up dispatching evidence is missing");
   }
-  if ((state === "dispatched") !== (dispatchedAt !== null)) throw new Error("follow-up dispatch evidence is inconsistent");
-  if ((state === "removed") !== (removedAt !== null)) throw new Error("follow-up removal evidence is inconsistent");
+  if (state === "queued" && [dispatchingAt, dispatchedAt, removedAt, interruptedAt].some((value) => value !== null)) {
+    throw new Error("queued follow-up contains terminal or dispatch evidence");
+  }
+  if ((state === "dispatched") !== (dispatchedAt !== null)) {
+    throw new Error("follow-up dispatched evidence is inconsistent");
+  }
+  if ((state === "removed") !== (removedAt !== null)) {
+    throw new Error("follow-up removal evidence is inconsistent");
+  }
+  if (state === "interrupted" && interruptedAt === null) {
+    throw new Error("follow-up interruption evidence is inconsistent");
+  }
+  if (state !== "interrupted" && state !== "removed" && interruptedAt !== null) {
+    throw new Error("follow-up interruption evidence is inconsistent");
+  }
+  for (const timestamp of [dispatchingAt, dispatchedAt, removedAt, interruptedAt]) {
+    if (timestamp !== null && (timestamp < createdAt || timestamp > updatedAt)) {
+      throw new Error("follow-up transition timestamp is outside the draft lifetime");
+    }
+  }
   return Object.freeze({
     queueId: nonEmpty(value.queueId, "follow-up queueId") as FollowUpQueueId,
-    text: typeof value.text === "string" && value.text.trim().length > 0 ? value.text : (() => { throw new Error("follow-up text is invalid"); })(),
+    text: typeof value.text === "string" && value.text.trim().length > 0
+      ? value.text
+      : (() => { throw new Error("follow-up text is invalid"); })(),
     state,
     createdAt,
     updatedAt,
-    confirmedAt,
+    dispatchingAt,
     dispatchedAt,
     removedAt,
+    interruptedAt,
   });
 }
 
+function validateDraftOrder(drafts: readonly FollowUpDraft[]): void {
+  if (new Set(drafts.map((draft) => draft.queueId)).size !== drafts.length) {
+    throw new Error("follow-up queue identities must be unique");
+  }
+  for (let index = 1; index < drafts.length; index += 1) {
+    const previous = drafts[index - 1]!;
+    const current = drafts[index]!;
+    if (current.createdAt < previous.createdAt) {
+      throw new Error("follow-up durable order must be chronological");
+    }
+  }
+  const unresolved = drafts.filter((draft) => (
+    draft.state === "queued"
+    || draft.state === "dispatching"
+    || draft.state === "interrupted"
+  ));
+  const dispatching = unresolved.filter((draft) => draft.state === "dispatching");
+  const interrupted = unresolved.filter((draft) => draft.state === "interrupted");
+  if (dispatching.length > 1 || interrupted.length > 1) {
+    throw new Error("follow-up queue permits only one uncertain FIFO head");
+  }
+  if (dispatching[0] !== undefined && unresolved[0]?.queueId !== dispatching[0].queueId) {
+    throw new Error("only the FIFO head may be dispatching");
+  }
+  if (interrupted[0] !== undefined && unresolved[0]?.queueId !== interrupted[0].queueId) {
+    throw new Error("only the FIFO head may be interrupted");
+  }
+}
+
+function migrateLegacyFollowUpQueueProjection(value: Record<string, unknown>): FollowUpQueueProjection {
+  exactKeys(value, [
+    "schemaVersion",
+    "boardId",
+    "cardId",
+    "attemptId",
+    "generation",
+    "version",
+    "turnState",
+    "drafts",
+    "updatedAt",
+  ]);
+  const turnState = nonEmpty(value.turnState, "legacy follow-up turnState");
+  if (!(LEGACY_TURN_STATES as readonly string[]).includes(turnState)) {
+    throw new Error("legacy follow-up turnState is unsupported");
+  }
+  if (!Array.isArray(value.drafts) || value.drafts.length === 0) {
+    throw new Error("legacy follow-up drafts must be non-empty");
+  }
+  const drafts = value.drafts.map(migrateLegacyDraft);
+  const ambiguous = drafts.filter((draft) => draft.state === "interrupted");
+  if (turnState === "dispatching" && ambiguous.length !== 1) {
+    throw new Error("legacy dispatching queue must contain one ambiguous head");
+  }
+  return validateFollowUpQueueProjection({
+    schemaVersion: 2,
+    boardId: value.boardId,
+    cardId: value.cardId,
+    attemptId: value.attemptId,
+    generation: value.generation,
+    version: value.version,
+    drafts,
+    updatedAt: value.updatedAt,
+  });
+}
+
+function migrateLegacyDraft(input: unknown): FollowUpDraft {
+  const value = record(input, "legacy follow-up draft");
+  exactKeys(value, [
+    "queueId",
+    "text",
+    "state",
+    "createdAt",
+    "updatedAt",
+    "confirmedAt",
+    "dispatchedAt",
+    "removedAt",
+  ]);
+  const legacyState = nonEmpty(value.state, "legacy follow-up draft state");
+  if (!(LEGACY_DRAFT_STATES as readonly string[]).includes(legacyState)) {
+    throw new Error("legacy follow-up draft state is unsupported");
+  }
+  const createdAt = integer(value.createdAt, "legacy follow-up createdAt");
+  const updatedAt = integer(value.updatedAt, "legacy follow-up updatedAt");
+  const confirmedAt = nullableInteger(value.confirmedAt, "legacy follow-up confirmedAt");
+  const dispatchedAt = nullableInteger(value.dispatchedAt, "legacy follow-up dispatchedAt");
+  const removedAt = nullableInteger(value.removedAt, "legacy follow-up removedAt");
+  const state: FollowUpDraftState = legacyState === "confirmed"
+    ? "interrupted"
+    : legacyState === "awaiting_confirmation"
+      ? "queued"
+      : legacyState as FollowUpDraftState;
+  return {
+    queueId: nonEmpty(value.queueId, "legacy follow-up queueId") as FollowUpQueueId,
+    text: typeof value.text === "string" && value.text.trim().length > 0
+      ? value.text
+      : (() => { throw new Error("legacy follow-up text is invalid"); })(),
+    state,
+    createdAt,
+    updatedAt,
+    dispatchingAt: state === "dispatched" || state === "interrupted"
+      ? confirmedAt ?? dispatchedAt ?? updatedAt
+      : null,
+    dispatchedAt: state === "dispatched" ? dispatchedAt : null,
+    removedAt: state === "removed" ? removedAt : null,
+    interruptedAt: state === "interrupted" ? updatedAt : null,
+  };
+}
+
 function record(input: unknown, label: string): Record<string, unknown> {
-  if (input === null || typeof input !== "object" || Array.isArray(input) || Object.getPrototypeOf(input) !== Object.prototype) {
+  if (
+    input === null
+    || typeof input !== "object"
+    || Array.isArray(input)
+    || Object.getPrototypeOf(input) !== Object.prototype
+  ) {
     throw new Error(`${label} must be a plain object`);
   }
   return input as Record<string, unknown>;
@@ -282,12 +546,16 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): voi
 }
 
 function nonEmpty(input: unknown, label: string): string {
-  if (typeof input !== "string" || input.trim().length === 0) throw new Error(`${label} is invalid`);
+  if (typeof input !== "string" || input.trim().length === 0) {
+    throw new Error(`${label} is invalid`);
+  }
   return input;
 }
 
 function integer(input: unknown, label: string): number {
-  if (!Number.isSafeInteger(input) || (input as number) < 0) throw new Error(`${label} is invalid`);
+  if (!Number.isSafeInteger(input) || (input as number) < 0) {
+    throw new Error(`${label} is invalid`);
+  }
   return input as number;
 }
 

@@ -4,10 +4,16 @@ import {
   createCardInspectorEnvelope,
   createBootstrapEnvelope,
   createEmptyDesktopSnapshot,
+  createEmptySupervisionProjection,
   createEmptyWorkflowBoardProjection,
   createEmptyWorkflowCatalogProjection,
   createEmptyWorkspaceProjection,
   createRepositoryDirectoryPickerEnvelope,
+  createReviewDiffChunkEnvelope,
+  createReviewManifestEnvelope,
+  createReviewApprovalEnvelope,
+  createSubmitCardPromptEnvelope,
+  createSupervisionEnvelope,
   createWorkflowBoardEnvelope,
   createWorkflowCatalogEnvelope,
   createWorkflowCommandEnvelope,
@@ -21,28 +27,32 @@ import {
   type WorkflowCommandEnvelope,
   type WorkspaceEnvelope,
   type RepositoryDirectoryPickerEnvelope,
+  type ReviewDiffChunkEnvelope,
+  type ReviewManifestEnvelope,
   type SettingsCommandEnvelope,
   type SettingsEnvelope,
+  type SupervisionEnvelope,
+  type SubmitCardPromptEnvelope,
+  type SubmitCardPromptInput,
 } from "./shared/rpc.ts";
 import type { CardInspectorProjection } from "./attempts/inspectorProjection.ts";
 import { createActivityIngestor, getCardInspectorProjection } from "./attempts/activityIngestor.ts";
-import { createAttemptCoordinator } from "./attempts/attemptCoordinator.ts";
+import {
+  completeSuccessfulAttempt,
+  createAttemptCoordinator,
+} from "./attempts/attemptCoordinator.ts";
 import { createDesktopAcpConnectionFactory } from "./attempts/desktopAcpAdapter.ts";
 import { createDirectAcpAttemptStarter } from "./attempts/directAcpAttempt.ts";
 import type { CardId } from "./workflow/workflowTypes.ts";
-import type {
-  ConfirmQueuedFollowUpInput,
-  QueueFollowUpInput,
-  RemoveQueuedFollowUpInput,
-} from "./attempts/attemptCoordinator.ts";
 import {
-  createDesktopFollowUpRpc,
+  createDesktopPromptSubmissionRpc,
   createDesktopInspectorRpc,
+  createDesktopReviewRpc,
+  createDesktopReviewEvidenceRpc,
   type DesktopInspectorRpc,
-  type DesktopFollowUpRpc,
+  type DesktopPromptSubmissionRpc,
+  type DesktopReviewEvidenceRpc,
   type DesktopReviewRpc,
-  type FollowUpRpcRequest,
-  type FollowUpRpcResultEnvelope,
 } from "./host/desktopRpc.ts";
 import type { DesktopBoardRpc } from "./host/boardRpc.ts";
 import type { WorkflowCommand } from "./workflow/workflowTypes.ts";
@@ -56,13 +66,12 @@ import type {
   UpdateProfileDefaultsInput,
 } from "./shared/desktopRpc.ts";
 import { mkdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createDesktopBoardRpc, projectWorkflowBoard } from "./host/boardRpc.ts";
 import { createEventJournal } from "./persistence/eventJournal.ts";
 import { migrateDatabase } from "./persistence/migrations.ts";
 import { closeSqliteDatabase, openSqliteDatabase } from "./persistence/sqliteDatabase.ts";
 import { createWorkflowCommandHandler } from "./workflow/workflowCommands.ts";
-import { workflowIds } from "./workflow/workflowTypes.ts";
 import { readCatalogProjection, replaceCatalogProjection } from "./catalog/catalogProjection.ts";
 import type { SkillCatalog } from "./catalog/contracts.ts";
 import {
@@ -81,6 +90,13 @@ import { createAttentionCoordinator } from "./attention/attentionCoordinator.ts"
 import { createAttemptAskUserBridge } from "./attention/attemptAskUserBridge.ts";
 import { DESKTOP_ASK_USER_MCP_MODE_FLAG, runDesktopAskUserMcp } from "./attention/desktopAskUserMcpServer.ts";
 import { createCardNotificationService } from "./notifications/cardNotificationService.ts";
+import { createReviewEvidenceService } from "./host/reviewEvidence.ts";
+import { createReviewDispositionService } from "./host/reviewDisposition.ts";
+import {
+  createJsonlWorkflowMeasurementStorage,
+  createWorkflowMeasurement,
+} from "./host/workflowMeasurement.ts";
+import { resolveNativeCaptureRuntime } from "../test/native/nativeCaptureRuntime.ts";
 
 export interface DesktopWindowPort {
   sendHostMessage(message: HostMessageEnvelope): void;
@@ -94,16 +110,16 @@ export interface DesktopWindowFactory {
     onGetCardInspector(params: { readonly cardId: string }): Promise<CardInspectorEnvelope>;
     onGetBoard(params: { readonly boardId?: string; readonly mode?: "active" | "new" }): Promise<WorkflowBoardEnvelope>;
     onGetWorkspace(params: { readonly knownRevision?: number }): Promise<WorkspaceEnvelope>;
+    onGetSupervision(params: { readonly knownRevision?: number }): Promise<SupervisionEnvelope>;
+    onGetReviewManifest(params: Parameters<DesktopReviewEvidenceRpc["getReviewManifest"]>[0]): Promise<ReviewManifestEnvelope>;
+    onGetReviewDiffChunk(params: Parameters<DesktopReviewEvidenceRpc["getReviewDiffChunk"]>[0]): Promise<ReviewDiffChunkEnvelope>;
     onGetCatalog(params: { readonly catalogId?: string }): Promise<WorkflowCatalogEnvelope>;
     onPickRepositoryDirectory(params: Record<never, never>): Promise<RepositoryDirectoryPickerEnvelope>;
     onExecuteWorkflowCommand(params: {
       readonly commandId: string;
       readonly command: WorkflowCommand;
     }): Promise<WorkflowCommandEnvelope>;
-    onQueueFollowUp(params: FollowUpRpcRequest<QueueFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
-    onRemoveQueuedFollowUp(params: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
-    onConfirmQueuedFollowUp(params: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
-    onStartAttempt(params: Parameters<DesktopInspectorRpc["startAttempt"]>[0]): ReturnType<DesktopInspectorRpc["startAttempt"]>;
+    onSubmitCardPrompt(params: SubmitCardPromptInput): Promise<SubmitCardPromptEnvelope>;
     onStopAttempt(params: Parameters<DesktopInspectorRpc["stopAttempt"]>[0]): ReturnType<DesktopInspectorRpc["stopAttempt"]>;
     onAnswerAttention(params: Parameters<DesktopInspectorRpc["answerAttention"]>[0]): ReturnType<DesktopInspectorRpc["answerAttention"]>;
     onReviewCard(params: Parameters<DesktopReviewRpc["reviewCard"]>[0]): ReturnType<DesktopReviewRpc["reviewCard"]>;
@@ -124,9 +140,10 @@ export function startDesktopShell(options: {
   readonly windowFactory: DesktopWindowFactory;
   readonly getSnapshot?: () => DesktopSnapshot | Promise<DesktopSnapshot>;
   readonly getCardInspector?: (cardId: CardId) => CardInspectorProjection | null | Promise<CardInspectorProjection | null>;
-  readonly followUpRpc?: DesktopFollowUpRpc;
+  readonly promptSubmissionRpc?: DesktopPromptSubmissionRpc;
   readonly inspectorRpc?: DesktopInspectorRpc;
   readonly reviewRpc?: DesktopReviewRpc;
+  readonly reviewEvidenceRpc?: DesktopReviewEvidenceRpc;
   readonly boardRpc?: DesktopBoardRpc;
   readonly settingsRpc?: DesktopSettingsRpc;
   readonly pickRepositoryDirectory?: () => Promise<RepositoryDirectoryPickerEnvelope>;
@@ -238,6 +255,46 @@ export function startDesktopShell(options: {
         });
       }
     },
+    async onGetSupervision() {
+      if (stopped) {
+        return createSupervisionEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "desktop_host", reason: "host_stopped" },
+        });
+      }
+      if (options.boardRpc === undefined) {
+        return createSupervisionEnvelope({
+          status: "ok",
+          projection: createEmptySupervisionProjection(),
+        });
+      }
+      try {
+        return await options.boardRpc.getSupervision({});
+      } catch {
+        return createSupervisionEnvelope({
+          status: "unavailable",
+          unavailable: { resource: "supervision", reason: "projection_rejected" },
+        });
+      }
+    },
+    async onGetReviewManifest(request) {
+      if (stopped) return unavailableReviewManifest("host_stopped");
+      if (options.reviewEvidenceRpc === undefined) return unavailableReviewManifest("not_ready");
+      try {
+        return await options.reviewEvidenceRpc.getReviewManifest(request);
+      } catch {
+        return unavailableReviewManifest("projection_rejected");
+      }
+    },
+    async onGetReviewDiffChunk(request) {
+      if (stopped) return unavailableReviewDiffChunk("host_stopped");
+      if (options.reviewEvidenceRpc === undefined) return unavailableReviewDiffChunk("not_ready");
+      try {
+        return await options.reviewEvidenceRpc.getReviewDiffChunk(request);
+      } catch {
+        return unavailableReviewDiffChunk("projection_rejected");
+      }
+    },
     async onGetCatalog(params) {
       if (stopped) {
         return createWorkflowCatalogEnvelope({
@@ -309,25 +366,10 @@ export function startDesktopShell(options: {
         });
       }
     },
-    async onQueueFollowUp(request) {
-      return options.followUpRpc === undefined
-        ? unavailableFollowUp(request.commandId)
-        : options.followUpRpc.queueFollowUp(request);
-    },
-    async onRemoveQueuedFollowUp(request) {
-      return options.followUpRpc === undefined
-        ? unavailableFollowUp(request.commandId)
-        : options.followUpRpc.removeQueuedFollowUp(request);
-    },
-    async onConfirmQueuedFollowUp(request) {
-      return options.followUpRpc === undefined
-        ? unavailableFollowUp(request.commandId)
-        : options.followUpRpc.confirmQueuedFollowUp(request);
-    },
-    async onStartAttempt(request) {
-      return options.inspectorRpc === undefined
-        ? unavailableInspectorCommand(request.commandId)
-        : options.inspectorRpc.startAttempt(request);
+    async onSubmitCardPrompt(request) {
+      return options.promptSubmissionRpc === undefined
+        ? unavailablePromptSubmission(request.commandId)
+        : options.promptSubmissionRpc.submitCardPrompt(request);
     },
     async onStopAttempt(request) {
       return options.inspectorRpc === undefined
@@ -344,11 +386,11 @@ export function startDesktopShell(options: {
       if (options.reviewRpc === undefined) return unavailableReview(request.commandId, "not_ready");
       try {
         const envelope = await options.reviewRpc.reviewCard(request);
-        if (envelope.result.status === "committed") {
+        if (envelope.result.status === "ok" && envelope.result.outcome === "approved") {
           window.sendHostMessage(assertHostMessage({
             kind: "projection_committed",
             messageId: `review:${request.commandId}`,
-            revision: envelope.result.revision,
+            revision: options.reviewRpc.currentRevision(),
           }));
         }
         return envelope;
@@ -477,20 +519,37 @@ function unavailableInspectorCommand(commandId: string) {
 
 function unavailableReview(
   commandId: string,
-  reason: "not_ready" | "host_stopped" | "projection_rejected",
+  _reason: "not_ready" | "host_stopped" | "projection_rejected",
 ) {
-  return { kind: "review_card_result" as const, commandId, result: { status: "unavailable" as const, reason } };
+  return createReviewApprovalEnvelope(commandId, {
+    status: "rejected",
+    error: { code: "evidence_missing", recoveryHint: "retry_evidence_capture" },
+  });
 }
 
-function unavailableFollowUp(commandId: string): FollowUpRpcResultEnvelope {
-  return {
-    kind: "follow_up_command_result",
-    commandId,
-    result: {
-      status: "rejected",
-      reason: { code: "invalid_state", message: "Follow-up commands are not ready" },
-    },
-  };
+function unavailableReviewManifest(
+  reason: "not_ready" | "host_stopped" | "projection_rejected",
+): ReviewManifestEnvelope {
+  return createReviewManifestEnvelope({
+    status: "unavailable",
+    unavailable: { resource: "review_manifest", reason },
+  });
+}
+
+function unavailableReviewDiffChunk(
+  reason: "not_ready" | "host_stopped" | "projection_rejected",
+): ReviewDiffChunkEnvelope {
+  return createReviewDiffChunkEnvelope({
+    status: "unavailable",
+    unavailable: { resource: "review_diff_chunk", reason },
+  });
+}
+
+function unavailablePromptSubmission(commandId: string): SubmitCardPromptEnvelope {
+  return createSubmitCardPromptEnvelope(commandId, {
+    status: "rejected",
+    error: { code: "invalid_prompt", recoveryHint: "none" },
+  });
 }
 
 export async function main(): Promise<DesktopShell> {
@@ -498,9 +557,21 @@ export async function main(): Promise<DesktopShell> {
     import("./host/electrobunWindow.ts"),
     import("electrobun/bun"),
   ]);
-  mkdirSync(Utils.paths.userData, { recursive: true });
-  const database = openSqliteDatabase({ filename: join(Utils.paths.userData, "workflow.sqlite") });
+  const nativeCapture = resolveNativeCaptureRuntime(process.env);
+  const userDataPath = nativeCapture === null
+    ? Utils.paths.userData
+    : dirname(nativeCapture.databasePath);
+  const homePath = nativeCapture === null ? Utils.paths.home : userDataPath;
+  mkdirSync(userDataPath, { recursive: true });
+  const database = openSqliteDatabase({
+    filename: nativeCapture?.databasePath ?? join(userDataPath, "workflow.sqlite"),
+  });
   migrateDatabase(database);
+  const workflowMeasurement = createWorkflowMeasurement({
+    storage: createJsonlWorkflowMeasurementStorage(
+      join(userDataPath, "workflow-measurement.jsonl"),
+    ),
+  });
 
   const journal = createEventJournal(database);
   let currentCatalog: SkillCatalog | null = null;
@@ -522,16 +593,19 @@ export async function main(): Promise<DesktopShell> {
     });
   };
   const initialBoard = journal.snapshot().boards[0];
-  const acpProviders = discoverAcpProviders({ homePath: Utils.paths.home });
-  const runtimeProfiles = discoverDesktopAcpRuntimeProfiles({ homePath: Utils.paths.home });
+  const acpProviders = discoverAcpProviders({ homePath });
+  const runtimeProfiles = discoverDesktopAcpRuntimeProfiles({ homePath });
   const settingsRpc = createDesktopSettingsRpc({
     initialProjectRoots: initialBoard === undefined
       ? []
       : defaultProjectSkillRoots(initialBoard.repositoryPath),
-    initialUserRoots: defaultUserSkillRoots(Utils.paths.home),
+    initialUserRoots: defaultUserSkillRoots(homePath),
     profiles: runtimeProfiles.map(({ profile }) => profile),
     acpProviders,
     onCatalogChanged: syncCatalog,
+    onWorkflowMeasurementEnabledChanged(enabled) {
+      workflowMeasurement.setEnabled(enabled);
+    },
   });
   const workflowCommands = createWorkflowCommandHandler(journal);
   const boardRpc = createDesktopBoardRpc(journal, workflowCommands, {
@@ -544,6 +618,7 @@ export async function main(): Promise<DesktopShell> {
     onProjectionCommitted(projection) {
       writeProjectBoardConfig(projection);
     },
+    measurement: workflowMeasurement,
   });
   const startupSnapshot = journal.snapshot();
   for (const board of startupSnapshot.boards) {
@@ -563,28 +638,30 @@ export async function main(): Promise<DesktopShell> {
     }),
   });
   const askUserBridge = createAttemptAskUserBridge({ journal, attention });
+  const reviewEvidence = createReviewEvidenceService(journal);
   const activityIngestor = createActivityIngestor({
     journal,
-    onCommitted({ event, inspector, delta }) {
+    async onCommitted({ event, inspector, delta }) {
+      let revision = delta.revision;
       if (event.activity.kind === "attempt_state" && event.activity.state === "succeeded") {
-        const snapshot = journal.snapshot();
-        const attempt = snapshot.attempts.find(({ attemptId }) => attemptId === inspector.attemptId);
-        const card = snapshot.cards.find(({ cardId }) => cardId === inspector.cardId);
-        const board = snapshot.boards.find(({ boardId }) => boardId === inspector.boardId);
-        if (attempt?.state === "succeeded" && card?.executionStatus === "running" && board !== undefined) {
-          workflowCommands.execute({
-            kind: "record_agent_success",
-            mutationId: workflowIds.mutation(`agent-success:${crypto.randomUUID()}`),
-            boardId: board.boardId,
-            expectedWorkflowVersion: board.workflowVersion,
-            cardId: card.cardId,
-            expectedCardVersion: card.version,
-          });
+        const completion = await completeSuccessfulAttempt({
+          journal,
+          workflowCommands,
+          reviewEvidence,
+          attemptId: inspector.attemptId,
+          generation: inspector.generation,
+          measurement: workflowMeasurement,
+        });
+        if (
+          completion.status === "advanced"
+          || completion.status === "ready_for_review"
+        ) {
+          revision = completion.revision;
         }
       }
       shell?.publish(createAttemptActivityMessage({
         messageId: `attempt:${event.eventId}`,
-        revision: delta.revision,
+        revision,
         boardId: inspector.boardId,
         cardId: inspector.cardId,
         attemptId: inspector.attemptId,
@@ -602,6 +679,8 @@ export async function main(): Promise<DesktopShell> {
       command: process.execPath,
       args: [import.meta.path, DESKTOP_ASK_USER_MCP_MODE_FLAG],
     })),
+    reviewEvidence,
+    measurement: workflowMeasurement,
     activityIngestor,
     askUserBridge,
     hasActiveAttention: (attemptId) => attention.hasActive(attemptId),
@@ -629,13 +708,25 @@ export async function main(): Promise<DesktopShell> {
       }
     },
   });
+  const reviewDisposition = createReviewDispositionService({
+    journal,
+    evidence: reviewEvidence,
+  });
   shell = startDesktopShell({
-    windowFactory: await createElectrobunWindowFactory(),
+    windowFactory: await createElectrobunWindowFactory(nativeCapture),
     boardRpc,
     settingsRpc,
     getCardInspector: (cardId) => getCardInspectorProjection(journal, cardId),
     inspectorRpc: createDesktopInspectorRpc(journal, attemptCoordinator, attention),
-    followUpRpc: createDesktopFollowUpRpc(attemptCoordinator),
+    promptSubmissionRpc: createDesktopPromptSubmissionRpc(
+      attemptCoordinator,
+      workflowMeasurement,
+    ),
+    reviewRpc: createDesktopReviewRpc(reviewDisposition, workflowMeasurement),
+    reviewEvidenceRpc: createDesktopReviewEvidenceRpc(
+      reviewEvidence,
+      workflowMeasurement,
+    ),
     async getSnapshot() {
       const snapshot = journal.snapshot();
       const settings = await settingsRpc.getSettings();
@@ -656,7 +747,7 @@ export async function main(): Promise<DesktopShell> {
     },
     async pickRepositoryDirectory() {
       const chosenPaths = await Utils.openFileDialog({
-        startingFolder: Utils.paths.home,
+        startingFolder: homePath,
         allowedFileTypes: "*",
         canChooseFiles: false,
         canChooseDirectory: true,
@@ -676,7 +767,7 @@ export async function main(): Promise<DesktopShell> {
   const workflowApi = createWorkflowApiServer({
     boardRpc,
     getSnapshot: () => journal.snapshot(),
-    homePath: Utils.paths.home,
+    homePath,
     onProjectionCommitted(projection) {
       shell?.publish(assertHostMessage({
         kind: "projection_committed",

@@ -1,51 +1,31 @@
-import { describe, expect, test } from "bun:test";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { afterEach, describe, expect, test } from "bun:test";
+import "../../settings/testDom.ts";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PersistentComposer, type ComposerLifecycleStatus } from "./PersistentComposer.tsx";
+import {
+  PersistentComposer,
+  type ComposerDeliveryState,
+  type ComposerLifecycleStatus,
+} from "./PersistentComposer.tsx";
 import { TEST_ATTEMPT_ID, TEST_GENERATION } from "./testSupport.ts";
 
-function descendants(node: ReactNode, type: string): ReactElement<Record<string, unknown>>[] {
-  if (Array.isArray(node)) return node.flatMap((child) => descendants(child, type));
-  if (!isValidElement<Record<string, unknown>>(node)) return [];
-  return (node.type === type ? [node] : []).concat(descendants(node.props.children as ReactNode, type));
-}
-
-function action(node: ReactNode, label: string): ReactElement<Record<string, unknown>> {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const match = actionOrNull(child, label);
-      if (match !== null) return match;
-    }
-  }
-  return actionOrNull(node, label)!;
-}
-
-function actionOrNull(node: ReactNode, label: string): ReactElement<Record<string, unknown>> | null {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const match = actionOrNull(child, label);
-      if (match !== null) return match;
-    }
-    return null;
-  }
-  if (!isValidElement<Record<string, unknown>>(node)) return null;
-  if (typeof node.props.onPress === "function" && node.props.children === label) return node;
-  return actionOrNull(node.props.children as ReactNode, label);
-}
+afterEach(cleanup);
 
 function composer(input: Partial<Parameters<typeof PersistentComposer>[0]> = {}) {
-  return PersistentComposer({
-    status: "idle",
-    attemptId: TEST_ATTEMPT_ID,
-    generation: TEST_GENERATION,
-    draft: "Inspect the renderer",
-    blockerActive: false,
-    busy: false,
-    onDraftChange() {},
-    onStartAttempt() {},
-    onSendDirection() {},
-    ...input,
-  });
+  return (
+    <PersistentComposer
+      status="idle"
+      attemptId={TEST_ATTEMPT_ID}
+      generation={TEST_GENERATION}
+      draft="Inspect the renderer"
+      blockerActive={false}
+      busy={false}
+      onDraftChange={() => {}}
+      onStartAttempt={() => {}}
+      onSendDirection={() => {}}
+      {...input}
+    />
+  );
 }
 
 describe("PersistentComposer", () => {
@@ -60,28 +40,114 @@ describe("PersistentComposer", () => {
     }
   });
 
-  test("routes idle text only to startAttempt and running text only to sendDirection", () => {
+  test("routes trimmed initial, active-direction, and request-changes text exactly once", () => {
     const starts: string[] = [];
     const directions: string[] = [];
-    const submit = (view: ReactNode) => (
-      descendants(view, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void
-    )({ preventDefault() {} });
+    const changes: string[] = [];
 
-    submit(composer({ status: "idle", onStartAttempt: (text) => starts.push(text), onSendDirection: (text) => directions.push(text) }));
-    submit(composer({ status: "running", onStartAttempt: (text) => starts.push(text), onSendDirection: (text) => directions.push(text) }));
-    submit(composer({ status: "needs_attention", blockerActive: true, onStartAttempt: (text) => starts.push(text), onSendDirection: (text) => directions.push(text) }));
+    const initial = render(composer({
+      draft: "  Start here  ",
+      onStartAttempt: (text) => starts.push(text),
+    }));
+    fireEvent.submit(initial.getByRole("button", { name: "Start run" }).closest("form")!);
+    fireEvent.submit(initial.getByRole("button", { name: "Start run" }).closest("form")!);
+    expect(starts).toEqual(["Start here"]);
+    cleanup();
 
-    expect(starts).toEqual(["Inspect the renderer"]);
-    expect(directions).toEqual(["Inspect the renderer"]);
+    const active = render(composer({
+      status: "running",
+      mode: "active_direction",
+      draft: "  Direction  ",
+      onSendDirection: (text) => directions.push(text),
+    }));
+    fireEvent.submit(active.getByRole("button", { name: "Send message" }).closest("form")!);
+    expect(directions).toEqual(["Direction"]);
+    cleanup();
+
+    const request = render(composer({
+      status: "ready_for_review",
+      mode: "request_changes",
+      requestChangesAvailable: true,
+      draft: "  Fix the regression  ",
+      onRequestChanges: (text) => changes.push(text),
+    }));
+    fireEvent.submit(request.getByRole("button", { name: "Send change request" }).closest("form")!);
+    expect(changes).toEqual(["Fix the regression"]);
   });
 
-  test("uses cockpit-like immediate send language without confirmation controls", () => {
-    const view = composer({ status: "running" });
-    const markup = renderToStaticMarkup(view);
-    expect(markup).toContain("Steer active task");
-    expect(markup).toContain("Press Enter to send a direction");
-    expect(markup).toContain("Send message");
-    expect(markup).not.toContain("Queue a follow-up");
-    expect(markup).not.toContain("confirmation");
+  test("submits on Enter but never on Shift+Enter, IME composition, repeat, busy, or duplicate keydown", () => {
+    const submissions: string[] = [];
+    const view = render(composer({
+      draft: "Send once",
+      onStartAttempt: (text) => submissions.push(text),
+    }));
+    const input = view.getByLabelText("Message");
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    fireEvent.keyDown(input, { key: "Enter", repeat: true });
+    expect(submissions).toEqual([]);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(submissions).toEqual(["Send once"]);
+    cleanup();
+
+    const busy = render(composer({
+      busy: true,
+      onStartAttempt: (text) => submissions.push(text),
+    }));
+    fireEvent.keyDown(busy.getByLabelText("Message"), { key: "Enter" });
+    expect(submissions).toEqual(["Send once"]);
+  });
+
+  test("uses host delivery states and explicit retry without confirmation language", () => {
+    const states: readonly ComposerDeliveryState[] = [
+      "queued", "dispatching", "dispatched", "interrupted",
+    ];
+    const copy = states.map((deliveryState) => renderToStaticMarkup(composer({
+      status: deliveryState === "interrupted" ? "failed" : "running",
+      mode: deliveryState === "interrupted" ? "initial" : "active_direction",
+      deliveryState,
+    }))).join("\n");
+
+    expect(copy).toContain("accepted and queued");
+    expect(copy).toContain("is dispatching");
+    expect(copy).toContain("was dispatched");
+    expect(copy).toContain("retry explicitly");
+    expect(copy).not.toContain("confirmation");
+
+    const retried: string[] = [];
+    const interrupted = render(composer({
+      status: "failed",
+      deliveryState: "interrupted",
+      draft: "Restore exactly",
+      onRetryInterrupted: (text) => retried.push(text),
+    }));
+    fireEvent.submit(interrupted.getByRole("button", { name: "Retry message" }).closest("form")!);
+    expect(retried).toEqual(["Restore exactly"]);
+  });
+
+  test("keeps blocked and review-only drafts visible with next-action guidance", () => {
+    const blocked = renderToStaticMarkup(composer({
+      status: "needs_attention",
+      blockerActive: true,
+    }));
+    const reviewOnly = renderToStaticMarkup(composer({
+      status: "ready_for_review",
+    }));
+    const staleEvidence = renderToStaticMarkup(composer({
+      status: "ready_for_review",
+      mode: "request_changes",
+      requestChangesAvailable: false,
+    }));
+
+    expect(blocked).toContain("Answer the active question");
+    expect(reviewOnly).toContain("Open review and choose Request changes");
+    expect(staleEvidence).toContain("Current review evidence is required");
+    expect(blocked).toContain("Inspect the renderer");
+    expect(reviewOnly).toContain("Inspect the renderer");
+    expect(staleEvidence).toContain("Inspect the renderer");
   });
 });

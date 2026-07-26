@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add migration v9 and immutable review-evidence persistence
 type: backend
 complexity: high

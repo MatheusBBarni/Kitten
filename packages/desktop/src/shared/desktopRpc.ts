@@ -43,7 +43,10 @@ export interface FutureCardProfileDefaults {
 export interface DesktopSettingsProjection {
   readonly kind: "desktop_settings_projection";
   readonly revision: number;
-  readonly preferences: { readonly theme: SettingsTheme };
+  readonly preferences: {
+    readonly theme: SettingsTheme;
+    readonly workflowMeasurementEnabled: boolean;
+  };
   readonly profileDefaults: FutureCardProfileDefaults;
   readonly profiles: readonly SettingsProfileProjection[];
   readonly acpProviders: readonly AcpProviderProjection[];
@@ -58,6 +61,7 @@ export interface DesktopSettingsProjection {
 export interface UpdatePreferencesInput {
   readonly expectedRevision: number;
   readonly theme: SettingsTheme;
+  readonly workflowMeasurementEnabled: boolean;
 }
 
 export interface UpdateProfileDefaultsInput {
@@ -115,6 +119,7 @@ export type SettingsCommandResult =
         readonly code:
           | "invalid_settings_revision"
           | "invalid_theme"
+          | "invalid_measurement_preference"
           | "invalid_profile_default"
           | "invalid_catalog_root"
           | "invalid_execution_limit";

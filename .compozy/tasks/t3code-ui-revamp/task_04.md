@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build canonical review-evidence capture, revalidation, and chunking
 type: backend
 complexity: high

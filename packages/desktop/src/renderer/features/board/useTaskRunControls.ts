@@ -11,14 +11,14 @@ function commandId(action: "start" | "stop"): string {
 export function useTaskRunControls(client: DesktopRpcClient) {
   const queryClient = useQueryClient();
   const start = useMutation({
-    mutationFn: (card: CardProjection) => client.startAttempt(
-      commandId("start"),
-      {
-        cardId: card.cardId,
-        expectedCardVersion: card.version,
-        initialPrompt: card.description.trim() || card.title,
-      },
-    ),
+    mutationFn: (card: CardProjection) => client.submitCardPrompt({
+      commandId: commandId("start"),
+      boardId: card.boardId,
+      cardId: card.cardId,
+      expectedCardVersion: card.version,
+      content: card.description.trim() || card.title,
+      source: "initial",
+    }),
     onSuccess({ result }) {
       if (result.status === "ok") {
         showBoardToast({ message: "Run started.", tone: "success" });
@@ -26,7 +26,7 @@ export function useTaskRunControls(client: DesktopRpcClient) {
         return;
       }
       showBoardToast({
-        message: result.status === "conflict" ? result.conflict.message : result.reason.message,
+        message: "The run could not start from the task's current state.",
         tone: "error",
       });
     },

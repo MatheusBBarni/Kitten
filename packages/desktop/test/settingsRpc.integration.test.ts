@@ -82,7 +82,11 @@ describe("settings RPC integration", () => {
 
     const theme = await handlers.onUpdatePreferences({
       commandId: "settings-theme",
-      input: { expectedRevision: 0, theme: "dark" },
+      input: {
+        expectedRevision: 0,
+        theme: "dark",
+        workflowMeasurementEnabled: false,
+      },
     });
     const defaults = await handlers.onUpdateProfileDefaults({
       commandId: "settings-defaults",

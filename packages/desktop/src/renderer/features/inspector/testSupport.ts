@@ -8,7 +8,8 @@ import type {
 } from "@kitten/engine";
 import type { AttentionBlockerProjection } from "../../../attention/contracts.ts";
 import type { AttemptInspectorProjection, CardInspectorProjection } from "../../../attempts/inspectorProjection.ts";
-import { createFollowUpQueue, settleFollowUpTurn, type FollowUpQueueId } from "../../../attempts/followUpQueue.ts";
+import { createFollowUpQueue, type FollowUpQueueId } from "../../../attempts/followUpQueue.ts";
+import type { ReviewEvidenceManifest } from "../../../shared/rpc.ts";
 import { workflowIds, type CardProjection, type ExecutionStatus } from "../../../workflow/workflowTypes.ts";
 
 export const TEST_BOARD_ID = workflowIds.board("board-inspector-renderer");
@@ -17,6 +18,8 @@ export const TEST_ATTEMPT_ID = "attempt-inspector-renderer" as AttemptId;
 export const TEST_GENERATION = 2 as AttemptGeneration;
 export const TEST_BLOCKER_ID = "blocker-inspector-renderer" as QuestionId;
 export const TEST_QUEUE_ID = "queue-inspector-renderer" as FollowUpQueueId;
+export const TEST_EVIDENCE_ID = "evidence-inspector-renderer";
+export const TEST_EVIDENCE_DIGEST = "a".repeat(64);
 
 export function inspectorCard(executionStatus: ExecutionStatus = "running"): CardProjection {
   return {
@@ -129,36 +132,25 @@ export function inspectorProjection(input: {
   readonly queue?: "none" | "active" | "settled";
   readonly blocker?: "none" | "active" | "settled";
   readonly revision?: number;
+  readonly evidence?: boolean;
 } = {}): CardInspectorProjection {
   const attempt = inspectorAttempt(input.terminalOutcome ?? null);
   const queue = input.queue === undefined || input.queue === "none"
     ? []
-    : [input.queue === "settled"
-        ? settleFollowUpTurn(createFollowUpQueue({
-            boardId: TEST_BOARD_ID,
-            cardId: TEST_CARD_ID,
-            attemptId: TEST_ATTEMPT_ID,
-            generation: TEST_GENERATION,
-            turnState: "active",
-            queueId: TEST_QUEUE_ID,
-            text: "Verify the renderer queue.",
-            occurredAt: 107,
-          }), 108)
-        : createFollowUpQueue({
-            boardId: TEST_BOARD_ID,
-            cardId: TEST_CARD_ID,
-            attemptId: TEST_ATTEMPT_ID,
-            generation: TEST_GENERATION,
-            turnState: "active",
-            queueId: TEST_QUEUE_ID,
-            text: "Verify the renderer queue.",
-            occurredAt: 107,
-          })];
+    : [createFollowUpQueue({
+        boardId: TEST_BOARD_ID,
+        cardId: TEST_CARD_ID,
+        attemptId: TEST_ATTEMPT_ID,
+        generation: TEST_GENERATION,
+        queueId: TEST_QUEUE_ID,
+        text: "Verify the renderer queue.",
+        occurredAt: input.queue === "settled" ? 108 : 107,
+      })];
   const blocker = input.blocker === undefined || input.blocker === "none"
     ? []
     : [attentionBlocker(input.blocker === "active")];
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     cardId: TEST_CARD_ID,
     revision: input.revision ?? 12,
     card: inspectorCard(input.status ?? "running"),
@@ -174,5 +166,56 @@ export function inspectorProjection(input: {
     }],
     followUpQueues: queue,
     attentionBlockers: blocker,
+    reviewEvidence: input.evidence === true ? [{
+      evidenceId: TEST_EVIDENCE_ID,
+      evidenceDigest: TEST_EVIDENCE_DIGEST,
+      attemptId: TEST_ATTEMPT_ID,
+      generation: TEST_GENERATION,
+      worktreeBindingId: "binding-inspector-renderer",
+      fileCount: 1,
+      totalPatchBytes: 128,
+      createdAt: 121,
+    }] : [],
+  };
+}
+
+export function reviewManifest(): ReviewEvidenceManifest {
+  return {
+    kind: "review_evidence_manifest",
+    schemaVersion: 1,
+    revision: 12,
+    evidenceId: TEST_EVIDENCE_ID,
+    boardId: TEST_BOARD_ID,
+    cardId: TEST_CARD_ID,
+    attemptId: TEST_ATTEMPT_ID,
+    generation: TEST_GENERATION,
+    worktreeBindingId: "binding-inspector-renderer",
+    evidenceDigest: TEST_EVIDENCE_DIGEST,
+    baseCommit: "base-commit",
+    headCommit: "head-commit",
+    policyVersion: 1,
+    fileCount: 1,
+    totalPatchBytes: 128,
+    createdAt: 121,
+    availability: {
+      status: "available",
+      evidenceId: TEST_EVIDENCE_ID,
+      evidenceDigest: TEST_EVIDENCE_DIGEST,
+    },
+    files: [{
+      fileId: "file-inspector-renderer",
+      index: 0,
+      status: "modified",
+      oldPath: "src/old.ts",
+      newPath: "src/new.ts",
+      oldMode: "100644",
+      newMode: "100644",
+      isBinary: false,
+      additions: 4,
+      deletions: 2,
+      patchByteLength: 128,
+      patchDigest: "b".repeat(64),
+      contentDigest: null,
+    }],
   };
 }

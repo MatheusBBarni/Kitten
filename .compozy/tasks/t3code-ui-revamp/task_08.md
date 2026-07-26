@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Gate review readiness and approval on current evidence
 type: backend
 complexity: high

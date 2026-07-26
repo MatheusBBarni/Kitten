@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Add opt-in content-free workflow measurement and diagnostics
 type: backend
 complexity: high

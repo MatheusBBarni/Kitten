@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the cross-project Work Inbox
 type: frontend
 complexity: high

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Derive the cross-project supervision projection and host query
 type: backend
 complexity: high

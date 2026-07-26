@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Implement unified direct prompt submission and safe-boundary dispatch
 type: backend
 complexity: high

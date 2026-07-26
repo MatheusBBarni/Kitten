@@ -45,9 +45,29 @@ import type {
   FollowUpQueueOperation,
   FollowUpQueueProjection,
 } from "../attempts/followUpQueue.ts";
-import { validateFollowUpQueueProjection } from "../attempts/followUpQueue.ts";
+import {
+  serializeFollowUpQueueProjection,
+  validateFollowUpQueueProjection,
+} from "../attempts/followUpQueue.ts";
 import type { AttentionBlockerProjection } from "../attention/contracts.ts";
 import { validateAttentionBlockerProjection } from "../attention/contracts.ts";
+import {
+  persistReviewEvidence,
+  readLatestReviewEvidenceByCard,
+  readReviewEvidence,
+  readReviewEvidenceSummary,
+  type PersistReviewEvidenceResult,
+  type ReviewEvidenceRecord,
+  type ReviewEvidenceReference,
+  type ReviewEvidenceSummary,
+} from "./reviewEvidencePersistence.ts";
+
+export type {
+  ReviewEvidenceFileRecord,
+  ReviewEvidenceRecord,
+  ReviewEvidenceReference,
+  ReviewEvidenceSummary,
+} from "./reviewEvidencePersistence.ts";
 
 export type {
   BoardProjection,
@@ -111,6 +131,11 @@ export type JournalEvent =
       readonly payload: AttemptLifecycleEventPayload;
     })
   | (JournalEventBase & {
+      readonly kind: "prompt_submission_committed";
+      readonly cardId: CardId;
+      readonly payload: PromptSubmissionEventPayload;
+    })
+  | (JournalEventBase & {
       readonly kind: "attempt_activity_committed";
       readonly cardId: CardId;
       readonly attemptId: string;
@@ -135,6 +160,11 @@ export type JournalEvent =
       readonly payload: AttemptInterruptedEventPayload;
     })
   | (JournalEventBase & {
+      readonly kind: "review_evidence_committed";
+      readonly cardId: CardId;
+      readonly payload: ReviewEvidenceEventPayload;
+    })
+  | (JournalEventBase & {
       readonly kind: "review_disposition_committed";
       readonly cardId: CardId;
       readonly payload: ReviewDispositionEventPayload;
@@ -157,6 +187,20 @@ export type AttemptLifecycleOperation = "created" | "started" | "startup_failed"
 
 export interface AttemptLifecycleEventPayload {
   readonly operation: AttemptLifecycleOperation;
+  readonly changes: readonly ProjectionChange[];
+}
+
+export interface PromptSubmissionRecord {
+  readonly commandId: string;
+  readonly requestFingerprint: string;
+  readonly outcome: "admitted" | "queued";
+  readonly cardVersion: number;
+  readonly attemptId: string;
+  readonly generation: AttemptGeneration;
+}
+
+export interface PromptSubmissionEventPayload {
+  readonly submission: PromptSubmissionRecord;
   readonly changes: readonly ProjectionChange[];
 }
 
@@ -186,10 +230,28 @@ export interface ReviewDispositionProjection {
   readonly reviewId: string;
   readonly boardId: BoardId;
   readonly cardId: CardId;
-  readonly disposition: "approved";
+  readonly evidenceId: string | null;
+  readonly evidenceDigest: string | null;
+  readonly attemptId: string | null;
+  readonly generation: AttemptGeneration | null;
+  readonly worktreeBindingId: string | null;
+  readonly disposition: "approved" | "changes_requested";
   readonly reviewer: "operator";
   readonly reviewedCardVersion: number;
   readonly occurredAt: number;
+}
+
+export interface EvidenceBoundReviewDispositionProjection extends ReviewDispositionProjection {
+  readonly evidenceId: string;
+  readonly evidenceDigest: string;
+  readonly attemptId: string;
+  readonly generation: AttemptGeneration;
+  readonly worktreeBindingId: string;
+}
+
+export interface ReviewEvidenceEventPayload {
+  readonly evidence: ReviewEvidenceReference;
+  readonly changes: readonly ProjectionChange[];
 }
 
 export interface ReviewDispositionEventPayload {
@@ -245,6 +307,7 @@ export interface PersistenceSnapshot {
   readonly attemptInspectors: readonly AttemptInspectorProjection[];
   readonly followUpQueues: readonly FollowUpQueueProjection[];
   readonly attentionBlockers: readonly AttentionBlockerProjection[];
+  readonly reviewEvidenceByCard: Readonly<Record<string, ReviewEvidenceSummary>>;
   readonly reviewDispositions: readonly ReviewDispositionProjection[];
 }
 
@@ -256,9 +319,16 @@ export interface JournalBatchAppendInput {
 export interface EventJournal {
   append(input: unknown, options?: JournalAppendOptions): ProjectionDelta;
   appendBatch(inputs: readonly JournalBatchAppendInput[]): readonly ProjectionDelta[];
+  immediate<T>(callback: (transaction: EventJournalTransaction) => T): T;
   snapshot(): PersistenceSnapshot;
   events(): readonly JournalEvent[];
   eventById(eventId: string): JournalEvent | null;
+  reviewEvidence(evidenceId: string): ReviewEvidenceRecord | null;
+}
+
+export interface EventJournalTransaction {
+  append(input: unknown, options?: JournalAppendOptions): ProjectionDelta;
+  persistReviewEvidence(input: unknown): PersistReviewEvidenceResult;
 }
 
 export interface JournalAppendOptions {
@@ -355,6 +425,14 @@ function stringField(value: unknown, label: string, allowEmpty = false): string 
     throw new JournalValidationError(`${label} must be ${allowEmpty ? "a string" : "a non-empty string"}`);
   }
   return value;
+}
+
+function sha256Field(value: unknown, label: string): string {
+  const parsed = stringField(value, label);
+  if (!/^[a-f0-9]{64}$/.test(parsed)) {
+    throw new JournalValidationError(`${label} must be a lowercase SHA-256 digest`);
+  }
+  return parsed;
 }
 
 function optionalStringField(value: unknown, label: string): string | null {
@@ -661,11 +739,28 @@ function parseCardProjection(value: unknown): CardProjection {
 
 function parseReviewDisposition(value: unknown): ReviewDispositionProjection {
   assertRecord(value, "review disposition");
-  assertExactKeys(value, [
-    "reviewId", "boardId", "cardId", "disposition", "reviewer", "reviewedCardVersion", "occurredAt",
-  ]);
-  if (value.disposition !== "approved" || value.reviewer !== "operator") {
-    throw new JournalValidationError("review disposition must be an explicit operator approval");
+  const hasEvidence = Object.hasOwn(value, "evidenceId");
+  assertExactKeys(
+    value,
+    hasEvidence
+      ? [
+          "reviewId", "boardId", "cardId", "evidenceId", "evidenceDigest",
+          "attemptId", "generation", "worktreeBindingId", "disposition",
+          "reviewer", "reviewedCardVersion", "occurredAt",
+        ]
+      : [
+          "reviewId", "boardId", "cardId", "disposition", "reviewer",
+          "reviewedCardVersion", "occurredAt",
+        ],
+  );
+  if (
+    (value.disposition !== "approved" && value.disposition !== "changes_requested")
+    || value.reviewer !== "operator"
+  ) {
+    throw new JournalValidationError("review disposition is unsupported");
+  }
+  if (!hasEvidence && value.disposition !== "approved") {
+    throw new JournalValidationError("legacy review dispositions may only be approvals");
   }
   const reviewedCardVersion = integerField(value.reviewedCardVersion, "reviewedCardVersion");
   if (reviewedCardVersion === 0) throw new JournalValidationError("reviewedCardVersion must be positive");
@@ -673,10 +768,51 @@ function parseReviewDisposition(value: unknown): ReviewDispositionProjection {
     reviewId: stringField(value.reviewId, "reviewId"),
     boardId: stringField(value.boardId, "review boardId") as BoardId,
     cardId: stringField(value.cardId, "review cardId") as CardId,
-    disposition: "approved",
+    evidenceId: hasEvidence ? stringField(value.evidenceId, "review evidenceId") : null,
+    evidenceDigest: hasEvidence
+      ? sha256Field(value.evidenceDigest, "review evidenceDigest")
+      : null,
+    attemptId: hasEvidence ? stringField(value.attemptId, "review attemptId") : null,
+    generation: hasEvidence
+      ? integerField(value.generation, "review generation") as AttemptGeneration
+      : null,
+    worktreeBindingId: hasEvidence
+      ? stringField(value.worktreeBindingId, "review worktreeBindingId")
+      : null,
+    disposition: value.disposition,
     reviewer: "operator",
     reviewedCardVersion,
     occurredAt: integerField(value.occurredAt, "review occurredAt"),
+  };
+}
+
+function parseReviewEvidenceReference(value: unknown): ReviewEvidenceReference {
+  assertRecord(value, "review evidence reference");
+  assertExactKeys(value, [
+    "evidenceId",
+    "boardId",
+    "cardId",
+    "attemptId",
+    "generation",
+    "worktreeBindingId",
+    "evidenceDigest",
+    "createdAt",
+  ]);
+  return {
+    evidenceId: stringField(value.evidenceId, "review evidenceId"),
+    boardId: stringField(value.boardId, "review evidence boardId") as BoardId,
+    cardId: stringField(value.cardId, "review evidence cardId") as CardId,
+    attemptId: stringField(value.attemptId, "review evidence attemptId") as ReviewEvidenceReference["attemptId"],
+    generation: integerField(
+      value.generation,
+      "review evidence generation",
+    ) as AttemptGeneration,
+    worktreeBindingId: stringField(
+      value.worktreeBindingId,
+      "review evidence worktreeBindingId",
+    ),
+    evidenceDigest: sha256Field(value.evidenceDigest, "review evidence digest"),
+    createdAt: integerField(value.createdAt, "review evidence createdAt"),
   };
 }
 
@@ -778,6 +914,7 @@ function parseAttemptInterruptedPayload(value: unknown): AttemptInterruptedEvent
   const cards = changes.filter((change) => change.entity === "card");
   const inspectors = changes.filter((change) => change.entity === "attempt_inspector");
   const blockers = changes.filter((change) => change.entity === "attention_blocker");
+  const queues = changes.filter((change) => change.entity === "follow_up_queue");
   if (attempts.length !== 1 || attempts[0]!.value.state !== "interrupted") {
     throw new JournalValidationError("attempt interruption requires one interrupted attempt");
   }
@@ -790,6 +927,12 @@ function parseAttemptInterruptedPayload(value: unknown): AttemptInterruptedEvent
   if (blockers.length > 1 || blockers.some((change) => change.value.active || change.value.outcome?.kind !== "cancelled")) {
     throw new JournalValidationError("attempt interruption may only cancel one active blocker");
   }
+  if (
+    queues.length > 1
+    || queues.some((change) => !change.value.drafts.some((draft) => draft.state === "interrupted"))
+  ) {
+    throw new JournalValidationError("attempt interruption may only reconcile one interrupted follow-up queue");
+  }
   return {
     generation: integerField(value.generation, "payload.generation") as AttemptGeneration,
     changes,
@@ -799,23 +942,75 @@ function parseAttemptInterruptedPayload(value: unknown): AttemptInterruptedEvent
 function parseReviewDispositionPayload(value: unknown): ReviewDispositionEventPayload {
   assertRecord(value, "payload");
   assertExactKeys(value, ["changes"]);
-  if (!Array.isArray(value.changes) || value.changes.length !== 2) {
-    throw new JournalValidationError("review disposition requires review and card changes");
+  if (!Array.isArray(value.changes) || value.changes.length === 0) {
+    throw new JournalValidationError("review disposition requires changes");
   }
   const changes = value.changes.map(parseProjectionChange);
   const reviews = changes.filter((change) => change.entity === "review_disposition");
   const cards = changes.filter((change) => change.entity === "card");
-  if (reviews.length !== 1 || cards.length !== 1 || cards[0]!.value.executionStatus !== "completed") {
-    throw new JournalValidationError("review disposition requires one approval and one completed card");
+  if (reviews.length !== 1) {
+    throw new JournalValidationError("review disposition requires one review");
+  }
+  const review = reviews[0]!.value;
+  if (
+    review.disposition === "approved"
+    && (
+      changes.length !== 2
+      || cards.length !== 1
+      || cards[0]!.value.executionStatus !== "completed"
+    )
+  ) {
+    throw new JournalValidationError("approval requires one completed card");
+  }
+  if (review.disposition === "changes_requested" && changes.length !== 1) {
+    throw new JournalValidationError(
+      "persistence-only change-request rounds may contain only the disposition",
+    );
   }
   return { changes };
+}
+
+function parseReviewEvidencePayload(value: unknown): ReviewEvidenceEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["evidence", "changes"]);
+  if (!Array.isArray(value.changes) || value.changes.length !== 1) {
+    throw new JournalValidationError(
+      "review evidence reference requires one ready-for-review card change",
+    );
+  }
+  const changes = value.changes.map(parseProjectionChange);
+  const cards = changes.filter((change) => change.entity === "card");
+  if (cards.length !== 1 || cards[0]!.value.executionStatus !== "ready_for_review") {
+    throw new JournalValidationError(
+      "review evidence reference requires one ready-for-review card change",
+    );
+  }
+  return {
+    evidence: parseReviewEvidenceReference(value.evidence),
+    changes,
+  };
 }
 
 function parseFollowUpQueuePayload(value: unknown): FollowUpQueueEventPayload {
   assertRecord(value, "payload");
   assertExactKeys(value, ["operation", "queue"]);
-  const operation = stringField(value.operation, "payload.operation") as FollowUpQueueOperation;
-  if (!(["created", "removed", "head_ready", "confirmed", "dispatched"] as const).includes(operation)) {
+  const rawOperation = stringField(value.operation, "payload.operation");
+  const operation = ({
+    created: "enqueued",
+    head_ready: "enqueued",
+    confirmed: "interrupted",
+    enqueued: "enqueued",
+    dispatching: "dispatching",
+    dispatched: "dispatched",
+    removed: "removed",
+    interrupted: "interrupted",
+    retried: "retried",
+  } as const)[rawOperation as
+    | "created"
+    | "head_ready"
+    | "confirmed"
+    | FollowUpQueueOperation];
+  if (operation === undefined) {
     throw new JournalValidationError("follow-up queue operation is unsupported");
   }
   try {
@@ -896,6 +1091,106 @@ function parseAttemptLifecyclePayload(value: unknown): AttemptLifecycleEventPayl
     throw new JournalValidationError("attempt startup failure requires failed attempt and card changes");
   }
   return { operation, changes };
+}
+
+function parsePromptSubmissionPayload(value: unknown): PromptSubmissionEventPayload {
+  assertRecord(value, "payload");
+  assertExactKeys(value, ["submission", "changes"]);
+  assertRecord(value.submission, "payload.submission");
+  assertExactKeys(value.submission, [
+    "commandId",
+    "requestFingerprint",
+    "outcome",
+    "cardVersion",
+    "attemptId",
+    "generation",
+  ]);
+  const outcome = stringField(value.submission.outcome, "payload.submission.outcome");
+  if (outcome !== "admitted" && outcome !== "queued") {
+    throw new JournalValidationError("prompt submission outcome is unsupported");
+  }
+  if (!Array.isArray(value.changes) || value.changes.length === 0) {
+    throw new JournalValidationError("prompt submission changes must be a non-empty array");
+  }
+  const changes = value.changes.map(parseProjectionChange);
+  const submission: PromptSubmissionRecord = {
+    commandId: stringField(value.submission.commandId, "payload.submission.commandId"),
+    requestFingerprint: stringField(
+      value.submission.requestFingerprint,
+      "payload.submission.requestFingerprint",
+    ),
+    outcome,
+    cardVersion: integerField(value.submission.cardVersion, "payload.submission.cardVersion"),
+    attemptId: stringField(value.submission.attemptId, "payload.submission.attemptId"),
+    generation: integerField(
+      value.submission.generation,
+      "payload.submission.generation",
+    ) as AttemptGeneration,
+  };
+  const attempts = changes.filter((change) => change.entity === "attempt");
+  const cards = changes.filter((change) => change.entity === "card");
+  const contexts = changes.filter((change) => change.entity === "run_context");
+  const queues = changes.filter((change) => change.entity === "follow_up_queue");
+  const reviews = changes.filter((change) => change.entity === "review_disposition");
+  if (outcome === "admitted") {
+    const attempt = attempts[0]?.value;
+    const card = cards[0]?.value;
+    const context = contexts[0]?.value;
+    const review = reviews[0]?.value;
+    const ordinaryAdmission = reviews.length === 0 && changes.length === 3;
+    const requestChangesAdmission = (
+      reviews.length === 1
+      && changes.length === 4
+      && review?.disposition === "changes_requested"
+      && review.reviewId === submission.commandId
+      && review.boardId === card?.boardId
+      && review.cardId === card?.cardId
+      && review.reviewedCardVersion + 1 === card?.version
+      && review.attemptId !== attempt?.attemptId
+      && review.generation !== null
+      && attempt?.generation === Number(review.generation) + 1
+      && context?.card.version === review.reviewedCardVersion
+    );
+    if (
+      (!ordinaryAdmission && !requestChangesAdmission)
+      || attempts.length !== 1
+      || cards.length !== 1
+      || contexts.length !== 1
+      || queues.length !== 0
+      || attempt?.state !== "starting"
+      || attempt.attemptId !== submission.attemptId
+      || attempt.generation !== submission.generation
+      || card?.executionStatus !== "running"
+      || card?.version !== submission.cardVersion
+      || context?.attemptId !== submission.attemptId
+      || context?.generation !== submission.generation
+      || attempt.boardId !== card.boardId
+      || attempt.cardId !== card.cardId
+      || context.workflow.boardId !== card.boardId
+      || context.card.cardId !== card.cardId
+    ) {
+      throw new JournalValidationError(
+        "admitted prompt submission requires matching card, starting attempt, Run Context, and optional change-request disposition changes",
+      );
+    }
+  } else {
+    const queue = queues[0]?.value;
+    if (
+      changes.length !== 1
+      || queues.length !== 1
+      || attempts.length !== 0
+      || cards.length !== 0
+      || contexts.length !== 0
+      || reviews.length !== 0
+      || queue?.attemptId !== submission.attemptId
+      || queue.generation !== submission.generation
+    ) {
+      throw new JournalValidationError(
+        "queued prompt submission requires one matching follow-up queue change",
+      );
+    }
+  }
+  return { submission, changes };
 }
 
 function parseWorkflowCommandPayload(value: unknown): WorkflowCommandEventPayload {
@@ -1075,6 +1370,37 @@ export function validateJournalEvent(input: unknown): JournalEvent {
         payload,
       };
     }
+    case "prompt_submission_committed": {
+      const payload = parsePromptSubmissionPayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      const identityChange = payload.submission.outcome === "admitted"
+        ? payload.changes.find((change) => change.entity === "attempt")?.value
+        : payload.changes.find((change) => change.entity === "follow_up_queue")?.value;
+      const review = payload.changes.find(
+        (change) => change.entity === "review_disposition",
+      )?.value;
+      if (
+        actor !== "operator"
+        || Object.hasOwn(input, "attemptId")
+        || Object.hasOwn(input, "attemptSequence")
+        || identityChange === undefined
+        || identityChange.boardId !== boardId
+        || identityChange.cardId !== cardId
+        || identityChange.attemptId !== payload.submission.attemptId
+        || identityChange.generation !== payload.submission.generation
+        || (
+          review !== undefined
+          && (
+            review.reviewId !== payload.submission.commandId
+            || review.boardId !== boardId
+            || review.cardId !== cardId
+          )
+        )
+      ) {
+        throw new JournalValidationError("prompt submission event identity is inconsistent");
+      }
+      return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
+    }
     case "attempt_activity_committed": {
       const payload = parseAttemptActivityPayload(input.payload);
       if (actor !== "agent") throw new JournalValidationError("attempt activity actor must be agent");
@@ -1143,6 +1469,7 @@ export function validateJournalEvent(input: unknown): JournalEvent {
       const attemptProjection = payload.changes.find((change) => change.entity === "attempt")!.value;
       const card = payload.changes.find((change) => change.entity === "card")!.value;
       const inspector = payload.changes.find((change) => change.entity === "attempt_inspector")!.value;
+      const queue = payload.changes.find((change) => change.entity === "follow_up_queue")?.value;
       if (
         actor !== "system"
         || attemptProjection.boardId !== boardId
@@ -1152,6 +1479,12 @@ export function validateJournalEvent(input: unknown): JournalEvent {
         || card.boardId !== boardId
         || card.cardId !== cardId
         || inspector.attemptId !== attemptId
+        || (queue !== undefined && (
+          queue.boardId !== boardId
+          || queue.cardId !== cardId
+          || queue.attemptId !== attemptId
+          || queue.generation !== payload.generation
+        ))
       ) {
         throw new JournalValidationError("attempt interruption identity is inconsistent");
       }
@@ -1167,22 +1500,46 @@ export function validateJournalEvent(input: unknown): JournalEvent {
         payload,
       };
     }
+    case "review_evidence_committed": {
+      const payload = parseReviewEvidencePayload(input.payload);
+      const cardId = stringField(input.cardId, "cardId") as CardId;
+      const card = payload.changes[0]!.value as CardProjection;
+      if (
+        actor !== "system"
+        || Object.hasOwn(input, "attemptId")
+        || Object.hasOwn(input, "attemptSequence")
+        || payload.evidence.boardId !== boardId
+        || payload.evidence.cardId !== cardId
+        || card.boardId !== boardId
+        || card.cardId !== cardId
+        || eventId !== `evidence:${payload.evidence.evidenceId}`
+        || payload.evidence.createdAt !== occurredAt
+      ) {
+        throw new JournalValidationError("review evidence reference identity is inconsistent");
+      }
+      return { eventId, boardId, cardId, actor, kind: input.kind, occurredAt, payload };
+    }
     case "review_disposition_committed": {
       const payload = parseReviewDispositionPayload(input.payload);
       const cardId = stringField(input.cardId, "cardId") as CardId;
       const review = payload.changes.find((change) => change.entity === "review_disposition")!.value;
-      const card = payload.changes.find((change) => change.entity === "card")!.value;
+      const card = payload.changes.find((change) => change.entity === "card")?.value;
       if (
         actor !== "operator"
         || Object.hasOwn(input, "attemptId")
         || Object.hasOwn(input, "attemptSequence")
         || review.boardId !== boardId
         || review.cardId !== cardId
-        || card.boardId !== boardId
-        || card.cardId !== cardId
         || eventId !== `review:${review.reviewId}`
-        || review.reviewedCardVersion + 1 !== card.version
         || review.occurredAt !== occurredAt
+        || (
+          card !== undefined
+          && (
+            card.boardId !== boardId
+            || card.cardId !== cardId
+            || review.reviewedCardVersion + 1 !== card.version
+          )
+        )
       ) {
         throw new JournalValidationError("review disposition identity is inconsistent");
       }
@@ -1606,7 +1963,43 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
     }
     case "follow_up_queue": {
       const value = change.value;
-      const serialized = JSON.stringify(value);
+      const existingStatement = database.query<{
+        readonly boardId: string;
+        readonly cardId: string;
+        readonly generation: number;
+        readonly version: number;
+      }, [string]>(`
+        SELECT board_id AS boardId, card_id AS cardId, generation, version
+        FROM follow_up_queue_projections WHERE attempt_id = ?
+      `);
+      const existing = existingStatement.get(value.attemptId);
+      existingStatement.finalize();
+      if (existing === null && value.version !== 1) {
+        throw new ProjectionVersionConflictError(
+          "follow_up_queue",
+          value.attemptId,
+          0,
+          value.version,
+        );
+      }
+      if (existing !== null) {
+        if (
+          existing.boardId !== value.boardId
+          || existing.cardId !== value.cardId
+          || existing.generation !== value.generation
+        ) {
+          throw new Error(`Follow-up queue identity conflict: ${value.attemptId}`);
+        }
+        if (value.version !== existing.version + 1) {
+          throw new ProjectionVersionConflictError(
+            "follow_up_queue",
+            value.attemptId,
+            existing.version + 1,
+            value.version,
+          );
+        }
+      }
+      const serialized = serializeFollowUpQueueProjection(value);
       const upsert = database.query<void, [string, string, string, number, number, string, number]>(`
         INSERT INTO follow_up_queue_projections(
           attempt_id, board_id, card_id, generation, version, projection_json, updated_at
@@ -1683,19 +2076,48 @@ export function applyProjectionChange(database: Database, change: ProjectionChan
     }
     case "review_disposition": {
       const value = change.value;
-      database.query<void, [string, string, string, string, string, number, number]>(`
+      const existingStatement = database.query<ReviewDispositionRow, [string]>(`
+        SELECT review_id AS reviewId, board_id AS boardId, card_id AS cardId,
+          evidence_id AS evidenceId, evidence_digest AS evidenceDigest,
+          attempt_id AS attemptId, generation,
+          worktree_binding_id AS worktreeBindingId, disposition, reviewer,
+          reviewed_card_version AS reviewedCardVersion, occurred_at AS occurredAt
+        FROM review_dispositions WHERE review_id = ?
+      `);
+      const existing = existingStatement.get(value.reviewId);
+      existingStatement.finalize();
+      if (existing !== null) {
+        if (JSON.stringify(parseReviewDispositionRow(existing)) !== JSON.stringify(value)) {
+          throw new Error(`Review disposition identity conflict: ${value.reviewId}`);
+        }
+        return;
+      }
+      const insertDisposition = database.query<void, [
+        string, string, string, string | null, string | null, string | null,
+        number | null, string | null,
+        string, string, number, number,
+      ]>(`
         INSERT INTO review_dispositions(
-          review_id, board_id, card_id, disposition, reviewer, reviewed_card_version, occurred_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
+          review_id, board_id, card_id, evidence_id, evidence_digest,
+          attempt_id, generation, worktree_binding_id, disposition, reviewer,
+          reviewed_card_version, occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertDisposition.run(
         value.reviewId,
         value.boardId,
         value.cardId,
+        value.evidenceId,
+        value.evidenceDigest,
+        value.attemptId,
+        value.generation,
+        value.worktreeBindingId,
         value.disposition,
         value.reviewer,
         value.reviewedCardVersion,
         value.occurredAt,
       );
+      insertDisposition.finalize();
       return;
     }
   }
@@ -1819,6 +2241,24 @@ export function applyProjectionEvent(
   database: Database,
   event: JournalEvent,
 ): readonly ProjectionChange[] {
+  if (event.kind === "review_evidence_committed") {
+    const persisted = readReviewEvidenceSummary(database, event.payload.evidence.evidenceId);
+    const reference = event.payload.evidence;
+    if (
+      persisted === null
+      || persisted.boardId !== reference.boardId
+      || persisted.cardId !== reference.cardId
+      || persisted.attemptId !== reference.attemptId
+      || persisted.generation !== reference.generation
+      || persisted.worktreeBindingId !== reference.worktreeBindingId
+      || persisted.evidenceDigest !== reference.evidenceDigest
+      || persisted.createdAt !== reference.createdAt
+    ) {
+      throw new Error(
+        `Review evidence reference does not match persisted evidence: ${reference.evidenceId}`,
+      );
+    }
+  }
   const changes: readonly ProjectionChange[] = event.kind === "workflow_command_committed"
     ? event.payload.changes
     : event.kind === "catalog_projection_replaced"
@@ -1829,16 +2269,20 @@ export function applyProjectionEvent(
           ? [{ entity: "card_worktree", operation: "upsert", value: event.payload }]
         : event.kind === "attempt_lifecycle_committed"
           ? event.payload.changes
-          : event.kind === "attempt_activity_committed"
-            ? applyAttemptActivityProjection(database, event)
-            : event.kind === "follow_up_queue_committed"
-              ? [{ entity: "follow_up_queue", operation: "upsert", value: event.payload.queue }]
+          : event.kind === "prompt_submission_committed"
+            ? event.payload.changes
+            : event.kind === "attempt_activity_committed"
+              ? applyAttemptActivityProjection(database, event)
+              : event.kind === "follow_up_queue_committed"
+                ? [{ entity: "follow_up_queue", operation: "upsert", value: event.payload.queue }]
               : event.kind === "attention_blocker_committed"
                 ? event.payload.changes
                 : event.kind === "attempt_interrupted"
                   ? event.payload.changes
-                  : event.kind === "review_disposition_committed"
+                  : event.kind === "review_evidence_committed"
                     ? event.payload.changes
+                    : event.kind === "review_disposition_committed"
+                      ? event.payload.changes
     : event.kind === "board_upserted"
       ? [{ entity: "board", operation: "upsert", value: event.payload }]
       : event.kind === "stage_upserted"
@@ -1964,10 +2408,37 @@ interface ReviewDispositionRow {
   readonly reviewId: string;
   readonly boardId: string;
   readonly cardId: string;
+  readonly evidenceId: string | null;
+  readonly evidenceDigest: string | null;
+  readonly attemptId: string | null;
+  readonly generation: number | null;
+  readonly worktreeBindingId: string | null;
   readonly disposition: string;
   readonly reviewer: string;
   readonly reviewedCardVersion: number;
   readonly occurredAt: number;
+}
+
+function parseReviewDispositionRow(row: ReviewDispositionRow): ReviewDispositionProjection {
+  const evidence = row.evidenceId === null
+    ? {}
+    : {
+        evidenceId: row.evidenceId,
+        evidenceDigest: row.evidenceDigest,
+        attemptId: row.attemptId,
+        generation: row.generation,
+        worktreeBindingId: row.worktreeBindingId,
+      };
+  return parseReviewDisposition({
+    reviewId: row.reviewId,
+    boardId: row.boardId,
+    cardId: row.cardId,
+    ...evidence,
+    disposition: row.disposition,
+    reviewer: row.reviewer,
+    reviewedCardVersion: row.reviewedCardVersion,
+    occurredAt: row.occurredAt,
+  });
 }
 
 function parsePersistedJson(value: string, label: string): unknown {
@@ -2156,15 +2627,18 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
   const attentionBlockers = attentionBlockerRows.map((row) => validateAttentionBlockerProjection(
     parsePersistedJson(row.projectionJson, "persisted Attention Blocker projection"),
   ));
+  const reviewEvidenceByCard = readLatestReviewEvidenceByCard(database);
   const reviewDispositionsStatement = database.query<ReviewDispositionRow, []>(`
     SELECT review_id AS reviewId, board_id AS boardId, card_id AS cardId,
-      disposition, reviewer, reviewed_card_version AS reviewedCardVersion,
-      occurred_at AS occurredAt
+      evidence_id AS evidenceId, evidence_digest AS evidenceDigest,
+      attempt_id AS attemptId, generation,
+      worktree_binding_id AS worktreeBindingId, disposition, reviewer,
+      reviewed_card_version AS reviewedCardVersion, occurred_at AS occurredAt
     FROM review_dispositions ORDER BY occurred_at, review_id
   `);
   const reviewDispositionRows = reviewDispositionsStatement.all();
   reviewDispositionsStatement.finalize();
-  const reviewDispositions = reviewDispositionRows.map(parseReviewDisposition);
+  const reviewDispositions = reviewDispositionRows.map(parseReviewDispositionRow);
 
   return {
     schemaVersion: 1,
@@ -2184,6 +2658,7 @@ export function readPersistenceSnapshot(database: Database): PersistenceSnapshot
     attemptInspectors,
     followUpQueues,
     attentionBlockers,
+    reviewEvidenceByCard,
     reviewDispositions,
   };
 }
@@ -2326,18 +2801,44 @@ function appendValidatedEvent(
 }
 
 export function createEventJournal(database: Database): EventJournal {
+  let transactionOpen = false;
+  function assertTransactionOpen(): void {
+    if (!transactionOpen) {
+      throw new Error("Journal transaction operations require an active immediate callback");
+    }
+  }
+  const transactionApi: EventJournalTransaction = {
+    append(input, options = {}) {
+      assertTransactionOpen();
+      return appendValidatedEvent(database, validateJournalEvent(input), options);
+    },
+    persistReviewEvidence(input) {
+      assertTransactionOpen();
+      return persistReviewEvidence(database, input);
+    },
+  };
   return {
     append(input, options = {}) {
-      const event = validateJournalEvent(input);
+      if (transactionOpen) {
+        throw new Error("Use the active transaction callback to append journal events");
+      }
       let delta: ProjectionDelta | undefined;
       const appendTransaction = database.transaction(() => {
-        delta = appendValidatedEvent(database, event, options);
+        transactionOpen = true;
+        try {
+          delta = transactionApi.append(input, options);
+        } finally {
+          transactionOpen = false;
+        }
       });
       appendTransaction.immediate();
       if (delta === undefined) throw new Error("Journal transaction committed without a delta");
       return delta;
     },
     appendBatch(inputs) {
+      if (transactionOpen) {
+        throw new Error("Use the active transaction callback to append journal events");
+      }
       if (inputs.length === 0) return [];
       const validated = inputs.map(({ event, options = {} }) => ({
         event: validateJournalEvent(event),
@@ -2352,6 +2853,34 @@ export function createEventJournal(database: Database): EventJournal {
       appendTransaction.immediate();
       return deltas;
     },
+    immediate<T>(callback: (transaction: EventJournalTransaction) => T): T {
+      if (transactionOpen) {
+        throw new Error("Nested immediate journal transactions are not supported");
+      }
+      let result: T | undefined;
+      let completed = false;
+      const immediateTransaction = database.transaction(() => {
+        transactionOpen = true;
+        try {
+          result = callback(transactionApi);
+          if (
+            result !== null
+            && typeof result === "object"
+            && typeof (result as { readonly then?: unknown }).then === "function"
+          ) {
+            throw new Error("Immediate journal transaction callbacks must be synchronous");
+          }
+          completed = true;
+        } finally {
+          transactionOpen = false;
+        }
+      });
+      immediateTransaction.immediate();
+      if (!completed) {
+        throw new Error("Immediate journal transaction completed without a result");
+      }
+      return result as T;
+    },
     snapshot() {
       return readPersistenceSnapshot(database);
     },
@@ -2360,6 +2889,9 @@ export function createEventJournal(database: Database): EventJournal {
     },
     eventById(eventId) {
       return readOrderedJournalEvents(database).find((event) => event.eventId === eventId) ?? null;
+    },
+    reviewEvidence(evidenceId) {
+      return readReviewEvidence(database, evidenceId);
     },
   };
 }

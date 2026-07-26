@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Replace confirmation queue states with authorized FIFO queue-v2 and recovery
 type: backend
 complexity: high

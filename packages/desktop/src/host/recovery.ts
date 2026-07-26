@@ -5,6 +5,11 @@ import {
   validateAttemptInspectorProjection,
   type AttemptInspectorProjection,
 } from "../attempts/inspectorProjection.ts";
+import {
+  followUpQueueFence,
+  interruptFollowUpDispatch,
+  unresolvedFollowUpHead,
+} from "../attempts/followUpQueue.ts";
 import type { AttentionBlockerProjection } from "../attention/contracts.ts";
 import type {
   EventJournal,
@@ -72,6 +77,20 @@ export function recoverInterruptedAttempts(options: {
       { entity: "attempt_inspector", operation: "upsert", value: interruptedInspector },
       { entity: "card", operation: "upsert", value: unlockedCard },
     ];
+    const queue = snapshot.followUpQueues.find((candidate) => candidate.attemptId === attempt.attemptId);
+    const queueHead = queue === undefined ? null : unresolvedFollowUpHead(queue);
+    if (queue !== undefined && queueHead?.state === "dispatching") {
+      changes.push({
+        entity: "follow_up_queue",
+        operation: "upsert",
+        value: interruptFollowUpDispatch(
+          queue,
+          queueHead.queueId,
+          occurredAt,
+          followUpQueueFence(queue),
+        ),
+      });
+    }
     if (blocker !== undefined) {
       changes.push({
         entity: "attention_blocker",
@@ -97,7 +116,43 @@ export function recoverInterruptedAttempts(options: {
           ...(blocker === undefined
             ? []
             : [{ entity: "attention_blocker" as const, id: blocker.blockerId, expectedVersion: blocker.version }]),
+          ...(queue !== undefined && queueHead?.state === "dispatching"
+            ? [{ entity: "follow_up_queue" as const, id: queue.attemptId, expectedVersion: queue.version }]
+            : []),
         ],
+      },
+    });
+  }
+
+  const liveAttemptIds = new Set(live.map(({ attemptId }) => attemptId));
+  for (const queue of snapshot.followUpQueues) {
+    if (liveAttemptIds.has(queue.attemptId)) continue;
+    const head = unresolvedFollowUpHead(queue);
+    if (head?.state !== "dispatching") continue;
+    const interrupted = interruptFollowUpDispatch(
+      queue,
+      head.queueId,
+      occurredAt,
+      followUpQueueFence(queue),
+    );
+    const eventId = createEventId(queue.attemptId);
+    if (eventId.trim().length === 0) throw new Error("Recovery event identity must not be empty");
+    batch.push({
+      event: {
+        eventId,
+        boardId: queue.boardId,
+        cardId: queue.cardId,
+        actor: "system",
+        kind: "follow_up_queue_committed",
+        occurredAt,
+        payload: { operation: "interrupted", queue: interrupted },
+      },
+      options: {
+        preconditions: [{
+          entity: "follow_up_queue",
+          id: queue.attemptId,
+          expectedVersion: queue.version,
+        }],
       },
     });
   }

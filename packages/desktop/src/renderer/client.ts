@@ -2,16 +2,21 @@ import type {
   BootstrapEnvelope,
   CardInspectorEnvelope,
   AnswerAttentionRpcInput,
-  FollowUpRpcResultEnvelope,
+  GetReviewDiffChunkRequest,
+  GetReviewManifestRequest,
   HostMessageEnvelope,
   InspectorCommandResultEnvelope,
-  ReviewCardInput,
-  ReviewCardRpcEnvelope,
-  StartAttemptRpcInput,
+  ReviewApprovalEnvelope,
+  ReviewDispositionInput,
+  ReviewDiffChunkEnvelope,
+  ReviewManifestEnvelope,
+  SubmitCardPromptEnvelope,
+  SubmitCardPromptInput,
   StopAttemptRpcInput,
   WorkflowBoardEnvelope,
   WorkflowCatalogEnvelope,
   WorkspaceEnvelope,
+  SupervisionEnvelope,
   WorkflowCommandEnvelope,
   RepositoryDirectoryPickerEnvelope,
   SettingsCommandEnvelope,
@@ -22,27 +27,22 @@ import type {
   UpdateProfileDefaultsInput,
 } from "../shared/rpc.ts";
 import type { WorkflowCommand } from "../workflow/workflowTypes.ts";
-import type {
-  ConfirmQueuedFollowUpInput,
-  QueueFollowUpInput,
-  RemoveQueuedFollowUpInput,
-} from "../attempts/attemptCoordinator.ts";
 
 export interface DesktopRpcClient {
   getDesktopSnapshot(): Promise<BootstrapEnvelope>;
   getCardInspector(cardId: string): Promise<CardInspectorEnvelope>;
   getBoard(boardId?: string, mode?: "active" | "new"): Promise<WorkflowBoardEnvelope>;
   getWorkspace?(): Promise<WorkspaceEnvelope>;
+  getSupervision?(): Promise<SupervisionEnvelope>;
+  getReviewManifest(request: GetReviewManifestRequest): Promise<ReviewManifestEnvelope>;
+  getReviewDiffChunk(request: GetReviewDiffChunkRequest): Promise<ReviewDiffChunkEnvelope>;
   getCatalog(catalogId?: string): Promise<WorkflowCatalogEnvelope>;
   pickRepositoryDirectory?(): Promise<RepositoryDirectoryPickerEnvelope>;
   executeWorkflowCommand(commandId: string, command: WorkflowCommand): Promise<WorkflowCommandEnvelope>;
-  startAttempt(commandId: string, input: StartAttemptRpcInput): Promise<InspectorCommandResultEnvelope>;
+  submitCardPrompt(input: SubmitCardPromptInput): Promise<SubmitCardPromptEnvelope>;
   stopAttempt?(commandId: string, input: StopAttemptRpcInput): Promise<InspectorCommandResultEnvelope>;
-  queueFollowUp(commandId: string, input: QueueFollowUpInput): Promise<FollowUpRpcResultEnvelope>;
-  removeQueuedFollowUp(commandId: string, input: RemoveQueuedFollowUpInput): Promise<FollowUpRpcResultEnvelope>;
-  confirmQueuedFollowUp(commandId: string, input: ConfirmQueuedFollowUpInput): Promise<FollowUpRpcResultEnvelope>;
   answerAttention(commandId: string, input: AnswerAttentionRpcInput): Promise<InspectorCommandResultEnvelope>;
-  reviewCard?(commandId: string, input: ReviewCardInput): Promise<ReviewCardRpcEnvelope>;
+  reviewCard?(input: ReviewDispositionInput): Promise<ReviewApprovalEnvelope>;
   getSettings(): Promise<SettingsEnvelope>;
   updatePreferences(commandId: string, input: UpdatePreferencesInput): Promise<SettingsCommandEnvelope>;
   updateProfileDefaults(commandId: string, input: UpdateProfileDefaultsInput): Promise<SettingsCommandEnvelope>;

@@ -11,11 +11,39 @@ import type { SkillCatalog, SkillSnapshot } from "../catalog/contracts.ts";
 import type {
   EventJournal,
   PersistenceSnapshot,
+  PromptSubmissionRecord,
   ProjectionChange,
+  ReviewDispositionProjection,
 } from "../persistence/eventJournal.ts";
 import { ProjectionVersionConflictError } from "../persistence/eventJournal.ts";
+import type {
+  ContractError,
+  SubmitCardPromptInput,
+  SubmitCardPromptResult,
+} from "../shared/rpc.ts";
+import {
+  reviewEvidenceContractError,
+  type ReviewEvidenceService,
+  type ReviewEvidenceUnavailableReason,
+} from "../host/reviewEvidence.ts";
+import { evidenceBoundReviewPreconditions } from "../host/reviewDisposition.ts";
+import {
+  recordWorkflowMeasurementSafely,
+  silentLifecycleDiagnostics,
+  type LifecycleDiagnostics,
+  type WorkflowMeasurementSink,
+} from "../host/lifecycleDiagnostics.ts";
 import type { CardWorktreeService } from "../worktrees/cardWorktreeService.ts";
-import type { BoardProjection, CardId, CardProjection, StageProjection } from "../workflow/workflowTypes.ts";
+import { readCardWorktreeBinding } from "../worktrees/cardWorktreeProjection.ts";
+import type { WorkflowCommandHandler } from "../workflow/workflowCommands.ts";
+import {
+  workflowIds,
+  type BoardProjection,
+  type CardId,
+  type CardProjection,
+  type MutationId,
+  type StageProjection,
+} from "../workflow/workflowTypes.ts";
 import {
   deepFreeze,
   type AttemptProjection,
@@ -31,19 +59,22 @@ import type { GlobalAttemptScheduler, SchedulerReservation } from "./scheduler.t
 import type { AttemptActivityIngestor } from "./activityIngestor.ts";
 import type { AttemptAskUserBridge, AttemptAskUserRoute } from "../attention/attemptAskUserBridge.ts";
 import {
-  awaitingConfirmationHead,
-  confirmFollowUpHead,
   createFollowUpQueue,
   enqueueFollowUp,
-  FollowUpQueueTransitionError,
+  followUpQueueFence,
+  interruptFollowUpDispatch,
   markFollowUpDispatched,
-  removeFollowUp,
-  settleFollowUpTurn,
+  markFollowUpDispatching,
+  queuedFollowUpHead,
   type FollowUpQueueId,
   type FollowUpQueueOperation,
   type FollowUpQueueProjection,
-  type FollowUpTurnState,
 } from "./followUpQueue.ts";
+import { createHash } from "node:crypto";
+import {
+  bucketBytes,
+  bucketCount,
+} from "../host/workflowMeasurement.ts";
 
 export type StartAttemptResult =
   | { readonly status: "rejected"; readonly reason: RunnableFailure }
@@ -57,16 +88,159 @@ export type StartAttemptResult =
       readonly status: "failed";
       readonly attempt: AttemptProjection | null;
       readonly failure: AttemptStartupFailure;
+    }
+  | {
+      readonly status: "submission_rejected";
+      readonly error: ContractError;
     };
 
+export type SuccessfulAttemptCompletionResult =
+  | {
+      readonly status: "advanced";
+      readonly revision: number;
+    }
+  | {
+      readonly status: "ready_for_review";
+      readonly revision: number;
+      readonly cardVersion: number;
+      readonly evidenceId: string;
+      readonly evidenceDigest: string;
+    }
+  | {
+      readonly status: "non_reviewable";
+      readonly reason: ReviewEvidenceUnavailableReason;
+      readonly error: ContractError;
+    };
+
+export async function completeSuccessfulAttempt(options: {
+  readonly journal: EventJournal;
+  readonly workflowCommands: WorkflowCommandHandler;
+  readonly reviewEvidence: Pick<ReviewEvidenceService, "capture">;
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
+  readonly createMutationId?: () => MutationId;
+  readonly measurement?: WorkflowMeasurementSink;
+}): Promise<SuccessfulAttemptCompletionResult> {
+  const snapshot = options.journal.snapshot();
+  const attempt = snapshot.attempts.find((candidate) => (
+    candidate.attemptId === options.attemptId
+    && candidate.generation === options.generation
+  ));
+  if (attempt === undefined || attempt.state !== "succeeded") {
+    return {
+      status: "non_reviewable",
+      reason: "stale_attempt",
+      error: reviewEvidenceContractError("stale_attempt"),
+    };
+  }
+  const card = snapshot.cards.find((candidate) => (
+    candidate.cardId === attempt.cardId && candidate.boardId === attempt.boardId
+  ));
+  const board = snapshot.boards.find(({ boardId }) => boardId === attempt.boardId);
+  if (card === undefined || board === undefined || card.executionStatus !== "running") {
+    return {
+      status: "non_reviewable",
+      reason: "stale_card",
+      error: reviewEvidenceContractError("stale_card"),
+    };
+  }
+
+  const hasSuccessor = snapshot.edges.some((edge) => (
+    edge.boardId === board.boardId && edge.sourceStageId === card.stageId
+  ));
+  if (hasSuccessor) {
+    const result = options.workflowCommands.execute({
+      kind: "record_agent_success",
+      mutationId: options.createMutationId?.()
+        ?? workflowIds.mutation(`agent-success:${crypto.randomUUID()}`),
+      boardId: board.boardId,
+      expectedWorkflowVersion: board.workflowVersion,
+      cardId: card.cardId,
+      expectedCardVersion: card.version,
+    });
+    if (result.status === "committed") {
+      return { status: "advanced", revision: result.delta.revision };
+    }
+    if (result.status === "idempotent") {
+      return { status: "advanced", revision: options.journal.snapshot().revision };
+    }
+    return {
+      status: "non_reviewable",
+      reason: "stale_card",
+      error: {
+        code: "stale_projection",
+        recoveryHint: "refresh_projection",
+        expectedVersion: card.version,
+        actualVersion: options.journal.snapshot().cards.find(
+          ({ cardId }) => cardId === card.cardId,
+        )?.version,
+      },
+    };
+  }
+
+  const context = snapshot.runContexts.find((candidate) => (
+    candidate.attemptId === attempt.attemptId
+    && candidate.generation === attempt.generation
+    && candidate.card.cardId === card.cardId
+    && candidate.workflow.boardId === board.boardId
+  ));
+  if (context === undefined) {
+    return {
+      status: "non_reviewable",
+      reason: "incomplete",
+      error: reviewEvidenceContractError("incomplete"),
+    };
+  }
+  const captured = await options.reviewEvidence.capture({
+    boardId: board.boardId,
+    expectedWorkflowVersion: board.workflowVersion,
+    cardId: card.cardId,
+    attemptId: attempt.attemptId,
+    generation: attempt.generation,
+    expectedCardVersion: card.version,
+    worktreeBindingId: context.worktree.bindingId,
+  });
+  if (captured.status === "unavailable") {
+    recordWorkflowMeasurementSafely(options.measurement, {
+      schemaVersion: 1,
+      name: "evidence_capture",
+      outcome: "unavailable",
+      fileCountBucket: "0",
+      byteCountBucket: "0",
+      reason: reviewEvidenceContractError(captured.reason).code,
+    });
+    return {
+      status: "non_reviewable",
+      reason: captured.reason,
+      error: reviewEvidenceContractError(captured.reason),
+    };
+  }
+  recordWorkflowMeasurementSafely(options.measurement, {
+    schemaVersion: 1,
+    name: "evidence_capture",
+    outcome: "available",
+    fileCountBucket: bucketCount(captured.evidence.fileCount),
+    byteCountBucket: bucketBytes(captured.evidence.totalPatchBytes),
+    reason: "none",
+  });
+  return {
+    status: "ready_for_review",
+    revision: captured.delta.revision,
+    cardVersion: captured.cardVersion,
+    evidenceId: captured.evidence.evidenceId,
+    evidenceDigest: captured.evidence.evidenceDigest,
+  };
+}
+
 export interface DesktopAttemptCoordinator {
-  start(cardId: CardId, initialPrompt?: string): Promise<StartAttemptResult>;
+  start(
+    cardId: CardId,
+    initialPrompt?: string,
+    submission?: StartSubmissionAdmission,
+  ): Promise<StartAttemptResult>;
+  submitCardPrompt(input: SubmitCardPromptInput): Promise<SubmitCardPromptResult>;
   stop(input: StopAttemptInput): Promise<StopAttemptResult>;
   release(attemptId: AttemptId): Promise<boolean>;
-  queueFollowUp(input: QueueFollowUpInput): FollowUpQueueResult;
-  removeQueuedFollowUp(input: RemoveQueuedFollowUpInput): FollowUpQueueResult;
-  settleTurn(input: SettleFollowUpTurnInput): FollowUpQueueResult;
-  confirmQueuedFollowUp(input: ConfirmQueuedFollowUpInput): Promise<FollowUpQueueResult>;
 }
 
 export interface StopAttemptInput {
@@ -78,51 +252,15 @@ export type StopAttemptResult =
   | { readonly status: "ok" }
   | { readonly status: "rejected"; readonly reason: { readonly code: string; readonly message: string } };
 
-export interface FollowUpFence {
-  readonly attemptId: AttemptId;
-  readonly generation: AttemptGeneration;
-  readonly expectedQueueVersion: number;
-}
-
-export interface QueueFollowUpInput extends FollowUpFence {
-  readonly text: string;
-  readonly queueId?: FollowUpQueueId;
-}
-
-export interface RemoveQueuedFollowUpInput extends FollowUpFence {
-  readonly queueId: FollowUpQueueId;
-}
-
-export interface ConfirmQueuedFollowUpInput extends FollowUpFence {
-  readonly queueId: FollowUpQueueId;
-}
-
-export interface SettleFollowUpTurnInput {
-  readonly attemptId: AttemptId;
-  readonly generation: AttemptGeneration;
-}
-
-export type FollowUpRejectionCode =
-  | "unknown_attempt"
-  | "stale_attempt"
-  | "stale_generation"
-  | "stale_version"
-  | "stale_head"
-  | "attempt_terminal"
-  | "invalid_state"
-  | "blocker_active"
-  | "dispatch_failed";
-
-export type FollowUpQueueResult =
-  | { readonly status: "ok"; readonly projection: FollowUpQueueProjection | null }
-  | { readonly status: "rejected"; readonly reason: { readonly code: FollowUpRejectionCode; readonly message: string } };
-
-export interface ContentFreeFollowUpTelemetry {
-  record(name: "follow_up_created" | "follow_up_removed" | "follow_up_confirmed" | "follow_up_dispatched" | "follow_up_rejected", attributes: {
-    readonly attemptId: AttemptId;
-    readonly generation: AttemptGeneration;
-    readonly outcome: string;
-  }): void;
+interface StartSubmissionAdmission {
+  readonly eventId: string;
+  readonly record: PromptSubmissionRecord;
+  readonly requestChanges?: {
+    readonly input: SubmitCardPromptInput & {
+      readonly source: "request_changes";
+      readonly evidence: NonNullable<SubmitCardPromptInput["evidence"]>;
+    };
+  };
 }
 
 export interface CreateAttemptCoordinatorOptions {
@@ -138,7 +276,9 @@ export interface CreateAttemptCoordinatorOptions {
   readonly createEventId?: (operation: "created" | "started" | "startup_failed") => string;
   readonly activityIngestor?: AttemptActivityIngestor;
   readonly hasActiveAttention?: (attemptId: AttemptId) => boolean;
-  readonly telemetry?: ContentFreeFollowUpTelemetry;
+  readonly reviewEvidence?: Pick<ReviewEvidenceService, "revalidate">;
+  readonly diagnostics?: LifecycleDiagnostics;
+  readonly measurement?: WorkflowMeasurementSink;
   readonly createQueueId?: () => string;
   readonly createFollowUpEventId?: (operation: FollowUpQueueOperation) => string;
   readonly askUserBridge?: Pick<AttemptAskUserBridge, "register" | "revoke">;
@@ -159,7 +299,7 @@ interface ActiveAttempt {
   readonly reservation: SchedulerReservation;
   readonly session: FreshDirectAcpSession;
   unsubscribeActivity: () => void;
-  turnState: FollowUpTurnState;
+  turnState: "active" | "settled" | "dispatching";
   revokeAskUser: () => void;
 }
 
@@ -171,17 +311,16 @@ function defaultEventId(operation: string): string {
   return `attempt:${operation}:${crypto.randomUUID()}`;
 }
 
-function defaultQueueId(): string {
-  return `follow-up:${crypto.randomUUID()}`;
-}
-
 export function createAttemptCoordinator(options: CreateAttemptCoordinatorOptions): DesktopAttemptCoordinator {
   const now = options.now ?? Date.now;
   const createAttemptId = options.createAttemptId ?? defaultAttemptId;
   const createEventId = options.createEventId ?? defaultEventId;
-  const createQueueId = options.createQueueId ?? defaultQueueId;
-  const createFollowUpEventId = options.createFollowUpEventId ?? defaultEventId;
+  const diagnostics = options.diagnostics ?? silentLifecycleDiagnostics;
   const active = new Map<AttemptId, ActiveAttempt>();
+  const inFlightSubmissions = new Map<string, {
+    readonly requestFingerprint: string;
+    readonly result: Promise<SubmitCardPromptResult>;
+  }>();
 
   const resolveAdmission = (cardId: CardId): ResolvedAdmission => {
     const snapshot = options.journal.snapshot();
@@ -218,9 +357,15 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
   const validate = (
     resolved: ResolvedAdmission,
     worktree: RunnableValidationInput["worktree"],
+    allowReadyForReview = false,
   ) => validateRunnable({
     board: resolved.board,
-    card: resolved.card,
+    card: (
+      allowReadyForReview
+      && resolved.card?.executionStatus === "ready_for_review"
+    )
+      ? { ...resolved.card, executionStatus: "idle" }
+      : resolved.card,
     stage: resolved.stage,
     repository: resolved.repository,
     effectiveSkill: resolved.skill,
@@ -231,10 +376,38 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
   });
 
   return {
-    async start(cardId, initialPrompt) {
+    async start(cardId, initialPrompt, submission) {
+      const requestChanges = submission?.requestChanges;
       const beforeWorktree = resolveAdmission(cardId);
-      const initial = validate(beforeWorktree, null);
-      if (!initial.runnable && initial.reason.code !== "worktree_unavailable") {
+      if (requestChanges !== undefined) {
+        const guarded = evidenceBoundReviewPreconditions(
+          options.journal,
+          requestChanges.input,
+        );
+        if (guarded.status === "rejected") {
+          return { status: "submission_rejected", error: guarded.error };
+        }
+      }
+      const requestChangesBinding = requestChanges === undefined
+        ? null
+        : readCardWorktreeBinding(beforeWorktree.snapshot, cardId);
+      const initialWorktree = requestChanges === undefined
+        ? null
+        : requestChangesBinding === null
+          ? { status: "unavailable" as const, reason: "unverified" as const }
+          : { status: "reused" as const, binding: requestChangesBinding };
+      const initial = validate(
+        beforeWorktree,
+        initialWorktree,
+        requestChanges !== undefined,
+      );
+      if (
+        !initial.runnable
+        && (
+          requestChanges !== undefined
+          || initial.reason.code !== "worktree_unavailable"
+        )
+      ) {
         return { status: "rejected", reason: initial.reason };
       }
       if (beforeWorktree.board === null || beforeWorktree.card === null) {
@@ -243,12 +416,14 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
           : initial.reason };
       }
 
-      const ensured = await options.worktrees.ensure({
-        boardId: beforeWorktree.board.boardId,
-        cardId,
-      });
+      const ensured = requestChanges === undefined
+        ? await options.worktrees.ensure({
+            boardId: beforeWorktree.board.boardId,
+            cardId,
+          })
+        : initialWorktree!;
       const resolved = resolveAdmission(cardId);
-      const admission = validate(resolved, ensured);
+      const admission = validate(resolved, ensured, requestChanges !== undefined);
       if (!admission.runnable) return { status: "rejected", reason: admission.reason };
       const { board, card, stage, repository, skill, profile } = resolved;
       if (board === null || card === null || stage === null || repository === null || skill === null || profile === null) {
@@ -258,7 +433,11 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
 
       const reserved = options.scheduler.reserve(card.cardId);
       if (reserved.status !== "reserved") {
-        const retry = validate(resolved, ensured);
+        const retry = validate(
+          resolved,
+          ensured,
+          requestChanges !== undefined,
+        );
         if (!retry.runnable) return { status: "rejected", reason: retry.reason };
         throw new Error("Scheduler rejected a runnable reservation without a reason");
       }
@@ -307,24 +486,98 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
         version: card.version + 1,
         updatedAt: Math.max(card.updatedAt, createdAt),
       };
-      try {
-        appendLifecycle(options.journal, {
-          eventId: createEventId("created"),
-          operation: "created",
-          board,
-          cardId: card.cardId,
-          attemptId,
-          attemptSequence: 0,
-          occurredAt: createdAt,
-          changes: [
-            { entity: "card", operation: "upsert", value: runningCard },
-            { entity: "attempt", operation: "upsert", value: startingAttempt },
-            { entity: "run_context", operation: "insert", value: context },
-          ],
-          expectedCardVersion: card.version,
+      if (requestChanges !== undefined) {
+        if (options.reviewEvidence === undefined) {
+          options.scheduler.release(reserved.reservation);
+          return {
+            status: "submission_rejected",
+            error: reviewEvidenceContractError("missing"),
+          };
+        }
+        const currentEvidence = await options.reviewEvidence.revalidate({
+          boardId: requestChanges.input.boardId,
+          cardId: requestChanges.input.cardId,
+          expectedCardVersion: requestChanges.input.expectedCardVersion,
+          evidence: requestChanges.input.evidence,
         });
+        if (currentEvidence.status === "unavailable") {
+          options.scheduler.release(reserved.reservation);
+          return {
+            status: "submission_rejected",
+            error: reviewEvidenceContractError(currentEvidence.reason),
+          };
+        }
+        if (
+          currentEvidence.evidenceId !== requestChanges.input.evidence.evidenceId
+          || currentEvidence.evidenceDigest !== requestChanges.input.evidence.evidenceDigest
+        ) {
+          options.scheduler.release(reserved.reservation);
+          return {
+            status: "submission_rejected",
+            error: reviewEvidenceContractError("stale"),
+          };
+        }
+      }
+      const admissionChanges: readonly ProjectionChange[] = [
+        { entity: "card", operation: "upsert", value: runningCard },
+        { entity: "attempt", operation: "upsert", value: startingAttempt },
+        { entity: "run_context", operation: "insert", value: context },
+      ];
+      try {
+        const committedSubmission = submission === undefined ? undefined : {
+          ...submission.record,
+          cardVersion: runningCard.version,
+          attemptId,
+          generation,
+        };
+        if (
+          requestChanges !== undefined
+          && committedSubmission !== undefined
+        ) {
+          appendRequestChangesAdmission(options.journal, {
+            eventId: submission!.eventId,
+            board,
+            card,
+            occurredAt: createdAt,
+            input: requestChanges.input,
+            submission: committedSubmission,
+            changes: admissionChanges,
+          });
+        } else {
+          appendLifecycle(options.journal, {
+            eventId: submission?.eventId ?? createEventId("created"),
+            operation: "created",
+            board,
+            cardId: card.cardId,
+            attemptId,
+            attemptSequence: 0,
+            occurredAt: createdAt,
+            changes: admissionChanges,
+            expectedCardVersion: card.version,
+            ...(committedSubmission === undefined
+              ? {}
+              : { submission: committedSubmission }),
+          });
+        }
       } catch (error) {
         options.scheduler.release(reserved.reservation);
+        if (error instanceof RequestChangesAdmissionError) {
+          return { status: "submission_rejected", error: error.contractError };
+        }
+        if (
+          requestChanges !== undefined
+          && error instanceof ProjectionVersionConflictError
+        ) {
+          return {
+            status: "submission_rejected",
+            error: {
+              code: "stale_projection",
+              recoveryHint: "refresh_projection",
+              expectedVersion: error.expectedVersion,
+              actualVersion: error.actualVersion,
+            },
+          };
+        }
         return {
           status: "failed",
           attempt: null,
@@ -334,6 +587,14 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
             occurredAt: Math.max(createdAt, now()),
           },
         };
+      }
+      if (requestChanges !== undefined) {
+        diagnostics.record({
+          name: "review_disposition_recorded",
+          boardId: card.boardId,
+          cardId: card.cardId,
+          outcome: "changes_requested",
+        });
       }
 
       let askUserRoute: AttemptAskUserRoute | undefined;
@@ -454,8 +715,8 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
           }
         });
       }
-      const prompt = initialPrompt?.trim();
-      if (prompt !== undefined && prompt.length > 0) {
+      const prompt = initialPrompt;
+      if (prompt !== undefined && prompt.trim().length > 0) {
         void dispatchInitialPrompt({
           journal: options.journal,
           activityIngestor: options.activityIngestor,
@@ -466,125 +727,206 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
           session: started.session,
           prompt,
           now,
+          measurement: options.measurement,
         });
       }
       return { status: "started", attempt: runningAttempt, context, sessionId: started.session.sessionId };
     },
 
-    queueFollowUp(input) {
-      const resolved = resolveFollowUpFence(options.journal, active, input);
-      if (resolved.status === "rejected") return rejectedFollowUp(options, input, resolved.code, resolved.message);
-      if (input.text.trim().length === 0) {
-        return rejectedFollowUp(options, input, "invalid_state", "Follow-up text must be non-empty");
+    async submitCardPrompt(input) {
+      const requestFingerprint = promptSubmissionFingerprint(input);
+      const inFlight = inFlightSubmissions.get(input.commandId);
+      if (inFlight !== undefined) {
+        return inFlight.requestFingerprint === requestFingerprint
+          ? inFlight.result
+          : rejectedSubmission("invalid_prompt", "edit_prompt");
       }
-      const queueIdValue = input.queueId ?? createQueueId() as FollowUpQueueId;
-      if (queueIdValue.trim().length === 0) {
-        return rejectedFollowUp(options, input, "invalid_state", "Follow-up queue identity is invalid");
-      }
-      try {
-        const projection = resolved.queue === null
-          ? createFollowUpQueue({
-              boardId: resolved.attempt.boardId,
-              cardId: resolved.attempt.cardId,
-              attemptId: input.attemptId,
-              generation: input.generation,
-              turnState: resolved.active.turnState === "settled" ? "settled" : "active",
-              queueId: queueIdValue,
-              text: input.text,
-              occurredAt: Math.max(0, now()),
-            })
-          : enqueueFollowUp(resolved.queue, {
-              queueId: queueIdValue,
-              text: input.text,
-              occurredAt: Math.max(0, now()),
-            });
-        appendFollowUpQueue(options.journal, createFollowUpEventId("created"), "created", projection, input.expectedQueueVersion);
-        recordFollowUp(options, "follow_up_created", input, "committed");
-        recordAcceptedDirection(options, resolved.active, input, input.text, now);
-        return { status: "ok", projection };
-      } catch (error) {
-        return mapFollowUpError(options, input, error);
-      }
-    },
+      const operation = (async (): Promise<SubmitCardPromptResult> => {
+        const existing = readPromptSubmission(options.journal, input.commandId);
+        if (existing !== null) {
+          return existing.requestFingerprint === requestFingerprint
+            ? promptSubmissionResult(existing)
+            : rejectedSubmission("invalid_prompt", "edit_prompt");
+        }
+        if (
+          input.commandId.trim().length === 0
+          || input.content.trim().length === 0
+        ) {
+          return rejectedSubmission("invalid_prompt", "edit_prompt");
+        }
+        if (
+          input.source !== "request_changes"
+          && input.evidence !== undefined
+        ) {
+          return rejectedSubmission("invalid_prompt", "edit_prompt");
+        }
 
-    removeQueuedFollowUp(input) {
-      const resolved = resolveFollowUpFence(options.journal, active, input);
-      if (resolved.status === "rejected") return rejectedFollowUp(options, input, resolved.code, resolved.message);
-      if (resolved.queue === null) return rejectedFollowUp(options, input, "stale_head", "The follow-up queue is empty");
-      try {
-        const projection = removeFollowUp(resolved.queue, input.queueId, Math.max(0, now()));
-        appendFollowUpQueue(options.journal, createFollowUpEventId("removed"), "removed", projection, input.expectedQueueVersion);
-        recordFollowUp(options, "follow_up_removed", input, "committed");
-        return { status: "ok", projection };
-      } catch (error) {
-        return mapFollowUpError(options, input, error);
-      }
-    },
+        const snapshot = options.journal.snapshot();
+        const card = snapshot.cards.find((candidate) => candidate.cardId === input.cardId);
+        if (card === undefined || card.boardId !== input.boardId) {
+          return rejectedSubmission("stale_projection", "refresh_projection");
+        }
+        if (card.version !== input.expectedCardVersion) {
+          return rejectedSubmission("stale_projection", "refresh_projection", {
+            expectedVersion: input.expectedCardVersion,
+            actualVersion: card.version,
+          });
+        }
+        if (input.source === "request_changes") {
+          if (
+            input.evidence === undefined
+            || input.activeAttempt !== undefined
+            || options.reviewEvidence === undefined
+          ) {
+            return input.evidence === undefined || options.reviewEvidence === undefined
+              ? rejectedSubmission("evidence_missing", "reload_evidence")
+              : rejectedSubmission("stale_projection", "refresh_projection");
+          }
+          const requestChangesInput = {
+            ...input,
+            source: "request_changes" as const,
+            evidence: input.evidence,
+          };
+          const guarded = evidenceBoundReviewPreconditions(
+            options.journal,
+            requestChangesInput,
+          );
+          if (guarded.status === "rejected") {
+            return { status: "rejected", error: guarded.error };
+          }
+          const result = await this.start(card.cardId, input.content, {
+            eventId: promptSubmissionEventId(input.commandId),
+            record: {
+              commandId: input.commandId,
+              requestFingerprint,
+              outcome: "admitted",
+              cardVersion: card.version + 1,
+              attemptId: "pending",
+              generation: 0 as AttemptGeneration,
+            },
+            requestChanges: { input: requestChangesInput },
+          });
+          const committed = readPromptSubmission(options.journal, input.commandId);
+          if (committed !== null) return promptSubmissionResult(committed);
+          if (result.status === "submission_rejected") {
+            return { status: "rejected", error: result.error };
+          }
+          if (result.status === "rejected") {
+            return mapRunnableFailure(result.reason.code);
+          }
+          return rejectedSubmission("invalid_prompt", "none");
+        }
 
-    settleTurn(input) {
-      const current = options.journal.snapshot().followUpQueues.find((queue) => queue.attemptId === input.attemptId) ?? null;
-      const attempt = options.journal.snapshot().attempts.find((candidate) => candidate.attemptId === input.attemptId);
-      const activeAttempt = active.get(input.attemptId);
-      if (attempt === undefined || activeAttempt === undefined) {
-        return rejectedFollowUp(options, input, "unknown_attempt", "Attempt is not active in this desktop host");
-      }
-      if (attempt.generation !== input.generation) {
-        return rejectedFollowUp(options, input, "stale_generation", "Attempt generation is stale");
-      }
-      if (isDirectAcpTerminalState(attempt.state)) {
-        return rejectedFollowUp(options, input, "attempt_terminal", "A terminal attempt cannot expose a follow-up head");
-      }
-      activeAttempt.turnState = "settled";
-      if (current === null || current.turnState === "settled") return { status: "ok", projection: current };
-      try {
-        const projection = settleFollowUpTurn(current, Math.max(0, now()));
-        appendFollowUpQueue(options.journal, createFollowUpEventId("head_ready"), "head_ready", projection, current.version);
-        return { status: "ok", projection };
-      } catch (error) {
-        return mapFollowUpError(options, { ...input, expectedQueueVersion: current.version }, error);
-      }
-    },
+        const attempt = latestActiveAttempt(snapshot, card.cardId);
+        if (attempt !== null) {
+        if (input.source === "initial") {
+          return rejectedSubmission("attempt_active", "wait_for_attempt");
+        }
+        if (
+          input.activeAttempt === undefined
+          || input.activeAttempt.attemptId !== attempt.attemptId
+          || input.activeAttempt.generation !== attempt.generation
+        ) {
+          return rejectedSubmission("stale_projection", "refresh_projection");
+        }
+        if (
+          attempt.state === "needs_attention"
+          || options.hasActiveAttention?.(attempt.attemptId) === true
+        ) {
+          return rejectedSubmission("blocker_active", "resolve_blocker");
+        }
+        const live = active.get(attempt.attemptId);
+        if (live === undefined) {
+          return rejectedSubmission("attempt_active", "wait_for_attempt");
+        }
+        const current = snapshot.followUpQueues.find(
+          (queue) => queue.attemptId === attempt.attemptId,
+        ) ?? null;
+        if (current?.drafts.some((draft) => draft.state === "interrupted") === true) {
+          return rejectedSubmission("submission_interrupted", "retry_submission");
+        }
+        const queueId = input.commandId as FollowUpQueueId;
+        try {
+          const occurredAt = Math.max(0, now());
+          const projection = current === null
+            ? createFollowUpQueue({
+                boardId: card.boardId,
+                cardId: card.cardId,
+                attemptId: attempt.attemptId,
+                generation: attempt.generation,
+                queueId,
+                text: input.content,
+                occurredAt,
+              })
+            : enqueueFollowUp(current, {
+                queueId,
+                text: input.content,
+                occurredAt,
+              }, followUpQueueFence(current));
+          const record: PromptSubmissionRecord = {
+            commandId: input.commandId,
+            requestFingerprint,
+            outcome: "queued",
+            cardVersion: card.version,
+            attemptId: attempt.attemptId,
+            generation: attempt.generation,
+          };
+          appendPromptSubmission(
+            options.journal,
+            promptSubmissionEventId(input.commandId),
+            record,
+            card,
+            projection,
+            current?.version ?? 0,
+          );
+          recordAcceptedDirection(options, live, {
+            attemptId: attempt.attemptId,
+            generation: attempt.generation,
+          }, input.content, now);
+          return promptSubmissionResult(record);
+        } catch (error) {
+          if (error instanceof ProjectionVersionConflictError) {
+            return rejectedSubmission("stale_projection", "refresh_projection");
+          }
+          return rejectedSubmission("invalid_prompt", "edit_prompt");
+        }
+        }
 
-    async confirmQueuedFollowUp(input) {
-      const resolved = resolveFollowUpFence(options.journal, active, input);
-      if (resolved.status === "rejected") return rejectedFollowUp(options, input, resolved.code, resolved.message);
-      if (resolved.attempt.state === "needs_attention" || options.hasActiveAttention?.(input.attemptId) === true) {
-        return rejectedFollowUp(options, input, "blocker_active", "Resolve the active Attention Blocker before dispatching a follow-up");
-      }
-      if (resolved.queue === null) return rejectedFollowUp(options, input, "stale_head", "The follow-up queue is empty");
-      const head = awaitingConfirmationHead(resolved.queue);
-      if (head?.queueId !== input.queueId) {
-        return rejectedFollowUp(options, input, "stale_head", "The expected queue head is no longer awaiting confirmation");
-      }
-      let confirmed: FollowUpQueueProjection;
-      try {
-        confirmed = confirmFollowUpHead(resolved.queue, input.queueId, Math.max(0, now()));
-        appendFollowUpQueue(options.journal, createFollowUpEventId("confirmed"), "confirmed", confirmed, input.expectedQueueVersion);
-        resolved.active.turnState = "dispatching";
-        recordFollowUp(options, "follow_up_confirmed", input, "committed");
-      } catch (error) {
-        return mapFollowUpError(options, input, error);
-      }
+        if (input.activeAttempt !== undefined) {
+          return rejectedSubmission("stale_projection", "refresh_projection");
+        }
+        if (card.executionStatus === "ready_for_review" || card.executionStatus === "completed") {
+          return rejectedSubmission("invalid_prompt", "none");
+        }
 
-      try {
-        await resolved.active.session.connection.prompt({
-          sessionId: resolved.active.session.sessionId,
-          prompt: head.text,
+        const result = await this.start(card.cardId, input.content, {
+          eventId: promptSubmissionEventId(input.commandId),
+          record: {
+            commandId: input.commandId,
+            requestFingerprint,
+            outcome: "admitted",
+            cardVersion: card.version + 1,
+            attemptId: "pending",
+            generation: 0 as AttemptGeneration,
+          },
         });
-      } catch {
-        return rejectedFollowUp(options, input, "dispatch_failed", "The confirmed follow-up could not be dispatched");
-      }
-
+        const committed = readPromptSubmission(options.journal, input.commandId);
+        if (committed !== null) return promptSubmissionResult(committed);
+        if (result.status === "rejected") {
+          return mapRunnableFailure(result.reason.code);
+        }
+        if (result.status === "submission_rejected") {
+          return { status: "rejected", error: result.error };
+        }
+        return rejectedSubmission("invalid_prompt", "none");
+      })();
+      inFlightSubmissions.set(input.commandId, { requestFingerprint, result: operation });
       try {
-        const latest = options.journal.snapshot().followUpQueues.find((queue) => queue.attemptId === input.attemptId);
-        if (latest === undefined) throw new Error("Confirmed follow-up projection disappeared before dispatch commit");
-        const projection = markFollowUpDispatched(latest, input.queueId, Math.max(0, now()));
-        appendFollowUpQueue(options.journal, createFollowUpEventId("dispatched"), "dispatched", projection, latest.version);
-        resolved.active.turnState = "settled";
-        recordFollowUp(options, "follow_up_dispatched", input, "committed");
-        return { status: "ok", projection };
-      } catch (error) {
-        return mapFollowUpError(options, input, error);
+        return await operation;
+      } finally {
+        if (inFlightSubmissions.get(input.commandId)?.result === operation) {
+          inFlightSubmissions.delete(input.commandId);
+        }
       }
     },
 
@@ -628,6 +970,7 @@ async function dispatchInitialPrompt(input: {
   readonly session: FreshDirectAcpSession;
   readonly prompt: string;
   readonly now: () => number;
+  readonly measurement?: WorkflowMeasurementSink;
 }): Promise<void> {
   if (input.activityIngestor !== undefined) {
     const initialMessage = await input.activityIngestor.ingest({
@@ -649,9 +992,9 @@ async function dispatchInitialPrompt(input: {
     }
   }
 
-  const terminal = await promptTurn(input, input.prompt);
-  if (terminal !== "succeeded") {
-    await commitPromptTerminal(input, terminal);
+  const turn = await promptTurn(input, input.prompt);
+  if (turn.terminal !== "succeeded") {
+    await commitPromptTerminal(input, turn.terminal);
     await releaseActive(input.active, input.scheduler, input.attemptId);
     return;
   }
@@ -673,43 +1016,87 @@ async function dispatchAcceptedDirections(
       await releaseActive(input.active, input.scheduler, input.attemptId);
       return;
     }
-    if (current.turnState === "dispatching") return;
+    const liveAttempt = input.active.get(input.attemptId);
+    if (liveAttempt?.turnState === "dispatching") return;
 
-    let settled = current;
     try {
-      if (settled.turnState === "active") {
-        settled = settleFollowUpTurn(settled, Math.max(0, input.now()));
-        appendFollowUpQueue(input.journal, activityEventId("direction-ready"), "head_ready", settled, current.version);
-      }
-      const head = awaitingConfirmationHead(settled);
+      const head = queuedFollowUpHead(current);
       if (head === null) {
         await commitPromptTerminal(input, "succeeded");
         await releaseActive(input.active, input.scheduler, input.attemptId);
         return;
       }
-      const dispatching = confirmFollowUpHead(settled, head.queueId, Math.max(0, input.now()));
-      appendFollowUpQueue(input.journal, activityEventId("direction-dispatch"), "confirmed", dispatching, settled.version);
+      const dispatching = markFollowUpDispatching(
+        current,
+        head.queueId,
+        Math.max(0, input.now()),
+        followUpQueueFence(current),
+      );
+      appendFollowUpQueue(
+        input.journal,
+        activityEventId("direction-dispatch"),
+        "dispatching",
+        dispatching,
+        current.version,
+      );
       const live = input.active.get(input.attemptId);
       if (live === undefined) return;
       live.turnState = "dispatching";
 
-      const terminal = await promptTurn(input, head.text);
-      if (terminal !== "succeeded") {
-        await commitPromptTerminal(input, terminal);
-        await releaseActive(input.active, input.scheduler, input.attemptId);
-        return;
-      }
-
+      const turn = await promptTurn(input, head.text);
       const latest = input.journal.snapshot().followUpQueues.find((queue) => queue.attemptId === input.attemptId);
       if (latest === undefined) {
         await commitPromptTerminal(input, "failed");
         await releaseActive(input.active, input.scheduler, input.attemptId);
         return;
       }
-      const dispatched = markFollowUpDispatched(latest, head.queueId, Math.max(0, input.now()));
+      if (turn.delivery === "ambiguous") {
+        const interrupted = interruptFollowUpDispatch(
+          latest,
+          head.queueId,
+          Math.max(0, input.now()),
+          followUpQueueFence(latest),
+        );
+        appendFollowUpQueue(
+          input.journal,
+          activityEventId("direction-interrupted"),
+          "interrupted",
+          interrupted,
+          latest.version,
+        );
+        recordWorkflowMeasurementSafely(input.measurement, {
+          schemaVersion: 1,
+          name: "safe_boundary_dispatch",
+          outcome: "interrupted",
+        });
+        await commitPromptTerminal(input, "interrupted");
+        await releaseActive(input.active, input.scheduler, input.attemptId);
+        return;
+      }
+      const dispatched = markFollowUpDispatched(
+        latest,
+        head.queueId,
+        Math.max(0, input.now()),
+        followUpQueueFence(latest),
+      );
       appendFollowUpQueue(input.journal, activityEventId("direction-dispatched"), "dispatched", dispatched, latest.version);
+      recordWorkflowMeasurementSafely(input.measurement, {
+        schemaVersion: 1,
+        name: "safe_boundary_dispatch",
+        outcome: "dispatched",
+      });
       live.turnState = "settled";
+      if (turn.terminal !== "succeeded") {
+        await commitPromptTerminal(input, turn.terminal);
+        await releaseActive(input.active, input.scheduler, input.attemptId);
+        return;
+      }
     } catch {
+      recordWorkflowMeasurementSafely(input.measurement, {
+        schemaVersion: 1,
+        name: "safe_boundary_dispatch",
+        outcome: "failed",
+      });
       await commitPromptTerminal(input, "failed");
       await releaseActive(input.active, input.scheduler, input.attemptId);
       return;
@@ -720,15 +1107,25 @@ async function dispatchAcceptedDirections(
 async function promptTurn(
   input: Parameters<typeof dispatchInitialPrompt>[0],
   prompt: string,
-): Promise<DirectAcpAttemptState> {
+): Promise<{
+  readonly terminal: DirectAcpAttemptState;
+  readonly delivery: "acknowledged" | "ambiguous";
+}> {
   try {
     const result = await input.session.connection.prompt({
       sessionId: input.session.sessionId,
       prompt,
     });
-    return result.stopReason === "cancelled" ? "cancelled" : result.stopReason === "refusal" ? "failed" : "succeeded";
+    return {
+      terminal: result.stopReason === "cancelled"
+        ? "cancelled"
+        : result.stopReason === "refusal"
+          ? "failed"
+          : "succeeded",
+      delivery: "acknowledged",
+    };
   } catch {
-    return "failed";
+    return { terminal: "interrupted", delivery: "ambiguous" };
   }
 }
 
@@ -757,46 +1154,114 @@ function activitySequence(value: number): ActivitySequence {
   return toActivitySequence(value)!;
 }
 
-type ResolvedFollowUpFence =
-  | {
-      readonly status: "ok";
-      readonly attempt: AttemptProjection;
-      readonly active: ActiveAttempt;
-      readonly queue: FollowUpQueueProjection | null;
-    }
-  | { readonly status: "rejected"; readonly code: FollowUpRejectionCode; readonly message: string };
+function promptSubmissionEventId(commandId: string): string {
+  return `prompt-submission:${createHash("sha256").update(commandId).digest("hex")}`;
+}
 
-function resolveFollowUpFence(
+function promptSubmissionFingerprint(input: SubmitCardPromptInput): string {
+  return createHash("sha256").update(JSON.stringify({
+    commandId: input.commandId,
+    boardId: input.boardId,
+    cardId: input.cardId,
+    expectedCardVersion: input.expectedCardVersion,
+    content: input.content,
+    source: input.source,
+    activeAttempt: input.activeAttempt ?? null,
+    evidence: input.evidence ?? null,
+  })).digest("hex");
+}
+
+function readPromptSubmission(
   journal: EventJournal,
-  active: Map<AttemptId, ActiveAttempt>,
-  input: FollowUpFence,
-): ResolvedFollowUpFence {
-  const snapshot = journal.snapshot();
-  const attempt = snapshot.attempts.find((candidate) => candidate.attemptId === input.attemptId);
-  if (attempt === undefined) return { status: "rejected", code: "unknown_attempt", message: "Attempt does not exist" };
-  if (attempt.generation !== input.generation) {
-    return { status: "rejected", code: "stale_generation", message: "Attempt generation is stale" };
+  commandId: string,
+): PromptSubmissionRecord | null {
+  const event = journal.eventById(promptSubmissionEventId(commandId));
+  if (event?.kind !== "prompt_submission_committed") return null;
+  return event.payload.submission.commandId === commandId
+    ? event.payload.submission
+    : null;
+}
+
+function promptSubmissionResult(record: PromptSubmissionRecord): SubmitCardPromptResult {
+  return {
+    status: "ok",
+    outcome: record.outcome,
+    cardVersion: record.cardVersion,
+    attemptId: record.attemptId as AttemptId,
+    generation: record.generation,
+  };
+}
+
+function rejectedSubmission(
+  code: ContractError["code"],
+  recoveryHint: ContractError["recoveryHint"],
+  versions: Pick<ContractError, "expectedVersion" | "actualVersion"> = {},
+): SubmitCardPromptResult {
+  return {
+    status: "rejected",
+    error: { code, recoveryHint, ...versions },
+  };
+}
+
+function mapRunnableFailure(code: RunnableFailure["code"]): SubmitCardPromptResult {
+  switch (code) {
+    case "board_not_found":
+    case "card_not_found":
+      return rejectedSubmission("stale_projection", "refresh_projection");
+    case "card_not_idle":
+    case "card_already_active":
+    case "capacity_exhausted":
+      return rejectedSubmission("attempt_active", "wait_for_attempt");
+    default:
+      return rejectedSubmission("invalid_prompt", "none");
   }
-  if (isDirectAcpTerminalState(attempt.state)) {
-    return { status: "rejected", code: "attempt_terminal", message: `Attempt is terminal (${attempt.state})` };
-  }
-  if (attempt.state !== "running" && attempt.state !== "needs_attention") {
-    return { status: "rejected", code: "invalid_state", message: `Attempt is not dispatchable (${attempt.state})` };
-  }
-  const live = active.get(input.attemptId);
-  if (live === undefined) {
-    return { status: "rejected", code: "stale_attempt", message: "Attempt is not owned by this live desktop host" };
-  }
-  const queue = snapshot.followUpQueues.find((candidate) => candidate.attemptId === input.attemptId) ?? null;
-  const actualVersion = queue?.version ?? 0;
-  if (!Number.isSafeInteger(input.expectedQueueVersion) || input.expectedQueueVersion < 0 || actualVersion !== input.expectedQueueVersion) {
-    return {
-      status: "rejected",
-      code: "stale_version",
-      message: `Follow-up queue version is stale: expected ${input.expectedQueueVersion}, actual ${actualVersion}`,
-    };
-  }
-  return { status: "ok", attempt, active: live, queue };
+}
+
+function latestActiveAttempt(
+  snapshot: PersistenceSnapshot,
+  cardId: CardId,
+): AttemptProjection | null {
+  return snapshot.attempts
+    .filter((attempt) => (
+      attempt.cardId === cardId
+      && (
+        attempt.state === "starting"
+        || attempt.state === "running"
+        || attempt.state === "needs_attention"
+      )
+    ))
+    .sort((left, right) => Number(right.generation) - Number(left.generation))[0] ?? null;
+}
+
+function appendPromptSubmission(
+  journal: EventJournal,
+  eventId: string,
+  submission: PromptSubmissionRecord,
+  card: CardProjection,
+  queue: FollowUpQueueProjection,
+  expectedQueueVersion: number,
+): void {
+  journal.append({
+    eventId,
+    boardId: card.boardId,
+    cardId: card.cardId,
+    actor: "operator",
+    kind: "prompt_submission_committed",
+    occurredAt: queue.updatedAt,
+    payload: {
+      submission,
+      changes: [{ entity: "follow_up_queue", operation: "upsert", value: queue }],
+    },
+  }, {
+    preconditions: [
+      { entity: "card", id: card.cardId, expectedVersion: card.version },
+      {
+        entity: "follow_up_queue",
+        id: queue.attemptId,
+        expectedVersion: expectedQueueVersion,
+      },
+    ],
+  });
 }
 
 function appendFollowUpQueue(
@@ -810,7 +1275,9 @@ function appendFollowUpQueue(
     eventId,
     boardId: queue.boardId,
     cardId: queue.cardId,
-    actor: operation === "head_ready" || operation === "dispatched" ? "system" : "operator",
+    actor: operation === "dispatching" || operation === "dispatched" || operation === "interrupted"
+      ? "system"
+      : "operator",
     kind: "follow_up_queue_committed",
     occurredAt: queue.updatedAt,
     payload: { operation, queue },
@@ -819,50 +1286,15 @@ function appendFollowUpQueue(
   });
 }
 
-function mapFollowUpError(
-  options: CreateAttemptCoordinatorOptions,
-  input: FollowUpFence,
-  error: unknown,
-): FollowUpQueueResult {
-  if (error instanceof ProjectionVersionConflictError) {
-    return rejectedFollowUp(options, input, "stale_version", error.message);
-  }
-  if (error instanceof FollowUpQueueTransitionError) {
-    const code: FollowUpRejectionCode = error.reason === "stale_head" || error.reason === "queue_not_found"
-      ? "stale_head"
-      : "invalid_state";
-    return rejectedFollowUp(options, input, code, error.message);
-  }
-  return rejectedFollowUp(options, input, "invalid_state", legibleError(error, "Follow-up queue mutation failed"));
-}
-
-function rejectedFollowUp(
-  options: CreateAttemptCoordinatorOptions,
-  input: Pick<FollowUpFence, "attemptId" | "generation">,
-  code: FollowUpRejectionCode,
-  message: string,
-): FollowUpQueueResult {
-  recordFollowUp(options, "follow_up_rejected", input, code);
-  return { status: "rejected", reason: { code, message } };
-}
-
-function recordFollowUp(
-  options: CreateAttemptCoordinatorOptions,
-  name: Parameters<ContentFreeFollowUpTelemetry["record"]>[0],
-  input: Pick<FollowUpFence, "attemptId" | "generation">,
-  outcome: string,
-): void {
-  options.telemetry?.record(name, {
-    attemptId: input.attemptId,
-    generation: input.generation,
-    outcome,
-  });
+interface AttemptIdentity {
+  readonly attemptId: AttemptId;
+  readonly generation: AttemptGeneration;
 }
 
 function recordAcceptedDirection(
   options: CreateAttemptCoordinatorOptions,
   active: ActiveAttempt,
-  input: Pick<FollowUpFence, "attemptId" | "generation">,
+  input: AttemptIdentity,
   text: string,
   now: () => number,
 ): void {
@@ -942,6 +1374,78 @@ function createRunContext(input: {
   });
 }
 
+class RequestChangesAdmissionError extends Error {
+  constructor(readonly contractError: ContractError) {
+    super(`Request changes admission rejected: ${contractError.code}`);
+    this.name = "RequestChangesAdmissionError";
+  }
+}
+
+function appendRequestChangesAdmission(
+  journal: EventJournal,
+  input: {
+    readonly eventId: string;
+    readonly board: BoardProjection;
+    readonly card: CardProjection;
+    readonly occurredAt: number;
+    readonly input: SubmitCardPromptInput & {
+      readonly source: "request_changes";
+      readonly evidence: NonNullable<SubmitCardPromptInput["evidence"]>;
+    };
+    readonly submission: PromptSubmissionRecord;
+    readonly changes: readonly ProjectionChange[];
+  },
+): void {
+  journal.immediate((transaction) => {
+    const guarded = evidenceBoundReviewPreconditions(journal, input.input);
+    if (guarded.status === "rejected") {
+      throw new RequestChangesAdmissionError(guarded.error);
+    }
+    const disposition: ReviewDispositionProjection = {
+      reviewId: input.input.commandId,
+      boardId: input.input.boardId,
+      cardId: input.input.cardId,
+      evidenceId: input.input.evidence.evidenceId,
+      evidenceDigest: input.input.evidence.evidenceDigest,
+      attemptId: input.input.evidence.attemptId,
+      generation: input.input.evidence.generation,
+      worktreeBindingId: input.input.evidence.worktreeBindingId,
+      disposition: "changes_requested",
+      reviewer: "operator",
+      reviewedCardVersion: guarded.value.card.version,
+      occurredAt: input.occurredAt,
+    };
+    transaction.append({
+      eventId: input.eventId,
+      boardId: input.board.boardId,
+      cardId: input.card.cardId,
+      actor: "operator",
+      kind: "prompt_submission_committed",
+      occurredAt: input.occurredAt,
+      payload: {
+        submission: input.submission,
+        changes: [
+          { entity: "review_disposition", operation: "insert", value: disposition },
+          ...input.changes,
+        ],
+      },
+    }, {
+      preconditions: [
+        {
+          entity: "board",
+          id: input.board.boardId,
+          expectedVersion: input.board.workflowVersion,
+        },
+        {
+          entity: "card",
+          id: input.card.cardId,
+          expectedVersion: input.input.expectedCardVersion,
+        },
+      ],
+    });
+  });
+}
+
 function appendLifecycle(journal: EventJournal, input: {
   readonly eventId: string;
   readonly operation: "created" | "started" | "startup_failed";
@@ -952,7 +1456,31 @@ function appendLifecycle(journal: EventJournal, input: {
   readonly occurredAt: number;
   readonly changes: readonly ProjectionChange[];
   readonly expectedCardVersion?: number;
+  readonly submission?: PromptSubmissionRecord;
 }): void {
+  if (input.submission !== undefined) {
+    if (input.operation !== "created") {
+      throw new Error("Only attempt creation may commit prompt admission");
+    }
+    journal.append({
+      eventId: input.eventId,
+      boardId: input.board.boardId,
+      cardId: input.cardId,
+      actor: "operator",
+      kind: "prompt_submission_committed",
+      occurredAt: input.occurredAt,
+      payload: {
+        submission: input.submission,
+        changes: input.changes,
+      },
+    }, {
+      preconditions: [
+        { entity: "board", id: input.board.boardId, expectedVersion: input.board.workflowVersion },
+        { entity: "card", id: input.cardId, expectedVersion: input.expectedCardVersion! },
+      ],
+    });
+    return;
+  }
   journal.append({
     eventId: input.eventId,
     boardId: input.board.boardId,

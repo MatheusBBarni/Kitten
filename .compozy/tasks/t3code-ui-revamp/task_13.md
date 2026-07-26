@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the review panel and bounded per-file diff viewer
 type: frontend
 complexity: high

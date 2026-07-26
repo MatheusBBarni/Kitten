@@ -195,8 +195,8 @@ describe("WorkflowBoard", () => {
     expect(markup).toContain('aria-label="Start Ready task"');
     expect(markup).toContain('draggable="false"');
     expect(markup).toContain('draggable="true"');
-    expect(markup).toContain("Working");
-    expect(markup).toContain("needs attention");
+    expect(markup).toContain("Running");
+    expect(markup).toContain("Attention required");
     expect(markup).toContain("aria-pressed=\"true\"");
     expect(markup).toContain('aria-label="Open actions for Backlog"');
     expect(markup).not.toContain('aria-label="Move Backlog earlier"');

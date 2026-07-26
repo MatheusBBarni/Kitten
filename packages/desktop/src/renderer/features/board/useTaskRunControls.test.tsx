@@ -35,9 +35,19 @@ describe("task card run controls", () => {
   test("starts from the task description and stops with the same version fence", async () => {
     const calls: unknown[] = [];
     const client = {
-      async startAttempt(commandId: string, input: unknown) {
-        calls.push({ action: "start", commandId, input });
-        return { kind: "inspector_command_result" as const, commandId, result: { status: "ok" as const } };
+      async submitCardPrompt(input: Parameters<DesktopRpcClient["submitCardPrompt"]>[0]) {
+        calls.push({ action: "start", commandId: input.commandId, input });
+        return {
+          kind: "submit_card_prompt_result" as const,
+          commandId: input.commandId,
+          result: {
+            status: "ok" as const,
+            outcome: "admitted" as const,
+            cardVersion: input.expectedCardVersion + 1,
+            attemptId: "attempt-run-controls" as never,
+            generation: 1 as never,
+          },
+        };
       },
       async stopAttempt(commandId: string, input: unknown) {
         calls.push({ action: "stop", commandId, input });
@@ -53,7 +63,8 @@ describe("task card run controls", () => {
       input: {
         cardId: card.cardId,
         expectedCardVersion: card.version,
-        initialPrompt: card.description,
+        content: card.description,
+        source: "initial",
       },
     });
 
@@ -68,12 +79,15 @@ describe("task card run controls", () => {
   test("falls back to the title and handles rejected, unavailable, and failed commands", async () => {
     const starts: unknown[] = [];
     const rejectedClient = {
-      async startAttempt(commandId: string, input: unknown) {
+      async submitCardPrompt(input: Parameters<DesktopRpcClient["submitCardPrompt"]>[0]) {
         starts.push(input);
         return {
-          kind: "inspector_command_result" as const,
-          commandId,
-          result: { status: "conflict" as const, conflict: { code: "stale", message: "Refresh the task." } },
+          kind: "submit_card_prompt_result" as const,
+          commandId: input.commandId,
+          result: {
+            status: "rejected" as const,
+            error: { code: "stale_projection" as const, recoveryHint: "refresh_projection" as const },
+          },
         };
       },
     } as unknown as DesktopRpcClient;
@@ -81,13 +95,13 @@ describe("task card run controls", () => {
 
     act(() => rejected.result.current.start({ ...card, description: "   " }));
     await waitFor(() => expect(starts).toHaveLength(1));
-    expect(starts[0]).toMatchObject({ initialPrompt: card.title });
+    expect(starts[0]).toMatchObject({ content: card.title });
 
     act(() => rejected.result.current.stop({ ...card, executionStatus: "running" }));
     await waitFor(() => expect(rejected.result.current.busy).toBe(false));
 
     const failedClient = {
-      startAttempt: () => Promise.reject(new Error("offline")),
+      submitCardPrompt: () => Promise.reject(new Error("offline")),
       stopAttempt: () => Promise.reject(new Error("offline")),
     } as unknown as DesktopRpcClient;
     const failed = renderHook(() => useTaskRunControls(failedClient), { wrapper });

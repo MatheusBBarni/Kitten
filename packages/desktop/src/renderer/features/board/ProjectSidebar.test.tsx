@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import "../../settings/testDom.ts";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { workflowIds } from "../../../workflow/workflowTypes.ts";
+import {
+  createEmptySupervisionProjection,
+  type ReviewEvidenceAvailability,
+  type SupervisionItem,
+  type SupervisionProjection,
+  type SupervisionStatus,
+} from "../../../shared/rpc.ts";
 import { resetDesktopViewStore } from "../../state/desktopViewStore.ts";
 import { ProjectSidebar } from "./ProjectSidebar.tsx";
 
@@ -14,6 +21,7 @@ afterEach(() => {
 
 const boardId = workflowIds.board("board-project-sidebar");
 const secondBoardId = workflowIds.board("board-project-sidebar-second");
+const betaBoardId = workflowIds.board("board-project-sidebar-beta");
 const workspace = {
   kind: "workspace_projection" as const,
   revision: 1,
@@ -30,6 +38,72 @@ const workspace = {
       repositoryPath: "/Users/name/projects/kitten",
       createdAt: 1,
       updatedAt: 1,
+      workflowVersion: 1,
+    },
+  ],
+};
+
+const priorityByStatus = {
+  needs_attention: 0,
+  ready_for_review: 1,
+  failed: 2,
+  running: 3,
+  settled: 4,
+} as const;
+
+function supervisionItem(
+  status: SupervisionStatus,
+  itemBoardId: typeof boardId,
+  cardId: string,
+  actionableAt: number,
+  evidenceAvailability: ReviewEvidenceAvailability = { status: "not_applicable" },
+): SupervisionItem {
+  return {
+    boardId: itemBoardId,
+    cardId: workflowIds.card(cardId),
+    cardVersion: 1,
+    attemptId: null,
+    generation: null,
+    status,
+    priority: priorityByStatus[status],
+    evidenceAvailability,
+    actionableAt,
+    updatedAt: actionableAt,
+  };
+}
+
+function supervisionProjection(
+  items: readonly SupervisionItem[],
+): SupervisionProjection {
+  const empty = createEmptySupervisionProjection(3);
+  const groups = empty.groups.map((group) => ({
+    ...group,
+    items: items.filter(({ status }) => status === group.status),
+  }));
+  return {
+    ...empty,
+    revision: 3,
+    generatedAt: 3,
+    groups,
+    counts: {
+      needs_attention: groups[0]!.items.length,
+      ready_for_review: groups[1]!.items.length,
+      failed: groups[2]!.items.length,
+      running: groups[3]!.items.length,
+      settled: groups[4]!.items.length,
+    },
+  };
+}
+
+const multiProjectWorkspace = {
+  ...workspace,
+  boards: [
+    ...workspace.boards,
+    {
+      boardId: betaBoardId,
+      repositoryPath: "/Users/name/projects/beta-project",
+      createdAt: 3,
+      updatedAt: 3,
       workflowVersion: 1,
     },
   ],
@@ -150,5 +224,246 @@ describe("ProjectSidebar", () => {
     await user.click(view.getByRole("button", { name: "Delete from sidebar" }));
     expect(view.queryByRole("button", { name: "Project actions for kitten" })).toBeNull();
     expect(view.getByText("No projects or boards match this search.")).toBeDefined();
+  });
+
+  test("renders authoritative groups, counts, and item order without reprioritizing in the renderer", () => {
+    const items = [
+      supervisionItem("needs_attention", boardId, "card-attention-first", 50),
+      supervisionItem("needs_attention", secondBoardId, "card-attention-second", 40),
+      supervisionItem("ready_for_review", betaBoardId, "card-review", 30, {
+        status: "available",
+        evidenceId: "evidence-review",
+        evidenceDigest: "digest-review",
+      }),
+      supervisionItem("failed", boardId, "card-failed", 20),
+      supervisionItem("running", boardId, "card-running", 10),
+      supervisionItem("settled", boardId, "card-settled", 5),
+    ];
+    const view = render(
+      <ProjectSidebar
+        workspace={multiProjectWorkspace}
+        activeBoardId={boardId}
+        busy={false}
+        workInbox={{ status: "ready", projection: supervisionProjection(items) }}
+        onOpenProject={() => {}}
+        onAddBoard={() => {}}
+        onSelectBoard={() => {}}
+        onEditPath={() => {}}
+      />,
+    );
+
+    const inbox = view.getByRole("navigation", { name: "Work Inbox" });
+    expect(within(inbox).getAllByRole("heading").map(({ textContent }) => textContent)).toEqual([
+      "Attention",
+      "Ready for review",
+      "Failed",
+      "Running",
+      "Settled",
+    ]);
+    expect(within(inbox).getByLabelText("2 Attention items").textContent).toBe("2");
+    expect(within(inbox).getByLabelText("1 Ready for review item").textContent).toBe("1");
+    expect(within(inbox).getAllByRole("button").slice(0, 2).map((button) => button.id)).toEqual([
+      "work-inbox-card-board-project-sidebar-card-attention-first",
+      "work-inbox-card-board-project-sidebar-second-card-attention-second",
+    ]);
+    expect(within(inbox).getByText(/Review evidence available/)).toBeDefined();
+  });
+
+  test("uses one search across repository, board, and card labels while retaining status groups", async () => {
+    window.localStorage.setItem("kitten:project-sidebar-preferences:v1", JSON.stringify({
+      [betaBoardId]: { name: "Release board" },
+    }));
+    const user = userEvent.setup();
+    const projection = supervisionProjection([
+      supervisionItem("needs_attention", boardId, "card-current-project", 20),
+      supervisionItem("ready_for_review", betaBoardId, "card-fix-release", 10),
+    ]);
+    const view = render(
+      <ProjectSidebar
+        workspace={multiProjectWorkspace}
+        activeBoardId={boardId}
+        busy={false}
+        workInbox={{ status: "ready", projection }}
+        onOpenProject={() => {}}
+        onAddBoard={() => {}}
+        onSelectBoard={() => {}}
+        onEditPath={() => {}}
+      />,
+    );
+    const search = view.getByRole("searchbox", { name: "Search projects, boards, and cards" });
+
+    await user.type(search, "beta-project");
+    expect(view.getByRole("button", { name: /card-fix-release/i })).toBeDefined();
+    expect(view.queryByRole("button", { name: /card-current-project/i })).toBeNull();
+    expect(view.getByRole("heading", { name: "Ready for review" })).toBeDefined();
+
+    await user.clear(search);
+    await user.type(search, "Release board");
+    expect(view.getByRole("button", { name: /card-fix-release/i })).toBeDefined();
+    expect(view.queryByRole("button", { name: /card-current-project/i })).toBeNull();
+
+    await user.clear(search);
+    await user.type(search, "card-current-project");
+    expect(view.getByRole("button", { name: /card-current-project/i })).toBeDefined();
+    expect(view.queryByRole("button", { name: /card-fix-release/i })).toBeNull();
+  });
+
+  test("distinguishes loading, typed unavailable, empty workspace, and filtered-empty guidance", async () => {
+    const user = userEvent.setup();
+    const props = {
+      activeBoardId: boardId,
+      busy: false,
+      onOpenProject: () => {},
+      onAddBoard: () => {},
+      onSelectBoard: () => {},
+      onEditPath: () => {},
+    };
+    const view = render(
+      <ProjectSidebar
+        {...props}
+        workspace={workspace}
+        workInbox={{ status: "loading" }}
+      />,
+    );
+    expect(view.getByLabelText("Loading Work Inbox").getAttribute("aria-busy")).toBe("true");
+
+    view.rerender(
+      <ProjectSidebar
+        {...props}
+        workspace={workspace}
+        workInbox={{ status: "unavailable", reason: "projection_rejected" }}
+      />,
+    );
+    expect(view.getByRole("alert").textContent).toContain("host rejected the Work Inbox projection");
+
+    view.rerender(
+      <ProjectSidebar
+        {...props}
+        workspace={{ ...workspace, boards: [] }}
+        workInbox={{ status: "ready", projection: createEmptySupervisionProjection() }}
+      />,
+    );
+    expect(view.getByText("Open a repository to create work for the inbox.")).toBeDefined();
+
+    view.rerender(
+      <ProjectSidebar
+        {...props}
+        workspace={workspace}
+        workInbox={{
+          status: "ready",
+          projection: supervisionProjection([
+            supervisionItem("running", boardId, "card-searchable", 10),
+          ]),
+        }}
+      />,
+    );
+    await user.type(view.getByRole("searchbox"), "no-match");
+    expect(view.getByRole("status").textContent).toContain("No Work Inbox items match this search");
+  });
+
+  test("keeps evidence-unavailable items actionable and keyboard reachable with current state", async () => {
+    const user = userEvent.setup();
+    const selections: string[] = [];
+    const unavailableItem = supervisionItem("ready_for_review", boardId, "card-no-evidence", 10, {
+      status: "unavailable",
+      error: { code: "evidence_missing", recoveryHint: "retry_evidence_capture" },
+    });
+    const view = render(
+      <ProjectSidebar
+        workspace={workspace}
+        activeBoardId={boardId}
+        busy={false}
+        workInbox={{ status: "ready", projection: supervisionProjection([unavailableItem]) }}
+        selectedInboxItem={{
+          boardId: unavailableItem.boardId,
+          cardId: unavailableItem.cardId,
+        }}
+        onSelectInboxItem={({ item }) => selections.push(item.cardId)}
+        onOpenProject={() => {}}
+        onAddBoard={() => {}}
+        onSelectBoard={() => {}}
+        onEditPath={() => {}}
+      />,
+    );
+    const item = view.getByRole("button", {
+      name: /card-no-evidence.*status ready for review.*review evidence unavailable/i,
+    });
+    expect(item.getAttribute("aria-current")).toBe("true");
+    expect(item.hasAttribute("disabled")).toBe(false);
+
+    for (let index = 0; index < 6 && document.activeElement !== item; index += 1) {
+      await user.tab();
+    }
+    expect(document.activeElement).toBe(item);
+    await user.keyboard("{Enter}");
+    expect(selections).toEqual([unavailableItem.cardId]);
+  });
+
+  test("keeps an unmatched host item visible but unavailable until repository details load", () => {
+    const unmatchedItem = supervisionItem(
+      "needs_attention",
+      workflowIds.board("board-not-yet-loaded"),
+      "card-not-yet-loaded",
+      10,
+    );
+    const view = render(
+      <ProjectSidebar
+        workspace={workspace}
+        activeBoardId={boardId}
+        busy={false}
+        workInbox={{ status: "ready", projection: supervisionProjection([unmatchedItem]) }}
+        onOpenProject={() => {}}
+        onAddBoard={() => {}}
+        onSelectBoard={() => {}}
+        onEditPath={() => {}}
+      />,
+    );
+
+    const item = view.getByRole("button", { name: /card-not-yet-loaded/i });
+    expect(item.hasAttribute("disabled")).toBe(true);
+    expect(item.getAttribute("aria-label")).toContain(
+      "Navigation unavailable until repository details load",
+    );
+    expect(view.getByText(/Navigation unavailable$/)).toBeDefined();
+  });
+
+  test("preserves pin and archive preferences and scopes hidden projects out of the inbox", async () => {
+    const user = userEvent.setup();
+    const projection = supervisionProjection([
+      supervisionItem("running", boardId, "card-preference-scope", 10),
+    ]);
+    const view = render(
+      <ProjectSidebar
+        workspace={workspace}
+        activeBoardId={boardId}
+        busy={false}
+        workInbox={{ status: "ready", projection }}
+        onOpenProject={() => {}}
+        onAddBoard={() => {}}
+        onSelectBoard={() => {}}
+        onEditPath={() => {}}
+      />,
+    );
+    const inboxItem = () => view.queryByRole("button", { name: /card-preference-scope/i });
+    const openActions = async () => {
+      await user.click(view.getByRole("button", { name: "Project actions for kitten" }));
+    };
+
+    await openActions();
+    await user.click(await view.findByRole("menuitem", { name: "Pin" }));
+    expect(inboxItem()).not.toBeNull();
+    expect(view.getByRole("heading", { name: "Pinned" })).toBeDefined();
+
+    await openActions();
+    await user.click(await view.findByRole("menuitem", { name: "Archive" }));
+    expect(inboxItem()).not.toBeNull();
+    expect(view.getByRole("heading", { name: "Archived" })).toBeDefined();
+
+    await openActions();
+    await user.click(await view.findByRole("menuitem", { name: "Delete from sidebar" }));
+    await user.click(view.getByRole("button", { name: "Delete from sidebar" }));
+    expect(inboxItem()).toBeNull();
+    expect(view.getByRole("status").textContent).toContain("hidden by sidebar preferences");
+    expect(view.getByLabelText("1 supervised card").textContent).toBe("1");
   });
 });

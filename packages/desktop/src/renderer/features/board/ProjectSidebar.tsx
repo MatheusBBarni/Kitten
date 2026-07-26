@@ -7,9 +7,17 @@ import {
   Label,
   Modal,
   SearchField,
+  Skeleton,
   TextField,
 } from "@heroui/react";
-import type { WorkspaceBoardSummary, WorkspaceProjection } from "../../../shared/rpc.ts";
+import {
+  createEmptySupervisionProjection,
+  type SupervisionItem,
+  type SupervisionProjection,
+  type SupervisionStatus,
+  type WorkspaceBoardSummary,
+  type WorkspaceProjection,
+} from "../../../shared/rpc.ts";
 import {
   ArchiveIcon,
   BoardIcon,
@@ -49,6 +57,128 @@ interface SidebarTarget {
   readonly preferenceKey: string;
   readonly label: string;
 }
+
+export type WorkInboxState =
+  | { readonly status: "loading" }
+  | {
+      readonly status: "unavailable";
+      readonly reason: "host_stopped" | "projection_rejected" | "not_ready" | "request_failed";
+    }
+  | { readonly status: "ready"; readonly projection: SupervisionProjection };
+
+export interface WorkInboxSelection {
+  readonly item: SupervisionItem;
+  readonly repositoryPath: string;
+}
+
+export interface SelectedWorkInboxItem {
+  readonly boardId: string;
+  readonly cardId: string;
+}
+
+interface WorkInboxRow {
+  readonly item: SupervisionItem;
+  readonly repositoryPath: string;
+  readonly repositoryLabel: string;
+  readonly boardLabel: string;
+  readonly cardLabel: string;
+  readonly evidenceLabel: string;
+  readonly navigationAvailable: boolean;
+  readonly searchText: string;
+}
+
+interface WorkInboxGroup {
+  readonly status: SupervisionStatus;
+  readonly count: number;
+  readonly rows: readonly WorkInboxRow[];
+}
+
+interface ActionableTime {
+  readonly label: string;
+  readonly dateTime?: string;
+  readonly title?: string;
+}
+
+const supervisionStatusLabel: Readonly<Record<SupervisionStatus, string>> = {
+  needs_attention: "Attention",
+  ready_for_review: "Ready for review",
+  failed: "Failed",
+  running: "Running",
+  settled: "Settled",
+};
+
+const supervisionStatusTone: Readonly<Record<SupervisionStatus, string>> = {
+  needs_attention: "text-[var(--kitten-status-attention)]",
+  ready_for_review: "text-[var(--kitten-status-review)]",
+  failed: "text-[var(--kitten-status-failure)]",
+  running: "text-[var(--kitten-status-running)]",
+  settled: "text-[var(--kitten-status-success)]",
+};
+
+const supervisionStatusSurface: Readonly<Record<SupervisionStatus, string>> = {
+  needs_attention: "border-[var(--kitten-status-attention-border)] bg-[var(--kitten-status-attention-surface)]",
+  ready_for_review: "border-[var(--kitten-status-review-border)] bg-[var(--kitten-status-review-surface)]",
+  failed: "border-[var(--kitten-status-failure-border)] bg-[var(--kitten-status-failure-surface)]",
+  running: "border-[var(--kitten-status-running-border)] bg-[var(--kitten-status-running-surface)]",
+  settled: "border-[var(--kitten-status-success-border)] bg-[var(--kitten-status-success-surface)]",
+};
+
+const evidenceUnavailableLabel = {
+  evidence_missing: "Review evidence unavailable: capture is missing",
+  evidence_stale: "Review evidence unavailable: refresh the card",
+  evidence_oversized: "Review evidence unavailable: change set is too large",
+  evidence_unsafe: "Review evidence unavailable: change set is unsafe",
+  worktree_binding_mismatch: "Review evidence unavailable: worktree changed",
+} as const;
+
+function evidenceLabel(item: SupervisionItem): string {
+  if (item.evidenceAvailability.status === "available") return "Review evidence available";
+  if (item.evidenceAvailability.status === "not_applicable") return "Review evidence not required";
+  return evidenceUnavailableLabel[item.evidenceAvailability.error.code as keyof typeof evidenceUnavailableLabel]
+    ?? "Review evidence unavailable";
+}
+
+function actionableTime(timestamp: number): ActionableTime {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return { label: "Actionable time unavailable" };
+  const title = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+  const deltaSeconds = Math.round((timestamp - Date.now()) / 1_000);
+  const absoluteSeconds = Math.abs(deltaSeconds);
+  const [value, unit] = absoluteSeconds < 60
+    ? [deltaSeconds, "second" as const]
+    : absoluteSeconds < 3_600
+      ? [Math.round(deltaSeconds / 60), "minute" as const]
+      : absoluteSeconds < 86_400
+        ? [Math.round(deltaSeconds / 3_600), "hour" as const]
+        : [Math.round(deltaSeconds / 86_400), "day" as const];
+  return {
+    label: `Actionable ${new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(value, unit)}`,
+    dateTime: date.toISOString(),
+    title,
+  };
+}
+
+function unavailableGuidance(reason: WorkInboxState & { readonly status: "unavailable" }): string {
+  if (reason.reason === "host_stopped") {
+    return "The desktop host stopped. Board navigation remains available; restart Kitten to refresh supervised work.";
+  }
+  if (reason.reason === "projection_rejected") {
+    return "The host rejected the Work Inbox projection. Board navigation remains available; refresh after the next workflow update.";
+  }
+  if (reason.reason === "request_failed") {
+    return "Couldn't load the Work Inbox. Board navigation remains available; wait for the desktop host to reconnect.";
+  }
+  return "The Work Inbox is not ready. Board navigation remains available while the host starts.";
+}
+
+export function workInboxItemFocusId(boardId: string, cardId: string): string {
+  return `work-inbox-card-${boardId}-${cardId}`;
+}
+
+export const PROJECT_SIDEBAR_SEARCH_ID = "project-sidebar-search";
 
 function readPreferences(): SidebarPreferences {
   try {
@@ -132,6 +262,9 @@ interface ProjectSidebarProps {
   readonly onAddBoard: (repositoryPath: string) => void;
   readonly onSelectBoard: (boardId: string) => void;
   readonly onEditPath: (boardId: string) => void;
+  readonly workInbox?: WorkInboxState;
+  readonly selectedInboxItem?: SelectedWorkInboxItem | null;
+  readonly onSelectInboxItem?: (selection: WorkInboxSelection) => void;
 }
 
 export function ProjectSidebar({
@@ -142,6 +275,12 @@ export function ProjectSidebar({
   onAddBoard,
   onSelectBoard,
   onEditPath,
+  workInbox = {
+    status: "ready",
+    projection: createEmptySupervisionProjection(workspace.revision),
+  },
+  selectedInboxItem = null,
+  onSelectInboxItem = () => {},
 }: ProjectSidebarProps) {
   const [preferences, setPreferences] = useState<SidebarPreferences>(readPreferences);
   const [query, setQuery] = useState("");
@@ -199,6 +338,71 @@ export function ProjectSidebar({
   const pinned = visibleProjects.filter(({ preference }) => preference.pinned && !preference.archived);
   const projects = visibleProjects.filter(({ preference }) => !preference.pinned && !preference.archived);
   const archived = visibleProjects.filter(({ preference }) => preference.archived);
+  const workInboxGroups = useMemo<readonly WorkInboxGroup[]>(() => {
+    if (workInbox.status !== "ready") return [];
+    const boardsById = new Map(workspace.boards.map((board) => [board.boardId, board]));
+    const boardsByRepository = new Map<string, WorkspaceBoardSummary[]>();
+    for (const board of workspace.boards) {
+      const repositoryPath = normalizedRepositoryPath(board.repositoryPath);
+      boardsByRepository.set(repositoryPath, [
+        ...(boardsByRepository.get(repositoryPath) ?? []),
+        board,
+      ]);
+    }
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return workInbox.projection.groups.map((group) => {
+      const rows = group.items.flatMap((item): readonly WorkInboxRow[] => {
+        const board = boardsById.get(item.boardId);
+        const repositoryPath = board === undefined
+          ? ""
+          : normalizedRepositoryPath(board.repositoryPath);
+        const projectKey = projectPreferenceKey(repositoryPath);
+        if (preferences[projectKey]?.hidden || preferences[item.boardId]?.hidden) return [];
+        const repositoryLabel = repositoryPath.length === 0
+          ? "Repository unavailable"
+          : projectDisplayName(repositoryPath, preferences);
+        const boardLabel = board === undefined
+          ? `Board ${item.boardId}`
+          : boardDisplayName(
+              board,
+              boardsByRepository.get(repositoryPath) ?? [board],
+              preferences,
+            );
+        const cardLabel = `Card ${item.cardId}`;
+        const itemEvidenceLabel = evidenceLabel(item);
+        const searchText = [
+          repositoryLabel,
+          repositoryPath,
+          boardLabel,
+          item.boardId,
+          cardLabel,
+          item.cardId,
+          supervisionStatusLabel[item.status],
+        ].join("\n").toLocaleLowerCase();
+        if (normalizedQuery.length > 0 && !searchText.includes(normalizedQuery)) return [];
+        return [{
+          item,
+          repositoryPath,
+          repositoryLabel,
+          boardLabel,
+          cardLabel,
+          evidenceLabel: itemEvidenceLabel,
+          navigationAvailable: repositoryPath.length > 0,
+          searchText,
+        }];
+      });
+      return {
+        status: group.status,
+        count: workInbox.projection.counts[group.status],
+        rows,
+      };
+    });
+  }, [preferences, query, workInbox, workspace.boards]);
+  const visibleInboxItemCount = workInboxGroups.reduce((count, group) => count + group.rows.length, 0);
+  const nextActionableItem = workInboxGroups.flatMap(({ rows }) => rows).at(0)?.item ?? null;
+  const authoritativeInboxItemCount = workInbox.status === "ready"
+    ? Object.values(workInbox.projection.counts).reduce((count, groupCount) => count + groupCount, 0)
+    : 0;
 
   function group(label: string, groupedProjects: readonly SidebarProject[]) {
     if (groupedProjects.length === 0) return null;
@@ -338,7 +542,10 @@ export function ProjectSidebar({
   }
 
   return (
-    <aside className="project-sidebar" aria-label="Kitten projects">
+    <aside
+      className="project-sidebar h-dvh min-h-0 border-r border-[var(--kitten-border-subtle)] bg-[var(--kitten-surface-navigation)]"
+      aria-label="Repository navigation"
+    >
       <header className="project-sidebar-header">
         <div className="project-sidebar-brand">
           <img src="./kitten-icon.png" alt="" aria-hidden="true" className="size-8 shrink-0 rounded-lg" />
@@ -350,16 +557,134 @@ export function ProjectSidebar({
         <Button variant="ghost" size="sm" onPress={onOpenProject} isDisabled={busy}>
           <PlusIcon />Open project
         </Button>
-        <SearchField value={query} onChange={setQuery} aria-label="Search projects and boards" variant="secondary">
+        <SearchField value={query} onChange={setQuery} aria-label="Search projects, boards, and cards" variant="secondary">
           <SearchField.Group>
             <SearchField.SearchIcon />
-            <SearchField.Input placeholder="Search projects and boards" />
+            <SearchField.Input id={PROJECT_SIDEBAR_SEARCH_ID} placeholder="Search projects, boards, and cards" />
             <SearchField.ClearButton />
           </SearchField.Group>
         </SearchField>
       </div>
 
       <div className="project-sidebar-scroll">
+        <section aria-labelledby="work-inbox-heading" className="mb-4 border-b border-[var(--separator)] pb-4">
+          <div className="flex items-center justify-between gap-2 px-2 pb-2">
+            <h2 id="work-inbox-heading" className="m-0 text-xs font-bold uppercase tracking-[0.06em] text-muted">
+              Work Inbox
+            </h2>
+            {workInbox.status === "ready" ? (
+              <span
+                className="text-xs font-semibold tabular-nums text-muted"
+                aria-label={`${authoritativeInboxItemCount} supervised ${authoritativeInboxItemCount === 1 ? "card" : "cards"}`}
+              >
+                {authoritativeInboxItemCount}
+              </span>
+            ) : null}
+          </div>
+          {workInbox.status === "loading" ? (
+            <div aria-busy="true" aria-label="Loading Work Inbox" className="grid gap-2 px-2 pb-1">
+              {[0, 1, 2].map((index) => (
+                <Skeleton key={index} className="h-16 w-full rounded-md" />
+              ))}
+              <span className="sr-only">Loading Work Inbox…</span>
+            </div>
+          ) : workInbox.status === "unavailable" ? (
+            <p role="alert" className="m-0 px-2 pb-1 text-xs leading-5 text-muted">
+              <strong className="text-foreground">Work Inbox unavailable.</strong>{" "}
+              {unavailableGuidance(workInbox)}
+            </p>
+          ) : authoritativeInboxItemCount === 0 ? (
+            <p className="m-0 px-2 pb-1 text-xs leading-5 text-muted">
+              {workspace.boards.length === 0
+                ? "Open a repository to create work for the inbox."
+                : "No cards need supervision yet."}
+            </p>
+          ) : visibleInboxItemCount === 0 && query.trim().length > 0 ? (
+            <p role="status" className="m-0 px-2 pb-1 text-xs leading-5 text-muted">
+              No Work Inbox items match this search. Clear the search to see all supervised cards.
+            </p>
+          ) : visibleInboxItemCount === 0 ? (
+            <p role="status" className="m-0 px-2 pb-1 text-xs leading-5 text-muted">
+              Supervised cards are hidden by sidebar preferences. Reopen the project to restore them.
+            </p>
+          ) : (
+            <nav aria-label="Work Inbox">
+              <div className="grid gap-3">
+                {workInboxGroups.map((group) => {
+                  const headingId = `work-inbox-${group.status}`;
+                  return (
+                    <section key={group.status} aria-labelledby={headingId}>
+                      <div className="flex items-center justify-between gap-2 px-2 pb-1">
+                        <h3
+                          id={headingId}
+                          className={`m-0 text-xs font-semibold ${supervisionStatusTone[group.status]}`}
+                        >
+                          {supervisionStatusLabel[group.status]}
+                        </h3>
+                        <span
+                          className="text-xs tabular-nums text-muted"
+                          aria-label={`${group.count} ${supervisionStatusLabel[group.status]} ${group.count === 1 ? "item" : "items"}`}
+                        >
+                          {group.count}
+                        </span>
+                      </div>
+                      {group.rows.length === 0 ? null : (
+                        <ul className="m-0 grid list-none gap-1 p-0">
+                          {group.rows.map((row) => {
+                            const selected = selectedInboxItem?.boardId === row.item.boardId
+                              && selectedInboxItem.cardId === row.item.cardId;
+                            const statusLabel = supervisionStatusLabel[row.item.status];
+                            const itemActionableTime = actionableTime(row.item.actionableAt);
+                            return (
+                              <li key={`${row.item.boardId}:${row.item.cardId}`}>
+                                <Button
+                                  id={workInboxItemFocusId(row.item.boardId, row.item.cardId)}
+                                  data-desktop-command-target={
+                                    nextActionableItem?.boardId === row.item.boardId
+                                    && nextActionableItem.cardId === row.item.cardId
+                                      ? "next-actionable"
+                                      : undefined
+                                  }
+                                  variant="ghost"
+                                  size="sm"
+                                  fullWidth
+                                  aria-current={selected ? "true" : undefined}
+                                  aria-label={`Open ${row.cardLabel} in ${row.boardLabel}, ${row.repositoryLabel}. Status ${statusLabel}. ${itemActionableTime.label}. ${row.evidenceLabel}.${row.navigationAvailable ? "" : " Navigation unavailable until repository details load."}`}
+                                  className={`grid min-h-20 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-[var(--kitten-radius-control)] border px-2 py-2 text-left aria-[current=true]:ring-2 aria-[current=true]:ring-[var(--kitten-focus)] ${supervisionStatusSurface[row.item.status]}`}
+                                  onPress={() => onSelectInboxItem({
+                                    item: row.item,
+                                    repositoryPath: row.repositoryPath,
+                                  })}
+                                  isDisabled={busy || !row.navigationAvailable}
+                                >
+                                  <span className="grid min-w-0 gap-0.5">
+                                    <span className="truncate text-xs font-semibold text-foreground">{row.cardLabel}</span>
+                                    <span className="truncate text-xs text-muted">{row.repositoryLabel} / {row.boardLabel}</span>
+                                    <span className="text-xs text-muted">
+                                      {statusLabel} · {row.evidenceLabel}
+                                      {row.navigationAvailable ? null : " · Navigation unavailable"}
+                                    </span>
+                                  </span>
+                                  <time
+                                    dateTime={itemActionableTime.dateTime}
+                                    title={itemActionableTime.title}
+                                    className="max-w-20 text-right text-xs leading-4 text-muted"
+                                  >
+                                    {itemActionableTime.label}
+                                  </time>
+                                </Button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+            </nav>
+          )}
+        </section>
         {visibleProjects.length === 0 ? (
           <p className="project-sidebar-empty">
             {workspace.boards.length === 0 ? "Open a repository to create its first board." : "No projects or boards match this search."}

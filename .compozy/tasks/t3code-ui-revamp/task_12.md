@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the conversation-first timeline and direct composer presentation
 type: frontend
 complexity: high

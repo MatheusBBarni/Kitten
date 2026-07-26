@@ -1,4 +1,8 @@
 import type { Database } from "bun:sqlite";
+import {
+  parseFollowUpQueueProjection,
+  serializeFollowUpQueueProjection,
+} from "../attempts/followUpQueue.ts";
 
 export interface SqliteMigration {
   readonly version: number;
@@ -327,6 +331,240 @@ const RECOVERY_REVIEW_SCHEMA_SQL = `
   ) STRICT;
 `;
 
+const IMMUTABLE_REVIEW_EVIDENCE_SCHEMA_SQL = `
+  CREATE TABLE review_evidence (
+    evidence_id TEXT PRIMARY KEY CHECK (length(trim(evidence_id)) > 0),
+    board_id TEXT NOT NULL CHECK (length(trim(board_id)) > 0),
+    card_id TEXT NOT NULL CHECK (length(trim(card_id)) > 0),
+    attempt_id TEXT NOT NULL CHECK (length(trim(attempt_id)) > 0),
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    worktree_binding_id TEXT NOT NULL CHECK (length(trim(worktree_binding_id)) > 0),
+    base_commit TEXT NOT NULL CHECK (length(trim(base_commit)) > 0),
+    head_commit TEXT NOT NULL CHECK (length(trim(head_commit)) > 0),
+    policy_version INTEGER NOT NULL CHECK (policy_version > 0),
+    evidence_digest TEXT NOT NULL CHECK (length(trim(evidence_digest)) > 0),
+    file_count INTEGER NOT NULL CHECK (file_count >= 0),
+    patch_bytes INTEGER NOT NULL CHECK (patch_bytes >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    UNIQUE (evidence_digest),
+    UNIQUE (
+      evidence_id, card_id, attempt_id, generation, evidence_digest,
+      worktree_binding_id
+    ),
+    UNIQUE (card_id, attempt_id, generation, evidence_digest),
+    CHECK (file_count > 0 OR patch_bytes = 0)
+  ) STRICT;
+
+  CREATE TABLE review_evidence_files (
+    evidence_id TEXT NOT NULL,
+    file_index INTEGER NOT NULL CHECK (file_index >= 0),
+    file_id TEXT NOT NULL CHECK (length(trim(file_id)) > 0),
+    status TEXT NOT NULL CHECK (
+      status IN ('added', 'modified', 'deleted', 'renamed', 'copied', 'binary')
+    ),
+    old_path TEXT CHECK (old_path IS NULL OR length(trim(old_path)) > 0),
+    new_path TEXT CHECK (new_path IS NULL OR length(trim(new_path)) > 0),
+    old_mode TEXT CHECK (old_mode IS NULL OR length(trim(old_mode)) > 0),
+    new_mode TEXT CHECK (new_mode IS NULL OR length(trim(new_mode)) > 0),
+    is_binary INTEGER NOT NULL CHECK (is_binary IN (0, 1)),
+    additions INTEGER CHECK (additions IS NULL OR additions >= 0),
+    deletions INTEGER CHECK (deletions IS NULL OR deletions >= 0),
+    patch_size INTEGER NOT NULL CHECK (patch_size >= 0),
+    patch_digest TEXT NOT NULL CHECK (length(trim(patch_digest)) > 0),
+    content_digest TEXT CHECK (
+      content_digest IS NULL OR length(trim(content_digest)) > 0
+    ),
+    patch_blob BLOB,
+    PRIMARY KEY (evidence_id, file_index),
+    UNIQUE (evidence_id, file_id),
+    FOREIGN KEY (evidence_id) REFERENCES review_evidence(evidence_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CHECK (old_path IS NOT NULL OR new_path IS NOT NULL),
+    CHECK (
+      (is_binary = 1 AND status = 'binary' AND patch_blob IS NULL AND patch_size = 0) OR
+      (is_binary = 0 AND status <> 'binary' AND patch_blob IS NOT NULL)
+    ),
+    CHECK (patch_blob IS NULL OR length(patch_blob) = patch_size)
+  ) STRICT;
+
+  CREATE INDEX review_evidence_latest_card
+    ON review_evidence(card_id, created_at DESC, evidence_id DESC);
+
+  CREATE INDEX review_evidence_attempt_generation
+    ON review_evidence(attempt_id, generation, created_at, evidence_id);
+
+  CREATE TRIGGER review_evidence_reject_update
+    BEFORE UPDATE ON review_evidence
+    BEGIN
+      SELECT RAISE(ABORT, 'review evidence is immutable');
+    END;
+
+  CREATE TRIGGER review_evidence_reject_delete
+    BEFORE DELETE ON review_evidence
+    BEGIN
+      SELECT RAISE(ABORT, 'review evidence is immutable');
+    END;
+
+  CREATE TRIGGER review_evidence_files_reject_update
+    BEFORE UPDATE ON review_evidence_files
+    BEGIN
+      SELECT RAISE(ABORT, 'review evidence files are immutable');
+    END;
+
+  CREATE TRIGGER review_evidence_files_reject_delete
+    BEFORE DELETE ON review_evidence_files
+    BEGIN
+      SELECT RAISE(ABORT, 'review evidence files are immutable');
+    END;
+
+  CREATE TRIGGER review_evidence_files_validate_totals
+    AFTER INSERT ON review_evidence_files
+    BEGIN
+      SELECT CASE
+        WHEN NEW.file_index >= (
+          SELECT file_count FROM review_evidence
+          WHERE evidence_id = NEW.evidence_id
+        )
+        THEN RAISE(ABORT, 'review evidence file index exceeds manifest count')
+      END;
+      SELECT CASE
+        WHEN (
+          SELECT count(*) FROM review_evidence_files
+          WHERE evidence_id = NEW.evidence_id
+        ) > (
+          SELECT file_count FROM review_evidence
+          WHERE evidence_id = NEW.evidence_id
+        )
+        THEN RAISE(ABORT, 'review evidence file count exceeds manifest count')
+      END;
+      SELECT CASE
+        WHEN (
+          SELECT coalesce(sum(patch_size), 0) FROM review_evidence_files
+          WHERE evidence_id = NEW.evidence_id
+        ) > (
+          SELECT patch_bytes FROM review_evidence
+          WHERE evidence_id = NEW.evidence_id
+        )
+        THEN RAISE(ABORT, 'review evidence patch bytes exceed manifest total')
+      END;
+      SELECT CASE
+        WHEN (
+          SELECT count(*) FROM review_evidence_files
+          WHERE evidence_id = NEW.evidence_id
+        ) = (
+          SELECT file_count FROM review_evidence
+          WHERE evidence_id = NEW.evidence_id
+        )
+        AND (
+          SELECT coalesce(sum(patch_size), 0) FROM review_evidence_files
+          WHERE evidence_id = NEW.evidence_id
+        ) <> (
+          SELECT patch_bytes FROM review_evidence
+          WHERE evidence_id = NEW.evidence_id
+        )
+        THEN RAISE(ABORT, 'review evidence patch bytes do not match manifest total')
+      END;
+    END;
+
+  ALTER TABLE review_dispositions RENAME TO review_dispositions_v8;
+
+  CREATE TABLE review_dispositions (
+    review_id TEXT PRIMARY KEY CHECK (length(trim(review_id)) > 0),
+    board_id TEXT NOT NULL CHECK (length(trim(board_id)) > 0),
+    card_id TEXT NOT NULL CHECK (length(trim(card_id)) > 0),
+    evidence_id TEXT,
+    evidence_digest TEXT,
+    attempt_id TEXT,
+    generation INTEGER CHECK (generation IS NULL OR generation >= 0),
+    worktree_binding_id TEXT,
+    disposition TEXT NOT NULL CHECK (
+      disposition IN ('approved', 'changes_requested')
+    ),
+    reviewer TEXT NOT NULL CHECK (reviewer = 'operator'),
+    reviewed_card_version INTEGER NOT NULL CHECK (reviewed_card_version > 0),
+    occurred_at INTEGER NOT NULL CHECK (occurred_at >= 0),
+    FOREIGN KEY (
+      evidence_id, card_id, attempt_id, generation, evidence_digest,
+      worktree_binding_id
+    ) REFERENCES review_evidence(
+      evidence_id, card_id, attempt_id, generation, evidence_digest,
+      worktree_binding_id
+    ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CHECK (
+      (
+        evidence_id IS NULL AND evidence_digest IS NULL AND attempt_id IS NULL
+        AND generation IS NULL AND worktree_binding_id IS NULL
+      ) OR (
+        evidence_id IS NOT NULL AND evidence_digest IS NOT NULL
+        AND attempt_id IS NOT NULL AND generation IS NOT NULL
+        AND worktree_binding_id IS NOT NULL
+      )
+    )
+  ) STRICT;
+
+  INSERT INTO review_dispositions(
+    review_id, board_id, card_id, disposition, reviewer,
+    reviewed_card_version, occurred_at
+  )
+  SELECT
+    review_id, board_id, card_id, disposition, reviewer,
+    reviewed_card_version, occurred_at
+  FROM review_dispositions_v8;
+
+  DROP TABLE review_dispositions_v8;
+
+  CREATE INDEX review_dispositions_card_rounds
+    ON review_dispositions(card_id, occurred_at, review_id);
+
+  CREATE UNIQUE INDEX review_dispositions_one_per_evidence
+    ON review_dispositions(evidence_id)
+    WHERE evidence_id IS NOT NULL;
+
+  CREATE TRIGGER review_dispositions_require_evidence
+    BEFORE INSERT ON review_dispositions
+    WHEN NEW.evidence_id IS NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'review dispositions require evidence');
+    END;
+
+  CREATE TRIGGER review_dispositions_reject_update
+    BEFORE UPDATE ON review_dispositions
+    BEGIN
+      SELECT RAISE(ABORT, 'review dispositions are immutable');
+    END;
+
+  CREATE TRIGGER review_dispositions_reject_delete
+    BEFORE DELETE ON review_dispositions
+    BEGIN
+      SELECT RAISE(ABORT, 'review dispositions are immutable');
+    END;
+`;
+
+function migrateFollowUpQueueRows(database: Database): void {
+  const rows = database.query<{
+    readonly attemptId: string;
+    readonly projectionJson: string;
+  }, []>(`
+    SELECT attempt_id AS attemptId, projection_json AS projectionJson
+    FROM follow_up_queue_projections ORDER BY attempt_id
+  `).all();
+  const update = database.query<void, [string, string]>(`
+    UPDATE follow_up_queue_projections
+    SET projection_json = ?
+    WHERE attempt_id = ?
+  `);
+  try {
+    for (const row of rows) {
+      update.run(
+        serializeFollowUpQueueProjection(parseFollowUpQueueProjection(row.projectionJson)),
+        row.attemptId,
+      );
+    }
+  } finally {
+    update.finalize();
+  }
+}
+
 export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -382,6 +620,14 @@ export const DESKTOP_MIGRATIONS: readonly SqliteMigration[] = [
     name: "interrupted_attempt_recovery_and_review_dispositions",
     up(database) {
       database.run(RECOVERY_REVIEW_SCHEMA_SQL);
+    },
+  },
+  {
+    version: 9,
+    name: "immutable_review_evidence_and_queue_v2",
+    up(database) {
+      database.run(IMMUTABLE_REVIEW_EVIDENCE_SCHEMA_SQL);
+      migrateFollowUpQueueRows(database);
     },
   },
 ];

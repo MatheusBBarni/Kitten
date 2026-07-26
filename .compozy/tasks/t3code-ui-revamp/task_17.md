@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Build the packaged native lifecycle verification harness
 type: infra
 complexity: high

@@ -57,7 +57,7 @@ describe("desktop settings RPC", () => {
       status: "ok",
       projection: {
         revision: 0,
-        preferences: { theme: "system" },
+        preferences: { theme: "system", workflowMeasurementEnabled: false },
         scheduler: { automaticExecutionLimit: 1, activeCount: 0 },
         profileDefaults: { profileId: null, appliesTo: "future_cards" },
         profiles: [
@@ -81,7 +81,11 @@ describe("desktop settings RPC", () => {
     const rpc = createDesktopSettingsRpc({ profiles, discoverCatalog: emptyCatalog });
     const theme = await rpc.updatePreferences({
       commandId: "theme-invalid",
-      input: { expectedRevision: 0, theme: "sepia" as never },
+      input: {
+        expectedRevision: 0,
+        theme: "sepia" as never,
+        workflowMeasurementEnabled: false,
+      },
     });
     const unready = await rpc.updateProfileDefaults({
       commandId: "profile-unready",
@@ -135,7 +139,14 @@ describe("desktop settings RPC", () => {
 
   test("returns a typed stale conflict and leaves the committed projection intact", async () => {
     const rpc = createDesktopSettingsRpc({ discoverCatalog: emptyCatalog });
-    await rpc.updatePreferences({ commandId: "theme-dark", input: { expectedRevision: 0, theme: "dark" } });
+    await rpc.updatePreferences({
+      commandId: "theme-dark",
+      input: {
+        expectedRevision: 0,
+        theme: "dark",
+        workflowMeasurementEnabled: false,
+      },
+    });
     const stale = await rpc.setExecutionLimit({ commandId: "stale", input: { expectedRevision: 0, limit: 4 } });
     expect(stale.result).toEqual({
       status: "conflict",
@@ -145,6 +156,68 @@ describe("desktop settings RPC", () => {
       status: "ok",
       projection: { preferences: { theme: "dark" }, scheduler: { automaticExecutionLimit: 1 } },
     });
+  });
+
+  test("revision-fences the default-off measurement preference and applies commits immediately", async () => {
+    const changes: boolean[] = [];
+    const rpc = createDesktopSettingsRpc({
+      discoverCatalog: emptyCatalog,
+      onWorkflowMeasurementEnabledChanged(enabled) {
+        changes.push(enabled);
+      },
+    });
+    expect((await rpc.getSettings()).result).toMatchObject({
+      status: "ok",
+      projection: {
+        revision: 0,
+        preferences: { workflowMeasurementEnabled: false },
+      },
+    });
+
+    const enabled = await rpc.updatePreferences({
+      commandId: "measurement-on",
+      input: {
+        expectedRevision: 0,
+        theme: "system",
+        workflowMeasurementEnabled: true,
+      },
+    });
+    expect(enabled.result).toMatchObject({
+      status: "ok",
+      projection: {
+        revision: 1,
+        preferences: { workflowMeasurementEnabled: true },
+      },
+    });
+    expect(changes).toEqual([true]);
+
+    const stale = await rpc.updatePreferences({
+      commandId: "measurement-stale",
+      input: {
+        expectedRevision: 0,
+        theme: "system",
+        workflowMeasurementEnabled: false,
+      },
+    });
+    expect(stale.result).toMatchObject({ status: "conflict" });
+    expect(changes).toEqual([true]);
+
+    const disabled = await rpc.updatePreferences({
+      commandId: "measurement-off",
+      input: {
+        expectedRevision: 1,
+        theme: "system",
+        workflowMeasurementEnabled: false,
+      },
+    });
+    expect(disabled.result).toMatchObject({
+      status: "ok",
+      projection: {
+        revision: 2,
+        preferences: { workflowMeasurementEnabled: false },
+      },
+    });
+    expect(changes).toEqual([true, false]);
   });
 
   test("rescans project Skill roots after repository binding and publishes catalog changes", async () => {

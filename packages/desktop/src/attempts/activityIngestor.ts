@@ -169,7 +169,7 @@ export function getCardInspectorProjection(
     .map((context) => stored.get(context.attemptId) ?? createAttemptInspectorProjection(context));
   const attemptIds = new Set(attempts.map(({ attemptId }) => attemptId));
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     cardId,
     revision: snapshot.revision,
     card,
@@ -192,5 +192,22 @@ export function getCardInspectorProjection(
     attentionBlockers: snapshot.attentionBlockers
       .filter(({ attemptId }) => attemptIds.has(attemptId))
       .sort((left, right) => left.createdAt - right.createdAt || left.blockerId.localeCompare(right.blockerId)),
+    reviewEvidence: Object.values(snapshot.reviewEvidenceByCard ?? {})
+      .filter((evidence) => evidence.cardId === cardId && attemptIds.has(evidence.attemptId))
+      .sort((left, right) => (
+        Number(left.generation) - Number(right.generation)
+        || left.createdAt - right.createdAt
+        || left.evidenceId.localeCompare(right.evidenceId)
+      ))
+      .map((evidence) => ({
+        evidenceId: evidence.evidenceId,
+        evidenceDigest: evidence.evidenceDigest,
+        attemptId: evidence.attemptId,
+        generation: evidence.generation,
+        worktreeBindingId: evidence.worktreeBindingId,
+        fileCount: evidence.fileCount,
+        totalPatchBytes: evidence.totalPatchBytes,
+        createdAt: evidence.createdAt,
+      })),
   };
 }

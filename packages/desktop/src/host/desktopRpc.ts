@@ -1,11 +1,4 @@
-import type {
-  ConfirmQueuedFollowUpInput,
-  DesktopAttemptCoordinator,
-  FollowUpQueueResult,
-  FollowUpRejectionCode,
-  QueueFollowUpInput,
-  RemoveQueuedFollowUpInput,
-} from "../attempts/attemptCoordinator.ts";
+import type { DesktopAttemptCoordinator } from "../attempts/attemptCoordinator.ts";
 import type { AttemptGeneration, AttemptId, QuestionId } from "@kitten/engine";
 import type { AttentionOutcome } from "../attention/contracts.ts";
 import type { AttentionCoordinator } from "../attention/attentionCoordinator.ts";
@@ -13,44 +6,40 @@ import { AttentionCoordinatorError } from "../attention/attentionCoordinator.ts"
 import type { CardId } from "../workflow/workflowTypes.ts";
 import type { EventJournal } from "../persistence/eventJournal.ts";
 import type {
-  ReviewCardInput,
-  ReviewCardResult,
   ReviewDispositionService,
 } from "./reviewDisposition.ts";
+import {
+  REVIEW_TEXT_PATCH_BYTE_LIMIT,
+  reviewEvidenceContractError,
+  type ReviewEvidenceService,
+} from "./reviewEvidence.ts";
+import {
+  assertGetReviewDiffChunkRequest,
+  assertGetReviewManifestRequest,
+  assertReviewDispositionInput,
+  assertSubmitCardPromptInput,
+  createReviewApprovalEnvelope,
+  createReviewDiffChunkEnvelope,
+  createReviewManifestEnvelope,
+  createSubmitCardPromptEnvelope,
+  type GetReviewDiffChunkRequest,
+  type GetReviewManifestRequest,
+  type ContractError,
+  type ReviewApprovalEnvelope,
+  type ReviewDispositionInput,
+  type ReviewDiffChunkEnvelope,
+  type ReviewManifestEnvelope,
+  type SubmitCardPromptEnvelope,
+  type SubmitCardPromptInput,
+} from "../shared/rpc.ts";
+import {
+  recordWorkflowMeasurementSafely,
+  type MeasurementReason,
+  type WorkflowMeasurementSink,
+} from "./lifecycleDiagnostics.ts";
 
-export interface FollowUpRpcRequest<Input> {
-  readonly commandId: string;
-  readonly input: Input;
-}
-
-export interface FollowUpRpcResultEnvelope {
-  readonly kind: "follow_up_command_result";
-  readonly commandId: string;
-  readonly result: FollowUpRpcResult;
-}
-
-export type FollowUpRpcResult =
-  | Extract<FollowUpQueueResult, { readonly status: "ok" }>
-  | {
-      readonly status: "conflict";
-      readonly conflict: {
-        readonly kind: "follow_up_queue";
-        readonly code: Extract<FollowUpRejectionCode, "stale_attempt" | "stale_generation" | "stale_version" | "stale_head">;
-        readonly message: string;
-      };
-    }
-  | Extract<FollowUpQueueResult, { readonly status: "rejected" }>;
-
-export interface DesktopFollowUpRpc {
-  queueFollowUp(request: FollowUpRpcRequest<QueueFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
-  removeQueuedFollowUp(request: FollowUpRpcRequest<RemoveQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
-  confirmQueuedFollowUp(request: FollowUpRpcRequest<ConfirmQueuedFollowUpInput>): Promise<FollowUpRpcResultEnvelope>;
-}
-
-export interface StartAttemptRpcInput {
-  readonly cardId: CardId;
-  readonly expectedCardVersion: number;
-  readonly initialPrompt: string;
+export interface DesktopPromptSubmissionRpc {
+  submitCardPrompt(input: SubmitCardPromptInput): Promise<SubmitCardPromptEnvelope>;
 }
 
 export interface StopAttemptRpcInput {
@@ -67,11 +56,6 @@ export interface AnswerAttentionRpcInput {
 }
 
 export interface InspectorRpcRequest<Input> {
-  readonly commandId: string;
-  readonly input: Input;
-}
-
-export interface ReviewRpcRequest<Input> {
   readonly commandId: string;
   readonly input: Input;
 }
@@ -101,45 +85,246 @@ export interface InspectorCommandResultEnvelope {
 }
 
 export interface DesktopInspectorRpc {
-  startAttempt(request: InspectorRpcRequest<StartAttemptRpcInput>): Promise<InspectorCommandResultEnvelope>;
   stopAttempt(request: InspectorRpcRequest<StopAttemptRpcInput>): Promise<InspectorCommandResultEnvelope>;
   answerAttention(request: InspectorRpcRequest<AnswerAttentionRpcInput>): Promise<InspectorCommandResultEnvelope>;
 }
 
-export type ReviewCardRpcResult = ReviewCardResult | {
-  readonly status: "unavailable";
-  readonly reason: "not_ready" | "host_stopped" | "projection_rejected";
-};
-
-export interface ReviewCardRpcEnvelope {
-  readonly kind: "review_card_result";
-  readonly commandId: string;
-  readonly result: ReviewCardRpcResult;
-}
-
 export interface DesktopReviewRpc {
-  reviewCard(request: ReviewRpcRequest<ReviewCardInput>): Promise<ReviewCardRpcEnvelope>;
+  reviewCard(input: ReviewDispositionInput): Promise<ReviewApprovalEnvelope>;
+  currentRevision(): number;
 }
 
-export function createDesktopReviewRpc(service: ReviewDispositionService): DesktopReviewRpc {
+export interface DesktopReviewEvidenceRpc {
+  getReviewManifest(request: GetReviewManifestRequest): Promise<ReviewManifestEnvelope>;
+  getReviewDiffChunk(request: GetReviewDiffChunkRequest): Promise<ReviewDiffChunkEnvelope>;
+}
+
+function measurementReason(
+  error: ContractError | undefined,
+): MeasurementReason {
+  return error?.code ?? "none";
+}
+
+function recordReviewRead(
+  measurement: WorkflowMeasurementSink | undefined,
+  resource: "manifest" | "chunk",
+  result: ReviewManifestEnvelope["result"] | ReviewDiffChunkEnvelope["result"],
+): void {
+  recordWorkflowMeasurementSafely(measurement, {
+    schemaVersion: 1,
+    name: "review_read",
+    outcome: result.status,
+    resource,
+    reason: result.status === "rejected"
+      ? measurementReason(result.error)
+      : result.status === "unavailable"
+        ? "storage_unavailable"
+        : "none",
+  });
+}
+
+export function createDesktopReviewEvidenceRpc(
+  service: ReviewEvidenceService,
+  measurement?: WorkflowMeasurementSink,
+): DesktopReviewEvidenceRpc {
+  const manifestEnvelope = (
+    result: ReviewManifestEnvelope["result"],
+  ): ReviewManifestEnvelope => {
+    const envelope = createReviewManifestEnvelope(result);
+    recordReviewRead(measurement, "manifest", envelope.result);
+    return envelope;
+  };
+  const chunkEnvelope = (
+    result: ReviewDiffChunkEnvelope["result"],
+  ): ReviewDiffChunkEnvelope => {
+    const envelope = createReviewDiffChunkEnvelope(result);
+    recordReviewRead(measurement, "chunk", envelope.result);
+    return envelope;
+  };
   return {
-    async reviewCard(request) {
-      if (request.commandId.trim().length === 0) throw new Error("Review RPC commandId must be non-empty");
-      return { kind: "review_card_result", commandId: request.commandId, result: service.reviewCard(request.input) };
+    async getReviewManifest(request) {
+      try {
+        assertGetReviewManifestRequest(request);
+        const result = service.manifest(request.evidenceId);
+        if (result.status === "unavailable") {
+          return manifestEnvelope({
+            status: "rejected",
+            error: reviewEvidenceContractError(result.reason),
+          });
+        }
+        if (result.manifest.cardId !== request.cardId) {
+          return manifestEnvelope({
+            status: "rejected",
+            error: { code: "evidence_stale", recoveryHint: "reload_evidence" },
+          });
+        }
+        return manifestEnvelope({
+          status: "ok",
+          projection: result.manifest,
+        });
+      } catch {
+        return manifestEnvelope({
+          status: "rejected",
+          error: { code: "evidence_unsafe", recoveryHint: "resolve_unsafe_change" },
+        });
+      }
+    },
+
+    async getReviewDiffChunk(request) {
+      try {
+        assertGetReviewDiffChunkRequest(request);
+        const manifestResult = service.manifest(request.evidenceId);
+        if (manifestResult.status === "unavailable") {
+          return chunkEnvelope({
+            status: "rejected",
+            error: reviewEvidenceContractError(manifestResult.reason),
+          });
+        }
+        const file = manifestResult.manifest.files.find(
+          (candidate) => candidate.fileId === request.fileId,
+        );
+        if (file === undefined) {
+          return chunkEnvelope({
+            status: "rejected",
+            error: reviewEvidenceContractError("invalid_file"),
+          });
+        }
+        if (file.isBinary) {
+          return chunkEnvelope({
+            status: "rejected",
+            error: { code: "evidence_unsafe", recoveryHint: "none" },
+          });
+        }
+        if (file.patchByteLength > REVIEW_TEXT_PATCH_BYTE_LIMIT) {
+          return chunkEnvelope({
+            status: "rejected",
+            error: { code: "evidence_oversized", recoveryHint: "reduce_change_set" },
+          });
+        }
+        const result = service.readDiffChunk(
+          request.evidenceId,
+          request.fileId,
+          request.offset,
+        );
+        if (result.status === "non_text") {
+          return chunkEnvelope({
+            status: "rejected",
+            error: { code: "evidence_unsafe", recoveryHint: "none" },
+          });
+        }
+        if (result.status === "unavailable") {
+          return chunkEnvelope({
+            status: "rejected",
+            error: reviewEvidenceContractError(result.reason),
+          });
+        }
+        return chunkEnvelope({
+          status: "ok",
+          projection: result.chunk,
+        });
+      } catch {
+        return chunkEnvelope({
+          status: "rejected",
+          error: { code: "evidence_unsafe", recoveryHint: "resolve_unsafe_change" },
+        });
+      }
     },
   };
 }
 
-export function createDesktopFollowUpRpc(coordinator: DesktopAttemptCoordinator): DesktopFollowUpRpc {
+export function createDesktopReviewRpc(
+  service: ReviewDispositionService,
+  measurement?: WorkflowMeasurementSink,
+): DesktopReviewRpc {
   return {
-    async queueFollowUp(request) {
-      return envelope(request.commandId, coordinator.queueFollowUp(request.input));
+    async reviewCard(input) {
+      assertReviewDispositionInput(input);
+      const envelope = createReviewApprovalEnvelope(
+        input.commandId,
+        await service.reviewCard(input),
+      );
+      recordWorkflowMeasurementSafely(measurement, {
+        schemaVersion: 1,
+        name: "evidence_revalidation",
+        outcome: envelope.result.status === "ok"
+          ? "current"
+          : envelope.result.error.code === "evidence_stale"
+            ? "stale"
+            : "unavailable",
+        reason: envelope.result.status === "rejected"
+          ? measurementReason(envelope.result.error)
+          : "none",
+      });
+      recordWorkflowMeasurementSafely(measurement, {
+        schemaVersion: 1,
+        name: "review_disposition",
+        outcome: envelope.result.status === "ok"
+          ? envelope.result.outcome === "idempotent" ? "idempotent" : "completed"
+          : "rejected",
+        disposition: "approved",
+        reason: envelope.result.status === "rejected"
+          ? measurementReason(envelope.result.error)
+          : "none",
+      });
+      return envelope;
     },
-    async removeQueuedFollowUp(request) {
-      return envelope(request.commandId, coordinator.removeQueuedFollowUp(request.input));
+    currentRevision() {
+      return service.currentRevision();
     },
-    async confirmQueuedFollowUp(request) {
-      return envelope(request.commandId, await coordinator.confirmQueuedFollowUp(request.input));
+  };
+}
+
+export function createDesktopPromptSubmissionRpc(
+  coordinator: DesktopAttemptCoordinator,
+  measurement?: WorkflowMeasurementSink,
+): DesktopPromptSubmissionRpc {
+  return {
+    async submitCardPrompt(input) {
+      assertSubmitCardPromptInput(input);
+      const envelope = createSubmitCardPromptEnvelope(
+        input.commandId,
+        await coordinator.submitCardPrompt(input),
+      );
+      const promptOutcome = envelope.result.status === "ok"
+        ? envelope.result.outcome
+        : envelope.result.error.code === "blocker_active"
+          ? "blocked"
+          : envelope.result.error.code === "submission_interrupted"
+            ? "interrupted"
+            : "rejected";
+      recordWorkflowMeasurementSafely(measurement, {
+        schemaVersion: 1,
+        name: "prompt_admission",
+        outcome: promptOutcome,
+        source: input.source,
+        reason: envelope.result.status === "rejected"
+          ? measurementReason(envelope.result.error)
+          : "none",
+      });
+      if (input.source === "request_changes") {
+        recordWorkflowMeasurementSafely(measurement, {
+          schemaVersion: 1,
+          name: "evidence_revalidation",
+          outcome: envelope.result.status === "ok"
+            ? "current"
+            : envelope.result.error.code === "evidence_stale"
+              ? "stale"
+              : "unavailable",
+          reason: envelope.result.status === "rejected"
+            ? measurementReason(envelope.result.error)
+            : "none",
+        });
+        recordWorkflowMeasurementSafely(measurement, {
+          schemaVersion: 1,
+          name: "review_disposition",
+          outcome: envelope.result.status === "ok" ? "completed" : "rejected",
+          disposition: "changes_requested",
+          reason: envelope.result.status === "rejected"
+            ? measurementReason(envelope.result.error)
+            : "none",
+        });
+      }
+      return envelope;
     },
   };
 }
@@ -150,44 +335,6 @@ export function createDesktopInspectorRpc(
   attention?: AttentionCoordinator,
 ): DesktopInspectorRpc {
   return {
-    async startAttempt(request) {
-      if (request.commandId.trim().length === 0) {
-        throw new Error("Inspector RPC commandId must be non-empty");
-      }
-      const card = journal.snapshot().cards.find(({ cardId }) => cardId === request.input.cardId);
-      if (card === undefined) {
-        return inspectorEnvelope(request.commandId, {
-          status: "rejected",
-          reason: { code: "card_not_found", message: "The task no longer exists on this board." },
-        });
-      }
-      if (card.version !== request.input.expectedCardVersion) {
-        return inspectorEnvelope(request.commandId, {
-          status: "conflict",
-          conflict: {
-            kind: "inspector_command",
-            code: "stale_card",
-            message: "The task changed before the run started. Review the refreshed task and try again.",
-          },
-        });
-      }
-      const prompt = request.input.initialPrompt.trim();
-      if (prompt.length === 0) {
-        return inspectorEnvelope(request.commandId, {
-          status: "rejected",
-          reason: { code: "empty_prompt", message: "Add a message before starting the run." },
-        });
-      }
-      const result = await coordinator.start(card.cardId, prompt);
-      if (result.status === "started") return inspectorEnvelope(request.commandId, { status: "ok" });
-      if (result.status === "rejected") {
-        return inspectorEnvelope(request.commandId, { status: "rejected", reason: result.reason });
-      }
-      return inspectorEnvelope(request.commandId, {
-        status: "rejected",
-        reason: { code: result.failure.code, message: result.failure.message },
-      });
-    },
     async stopAttempt(request) {
       if (request.commandId.trim().length === 0) throw new Error("Inspector RPC commandId must be non-empty");
       const snapshot = journal.snapshot();
@@ -239,27 +386,4 @@ function inspectorEnvelope(
   result: InspectorCommandResult,
 ): InspectorCommandResultEnvelope {
   return { kind: "inspector_command_result", commandId, result };
-}
-
-function envelope(commandId: string, result: FollowUpQueueResult): FollowUpRpcResultEnvelope {
-  if (commandId.trim().length === 0) throw new Error("Follow-up RPC commandId must be non-empty");
-  if (
-    result.status === "rejected"
-    && (
-      result.reason.code === "stale_attempt"
-      || result.reason.code === "stale_generation"
-      || result.reason.code === "stale_version"
-      || result.reason.code === "stale_head"
-    )
-  ) {
-    return {
-      kind: "follow_up_command_result",
-      commandId,
-      result: {
-        status: "conflict",
-        conflict: { kind: "follow_up_queue", code: result.reason.code, message: result.reason.message },
-      },
-    };
-  }
-  return { kind: "follow_up_command_result", commandId, result };
 }

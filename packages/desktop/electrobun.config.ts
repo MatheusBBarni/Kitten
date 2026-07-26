@@ -24,6 +24,7 @@ export default {
       "src/renderer/index.html": "views/main/index.html",
       "src/renderer/generated.css": "views/main/styles.css",
       "assets/kitten-icon.iconset/icon_128x128.png": "views/main/kitten-icon.png",
+      "test/native/lifecycle-matrix.v1.json": "native/lifecycle-matrix.v1.json",
     },
     mac: {
       codesign: false,

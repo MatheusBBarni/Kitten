@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Expose review manifest and chunk RPC with renderer query bindings
 type: backend
 complexity: high

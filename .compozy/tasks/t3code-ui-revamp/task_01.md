@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 title: Define shared supervision, review-evidence, and prompt-submission contracts
 type: backend
 complexity: medium

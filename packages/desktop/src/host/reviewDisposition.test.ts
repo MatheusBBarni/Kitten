@@ -1,174 +1,424 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { toActivitySequence, toOpaqueId, type ActivityEventId } from "@kitten/engine";
+import { createActivityIngestor } from "../attempts/activityIngestor.ts";
 import { createAttentionFixture } from "../attention/testSupport.ts";
-import { DuplicateJournalEventError, type EventJournal, type JournalEvent } from "../persistence/eventJournal.ts";
+import type {
+  EventJournal,
+  ReviewEvidenceRecord,
+} from "../persistence/eventJournal.ts";
 import { closeSqliteDatabase } from "../persistence/sqliteDatabase.ts";
-import { workflowIds } from "../workflow/workflowTypes.ts";
-import { createDesktopCoordinator } from "./desktopCoordinator.ts";
+import type {
+  ContractError,
+  ReviewDispositionInput,
+  ReviewEvidencePrecondition,
+} from "../shared/rpc.ts";
+import type { CardWorktreeBinding } from "../worktrees/contracts.ts";
 import type { LifecycleDiagnostic } from "./lifecycleDiagnostics.ts";
-import { recoverInterruptedAttempts } from "./recovery.ts";
 import { createReviewDispositionService } from "./reviewDisposition.ts";
 
-describe("review disposition", () => {
-  test("rejects stale and wrong-state reviews, then persists the sole explicit completion evidence", () => {
-    const { database, journal } = createAttentionFixture();
-    try {
-      recoverInterruptedAttempts({ journal, now: () => 120, createEventId: () => "review-seed-recovery" });
-      const failedCard = journal.snapshot().cards[0]!;
-      const service = createDesktopCoordinator({ journal, now: () => 150 });
-      const input = {
-        reviewId: "review-1",
-        boardId: failedCard.boardId,
-        cardId: failedCard.cardId,
-        expectedCardVersion: failedCard.version,
-        disposition: "approved" as const,
-      };
-      expect(service.reviewCard({ ...input, expectedCardVersion: failedCard.version - 1 })).toEqual({
-        status: "conflict",
-        expectedVersion: failedCard.version - 1,
-        actualVersion: failedCard.version,
-      });
-      expect(service.reviewCard(input)).toEqual({ status: "rejected", reason: "wrong_state" });
-      journal.append({
-        eventId: "review-ready-card",
-        boardId: failedCard.boardId,
-        cardId: failedCard.cardId,
+interface ReadyFixture {
+  readonly database: ReturnType<typeof createAttentionFixture>["database"];
+  readonly journal: EventJournal;
+  readonly evidence: ReviewEvidenceRecord;
+  readonly input: ReviewDispositionInput;
+}
+
+function createEvidence(
+  journal: EventJournal,
+  binding: CardWorktreeBinding,
+): ReviewEvidenceRecord {
+  const snapshot = journal.snapshot();
+  const card = snapshot.cards[0]!;
+  const attempt = snapshot.attempts[0]!;
+  const patchBlob = new TextEncoder().encode(`review patch ${card.version}\n`);
+  const patchDigest = createHash("sha256").update(patchBlob).digest("hex");
+  const evidenceId = `evidence-${card.version}`;
+  const evidence: ReviewEvidenceRecord = {
+    evidenceId,
+    boardId: card.boardId,
+    cardId: card.cardId,
+    attemptId: attempt.attemptId as ReviewEvidenceRecord["attemptId"],
+    generation: attempt.generation,
+    worktreeBindingId: binding.bindingId,
+    baseCommit: "a".repeat(40),
+    headCommit: "b".repeat(40),
+    policyVersion: 1,
+    evidenceDigest: createHash("sha256").update(`evidence-${card.version}`).digest("hex"),
+    fileCount: 1,
+    totalPatchBytes: patchBlob.byteLength,
+    createdAt: 145,
+    files: [{
+      evidenceId,
+      fileIndex: 0,
+      fileId: "file-review",
+      status: "modified",
+      oldPath: "src/review.ts",
+      newPath: "src/review.ts",
+      oldMode: "100644",
+      newMode: "100644",
+      isBinary: false,
+      additions: 1,
+      deletions: 0,
+      patchByteLength: patchBlob.byteLength,
+      patchDigest,
+      contentDigest: null,
+      patchBlob,
+    }],
+  };
+  return evidence;
+}
+
+function precondition(evidence: ReviewEvidenceRecord): ReviewEvidencePrecondition {
+  return {
+    evidenceId: evidence.evidenceId,
+    evidenceDigest: evidence.evidenceDigest,
+    attemptId: evidence.attemptId,
+    generation: evidence.generation,
+    worktreeBindingId: evidence.worktreeBindingId,
+  };
+}
+
+async function readyFixture(options: { readonly withEvidence?: boolean } = {}): Promise<ReadyFixture> {
+  const { database, journal } = createAttentionFixture();
+  const initial = journal.snapshot();
+  const attempt = initial.attempts[0]!;
+  const committed = await createActivityIngestor({ journal }).ingest({
+    eventId: toOpaqueId<ActivityEventId>(`review-success-${crypto.randomUUID()}`)!,
+    attemptId: attempt.attemptId,
+    generation: attempt.generation,
+    sequence: toActivitySequence(2)!,
+    occurredAt: 130,
+    activity: { kind: "attempt_state", state: "succeeded" },
+  });
+  if (committed.status !== "committed") throw new Error("failed to seed succeeded attempt");
+
+  const binding = journal.snapshot().runContexts[0]!.worktree;
+  journal.append({
+    eventId: `review-binding-${crypto.randomUUID()}`,
+    boardId: binding.boardId,
+    cardId: binding.cardId,
+    actor: "system",
+    kind: "card_worktree_binding_recorded",
+    occurredAt: 141,
+    payload: binding,
+  });
+  const currentCard = journal.snapshot().cards[0]!;
+  const evidence = options.withEvidence === false
+    ? {
+        evidenceId: "missing",
+        boardId: currentCard.boardId,
+        cardId: currentCard.cardId,
+        attemptId: attempt.attemptId as ReviewEvidenceRecord["attemptId"],
+        generation: attempt.generation,
+        worktreeBindingId: binding.bindingId,
+        baseCommit: "a".repeat(40),
+        headCommit: "b".repeat(40),
+        policyVersion: 1,
+        evidenceDigest: "0".repeat(64),
+        fileCount: 0,
+        totalPatchBytes: 0,
+        createdAt: 145,
+        files: [],
+      } satisfies ReviewEvidenceRecord
+    : createEvidence(journal, binding);
+  const readyCard = {
+    ...currentCard,
+    executionStatus: "ready_for_review" as const,
+    version: currentCard.version + 1,
+    updatedAt: 145,
+  };
+  if (options.withEvidence === false) {
+    journal.append({
+      eventId: `review-ready-${crypto.randomUUID()}`,
+      boardId: currentCard.boardId,
+      cardId: currentCard.cardId,
+      actor: "system",
+      kind: "card_upserted",
+      occurredAt: 145,
+      payload: readyCard,
+    });
+  } else {
+    journal.immediate((transaction) => {
+      transaction.persistReviewEvidence(evidence);
+      transaction.append({
+        eventId: `evidence:${evidence.evidenceId}`,
+        boardId: currentCard.boardId,
+        cardId: currentCard.cardId,
         actor: "system",
-        kind: "card_upserted",
-        occurredAt: 140,
+        kind: "review_evidence_committed",
+        occurredAt: evidence.createdAt,
         payload: {
-          ...failedCard,
-          executionStatus: "ready_for_review",
-          version: failedCard.version + 1,
-          updatedAt: 140,
+          evidence: {
+            evidenceId: evidence.evidenceId,
+            boardId: evidence.boardId,
+            cardId: evidence.cardId,
+            attemptId: evidence.attemptId,
+            generation: evidence.generation,
+            worktreeBindingId: evidence.worktreeBindingId,
+            evidenceDigest: evidence.evidenceDigest,
+            createdAt: evidence.createdAt,
+          },
+          changes: [{
+            entity: "card",
+            operation: "upsert",
+            value: readyCard,
+          }],
         },
+      }, {
+        preconditions: [{
+          entity: "card",
+          id: currentCard.cardId,
+          expectedVersion: currentCard.version,
+        }],
       });
-      const ready = journal.snapshot().cards[0]!;
-      const committed = service.reviewCard({ ...input, expectedCardVersion: ready.version });
-      expect(committed).toMatchObject({ status: "committed", cardVersion: ready.version + 1 });
-      expect(journal.snapshot().cards[0]).toMatchObject({ executionStatus: "completed", version: ready.version + 1 });
-      expect(journal.snapshot().reviewDispositions).toEqual([{
-        reviewId: "review-1",
-        boardId: ready.boardId,
-        cardId: ready.cardId,
-        disposition: "approved",
-        reviewer: "operator",
-        reviewedCardVersion: ready.version,
-        occurredAt: 150,
-      }]);
-      expect(service.reviewCard({ ...input, expectedCardVersion: ready.version })).toMatchObject({ status: "idempotent" });
-      expect(service.reviewCard({ ...input, boardId: workflowIds.board("wrong-board") })).toEqual({
+    });
+  }
+  const card = journal.snapshot().cards[0]!;
+  return {
+    database,
+    journal,
+    evidence,
+    input: {
+      commandId: "review-1",
+      boardId: card.boardId,
+      cardId: card.cardId,
+      expectedCardVersion: card.version,
+      disposition: "approved",
+      evidence: precondition(evidence),
+    },
+  };
+}
+
+function currentEvidenceService(evidence: ReviewEvidencePrecondition) {
+  return {
+    async revalidate() {
+      return {
+        status: "current" as const,
+        evidenceId: evidence.evidenceId,
+        evidenceDigest: evidence.evidenceDigest,
+      };
+    },
+  };
+}
+
+describe("evidence-bound review disposition", () => {
+  test("rejects legacy review-ready cards without evidence and appends no disposition", async () => {
+    const fixture = await readyFixture({ withEvidence: false });
+    try {
+      const result = await createReviewDispositionService({
+        journal: fixture.journal,
+        evidence: currentEvidenceService(fixture.input.evidence),
+      }).reviewCard(fixture.input);
+      expect(result).toEqual({
         status: "rejected",
-        reason: "invalid_review_id",
+        error: { code: "evidence_missing", recoveryHint: "retry_evidence_capture" },
       });
-      expect(journal.snapshot().reviewDispositions).toHaveLength(1);
+      expect(fixture.journal.snapshot().reviewDispositions).toEqual([]);
     } finally {
-      closeSqliteDatabase(database);
+      closeSqliteDatabase(fixture.database);
     }
   });
 
-  test("diagnostics expose only opaque card identity and outcome", () => {
-    const { database, journal } = createAttentionFixture();
+  test("revalidates the exact evidence, atomically completes the card, and deduplicates an exact command", async () => {
+    const fixture = await readyFixture();
     try {
-      recoverInterruptedAttempts({ journal, now: () => 120, createEventId: () => "diagnostic-seed-recovery" });
-      const failed = journal.snapshot().cards[0]!;
-      journal.append({
-        eventId: "diagnostic-ready-card",
-        boardId: failed.boardId,
-        cardId: failed.cardId,
-        actor: "system",
-        kind: "card_upserted",
-        occurredAt: 130,
-        payload: { ...failed, executionStatus: "ready_for_review", version: failed.version + 1, updatedAt: 130 },
-      });
-      const ready = journal.snapshot().cards[0]!;
+      let revalidations = 0;
       const diagnostics: LifecycleDiagnostic[] = [];
-      createReviewDispositionService({
-        journal,
+      const service = createReviewDispositionService({
+        journal: fixture.journal,
+        evidence: {
+          async revalidate() {
+            revalidations += 1;
+            return {
+              status: "current",
+              evidenceId: fixture.evidence.evidenceId,
+              evidenceDigest: fixture.evidence.evidenceDigest,
+            };
+          },
+        },
         now: () => 150,
         diagnostics: { record: (diagnostic) => diagnostics.push(diagnostic) },
-      }).reviewCard({
-        reviewId: "review-content-free",
-        boardId: ready.boardId,
-        cardId: ready.cardId,
-        expectedCardVersion: ready.version,
-        disposition: "approved",
       });
+
+      expect(await service.reviewCard(fixture.input)).toEqual({
+        status: "ok",
+        outcome: "approved",
+        cardVersion: fixture.input.expectedCardVersion + 1,
+      });
+      expect(await service.reviewCard(fixture.input)).toEqual({
+        status: "ok",
+        outcome: "idempotent",
+        cardVersion: fixture.input.expectedCardVersion + 1,
+      });
+      expect(revalidations).toBe(1);
+      expect(fixture.journal.snapshot().cards[0]).toMatchObject({
+        executionStatus: "completed",
+        version: fixture.input.expectedCardVersion + 1,
+      });
+      expect(fixture.journal.snapshot().reviewDispositions).toEqual([{
+        reviewId: fixture.input.commandId,
+        boardId: fixture.input.boardId,
+        cardId: fixture.input.cardId,
+        ...fixture.input.evidence,
+        disposition: "approved",
+        reviewer: "operator",
+        reviewedCardVersion: fixture.input.expectedCardVersion,
+        occurredAt: 150,
+      }]);
       expect(diagnostics).toEqual([{
         name: "review_disposition_recorded",
-        boardId: ready.boardId,
-        cardId: ready.cardId,
+        boardId: fixture.input.boardId,
+        cardId: fixture.input.cardId,
         outcome: "completed",
       }]);
-      const serialized = JSON.stringify(diagnostics);
-      for (const forbidden of ["secret prompt", "Execute fixture", "/secret/path", "secret-provider", "session-attention"]) {
-        expect(serialized).not.toContain(forbidden);
-      }
     } finally {
-      closeSqliteDatabase(database);
+      closeSqliteDatabase(fixture.database);
     }
   });
 
-  test("maps a concurrent duplicate append to the already committed disposition", () => {
-    const { database, journal } = createAttentionFixture();
+  test("rejects every stale evidence precondition without revalidation or disposition", async () => {
+    const mutations: Array<{
+      readonly name: string;
+      readonly input: (input: ReviewDispositionInput) => ReviewDispositionInput;
+      readonly code: ContractError["code"];
+    }> = [
+      {
+        name: "card version",
+        input: (input) => ({ ...input, expectedCardVersion: input.expectedCardVersion - 1 }),
+        code: "stale_projection",
+      },
+      {
+        name: "evidence id",
+        input: (input) => ({ ...input, evidence: { ...input.evidence, evidenceId: "other-evidence" } }),
+        code: "evidence_stale",
+      },
+      {
+        name: "digest",
+        input: (input) => ({ ...input, evidence: { ...input.evidence, evidenceDigest: "f".repeat(64) } }),
+        code: "evidence_stale",
+      },
+      {
+        name: "attempt",
+        input: (input) => ({ ...input, evidence: { ...input.evidence, attemptId: "other-attempt" as typeof input.evidence.attemptId } }),
+        code: "evidence_stale",
+      },
+      {
+        name: "generation",
+        input: (input) => ({ ...input, evidence: { ...input.evidence, generation: (Number(input.evidence.generation) + 1) as typeof input.evidence.generation } }),
+        code: "evidence_stale",
+      },
+      {
+        name: "binding",
+        input: (input) => ({ ...input, evidence: { ...input.evidence, worktreeBindingId: "other-binding" } }),
+        code: "evidence_stale",
+      },
+    ];
+
+    for (const mutation of mutations) {
+      const fixture = await readyFixture();
+      try {
+        let revalidations = 0;
+        const result = await createReviewDispositionService({
+          journal: fixture.journal,
+          evidence: {
+            async revalidate() {
+              revalidations += 1;
+              return {
+                status: "current",
+                evidenceId: fixture.evidence.evidenceId,
+                evidenceDigest: fixture.evidence.evidenceDigest,
+              };
+            },
+          },
+        }).reviewCard(mutation.input(fixture.input));
+        expect(result.status, mutation.name).toBe("rejected");
+        if (result.status !== "rejected") throw new Error("expected stale rejection");
+        expect(result.error.code, mutation.name).toBe(mutation.code);
+        expect(revalidations, mutation.name).toBe(0);
+        expect(fixture.journal.snapshot().reviewDispositions, mutation.name).toEqual([]);
+      } finally {
+        closeSqliteDatabase(fixture.database);
+      }
+    }
+  });
+
+  test("maps fresh digest failures and concurrent card mutation to typed recovery without a disposition", async () => {
+    const staleFixture = await readyFixture();
     try {
-      recoverInterruptedAttempts({ journal, now: () => 120, createEventId: () => "duplicate-seed-recovery" });
-      const failed = journal.snapshot().cards[0]!;
-      const ready = { ...failed, executionStatus: "ready_for_review" as const, version: failed.version + 1, updatedAt: 130 };
-      journal.append({
-        eventId: "duplicate-ready-card",
-        boardId: ready.boardId,
-        cardId: ready.cardId,
-        actor: "system",
-        kind: "card_upserted",
-        occurredAt: 130,
-        payload: ready,
-      });
-      const completed = { ...ready, executionStatus: "completed" as const, version: ready.version + 1, updatedAt: 150 };
-      const disposition = {
-        reviewId: "review-concurrent",
-        boardId: ready.boardId,
-        cardId: ready.cardId,
-        disposition: "approved" as const,
-        reviewer: "operator" as const,
-        reviewedCardVersion: ready.version,
-        occurredAt: 150,
-      };
-      const committed = {
-        eventId: "review:review-concurrent",
-        boardId: ready.boardId,
-        cardId: ready.cardId,
-        actor: "operator",
-        kind: "review_disposition_committed",
-        occurredAt: 150,
-        payload: {
-          changes: [
-            { entity: "review_disposition", operation: "insert", value: disposition },
-            { entity: "card", operation: "upsert", value: completed },
-          ],
+      const stale = await createReviewDispositionService({
+        journal: staleFixture.journal,
+        evidence: {
+          async revalidate() {
+            return { status: "unavailable" as const, reason: "stale" as const };
+          },
         },
-      } as JournalEvent;
-      let lookups = 0;
-      const racingJournal: EventJournal = {
-        append() { throw new DuplicateJournalEventError(committed.eventId); },
-        appendBatch: journal.appendBatch,
-        snapshot: journal.snapshot,
-        events: journal.events,
-        eventById() { lookups += 1; return lookups === 1 ? null : committed; },
-      };
-      expect(createReviewDispositionService({ journal: racingJournal, now: () => 150 }).reviewCard({
-        reviewId: disposition.reviewId,
-        boardId: ready.boardId,
-        cardId: ready.cardId,
-        expectedCardVersion: ready.version,
-        disposition: "approved",
-      })).toEqual({
-        status: "idempotent",
-        disposition,
-        cardVersion: completed.version,
-        revision: journal.snapshot().revision,
+      }).reviewCard(staleFixture.input);
+      expect(stale).toEqual({
+        status: "rejected",
+        error: { code: "evidence_stale", recoveryHint: "reload_evidence" },
       });
+      expect(staleFixture.journal.snapshot().reviewDispositions).toEqual([]);
     } finally {
-      closeSqliteDatabase(database);
+      closeSqliteDatabase(staleFixture.database);
+    }
+
+    const racedFixture = await readyFixture();
+    try {
+      const result = await createReviewDispositionService({
+        journal: racedFixture.journal,
+        evidence: currentEvidenceService(racedFixture.input.evidence),
+        afterRevalidation() {
+          const card = racedFixture.journal.snapshot().cards[0]!;
+          racedFixture.journal.append({
+            eventId: "review-race-card",
+            boardId: card.boardId,
+            cardId: card.cardId,
+            actor: "operator",
+            kind: "card_upserted",
+            occurredAt: 151,
+            payload: {
+              ...card,
+              title: `${card.title} changed`,
+              version: card.version + 1,
+              updatedAt: 151,
+            },
+          });
+        },
+      }).reviewCard(racedFixture.input);
+      expect(result).toEqual({
+        status: "rejected",
+        error: {
+          code: "stale_projection",
+          recoveryHint: "refresh_projection",
+          expectedVersion: racedFixture.input.expectedCardVersion,
+          actualVersion: racedFixture.input.expectedCardVersion + 1,
+        },
+      });
+      expect(racedFixture.journal.snapshot().reviewDispositions).toEqual([]);
+    } finally {
+      closeSqliteDatabase(racedFixture.database);
+    }
+  });
+
+  test("rejects reuse of an approval command id with different evidence", async () => {
+    const fixture = await readyFixture();
+    try {
+      const service = createReviewDispositionService({
+        journal: fixture.journal,
+        evidence: currentEvidenceService(fixture.input.evidence),
+      });
+      expect((await service.reviewCard(fixture.input)).status).toBe("ok");
+      expect(await service.reviewCard({
+        ...fixture.input,
+        evidence: { ...fixture.input.evidence, evidenceDigest: "f".repeat(64) },
+      })).toEqual({
+        status: "rejected",
+        error: { code: "invalid_prompt", recoveryHint: "none" },
+      });
+      expect(fixture.journal.snapshot().reviewDispositions).toHaveLength(1);
+    } finally {
+      closeSqliteDatabase(fixture.database);
     }
   });
 });

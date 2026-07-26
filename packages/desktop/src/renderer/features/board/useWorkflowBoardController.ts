@@ -6,6 +6,7 @@ import {
   catalogQueryOptions,
   desktopQueryKeys,
   settingsQueryOptions,
+  supervisionQueryOptions,
   workspaceQueryOptions,
 } from "../../query/desktopQueries.ts";
 import { useDesktopViewStore } from "../../state/desktopViewStore.ts";
@@ -55,6 +56,7 @@ export function useWorkflowBoardController(
   const boardQuery = useQuery(boardQueryOptions(client, activeBoardId, boardMode));
   const catalogQuery = useQuery(catalogQueryOptions(client));
   const workspaceQuery = useQuery(workspaceQueryOptions(client));
+  const supervisionQuery = useQuery(supervisionQueryOptions(client));
   const settingsQuery = useQuery(settingsQueryOptions(client));
 
   const commandMutation = useMutation({
@@ -183,12 +185,23 @@ export function useWorkflowBoardController(
   const boardEnvelope = boardQuery.data;
   const catalogEnvelope = catalogQuery.data;
   const workspaceEnvelope = workspaceQuery.data;
+  const supervisionEnvelope = supervisionQuery.data;
   const settingsEnvelope = settingsQuery.data;
   const projection = boardEnvelope?.result.status === "ok" ? boardEnvelope.result.projection : null;
   const catalog = catalogEnvelope?.result.status === "ok" ? catalogEnvelope.result.projection : null;
   const workspace = workspaceEnvelope?.result.status === "ok"
     ? workspaceEnvelope.result.projection
     : createEmptyWorkspaceProjection();
+  const workInbox = supervisionEnvelope?.result.status === "ok"
+    ? { status: "ready" as const, projection: supervisionEnvelope.result.projection }
+    : supervisionEnvelope?.result.status === "unavailable"
+      ? {
+          status: "unavailable" as const,
+          reason: supervisionEnvelope.result.unavailable.reason,
+        }
+      : supervisionQuery.isError
+        ? { status: "unavailable" as const, reason: "request_failed" as const }
+        : { status: "loading" as const };
   const settings = settingsEnvelope?.result.status === "ok" ? settingsEnvelope.result.projection : null;
   const loadError = boardEnvelope?.result.status === "unavailable"
     ? "The Workflow Board projection is unavailable. Wait for the desktop host to reconnect."
@@ -203,6 +216,7 @@ export function useWorkflowBoardController(
     projection,
     catalog,
     workspace,
+    workInbox,
     settings,
     loadError,
     repositoryPath,
