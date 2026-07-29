@@ -17,21 +17,15 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Alert, Button, Card, Chip, Dropdown, Input, Label, Modal, TextField } from "@heroui/react";
-import type {
-  WorkflowBoardProjection,
-  WorkflowCatalogProjection,
-} from "../../../shared/rpc.ts";
+import type { WorkflowBoardProjection } from "../../../shared/rpc.ts";
 import type {
   CardId,
   CardProjection,
   StageId,
   StageProjection,
 } from "../../../workflow/workflowTypes.ts";
-import { AlertIcon, DragHandleIcon, EditIcon, MoreIcon, PathIcon, PauseIcon, PlayIcon, SettingsIcon, SpinnerIcon, TrashIcon } from "../../components/Icons.tsx";
-import {
-  cardMovementAffordance,
-  stageConfigurationReason,
-} from "./boardInteractions.ts";
+import { AlertIcon, DragHandleIcon, EditIcon, MoreIcon, PathIcon, PauseIcon, PlayIcon, SpinnerIcon, TrashIcon } from "../../components/Icons.tsx";
+import { cardMovementAffordance } from "./boardInteractions.ts";
 import {
   deriveImmediateSuccessorArrows,
   isCommittedOrderedPath,
@@ -234,7 +228,6 @@ export function ProjectSetupModal({
 
 interface BoardCanvasProps {
   readonly projection: WorkflowBoardProjection;
-  readonly catalog: WorkflowCatalogProjection;
   readonly selectedCardId: CardId | null;
   readonly busy: boolean;
   readonly onConfigureStage: (stage: StageProjection) => void;
@@ -293,7 +286,6 @@ function cardKey(cardId: string): string {
 
 interface SortableStageColumnProps {
   readonly projection: WorkflowBoardProjection;
-  readonly catalog: WorkflowCatalogProjection;
   readonly stage: StageProjection;
   readonly stageCards: readonly CardProjection[];
   readonly index: number;
@@ -316,7 +308,6 @@ interface SortableStageColumnProps {
 
 function SortableStageColumn({
   projection,
-  catalog,
   stage,
   stageCards,
   index,
@@ -337,7 +328,6 @@ function SortableStageColumn({
   onCardDragEnd,
 }: SortableStageColumnProps) {
   const board = projection.board!;
-  const configurationReason = stageConfigurationReason(stage, catalog);
   const {
     attributes,
     listeners,
@@ -429,21 +419,6 @@ function SortableStageColumn({
         </div>
       </header>
 
-      {configurationReason === null ? null : (
-        <div className="stage-settings">
-          <Button
-            size="sm"
-            variant="danger-soft"
-            fullWidth
-            onPress={() => onConfigureStage(stage)}
-            isDisabled={busy}
-            aria-label={`Configure ${stage.label}: ${configurationReason}`}
-          >
-            <SettingsIcon />Configure stage
-          </Button>
-        </div>
-      )}
-
       <ul className="card-list" aria-label={`${stage.label} cards`}>
         {stageCards.map((card) => {
           const movement = cardMovementAffordance(projection, card);
@@ -489,7 +464,11 @@ function SortableStageColumn({
                   </Chip>
                 </div>
                 <div className="card-actions relative z-10">
-                  <span className="truncate text-xs text-muted">{card.provider} · {card.model}</span>
+                  <span
+                    className={`truncate text-xs ${card.skillOverrideId === null ? "font-semibold text-[var(--kitten-status-attention)]" : "text-muted"}`}
+                  >
+                    {card.skillOverrideId === null ? "Workflow Skill required" : `${card.provider} · ${card.model}`}
+                  </span>
                   {card.executionStatus === "running" || card.executionStatus === "needs_attention" ? (
                     <Button
                       isIconOnly
@@ -520,7 +499,6 @@ function SortableStageColumn({
 
 export function BoardCanvas({
   projection,
-  catalog,
   selectedCardId,
   busy,
   onConfigureStage,
@@ -610,7 +588,6 @@ export function BoardCanvas({
               <SortableStageColumn
                 key={stage.stageId}
                 projection={projection}
-                catalog={catalog}
                 stage={stage}
                 stageCards={cardsByStage.get(stage.stageId) ?? []}
                 index={index}

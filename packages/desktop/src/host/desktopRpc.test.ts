@@ -168,6 +168,44 @@ describe("desktop inspector RPC", () => {
     expect(stops).toEqual([{ attemptId, generation }]);
   });
 
+  test("clears a stale running card when no active attempt remains", async () => {
+    const commands: unknown[] = [];
+    const runningCard = { ...CARD, executionStatus: "running" as const };
+    const rpc = createDesktopInspectorRpc(
+      {
+        snapshot: () => ({ cards: [runningCard], attempts: [] }),
+      } as unknown as EventJournal,
+      coordinator(async () => ({
+        status: "rejected",
+        reason: { code: "card_not_found", message: "unused" },
+      })),
+      undefined,
+      {
+        execute(command) {
+          commands.push(command);
+          return {
+            status: "committed",
+            mutationId: command.mutationId,
+            delta: {} as never,
+          };
+        },
+      },
+    );
+
+    expect((await rpc.stopAttempt({
+      commandId: "stop-stale-running",
+      input: { cardId: runningCard.cardId, expectedCardVersion: runningCard.version },
+    })).result).toEqual({ status: "ok" });
+    expect(commands).toEqual([
+      expect.objectContaining({
+        kind: "set_card_execution_status",
+        cardId: runningCard.cardId,
+        expectedCardVersion: runningCard.version,
+        executionStatus: "cancelled",
+      }),
+    ]);
+  });
+
   test("forwards structured attention answers to the durable coordinator", async () => {
     const resolved: unknown[] = [];
     const attention = {
@@ -277,6 +315,9 @@ function evidenceService(
     manifest() {
       return { status: "ok", manifest };
     },
+    async currentManifest() {
+      return { status: "ok", manifest };
+    },
     readDiffChunk(_evidenceId, fileId, offset) {
       if (fileId !== "file-text") {
         return { status: "unavailable", reason: "invalid_file" };
@@ -307,7 +348,7 @@ describe("desktop review evidence RPC", () => {
   test("returns deterministic summary-only manifests scoped to card and evidence identity", async () => {
     const requested: string[] = [];
     const service = evidenceService({
-      manifest(evidenceId) {
+      async currentManifest(evidenceId) {
         requested.push(evidenceId);
         return { status: "ok", manifest: evidenceManifest() };
       },
@@ -332,17 +373,22 @@ describe("desktop review evidence RPC", () => {
 
   test("maps missing, stale, incomplete, binary, oversized, and thrown host states to stable codes", async () => {
     const missing = createDesktopReviewEvidenceRpc(evidenceService({
-      manifest() {
+      async currentManifest() {
         return { status: "unavailable", reason: "missing" };
       },
     }));
     const incomplete = createDesktopReviewEvidenceRpc(evidenceService({
-      manifest() {
+      async currentManifest() {
         return { status: "unavailable", reason: "incomplete" };
       },
     }));
+    const stale = createDesktopReviewEvidenceRpc(evidenceService({
+      async currentManifest() {
+        return { status: "unavailable", reason: "stale" };
+      },
+    }));
     const thrown = createDesktopReviewEvidenceRpc(evidenceService({
-      manifest() {
+      async currentManifest() {
         throw new Error("/private/repository/raw-host-error");
       },
     }));
@@ -368,6 +414,13 @@ describe("desktop review evidence RPC", () => {
     })).result).toEqual({
       status: "rejected",
       error: { code: "evidence_unsafe", recoveryHint: "resolve_unsafe_change" },
+    });
+    expect((await stale.getReviewManifest({
+      cardId: CARD.cardId,
+      evidenceId: "evidence-rpc",
+    })).result).toEqual({
+      status: "rejected",
+      error: { code: "evidence_stale", recoveryHint: "reload_evidence" },
     });
     expect((await thrown.getReviewManifest({
       cardId: CARD.cardId,

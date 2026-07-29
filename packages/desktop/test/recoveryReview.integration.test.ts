@@ -709,6 +709,8 @@ describe("evidence-gated final-stage lifecycle", () => {
       events: fixture.journal.events,
       eventById: fixture.journal.eventById,
       reviewEvidence: fixture.journal.reviewEvidence,
+      reviewEvidenceManifest: fixture.journal.reviewEvidenceManifest,
+      reviewEvidenceFile: fixture.journal.reviewEvidenceFile,
       immediate(callback) {
         return fixture.journal.immediate((transaction) => callback({
           append: transaction.append,
@@ -898,7 +900,7 @@ async function createEvidenceLifecycleFixture(): Promise<EvidenceLifecycleFixtur
     provider: "codex",
     model: "gpt-5",
     effort: "high",
-    skillOverrideId: null,
+    skillOverrideId: EVIDENCE_SKILL_ID,
     runnable: true,
     executionStatus: "idle",
     version: 1,
@@ -930,8 +932,8 @@ async function createEvidenceLifecycleFixture(): Promise<EvidenceLifecycleFixtur
       boardId: EVIDENCE_BOARD_ID,
       label: "Final",
       position: 0,
-      defaultSkillId: EVIDENCE_SKILL_ID,
-      configured: true,
+      defaultSkillId: null,
+      configured: false,
       workflowVersion: 1,
       updatedAt: 2,
     },

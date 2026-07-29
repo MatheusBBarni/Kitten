@@ -46,7 +46,7 @@ export function seedAttentionAttempt(journal: EventJournal): void {
     provider: "secret-provider",
     model: "secret-model",
     effort: "high",
-    skillOverrideId: null,
+    skillOverrideId: SKILL_ID,
     runnable: true,
     executionStatus: "idle",
     version: 1,
@@ -66,7 +66,7 @@ export function seedAttentionAttempt(journal: EventJournal): void {
     kind: "stage_upserted", occurredAt: 2,
     payload: {
       stageId: ATTENTION_STAGE_ID, boardId: ATTENTION_BOARD_ID, label: "Doing", position: 0,
-      defaultSkillId: SKILL_ID, configured: true, workflowVersion: 1, updatedAt: 2,
+      defaultSkillId: null, configured: false, workflowVersion: 1, updatedAt: 2,
     },
   });
   journal.append({

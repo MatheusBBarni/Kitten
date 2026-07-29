@@ -39,7 +39,7 @@ const card: CardProjection = {
   provider: "codex",
   model: "gpt-5",
   effort: "high",
-  skillOverrideId: null,
+  skillOverrideId: SKILL_ID,
   runnable: true,
   executionStatus: "idle",
   version: 2,
@@ -88,7 +88,6 @@ function valid(overrides: Partial<RunnableValidationInput> = {}): RunnableValida
     stage,
     repository: { trusted: true, canonicalPath: REPOSITORY, checkedAt: 4, message: "Repository verified" },
     effectiveSkill: skill,
-    skillSource: "stage",
     profile,
     worktree: { status: "reused", binding },
     scheduler: { status: "available" },
@@ -106,7 +105,7 @@ describe("runnable validation", () => {
     const cases: readonly [string, RunnableValidationInput][] = [
       ["untrusted_repository", valid({ repository: { trusted: false, canonicalPath: REPOSITORY, checkedAt: 4, message: "Trust was revoked" } })],
       ["card_not_runnable", valid({ card: { ...card, runnable: false } })],
-      ["invalid_stage_skill", valid({ effectiveSkill: null })],
+      ["invalid_task_skill", valid({ effectiveSkill: null })],
       ["profile_unavailable", valid({ profile: null })],
       ["profile_not_ready", valid({ profile: { ...profile, readiness: { profileId: PROFILE_ID, ready: false, reason: "authentication_required", message: "Sign in to Codex." } } })],
       ["worktree_unavailable", valid({ worktree: { status: "unavailable", reason: "dirty" } })],
@@ -123,14 +122,15 @@ describe("runnable validation", () => {
     }
   });
 
-  test("distinguishes an invalid card override from an invalid stage default", () => {
+  test("requires a task-owned Skill and rejects an invalid task selection", () => {
     const override = workflowIds.skill(`skill:${"c".repeat(64)}`);
     expect(code(valid({
+      card: { ...card, skillOverrideId: null },
+    }))).toBe("task_skill_required");
+    expect(code(valid({
       card: { ...card, skillOverrideId: override },
-      skillSource: "override",
       effectiveSkill: null,
-    }))).toBe("invalid_skill_override");
-    expect(code(valid({ effectiveSkill: null, skillSource: "stage" }))).toBe("invalid_stage_skill");
+    }))).toBe("invalid_task_skill");
   });
 
   test("admits only the fully matched certified configuration", () => {

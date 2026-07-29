@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { TransformStream } from "node:stream/web";
 import {
   AgentSideConnection,
   PROTOCOL_VERSION,
-  ndJsonStream,
   type Agent,
   type SessionConfigOption,
   type Stream,
@@ -31,11 +31,17 @@ const RUNTIME: DesktopAcpRuntimeProfile = {
 };
 
 function transportPair(): { readonly client: Stream; readonly agent: Stream } {
-  const clientToAgent = new TransformStream<Uint8Array, Uint8Array>();
-  const agentToClient = new TransformStream<Uint8Array, Uint8Array>();
+  const clientToAgent = new TransformStream<unknown, unknown>();
+  const agentToClient = new TransformStream<unknown, unknown>();
   return {
-    client: ndJsonStream(clientToAgent.writable, agentToClient.readable),
-    agent: ndJsonStream(agentToClient.writable, clientToAgent.readable),
+    client: {
+      writable: clientToAgent.writable,
+      readable: agentToClient.readable,
+    } as unknown as Stream,
+    agent: {
+      writable: agentToClient.writable,
+      readable: clientToAgent.readable,
+    } as unknown as Stream,
   };
 }
 

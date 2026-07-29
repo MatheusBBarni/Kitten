@@ -3,22 +3,21 @@ import { Alert, Button, Drawer, Skeleton } from "@heroui/react";
 import type { DesktopRpcClient } from "../../client.ts";
 import type {
   CardId,
-  SkillId,
   StageId,
   WorkflowCommand,
 } from "../../../workflow/workflowTypes.ts";
 import {
   STARTER_STAGE_LABELS,
   applyStarterTemplate,
-  assignCatalogSkillToStage,
   createBlankBoard,
   createCardCommand,
-  createStageWithCatalogSkill,
+  createStage,
   deleteStageCommand,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
   setStagePathCommand,
+  updateStage,
   type CardEditInput,
   type CardCreateInput,
 } from "./boardInteractions.ts";
@@ -41,6 +40,7 @@ import {
   type WorkInboxSelection,
 } from "./ProjectSidebar.tsx";
 import { useResponsiveShellMode } from "./useResponsiveShellMode.ts";
+import { showBoardToast } from "./boardToast.ts";
 
 export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient }) {
   const [setupMode, setSetupMode] = useState<SetupMode>("choice");
@@ -49,7 +49,6 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
   const [stageDialogMode, setStageDialogMode] = useState<"create" | "configure" | null>(null);
   const [stageBeingConfigured, setStageBeingConfigured] = useState<StageId | null>(null);
   const [stageLabel, setStageLabel] = useState("");
-  const [stageSkillId, setStageSkillId] = useState<SkillId | null>(null);
   const [taskCreateOpen, setTaskCreateOpen] = useState(false);
   const [pathEditorBoardId, setPathEditorBoardId] = useState<string | null>(null);
   const [narrowNavigationOpen, setNarrowNavigationOpen] = useState(false);
@@ -254,7 +253,6 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
       : null;
   const selectedCard = projection.cards.find(({ cardId }) => cardId === selectedCardId) ?? null;
   const currentProjection = projection;
-  const currentCatalog = catalog;
 
   function openCard(card: {
     readonly cardId: CardId;
@@ -354,29 +352,25 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
     });
   }
 
-  function createStage(configured: boolean) {
-    const execute = stageDialogMode === "configure" && stageBeingConfigured !== null && stageSkillId !== null
-      ? () => assignCatalogSkillToStage(
+  function saveStage() {
+    const execute = stageDialogMode === "configure" && stageBeingConfigured !== null
+      ? () => updateStage(
           client,
           currentProjection,
           stageBeingConfigured,
-          stageSkillId,
-          currentCatalog,
+          stageLabel,
           controller.identities.current,
         )
-      : () => createStageWithCatalogSkill(
+      : () => createStage(
           client,
           currentProjection,
           stageLabel,
-          configured ? stageSkillId : null,
-          currentCatalog,
           controller.identities.current,
         );
     controller.run(execute, () => {
       setStageDialogMode(null);
       setStageBeingConfigured(null);
       setStageLabel("");
-      setStageSkillId(null);
     });
   }
 
@@ -386,9 +380,7 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
       data-workbench-mode={workbenchMode}
       className={`grid h-dvh min-w-0 overflow-hidden bg-[var(--kitten-surface-canvas)] ${
         shellMode === "wide"
-          ? workbenchMode === "closed"
-            ? "grid-cols-[var(--kitten-sidebar-width)_minmax(0,1fr)]"
-            : "grid-cols-[var(--kitten-sidebar-width)_minmax(20rem,1fr)_minmax(28rem,var(--kitten-workbench-width))]"
+          ? "grid-cols-[var(--kitten-sidebar-width)_minmax(0,1fr)]"
           : "grid-cols-[minmax(0,1fr)]"
       }`}
     >
@@ -464,7 +456,6 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
                 setStageDialogMode("create");
                 setStageBeingConfigured(null);
                 setStageLabel("");
-                setStageSkillId(null);
               }}
               isDisabled={busy}
             >
@@ -475,7 +466,6 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
           <div className="board-workspace" ref={boardWorkspaceRef}>
             <BoardCanvas
               projection={projection}
-              catalog={catalog}
               selectedCardId={selectedCardId}
               busy={busy || runControls.busy}
               draggedStageId={draggedStageId}
@@ -485,7 +475,6 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
                 setStageDialogMode("configure");
                 setStageBeingConfigured(stage.stageId);
                 setStageLabel(stage.label);
-                setStageSkillId(stage.defaultSkillId);
               }}
               onDeleteStage={(stage) => {
                 const command = deleteStageCommand(projection, stage, controller.identities.current);
@@ -495,13 +484,32 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
               onEditPath={() => setPathEditorBoardId(projection.board?.boardId ?? null)}
               onMoveCard={(card, targetStageId) => {
                 const command = moveCardCommand(projection, card, targetStageId, controller.identities.current);
-                if (command !== null) runCommand(command);
+                if (command !== null) {
+                  runCommand(command, () => showBoardToast({
+                    message: "Task moved. Its Workflow Skill was cleared; select a Skill before starting the next run.",
+                    tone: "info",
+                  }));
+                }
               }}
               onSelectCard={(card) => {
                 openCard(card);
               }}
               onStartCard={(card) => {
                 openCard(card);
+                if (card.skillOverrideId === null) {
+                  showBoardToast({
+                    message: "Select a Workflow Skill on this task before starting a run.",
+                    tone: "error",
+                  });
+                  return;
+                }
+                if (!card.runnable) {
+                  showBoardToast({
+                    message: "Edit this task and mark it ready to run before starting.",
+                    tone: "error",
+                  });
+                  return;
+                }
                 runControls.start(card);
               }}
               onStopCard={runControls.stop}
@@ -513,13 +521,10 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
       {stageDialogMode !== null ? (
         <StageSetupModal
           mode={stageDialogMode}
-          catalog={catalog}
           label={stageLabel}
-          selectedSkillId={stageSkillId}
           busy={busy}
           onLabelChange={setStageLabel}
-          onSkillChange={setStageSkillId}
-          onCreate={createStage}
+          onSave={saveStage}
           onClose={() => {
             if (!busy) setStageDialogMode(null);
           }}
@@ -592,6 +597,7 @@ export function WorkflowBoard({ client }: { readonly client: DesktopRpcClient })
           client={client}
           card={selectedCard}
           repositoryKey={projection.board.repositoryPath}
+          catalog={catalog}
           presentation={workbenchMode}
           isOpen
           taskBusy={busy}

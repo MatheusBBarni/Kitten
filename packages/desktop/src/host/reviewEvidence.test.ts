@@ -938,10 +938,21 @@ describe("review evidence Git capture and persistence", () => {
         evidenceId: stored.evidenceId,
         evidenceDigest: stored.evidenceDigest,
       });
+      expect(await service.currentManifest(stored.evidenceId)).toMatchObject({
+        status: "ok",
+        manifest: {
+          evidenceId: stored.evidenceId,
+          availability: { status: "available" },
+        },
+      });
 
       runGit(gitFixture.worktree, ["add", "tracked.txt"]);
       runGit(gitFixture.worktree, ["commit", "-m", "tracked after capture"]);
       expect(await service.revalidate(input)).toEqual({
+        status: "unavailable",
+        reason: "stale",
+      });
+      expect(await service.currentManifest(stored.evidenceId)).toEqual({
         status: "unavailable",
         reason: "stale",
       });
@@ -968,6 +979,22 @@ describe("review evidence Git capture and persistence", () => {
         ...input,
         evidence: { ...input.evidence, evidenceDigest: "0".repeat(64) },
       })).toEqual({ status: "unavailable", reason: "stale" });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  test("rejects oversized Git output before admitting evidence", async () => {
+    const gitFixture = await createGitFixture();
+    await writeFile(
+      join(gitFixture.worktree, "oversized.txt"),
+      "x".repeat(REVIEW_TEXT_PATCH_BYTE_LIMIT + 1_024),
+    );
+    const fixture = await createPersistenceFixture(gitFixture);
+    try {
+      expect(await createReviewEvidenceService(fixture.journal).capture(captureInput()))
+        .toEqual({ status: "unavailable", reason: "oversized" });
+      expect(fixture.journal.snapshot().reviewEvidenceByCard).toEqual({});
     } finally {
       fixture.close();
     }
@@ -1007,6 +1034,13 @@ describe("review evidence Git capture and persistence", () => {
         },
       });
       expect(JSON.stringify(journal.snapshot())).not.toContain("patchBlob");
+      expect(journal.reviewEvidenceManifest(evidenceId!)!.files[0]).not.toHaveProperty(
+        "patchBlob",
+      );
+      expect(journal.reviewEvidenceFile(
+        evidenceId!,
+        record.files[0]!.fileId,
+      )?.patchBlob).toBeInstanceOf(Uint8Array);
       expect(record.files[0]!.patchBlob).toBeInstanceOf(Uint8Array);
       expect(await readFile(fixture.filename)).not.toHaveLength(0);
     } finally {

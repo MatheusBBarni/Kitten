@@ -50,19 +50,6 @@ export function selectableCatalogEntries(
   ));
 }
 
-export function stageConfigurationReason(
-  stage: StageProjection,
-  catalog: WorkflowCatalogProjection,
-): string | null {
-  if (!stage.configured || stage.defaultSkillId === null) {
-    return "Default Workflow Skill not selected. This stage cannot launch work.";
-  }
-  if (!selectableCatalogEntries(catalog).some(({ skillId }) => skillId === stage.defaultSkillId)) {
-    return "The selected Workflow Skill is no longer valid in the local catalog. Choose another Skill before running work.";
-  }
-  return null;
-}
-
 export function cardMovementAffordance(
   projection: WorkflowBoardProjection,
   card: CardProjection,
@@ -166,69 +153,45 @@ export async function applyStarterTemplate(
   }, identities);
 }
 
-export async function createStageWithCatalogSkill(
+export async function createStage(
   client: DesktopRpcClient,
   projection: WorkflowBoardProjection,
   label: string,
-  defaultSkillId: SkillId | null,
-  catalog: WorkflowCatalogProjection,
   identities: IdentityFactory,
 ): Promise<BoardInteractionResult> {
   const board = projection.board;
   if (board === null) return { status: "invalid", message: "Create the Workflow Board before adding stages." };
   if (label.trim().length === 0) return { status: "invalid", message: "Stage name is required." };
-  if (
-    defaultSkillId !== null
-    && !selectableCatalogEntries(catalog).some(({ skillId }) => skillId === defaultSkillId)
-  ) {
-    return { status: "invalid", message: "Choose a valid Workflow Skill from the local catalog." };
-  }
-
-  const stageId = workflowIds.stage(identities.next("stage"));
-  const created = await execute(client, {
+  return execute(client, {
     kind: "create_stage",
+    mutationId: mutationId(identities),
+    boardId: board.boardId,
+    expectedWorkflowVersion: board.workflowVersion,
+    stageId: workflowIds.stage(identities.next("stage")),
+    label: label.trim(),
+  }, identities);
+}
+
+export async function updateStage(
+  client: DesktopRpcClient,
+  projection: WorkflowBoardProjection,
+  stageId: StageId,
+  label: string,
+  identities: IdentityFactory,
+): Promise<BoardInteractionResult> {
+  const board = projection.board;
+  if (board === null) return { status: "invalid", message: "Create the Workflow Board before editing stages." };
+  if (label.trim().length === 0) return { status: "invalid", message: "Stage name is required." };
+  if (!projection.stages.some((stage) => stage.stageId === stageId)) {
+    return { status: "invalid", message: "The selected stage is no longer on this Workflow Board." };
+  }
+  return execute(client, {
+    kind: "update_stage",
     mutationId: mutationId(identities),
     boardId: board.boardId,
     expectedWorkflowVersion: board.workflowVersion,
     stageId,
     label: label.trim(),
-  }, identities);
-  if (created.status !== "ok" || defaultSkillId === null) return created;
-  const updatedBoard = created.projection.board;
-  if (updatedBoard === null) return { status: "invalid", message: "The host did not return the created board." };
-  return execute(client, {
-    kind: "assign_stage_skill",
-    mutationId: mutationId(identities),
-    boardId: updatedBoard.boardId,
-    expectedWorkflowVersion: updatedBoard.workflowVersion,
-    stageId,
-    defaultSkillId,
-  }, identities);
-}
-
-export async function assignCatalogSkillToStage(
-  client: DesktopRpcClient,
-  projection: WorkflowBoardProjection,
-  stageId: StageId,
-  defaultSkillId: SkillId,
-  catalog: WorkflowCatalogProjection,
-  identities: IdentityFactory,
-): Promise<BoardInteractionResult> {
-  const board = projection.board;
-  if (board === null) return { status: "invalid", message: "Create the Workflow Board before configuring stages." };
-  if (!selectableCatalogEntries(catalog).some(({ skillId }) => skillId === defaultSkillId)) {
-    return { status: "invalid", message: "Choose a valid Workflow Skill from the local catalog." };
-  }
-  if (!projection.stages.some((stage) => stage.stageId === stageId)) {
-    return { status: "invalid", message: "The selected stage is no longer on this Workflow Board." };
-  }
-  return execute(client, {
-    kind: "assign_stage_skill",
-    mutationId: mutationId(identities),
-    boardId: board.boardId,
-    expectedWorkflowVersion: board.workflowVersion,
-    stageId,
-    defaultSkillId,
   }, identities);
 }
 
@@ -331,12 +294,12 @@ export interface CardEditInput {
   readonly provider: string;
   readonly model: string;
   readonly effort: string;
+  readonly skillOverrideId: SkillId | null;
   readonly runnable: boolean;
 }
 
 export interface CardCreateInput extends CardEditInput {
   readonly stageId: StageId;
-  readonly skillOverrideId: SkillId | null;
 }
 
 export function createCardCommand(
@@ -392,7 +355,7 @@ export function updateCardCommand(
     provider: input.provider.trim(),
     model: input.model.trim(),
     effort: input.effort.trim(),
-    skillOverrideId: card.skillOverrideId,
+    skillOverrideId: input.skillOverrideId,
     runnable: input.runnable,
   };
 }

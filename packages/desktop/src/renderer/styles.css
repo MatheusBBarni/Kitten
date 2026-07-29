@@ -119,6 +119,7 @@
     min-width: 0;
     height: 100vh;
     flex-direction: column;
+    overflow: hidden;
     border-right: 1px solid var(--separator);
     background: var(--kitten-sidebar);
     color: var(--foreground);

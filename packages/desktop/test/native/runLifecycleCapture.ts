@@ -539,9 +539,16 @@ export function verifyNativeArtifacts(
     readonly now?: number;
     readonly requireReview?: boolean;
     readonly expectedFixtureIds?: readonly string[];
+    readonly expectedBuildIdentity?: string;
   } = {},
 ): NativeArtifactManifest {
   const manifest = parseManifest(manifestPath);
+  if (
+    options.expectedBuildIdentity !== undefined
+    && manifest.buildIdentity !== options.expectedBuildIdentity
+  ) {
+    throw new Error("Native artifact manifest does not match the current packaged build");
+  }
   const expectedEntries = options.expectedFixtureIds === undefined
     ? lifecycleMatrix.entries
     : options.expectedFixtureIds.map((fixtureId) => {
@@ -665,8 +672,13 @@ if (import.meta.main) {
     const manifestPath = argument("--manifest")
       ?? join(packageRoot(), "test", "native", "artifacts", lifecycleMatrix.matrixVersion, "manifest.json");
     const fixtureId = argument("--fixture");
+    const currentBuildArtifact = packagedBuildArtifact();
+    if (!existsSync(currentBuildArtifact)) {
+      throw new Error(`Packaged Electrobun build artifact is missing: ${currentBuildArtifact}`);
+    }
     const manifest = verifyNativeArtifacts(manifestPath, {
       ...(fixtureId === undefined ? {} : { expectedFixtureIds: [fixtureId] }),
+      expectedBuildIdentity: sha256File(currentBuildArtifact),
     });
     console.log(JSON.stringify({
       verified: manifest.entries.length,

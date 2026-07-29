@@ -129,17 +129,15 @@ export function PersistentComposer({
       </header>
 
       <form onSubmit={submit} aria-busy={busy}>
-        <TextField
-          className="field"
-          value={draft}
-          onChange={onDraftChange}
-        >
-          <Label>Message</Label>
+        <TextField className="field">
+          <Label htmlFor="card-composer-draft">Message</Label>
           <TextArea
             id="card-composer-draft"
             autoFocus={!blocked}
             rows={4}
             variant="secondary"
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={submitOnEnter}
             aria-describedby={["composer-help", feedbackId].filter(Boolean).join(" ") || undefined}
           />
@@ -188,9 +186,11 @@ export function PersistentComposer({
         {delivery === null ? null : (
           <p className="m-0 text-sm" role="status" aria-live="polite">{delivery}</p>
         )}
-        <Button type="submit" isDisabled={disabled || draft.trim().length === 0} isPending={busy}>
-          {actionLabel}
-        </Button>
+        {running && deliveryState !== "interrupted" ? null : (
+          <Button type="submit" isDisabled={disabled || draft.trim().length === 0} isPending={busy}>
+            {actionLabel}
+          </Button>
+        )}
       </form>
     </section>
   );

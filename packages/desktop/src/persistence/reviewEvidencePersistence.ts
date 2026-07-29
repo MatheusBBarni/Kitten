@@ -56,6 +56,10 @@ export interface ReviewEvidenceRecord {
 }
 
 export type ReviewEvidenceSummary = Omit<ReviewEvidenceRecord, "files">;
+export type ReviewEvidenceFileMetadata = Omit<ReviewEvidenceFileRecord, "patchBlob">;
+export type ReviewEvidenceManifestRecord = ReviewEvidenceSummary & {
+  readonly files: readonly ReviewEvidenceFileMetadata[];
+};
 
 export interface ReviewEvidenceReference {
   readonly evidenceId: string;
@@ -378,6 +382,67 @@ function readEvidenceFiles(
     isBinary: row.isBinary === 1,
     patchBlob: row.patchBlob === null ? null : new Uint8Array(row.patchBlob),
   }));
+}
+
+function readEvidenceFileMetadata(
+  database: Database,
+  evidenceId: string,
+): readonly ReviewEvidenceFileMetadata[] {
+  const statement = database.query<
+    Omit<ReviewEvidenceFileRow, "patchBlob">,
+    [string]
+  >(`
+    SELECT evidence_id AS evidenceId, file_index AS fileIndex, file_id AS fileId,
+      status, old_path AS oldPath, new_path AS newPath, old_mode AS oldMode,
+      new_mode AS newMode, is_binary AS isBinary, additions, deletions,
+      patch_size AS patchByteLength, patch_digest AS patchDigest,
+      content_digest AS contentDigest
+    FROM review_evidence_files
+    WHERE evidence_id = ?
+    ORDER BY file_index
+  `);
+  const rows = statement.all(evidenceId);
+  statement.finalize();
+  return rows.map((row) => Object.freeze({
+    ...row,
+    isBinary: row.isBinary === 1,
+  }));
+}
+
+export function readReviewEvidenceManifest(
+  database: Database,
+  evidenceId: string,
+): ReviewEvidenceManifestRecord | null {
+  const row = readEvidenceRow(database, evidenceId);
+  if (row === null) return null;
+  return Object.freeze({
+    ...row,
+    files: Object.freeze(readEvidenceFileMetadata(database, evidenceId)),
+  });
+}
+
+export function readReviewEvidenceFile(
+  database: Database,
+  evidenceId: string,
+  fileId: string,
+): ReviewEvidenceFileRecord | null {
+  const statement = database.query<ReviewEvidenceFileRow, [string, string]>(`
+    SELECT evidence_id AS evidenceId, file_index AS fileIndex, file_id AS fileId,
+      status, old_path AS oldPath, new_path AS newPath, old_mode AS oldMode,
+      new_mode AS newMode, is_binary AS isBinary, additions, deletions,
+      patch_size AS patchByteLength, patch_digest AS patchDigest,
+      content_digest AS contentDigest, patch_blob AS patchBlob
+    FROM review_evidence_files
+    WHERE evidence_id = ? AND file_id = ?
+  `);
+  const row = statement.get(evidenceId, fileId);
+  statement.finalize();
+  if (row === null) return null;
+  return Object.freeze({
+    ...row,
+    isBinary: row.isBinary === 1,
+    patchBlob: row.patchBlob === null ? null : new Uint8Array(row.patchBlob),
+  });
 }
 
 export function readReviewEvidence(

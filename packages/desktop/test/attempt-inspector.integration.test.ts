@@ -236,8 +236,8 @@ function seedCards(journal: ReturnType<typeof createEventJournal>): void {
   journal.append({
     eventId: "seed-stage", boardId: BOARD_ID, actor: "operator", kind: "stage_upserted", occurredAt: 2,
     payload: {
-      stageId: STAGE_ID, boardId: BOARD_ID, label: "Doing", position: 0, defaultSkillId: SKILL_ID,
-      configured: true, workflowVersion: 1, updatedAt: 2,
+      stageId: STAGE_ID, boardId: BOARD_ID, label: "Doing", position: 0, defaultSkillId: null,
+      configured: false, workflowVersion: 1, updatedAt: 2,
     },
   });
   [CARD_ID, OTHER_CARD_ID].forEach((cardId, index) => journal.append({
@@ -261,7 +261,7 @@ function card(cardId: CardId, timestamp: number): CardProjection {
     provider: "codex",
     model: "gpt-5",
     effort: "high",
-    skillOverrideId: null,
+    skillOverrideId: SKILL_ID,
     runnable: true,
     executionStatus: "idle",
     version: 1,

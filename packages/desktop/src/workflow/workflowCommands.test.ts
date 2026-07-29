@@ -21,6 +21,7 @@ const BACKLOG_ID = workflowIds.stage("stage-backlog");
 const DOING_ID = workflowIds.stage("stage-doing");
 const REVIEW_ID = workflowIds.stage("stage-review");
 const CARD_ID = workflowIds.card("card-1");
+const SKILL_ID = workflowIds.skill(`skill:${"a".repeat(64)}`);
 
 function mutation(value: string): MutationId {
   return workflowIds.mutation(value);
@@ -81,7 +82,7 @@ function createCard(
     provider: "codex",
     model: "gpt-5",
     effort: "high",
-    skillOverrideId: null,
+    skillOverrideId: SKILL_ID,
     runnable: true,
   };
 }
@@ -397,6 +398,11 @@ describe("governed card progression", () => {
         expectedCardVersion: 1,
         targetStageId: DOING_ID,
       }).status).toBe("committed");
+      expect(harness.journal.snapshot().cards[0]).toMatchObject({
+        stageId: DOING_ID,
+        skillOverrideId: null,
+        runnable: false,
+      });
 
       expect(harness.commands.execute({
         kind: "set_card_execution_status",
@@ -416,6 +422,8 @@ describe("governed card progression", () => {
       }).status).toBe("committed");
       expect(harness.journal.snapshot().cards[0]).toMatchObject({
         stageId: REVIEW_ID,
+        skillOverrideId: null,
+        runnable: false,
         executionStatus: "idle",
         version: 4,
       });

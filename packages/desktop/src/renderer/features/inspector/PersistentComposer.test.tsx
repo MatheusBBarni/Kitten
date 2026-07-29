@@ -60,7 +60,8 @@ describe("PersistentComposer", () => {
       draft: "  Direction  ",
       onSendDirection: (text) => directions.push(text),
     }));
-    fireEvent.submit(active.getByRole("button", { name: "Send message" }).closest("form")!);
+    expect(active.queryByRole("button", { name: "Send message" })).toBeNull();
+    fireEvent.submit(active.getByRole("textbox", { name: "Message" }).closest("form")!);
     expect(directions).toEqual(["Direction"]);
     cleanup();
 

@@ -15,22 +15,21 @@ import {
 } from "../../../workflow/workflowTypes.ts";
 import {
   applyStarterTemplate,
-  assignCatalogSkillToStage,
   boardInteractionMessage,
   cardMovementAffordance,
   connectStagesCommand,
   createBlankBoard,
   createBrowserIdentityFactory,
   createCardCommand,
-  createStageWithCatalogSkill,
+  createStage,
   deleteStageCommand,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
   setStagePathCommand,
   selectableCatalogEntries,
-  stageConfigurationReason,
   updateCardCommand,
+  updateStage,
   type IdentityFactory,
 } from "./boardInteractions.ts";
 
@@ -142,11 +141,8 @@ function card(status: CardProjection["executionStatus"]): CardProjection {
 }
 
 describe("board interactions", () => {
-  test("filters catalog identities and explains every non-runnable stage state", () => {
+  test("filters catalog identities without assigning Skills to stages", () => {
     expect(selectableCatalogEntries(catalog).map(({ skillId: id }) => id)).toEqual([skillId]);
-    expect(stageConfigurationReason({ ...stages[0]!, configured: false }, catalog)).toContain("not selected");
-    expect(stageConfigurationReason({ ...stages[0]!, defaultSkillId: invalidSkillId }, catalog)).toContain("no longer valid");
-    expect(stageConfigurationReason(stages[0]!, catalog)).toBeNull();
     expect(createBrowserIdentityFactory().next("board")).toStartWith("board:");
   });
 
@@ -199,28 +195,23 @@ describe("board interactions", () => {
     expect(await applyStarterTemplate(new QueueClient([conflict]), blank, "/repo", ["Backlog"], new Identities())).toBe(conflict);
   });
 
-  test("creates configured or unconfigured stages only from catalog identities", async () => {
-    expect(await createStageWithCatalogSkill(new QueueClient([]), blank, "Doing", skillId, catalog, new Identities())).toMatchObject({ status: "invalid" });
-    expect(await createStageWithCatalogSkill(new QueueClient([]), projection, " ", skillId, catalog, new Identities())).toMatchObject({ status: "invalid" });
-    expect(await createStageWithCatalogSkill(new QueueClient([]), projection, "Doing", invalidSkillId, catalog, new Identities())).toMatchObject({ status: "invalid" });
-
+  test("creates stages without a Skill assignment", async () => {
+    expect(await createStage(new QueueClient([]), blank, "Doing", new Identities())).toMatchObject({ status: "invalid" });
+    expect(await createStage(new QueueClient([]), projection, " ", new Identities())).toMatchObject({ status: "invalid" });
     const createdProjection = { ...projection, board: { ...board, workflowVersion: 4 } };
-    const unconfigured = new QueueClient([ok(createdProjection)]);
-    expect(await createStageWithCatalogSkill(unconfigured, projection, " Review ", null, catalog, new Identities())).toMatchObject({ status: "ok" });
-    expect(unconfigured.commands).toHaveLength(1);
-
-    const configured = new QueueClient([ok(createdProjection), ok(createdProjection)]);
-    expect(await createStageWithCatalogSkill(configured, projection, "Review", skillId, catalog, new Identities())).toMatchObject({ status: "ok" });
-    expect(configured.commands.map(({ kind }) => kind)).toEqual(["create_stage", "assign_stage_skill"]);
+    const client = new QueueClient([ok(createdProjection)]);
+    expect(await createStage(client, projection, " Review ", new Identities())).toMatchObject({ status: "ok" });
+    expect(client.commands).toHaveLength(1);
+    expect(client.commands[0]).toMatchObject({ kind: "create_stage", label: "Review" });
   });
 
-  test("configures existing stages and rejects stale renderer selections", async () => {
-    expect(await assignCatalogSkillToStage(new QueueClient([]), blank, firstStageId, skillId, catalog, new Identities())).toMatchObject({ status: "invalid" });
-    expect(await assignCatalogSkillToStage(new QueueClient([]), projection, firstStageId, invalidSkillId, catalog, new Identities())).toMatchObject({ status: "invalid" });
-    expect(await assignCatalogSkillToStage(new QueueClient([]), projection, workflowIds.stage("gone"), skillId, catalog, new Identities())).toMatchObject({ status: "invalid" });
+  test("renames existing stages and rejects stale renderer selections", async () => {
+    expect(await updateStage(new QueueClient([]), blank, firstStageId, "Doing", new Identities())).toMatchObject({ status: "invalid" });
+    expect(await updateStage(new QueueClient([]), projection, firstStageId, " ", new Identities())).toMatchObject({ status: "invalid" });
+    expect(await updateStage(new QueueClient([]), projection, workflowIds.stage("gone"), "Doing", new Identities())).toMatchObject({ status: "invalid" });
     const client = new QueueClient([ok(projection)]);
-    expect(await assignCatalogSkillToStage(client, projection, firstStageId, skillId, catalog, new Identities())).toMatchObject({ status: "ok" });
-    expect(client.commands[0]?.kind).toBe("assign_stage_skill");
+    expect(await updateStage(client, projection, firstStageId, " Inbox ", new Identities())).toMatchObject({ status: "ok" });
+    expect(client.commands[0]).toMatchObject({ kind: "update_stage", label: "Inbox" });
   });
 
   test("builds only linear reorder, connect, and settled movement commands", async () => {
@@ -254,7 +245,7 @@ describe("board interactions", () => {
     expect(await executeBoardCommand(new QueueClient([ok(projection)]), reorder, identities)).toMatchObject({ status: "ok" });
   });
 
-  test("builds version-fenced task edits without changing the persisted Skill identity", () => {
+  test("builds version-fenced task edits with a task-owned Skill identity", () => {
     const task = { ...card("idle"), skillOverrideId: skillId };
     expect(updateCardCommand(task, {
       title: "  Refined task  ",
@@ -262,6 +253,7 @@ describe("board interactions", () => {
       provider: " codex ",
       model: " gpt-5.6 ",
       effort: " high ",
+      skillOverrideId: invalidSkillId,
       runnable: false,
     }, new Identities())).toMatchObject({
       kind: "update_card",
@@ -273,7 +265,7 @@ describe("board interactions", () => {
       provider: "codex",
       model: "gpt-5.6",
       effort: "high",
-      skillOverrideId: skillId,
+      skillOverrideId: invalidSkillId,
       runnable: false,
     });
     expect(updateCardCommand(task, {
@@ -282,6 +274,7 @@ describe("board interactions", () => {
       provider: "codex",
       model: "gpt-5",
       effort: "high",
+      skillOverrideId: skillId,
       runnable: true,
     }, new Identities())).toBeNull();
   });

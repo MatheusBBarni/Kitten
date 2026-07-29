@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { AttemptGeneration, AttemptId } from "@kitten/engine";
 import type {
   EventJournal,
   ProjectionDelta,
   ReviewEvidenceFileRecord,
+  ReviewEvidenceManifestRecord,
   ReviewEvidenceRecord,
   ReviewEvidenceSummary,
 } from "../persistence/eventJournal.ts";
@@ -83,10 +85,19 @@ export class ReviewEvidenceCaptureError extends Error {
 export interface ReviewEvidenceGitResult {
   readonly exitCode: number;
   readonly stdout: Uint8Array;
+  readonly overflow: boolean;
 }
 
 export interface ReviewEvidenceGitRunner {
-  run(cwd: string, args: readonly string[]): Promise<ReviewEvidenceGitResult>;
+  run(
+    cwd: string,
+    args: readonly string[],
+    maxOutputBytes?: number,
+  ): Promise<ReviewEvidenceGitResult>;
+  hash(cwd: string, args: readonly string[]): Promise<{
+    readonly exitCode: number;
+    readonly digest: string;
+  }>;
 }
 
 export interface ReviewEvidenceStat {
@@ -99,7 +110,7 @@ export interface ReviewEvidenceStat {
 export interface ReviewEvidenceFileSystem {
   realpath(path: string): Promise<string>;
   lstat(path: string): Promise<ReviewEvidenceStat | null>;
-  readBytes(path: string): Promise<Uint8Array>;
+  hashFile(path: string): Promise<string>;
 }
 
 export interface CanonicalReviewEvidenceFileInput {
@@ -170,7 +181,10 @@ export type RevalidateReviewEvidenceResult =
 
 export type ReadReviewEvidenceManifestResult =
   | { readonly status: "ok"; readonly manifest: ReviewEvidenceManifest }
-  | { readonly status: "unavailable"; readonly reason: "missing" | "incomplete" };
+  | {
+      readonly status: "unavailable";
+      readonly reason: ReviewEvidenceUnavailableReason;
+    };
 
 export type ReadReviewDiffChunkResult =
   | { readonly status: "ok"; readonly chunk: ReviewDiffChunk }
@@ -184,6 +198,7 @@ export interface ReviewEvidenceService {
   capture(input: CaptureReviewEvidenceInput): Promise<CaptureReviewEvidenceResult>;
   revalidate(input: RevalidateReviewEvidenceInput): Promise<RevalidateReviewEvidenceResult>;
   manifest(evidenceId: string): ReadReviewEvidenceManifestResult;
+  currentManifest(evidenceId: string): Promise<ReadReviewEvidenceManifestResult>;
   readDiffChunk(
     evidenceId: string,
     fileId: string,
@@ -225,8 +240,52 @@ interface CaptureContext {
   readonly createdAt: number;
 }
 
+async function readBoundedStream(
+  stream: ReadableStream<Uint8Array>,
+  maxOutputBytes: number,
+): Promise<{ readonly stdout: Uint8Array; readonly overflow: boolean }> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxOutputBytes) {
+      await reader.cancel();
+      return { stdout: new Uint8Array(), overflow: true };
+    }
+    chunks.push(value);
+  }
+  const stdout = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    stdout.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { stdout, overflow: false };
+}
+
+async function hashStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const digest = createHash("sha256");
+  const reader = stream.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return digest.digest("hex");
+    digest.update(value);
+  }
+}
+
+async function hashFileStream(path: string): Promise<string> {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) {
+    digest.update(chunk);
+  }
+  return digest.digest("hex");
+}
+
 const bunGitRunner: ReviewEvidenceGitRunner = {
-  async run(cwd, args) {
+  async run(cwd, args, maxOutputBytes = REVIEW_TOTAL_PATCH_BYTE_LIMIT + 1) {
     const child = Bun.spawn({
       cmd: ["git", ...args],
       cwd,
@@ -235,11 +294,25 @@ const bunGitRunner: ReviewEvidenceGitRunner = {
       stdout: "pipe",
       stderr: "ignore",
     });
-    const [exitCode, stdout] = await Promise.all([
+    const output = await readBoundedStream(child.stdout, maxOutputBytes);
+    if (output.overflow) child.kill();
+    const exitCode = await child.exited;
+    return { exitCode, ...output };
+  },
+  async hash(cwd, args) {
+    const child = Bun.spawn({
+      cmd: ["git", ...args],
+      cwd,
+      env: process.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [exitCode, digest] = await Promise.all([
       child.exited,
-      new Response(child.stdout).arrayBuffer(),
+      hashStream(child.stdout),
     ]);
-    return { exitCode, stdout: new Uint8Array(stdout) };
+    return { exitCode, digest };
   },
 };
 
@@ -260,8 +333,8 @@ const nodeFileSystem: ReviewEvidenceFileSystem = {
       throw error;
     }
   },
-  async readBytes(path) {
-    return new Uint8Array(await readFile(path));
+  async hashFile(path) {
+    return hashFileStream(path);
   },
 };
 
@@ -629,15 +702,15 @@ async function binaryContentDigest(
       worktree.binding.worktreePath,
       change.newPath,
     );
-    return sha256(await fileSystem.readBytes(current.absolutePath));
+    return fileSystem.hashFile(current.absolutePath);
   }
   if (change.oldPath === null) throw new ReviewEvidenceCaptureError("incomplete");
-  const prior = await git.run(worktree.binding.worktreePath, [
+  const prior = await git.hash(worktree.binding.worktreePath, [
     "show",
     `${worktree.baseCommit}:${change.oldPath}`,
   ]);
   if (prior.exitCode !== 0) throw new ReviewEvidenceCaptureError("incomplete");
-  return sha256(prior.stdout);
+  return prior.digest;
 }
 
 async function captureTrackedFile(
@@ -664,9 +737,14 @@ async function captureTrackedFile(
     ...paths,
   ] as const;
   const [patch, numstat] = await Promise.all([
-    git.run(worktree.binding.worktreePath, ["diff", "--patch", "--full-index", ...common]),
+    git.run(
+      worktree.binding.worktreePath,
+      ["diff", "--patch", "--full-index", ...common],
+      REVIEW_TEXT_PATCH_BYTE_LIMIT,
+    ),
     git.run(worktree.binding.worktreePath, ["diff", "--numstat", "-z", ...common]),
   ]);
+  if (patch.overflow) throw new ReviewEvidenceCaptureError("oversized");
   if (patch.exitCode !== 0 || numstat.exitCode !== 0) {
     throw new ReviewEvidenceCaptureError("incomplete");
   }
@@ -697,17 +775,21 @@ async function captureUntrackedFile(
     path,
   );
   const [patch, numstat] = await Promise.all([
-    git.run(worktree.binding.worktreePath, [
-      "diff",
-      "--no-index",
-      "--patch",
-      "--full-index",
-      "--no-ext-diff",
-      "--no-color",
-      "--",
-      "/dev/null",
-      path,
-    ]),
+    git.run(
+      worktree.binding.worktreePath,
+      [
+        "diff",
+        "--no-index",
+        "--patch",
+        "--full-index",
+        "--no-ext-diff",
+        "--no-color",
+        "--",
+        "/dev/null",
+        path,
+      ],
+      REVIEW_TEXT_PATCH_BYTE_LIMIT,
+    ),
     git.run(worktree.binding.worktreePath, [
       "diff",
       "--no-index",
@@ -718,6 +800,7 @@ async function captureUntrackedFile(
       path,
     ]),
   ]);
+  if (patch.overflow) throw new ReviewEvidenceCaptureError("oversized");
   if (![0, 1].includes(patch.exitCode) || ![0, 1].includes(numstat.exitCode)) {
     throw new ReviewEvidenceCaptureError("incomplete");
   }
@@ -736,7 +819,7 @@ async function captureUntrackedFile(
     deletions: isBinary ? null : stats.deletions,
     patch: isBinary ? null : patch.stdout,
     contentDigest: isBinary
-      ? sha256(await fileSystem.readBytes(current.absolutePath))
+      ? await fileSystem.hashFile(current.absolutePath)
       : null,
   };
 }
@@ -910,11 +993,23 @@ async function captureWorktree(
   }
 
   const files: CanonicalReviewEvidenceFileInput[] = [];
+  let totalPatchBytes = 0;
+  const appendFile = (file: CanonicalReviewEvidenceFileInput): void => {
+    totalPatchBytes += file.patch instanceof Uint8Array
+      ? file.patch.byteLength
+      : file.patch === null
+        ? 0
+        : utf8Encoder.encode(file.patch).byteLength;
+    if (totalPatchBytes > REVIEW_TOTAL_PATCH_BYTE_LIMIT) {
+      throw new ReviewEvidenceCaptureError("oversized");
+    }
+    files.push(file);
+  };
   for (const change of trackedChanges) {
-    files.push(await captureTrackedFile(git, fileSystem, worktree, change));
+    appendFile(await captureTrackedFile(git, fileSystem, worktree, change));
   }
   for (const path of untrackedPaths) {
-    files.push(await captureUntrackedFile(git, fileSystem, worktree, path));
+    appendFile(await captureUntrackedFile(git, fileSystem, worktree, path));
   }
   return canonicalizeReviewEvidence({
     boardId: context.boardId,
@@ -939,7 +1034,7 @@ function summary(record: ReviewEvidenceRecord): ReviewEvidenceSummary {
 }
 
 function manifestFrom(
-  record: ReviewEvidenceRecord,
+  record: ReviewEvidenceManifestRecord,
   revision: number,
 ): ReviewEvidenceManifest {
   const oversized = record.fileCount > REVIEW_MANIFEST_FILE_LIMIT
@@ -1179,7 +1274,7 @@ export function createReviewEvidenceService(
     },
 
     async revalidate(input) {
-      const record = journal.reviewEvidence(input.evidence.evidenceId);
+      const record = journal.reviewEvidenceManifest(input.evidence.evidenceId);
       if (record === null) return { status: "unavailable", reason: "missing" };
       const snapshot = journal.snapshot();
       const board = snapshot.boards.find(({ boardId }) => boardId === input.boardId);
@@ -1241,7 +1336,7 @@ export function createReviewEvidenceService(
     },
 
     manifest(evidenceId) {
-      const record = journal.reviewEvidence(evidenceId);
+      const record = journal.reviewEvidenceManifest(evidenceId);
       if (record === null) return { status: "unavailable", reason: "missing" };
       if (
         record.files.length !== record.fileCount
@@ -1255,11 +1350,72 @@ export function createReviewEvidenceService(
       };
     },
 
-    readDiffChunk(evidenceId, fileId, offset) {
-      const record = journal.reviewEvidence(evidenceId);
+    async currentManifest(evidenceId) {
+      const record = journal.reviewEvidenceManifest(evidenceId);
       if (record === null) return { status: "unavailable", reason: "missing" };
-      const file = record.files.find((candidate) => candidate.fileId === fileId);
-      if (file === undefined) return { status: "unavailable", reason: "invalid_file" };
+      if (
+        record.files.length !== record.fileCount
+        || record.files.some((file, index) => file.fileIndex !== index)
+      ) {
+        return { status: "unavailable", reason: "incomplete" };
+      }
+      const snapshot = journal.snapshot();
+      const board = snapshot.boards.find(({ boardId }) => boardId === record.boardId);
+      const card = snapshot.cards.find(({ cardId }) => cardId === record.cardId);
+      const binding = readCardWorktreeBinding(snapshot, record.cardId);
+      if (board === undefined || card === undefined || card.boardId !== record.boardId) {
+        return { status: "unavailable", reason: "missing" };
+      }
+      if (card.executionStatus !== "ready_for_review") {
+        return { status: "unavailable", reason: "stale_card" };
+      }
+      if (
+        binding === null
+        || binding.bindingId !== record.worktreeBindingId
+        || binding.boardId !== record.boardId
+        || binding.cardId !== record.cardId
+      ) {
+        return { status: "unavailable", reason: "binding_mismatch" };
+      }
+      try {
+        const current = await captureWorktree(
+          git,
+          fileSystem,
+          {
+            boardId: record.boardId,
+            cardId: record.cardId,
+            attemptId: record.attemptId,
+            generation: record.generation,
+            binding,
+            createdAt: record.createdAt,
+          },
+          board.repositoryPath,
+        );
+        if (
+          current.evidenceDigest !== record.evidenceDigest
+          || current.baseCommit !== record.baseCommit
+          || current.headCommit !== record.headCommit
+        ) {
+          return { status: "unavailable", reason: "stale" };
+        }
+        return {
+          status: "ok",
+          manifest: manifestFrom(record, snapshot.revision),
+        };
+      } catch (error) {
+        return {
+          status: "unavailable",
+          reason: error instanceof ReviewEvidenceCaptureError ? error.reason : "incomplete",
+        };
+      }
+    },
+
+    readDiffChunk(evidenceId, fileId, offset) {
+      if (journal.reviewEvidenceManifest(evidenceId) === null) {
+        return { status: "unavailable", reason: "missing" };
+      }
+      const file = journal.reviewEvidenceFile(evidenceId, fileId);
+      if (file === null) return { status: "unavailable", reason: "invalid_file" };
       if (file.isBinary || file.patchBlob === null) {
         return file.isBinary
           ? { status: "non_text", state: "binary" }

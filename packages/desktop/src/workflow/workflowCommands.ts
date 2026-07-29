@@ -475,7 +475,14 @@ export function createWorkflowCommandHandler(
             if (successor !== command.targetStageId) {
               return reject(command, "not_immediate_successor", "Human moves may target only the immediate successor");
             }
-            value = { ...card, stageId: command.targetStageId, version: card.version + 1, updatedAt: occurredAt };
+            value = {
+              ...card,
+              stageId: command.targetStageId,
+              skillOverrideId: null,
+              runnable: false,
+              version: card.version + 1,
+              updatedAt: occurredAt,
+            };
           } else {
             actor = "agent";
             if (card.executionStatus === "needs_attention") {
@@ -494,6 +501,8 @@ export function createWorkflowCommandHandler(
               : {
                   ...card,
                   stageId: successor,
+                  skillOverrideId: null,
+                  runnable: false,
                   executionStatus: "idle",
                   version: card.version + 1,
                   updatedAt: occurredAt,

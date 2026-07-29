@@ -200,23 +200,45 @@ describe("host-owned lifecycle fixture seeding", () => {
       const manifest = service.manifest(regularEvidence.evidenceId);
       expect(manifest.status).toBe("ok");
       if (manifest.status !== "ok") throw new Error("regular manifest missing");
+      expect(await service.currentManifest(regularEvidence.evidenceId)).toMatchObject({
+        status: "ok",
+        manifest: { evidenceId: regularEvidence.evidenceId },
+      });
       expect(manifest.manifest.availability.status).toBe("available");
       expect(manifest.manifest.files.map(({ isBinary }) => isBinary)).toEqual([
-        false,
         true,
+        false,
       ]);
+      const textFile = manifest.manifest.files.find(
+        ({ newPath }) => newPath === "src-native.ts",
+      )!;
+      const binaryFile = manifest.manifest.files.find(
+        ({ newPath }) => newPath === "assets/native.bin",
+      )!;
       expect(service.readDiffChunk(
         regularEvidence.evidenceId,
-        "native-file-text",
+        textFile.fileId,
         0,
       ).status).toBe("ok");
       expect(service.readDiffChunk(
         regularEvidence.evidenceId,
-        "native-file-binary",
+        binaryFile.fileId,
         0,
       )).toEqual({ status: "non_text", state: "binary" });
     } finally {
       closeSqliteDatabase(regularDatabase);
+    }
+
+    const stale = await seedLifecycleFixture("fx-v1-review-stale", root);
+    const staleDatabase = openSqliteDatabase({ filename: stale.databasePath });
+    try {
+      migrateDatabase(staleDatabase);
+      const journal = createEventJournal(staleDatabase);
+      const evidence = journal.snapshot().reviewEvidenceByCard[NATIVE_FIXTURE_IDS.reviewCard]!;
+      expect(await createReviewEvidenceService(journal).currentManifest(evidence.evidenceId))
+        .toEqual({ status: "unavailable", reason: "stale" });
+    } finally {
+      closeSqliteDatabase(staleDatabase);
     }
 
     const oversized = await seedLifecycleFixture("fx-v1-review-too-large", root);
@@ -320,8 +342,36 @@ describe("packaged runtime selection and driver", () => {
     const script = buildNativeCaptureDriverScript(runtime!);
     expect(script).toContain("Request changes");
     expect(script).toContain(NATIVE_FIXTURE_IDS.reviewCard);
-    expect(script).toContain("native-file-text");
+    expect(script).toContain(runtime?.fixture.driver.fileId!);
     expect(script).not.toContain("localhost");
+  });
+
+  test("types and presses Enter for declared send actions before reporting ready", async () => {
+    for (const fixtureId of [
+      "fx-v1-running-attempt",
+      "fx-v1-request-changes-send",
+    ]) {
+      const seeded = await seedLifecycleFixture(
+        fixtureId,
+        temporaryDirectory(`runtime-action-${fixtureId}`),
+      );
+      const runtime = resolveNativeCaptureRuntime({
+        [NATIVE_CAPTURE_ENV.enabled]: "1",
+        [NATIVE_CAPTURE_ENV.target]: "packaged",
+        [NATIVE_CAPTURE_ENV.fixtureId]: seeded.fixtureId,
+        [NATIVE_CAPTURE_ENV.matrixVersion]: lifecycleMatrix.matrixVersion,
+        [NATIVE_CAPTURE_ENV.databasePath]: seeded.databasePath,
+        [NATIVE_CAPTURE_ENV.readyPath]: join(seeded.fixtureDirectory, "capture-ready.json"),
+      })!;
+      const script = buildNativeCaptureDriverScript(runtime);
+      expect(script).toContain("card-composer-draft");
+      expect(script).toContain("KeyboardEvent");
+      expect(script).toContain(runtime.fixture.driver.text!);
+      expect(script).toContain(runtime.fixture.driver.expectText!);
+      expect(script.indexOf("KeyboardEvent")).toBeLessThan(
+        script.indexOf("__kittenReportNativeCaptureReady"),
+      );
+    }
   });
 
   test("launches a packaged child, captures an artifact, emits metadata, and cleans up", async () => {
@@ -560,6 +610,12 @@ describe("native artifact metadata and completeness verification", () => {
     });
     expect(() => verifyNativeArtifacts(platform.manifestPath, { requireReview: false }))
       .toThrow("metadata mismatch");
+
+    const build = artifactFixture();
+    expect(() => verifyNativeArtifacts(build.manifestPath, {
+      requireReview: false,
+      expectedBuildIdentity: "different-current-build",
+    })).toThrow("current packaged build");
   });
 
   test("does not record repository paths, prompts, credentials, or workspace content", () => {

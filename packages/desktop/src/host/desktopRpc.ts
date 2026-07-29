@@ -3,7 +3,8 @@ import type { AttemptGeneration, AttemptId, QuestionId } from "@kitten/engine";
 import type { AttentionOutcome } from "../attention/contracts.ts";
 import type { AttentionCoordinator } from "../attention/attentionCoordinator.ts";
 import { AttentionCoordinatorError } from "../attention/attentionCoordinator.ts";
-import type { CardId } from "../workflow/workflowTypes.ts";
+import { workflowIds, type CardId } from "../workflow/workflowTypes.ts";
+import type { WorkflowCommandHandler } from "../workflow/workflowCommands.ts";
 import type { EventJournal } from "../persistence/eventJournal.ts";
 import type {
   ReviewDispositionService,
@@ -145,7 +146,7 @@ export function createDesktopReviewEvidenceRpc(
     async getReviewManifest(request) {
       try {
         assertGetReviewManifestRequest(request);
-        const result = service.manifest(request.evidenceId);
+        const result = await service.currentManifest(request.evidenceId);
         if (result.status === "unavailable") {
           return manifestEnvelope({
             status: "rejected",
@@ -333,6 +334,7 @@ export function createDesktopInspectorRpc(
   journal: EventJournal,
   coordinator: DesktopAttemptCoordinator,
   attention?: AttentionCoordinator,
+  workflowCommands?: WorkflowCommandHandler,
 ): DesktopInspectorRpc {
   return {
     async stopAttempt(request) {
@@ -349,11 +351,50 @@ export function createDesktopInspectorRpc(
       });
       const attempt = [...snapshot.attempts]
         .reverse()
-        .find((candidate) => candidate.cardId === card.cardId && (candidate.state === "running" || candidate.state === "needs_attention"));
-      if (attempt === undefined) return inspectorEnvelope(request.commandId, {
-        status: "rejected",
-        reason: { code: "attempt_not_active", message: "The task has no active run to stop." },
-      });
+        .find((candidate) => candidate.cardId === card.cardId && (
+          candidate.state === "starting"
+          || candidate.state === "running"
+          || candidate.state === "needs_attention"
+        ));
+      if (attempt === undefined) {
+        if (
+          workflowCommands !== undefined
+          && (card.executionStatus === "running" || card.executionStatus === "needs_attention")
+        ) {
+          const reconciled = workflowCommands.execute({
+            kind: "set_card_execution_status",
+            mutationId: workflowIds.mutation(`stop-reconcile:${request.commandId}`),
+            boardId: card.boardId,
+            cardId: card.cardId,
+            expectedCardVersion: card.version,
+            executionStatus: "cancelled",
+          });
+          if (reconciled.status === "committed" || reconciled.status === "idempotent") {
+            return inspectorEnvelope(request.commandId, { status: "ok" });
+          }
+          if (reconciled.status === "conflict") {
+            return inspectorEnvelope(request.commandId, {
+              status: "conflict",
+              conflict: {
+                kind: "inspector_command",
+                code: "stale_card",
+                message: "The task changed before its stale run state could be cleared.",
+              },
+            });
+          }
+          return inspectorEnvelope(request.commandId, {
+            status: "rejected",
+            reason: {
+              code: reconciled.rejection.kind,
+              message: reconciled.rejection.message,
+            },
+          });
+        }
+        return inspectorEnvelope(request.commandId, {
+          status: "rejected",
+          reason: { code: "attempt_not_active", message: "The task has no active run to stop." },
+        });
+      }
       const result = await coordinator.stop({ attemptId: attempt.attemptId, generation: attempt.generation });
       return inspectorEnvelope(request.commandId, result.status === "ok"
         ? { status: "ok" }

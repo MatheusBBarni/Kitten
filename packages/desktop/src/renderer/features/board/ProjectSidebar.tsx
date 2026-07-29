@@ -608,12 +608,12 @@ export function ProjectSidebar({
               Supervised cards are hidden by sidebar preferences. Reopen the project to restore them.
             </p>
           ) : (
-            <nav aria-label="Work Inbox">
-              <div className="grid gap-3">
+            <nav aria-label="Work Inbox" className="min-w-0 overflow-hidden">
+              <div className="grid min-w-0 gap-3 overflow-hidden">
                 {workInboxGroups.map((group) => {
                   const headingId = `work-inbox-${group.status}`;
                   return (
-                    <section key={group.status} aria-labelledby={headingId}>
+                    <section key={group.status} aria-labelledby={headingId} className="min-w-0 overflow-hidden">
                       <div className="flex items-center justify-between gap-2 px-2 pb-1">
                         <h3
                           id={headingId}
@@ -629,14 +629,14 @@ export function ProjectSidebar({
                         </span>
                       </div>
                       {group.rows.length === 0 ? null : (
-                        <ul className="m-0 grid list-none gap-1 p-0">
+                        <ul className="m-0 grid min-w-0 list-none gap-1 overflow-hidden p-0">
                           {group.rows.map((row) => {
                             const selected = selectedInboxItem?.boardId === row.item.boardId
                               && selectedInboxItem.cardId === row.item.cardId;
                             const statusLabel = supervisionStatusLabel[row.item.status];
                             const itemActionableTime = actionableTime(row.item.actionableAt);
                             return (
-                              <li key={`${row.item.boardId}:${row.item.cardId}`}>
+                              <li key={`${row.item.boardId}:${row.item.cardId}`} className="min-w-0 overflow-hidden">
                                 <Button
                                   id={workInboxItemFocusId(row.item.boardId, row.item.cardId)}
                                   data-desktop-command-target={
@@ -650,17 +650,17 @@ export function ProjectSidebar({
                                   fullWidth
                                   aria-current={selected ? "true" : undefined}
                                   aria-label={`Open ${row.cardLabel} in ${row.boardLabel}, ${row.repositoryLabel}. Status ${statusLabel}. ${itemActionableTime.label}. ${row.evidenceLabel}.${row.navigationAvailable ? "" : " Navigation unavailable until repository details load."}`}
-                                  className={`grid min-h-20 w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-[var(--kitten-radius-control)] border px-2 py-2 text-left aria-[current=true]:ring-2 aria-[current=true]:ring-[var(--kitten-focus)] ${supervisionStatusSurface[row.item.status]}`}
+                                  className={`grid min-h-20 w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_5rem] items-start gap-2 overflow-hidden rounded-[var(--kitten-radius-control)] border px-2 py-2 text-left aria-[current=true]:ring-2 aria-[current=true]:ring-[var(--kitten-focus)] ${supervisionStatusSurface[row.item.status]}`}
                                   onPress={() => onSelectInboxItem({
                                     item: row.item,
                                     repositoryPath: row.repositoryPath,
                                   })}
                                   isDisabled={busy || !row.navigationAvailable}
                                 >
-                                  <span className="grid min-w-0 gap-0.5">
+                                  <span className="grid min-w-0 overflow-hidden gap-0.5">
                                     <span className="truncate text-xs font-semibold text-foreground">{row.cardLabel}</span>
                                     <span className="truncate text-xs text-muted">{row.repositoryLabel} / {row.boardLabel}</span>
-                                    <span className="text-xs text-muted">
+                                    <span className="truncate text-xs text-muted">
                                       {statusLabel} · {row.evidenceLabel}
                                       {row.navigationAvailable ? null : " · Navigation unavailable"}
                                     </span>
@@ -668,7 +668,7 @@ export function ProjectSidebar({
                                   <time
                                     dateTime={itemActionableTime.dateTime}
                                     title={itemActionableTime.title}
-                                    className="max-w-20 text-right text-xs leading-4 text-muted"
+                                    className="w-20 min-w-0 truncate text-right text-xs leading-4 text-muted"
                                   >
                                     {itemActionableTime.label}
                                   </time>

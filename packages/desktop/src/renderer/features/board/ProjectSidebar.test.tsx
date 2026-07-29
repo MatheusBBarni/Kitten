@@ -266,6 +266,10 @@ describe("ProjectSidebar", () => {
       "work-inbox-card-board-project-sidebar-card-attention-first",
       "work-inbox-card-board-project-sidebar-second-card-attention-second",
     ]);
+    const firstInboxCard = within(inbox).getAllByRole("button")[0]!;
+    expect(firstInboxCard.className).toContain("max-w-full");
+    expect(firstInboxCard.className).toContain("overflow-hidden");
+    expect(firstInboxCard.querySelector("time")?.className).toContain("truncate");
     expect(within(inbox).getByText(/Review evidence available/)).toBeDefined();
   });
 

@@ -10,24 +10,29 @@ import {
   TextArea,
   TextField,
 } from "@heroui/react";
-import type { CardProjection } from "../../../workflow/workflowTypes.ts";
-import type { CardEditInput } from "../board/boardInteractions.ts";
+import type { WorkflowCatalogProjection } from "../../../shared/rpc.ts";
+import type { CardProjection, SkillId } from "../../../workflow/workflowTypes.ts";
+import { SearchableSelectField } from "../../components/SearchableSelectField.tsx";
+import { selectableCatalogEntries, type CardEditInput } from "../board/boardInteractions.ts";
 import { CheckIcon, EditIcon } from "../../components/Icons.tsx";
 
 interface TaskEditModalProps {
   readonly card: CardProjection;
+  readonly catalog: WorkflowCatalogProjection | undefined;
   readonly isOpen: boolean;
   readonly busy: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onSave: (input: CardEditInput) => void;
 }
 
-export function TaskEditModal({ card, isOpen, busy, onOpenChange, onSave }: TaskEditModalProps) {
+export function TaskEditModal({ card, catalog, isOpen, busy, onOpenChange, onSave }: TaskEditModalProps) {
+  const skillEntries = catalog === undefined ? [] : selectableCatalogEntries(catalog);
   const [title, setTitle] = useState(card.title);
   const [description, setDescription] = useState(card.description);
   const [provider, setProvider] = useState(card.provider);
   const [model, setModel] = useState(card.model);
   const [effort, setEffort] = useState(card.effort);
+  const [skillOverrideId, setSkillOverrideId] = useState<string>(card.skillOverrideId ?? "");
   const [runnable, setRunnable] = useState(card.runnable);
 
   useEffect(() => {
@@ -37,6 +42,7 @@ export function TaskEditModal({ card, isOpen, busy, onOpenChange, onSave }: Task
     setProvider(card.provider);
     setModel(card.model);
     setEffort(card.effort);
+    setSkillOverrideId(card.skillOverrideId ?? "");
     setRunnable(card.runnable);
   }, [card, isOpen]);
 
@@ -93,7 +99,34 @@ export function TaskEditModal({ card, isOpen, busy, onOpenChange, onSave }: Task
                 <FieldError>Enter an effort level.</FieldError>
               </TextField>
 
-              <Checkbox isSelected={runnable} onChange={setRunnable} className="self-end">
+              <div className="sm:col-span-2">
+                <SearchableSelectField
+                  label="Workflow Skill"
+                  value={skillOverrideId}
+                  disabled={busy}
+                  options={[
+                    { value: "", label: "Select a Workflow Skill" },
+                    ...skillEntries.map((entry) => ({
+                      value: entry.skillId,
+                      label: `${entry.metadata.name} (${entry.rootClass})`,
+                    })),
+                  ]}
+                  onChange={(value) => {
+                    setSkillOverrideId(value);
+                    if (value.length === 0) setRunnable(false);
+                  }}
+                  placeholder="Search validated Skills"
+                  emptyMessage="No matching Workflow Skills"
+                  description="Moving this task to another stage clears the Skill."
+                />
+              </div>
+
+              <Checkbox
+                isSelected={runnable}
+                onChange={setRunnable}
+                className="self-end"
+                isDisabled={busy || skillOverrideId.length === 0}
+              >
                 <Checkbox.Content>
                   <Checkbox.Control><Checkbox.Indicator><CheckIcon /></Checkbox.Indicator></Checkbox.Control>
                   <span>Runnable task</span>
@@ -104,7 +137,15 @@ export function TaskEditModal({ card, isOpen, busy, onOpenChange, onSave }: Task
           <Modal.Footer>
             <Button variant="secondary" onPress={() => onOpenChange(false)} isDisabled={busy}>Cancel</Button>
             <Button
-              onPress={() => onSave({ title, description, provider, model, effort, runnable })}
+              onPress={() => onSave({
+                title,
+                description,
+                provider,
+                model,
+                effort,
+                skillOverrideId: skillOverrideId.length === 0 ? null : skillOverrideId as SkillId,
+                runnable: runnable && skillOverrideId.length > 0,
+              })}
               isDisabled={!valid || busy}
               isPending={busy}
             >

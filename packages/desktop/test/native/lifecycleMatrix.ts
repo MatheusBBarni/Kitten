@@ -3,6 +3,7 @@ import matrixDocument from "./lifecycle-matrix.v1.json";
 export type NativeWindowName = "wide" | "medium" | "narrow";
 export type NativeTheme = "light" | "dark";
 export type NativeMotion = "standard" | "reduced";
+export type NativeDriverAction = "submit_direction" | "submit_request_changes";
 export type NativeDriverView =
   | "board"
   | "workbench"
@@ -18,6 +19,9 @@ export interface NativeLifecycleDriver {
   readonly cardId?: string;
   readonly fileId?: string;
   readonly focusTargetId?: string;
+  readonly action?: NativeDriverAction;
+  readonly text?: string;
+  readonly expectText?: string;
 }
 
 export interface NativeLifecycleMatrixEntry {
@@ -43,6 +47,7 @@ export interface NativeLifecycleMatrix {
 const WINDOW_NAMES = ["wide", "medium", "narrow"] as const;
 const THEMES = ["light", "dark"] as const;
 const MOTIONS = ["standard", "reduced"] as const;
+const DRIVER_ACTIONS = ["submit_direction", "submit_request_changes"] as const;
 const DRIVER_VIEWS = [
   "board",
   "workbench",
@@ -88,14 +93,27 @@ function oneOf<T extends string>(
 
 function parseDriver(value: unknown, index: number): NativeLifecycleDriver {
   const driver = record(value, `matrix entry ${index} driver`);
-  const optionalString = (key: "cardId" | "fileId" | "focusTargetId") => (
-    driver[key] === undefined ? {} : { [key]: nonEmpty(driver[key], `driver ${key}`) }
+  const optionalString = (key: string): string | undefined => (
+    driver[key] === undefined ? undefined : nonEmpty(driver[key], `driver ${key}`)
   );
+  const action = driver.action === undefined
+    ? undefined
+    : oneOf(driver.action, DRIVER_ACTIONS, "driver action");
+  const text = optionalString("text");
+  const expectText = optionalString("expectText");
+  if (action !== undefined && (text === undefined || expectText === undefined)) {
+    throw new Error("driver action requires text and expectText");
+  }
   return {
     view: oneOf(driver.view, DRIVER_VIEWS, "driver view"),
-    ...optionalString("cardId"),
-    ...optionalString("fileId"),
-    ...optionalString("focusTargetId"),
+    ...(optionalString("cardId") === undefined ? {} : { cardId: optionalString("cardId") }),
+    ...(optionalString("fileId") === undefined ? {} : { fileId: optionalString("fileId") }),
+    ...(optionalString("focusTargetId") === undefined
+      ? {}
+      : { focusTargetId: optionalString("focusTargetId") }),
+    ...(action === undefined ? {} : { action }),
+    ...(text === undefined ? {} : { text }),
+    ...(expectText === undefined ? {} : { expectText }),
   };
 }
 

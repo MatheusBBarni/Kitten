@@ -45,6 +45,7 @@ import {
   type ReviewEvidenceRecord,
 } from "../../src/persistence/eventJournal.ts";
 import {
+  createReviewEvidenceService,
   REVIEW_EVIDENCE_POLICY_VERSION,
   REVIEW_TEXT_PATCH_BYTE_LIMIT,
 } from "../../src/host/reviewEvidence.ts";
@@ -164,10 +165,7 @@ function worktreeBinding(
   const managedRoot = resolve(repositoryPath, ".kitten/worktrees/cards");
   const worktreePath = resolve(managedRoot, bindingId);
   mkdirSync(managedRoot, { recursive: true });
-  if (
-    cardId === NATIVE_FIXTURE_IDS.reviewCard
-    || cardId === NATIVE_FIXTURE_IDS.oversizedCard
-  ) {
+  if (cardId === NATIVE_FIXTURE_IDS.reviewCard) {
     runGit(repositoryPath, [
       "worktree",
       "add",
@@ -177,6 +175,21 @@ function worktreeBinding(
       baselineCommit,
     ]);
     writeFileSync(join(worktreePath, "src-native.ts"), "export const state = \"reviewed\";\n");
+    mkdirSync(join(worktreePath, "assets"), { recursive: true });
+    writeFileSync(join(worktreePath, "assets", "native.bin"), new Uint8Array([0, 1, 2, 3]));
+  } else if (cardId === NATIVE_FIXTURE_IDS.oversizedCard) {
+    runGit(repositoryPath, [
+      "worktree",
+      "add",
+      "-b",
+      `kitten/card/${bindingId}`,
+      worktreePath,
+      baselineCommit,
+    ]);
+    writeFileSync(
+      join(worktreePath, "src-native.ts"),
+      "x".repeat(REVIEW_TEXT_PATCH_BYTE_LIMIT + 1_024),
+    );
   } else {
     mkdirSync(worktreePath, { recursive: true });
     writeFileSync(
@@ -680,13 +693,14 @@ function seedBoard(
   });
 }
 
-function seedPopulatedFixture(
+async function seedPopulatedFixture(
   journal: EventJournal,
   fixtureDirectory: string,
   repositoryPath: string,
   baselineCommit: string,
   includeOversized: boolean,
-): void {
+  makeReviewStale: boolean,
+): Promise<void> {
   seedBoard(journal, NATIVE_FIXTURE_IDS.primaryBoard, repositoryPath, FIXTURE_TIME);
   journal.append({
     eventId: "native-stage-doing",
@@ -746,6 +760,9 @@ function seedPopulatedFixture(
     [NATIVE_FIXTURE_IDS.interruptedCard, "running"],
     [NATIVE_FIXTURE_IDS.oversizedCard, "succeeded"],
   ]);
+  const reviewEvidence = createReviewEvidenceService(journal, {
+    now: () => FIXTURE_TIME + 48,
+  });
 
   for (const [index, cardValue] of cards.entries()) {
     journal.append({
@@ -841,10 +858,26 @@ function seedPopulatedFixture(
         });
       }
     }
-    if (
-      cardValue.cardId === NATIVE_FIXTURE_IDS.reviewCard
-      || cardValue.cardId === NATIVE_FIXTURE_IDS.oversizedCard
-    ) {
+    if (cardValue.cardId === NATIVE_FIXTURE_IDS.reviewCard) {
+      const captured = await reviewEvidence.capture({
+        boardId: cardValue.boardId,
+        expectedWorkflowVersion: 1,
+        cardId: cardValue.cardId,
+        attemptId: seeded.attempt.attemptId,
+        generation: seeded.attempt.generation,
+        expectedCardVersion: 2,
+        worktreeBindingId: binding.bindingId,
+      });
+      if (captured.status !== "committed") {
+        throw new Error(`Native review evidence capture failed: ${captured.reason}`);
+      }
+      if (makeReviewStale) {
+        writeFileSync(
+          join(binding.worktreePath, "src-native.ts"),
+          "export const state = \"stale-after-capture\";\n",
+        );
+      }
+    } else if (cardValue.cardId === NATIVE_FIXTURE_IDS.oversizedCard) {
       persistEvidence(
         journal,
         cardValue,
@@ -924,12 +957,13 @@ export async function seedLifecycleFixture(
     migrateDatabase(database, { now: () => FIXTURE_TIME - 1_000 });
     const journal = createEventJournal(database);
     if (declared.state !== "empty_workspace") {
-      seedPopulatedFixture(
+      await seedPopulatedFixture(
         journal,
         fixtureDirectory,
         realpathSync(repositoryPath),
         baselineCommit,
         declared.state === "review_too_large",
+        declared.state === "review_stale_evidence",
       );
     }
     const snapshot = journal.snapshot();

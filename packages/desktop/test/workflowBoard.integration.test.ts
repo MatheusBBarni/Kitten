@@ -20,7 +20,7 @@ import {
 } from "../src/renderer/client.ts";
 import {
   createBlankBoard,
-  createStageWithCatalogSkill,
+  createStage,
   executeBoardCommand,
   moveCardCommand,
   reorderStagesCommand,
@@ -145,22 +145,18 @@ describe("Workflow Board fake typed RPC", () => {
       const createdBoard = await createBlankBoard(client, initial, "/repo", identities);
       expect(createdBoard.status).toBe("ok");
       if (createdBoard.status !== "ok") throw new Error("board setup failed");
-      const firstStage = await createStageWithCatalogSkill(
+      const firstStage = await createStage(
         client,
         createdBoard.projection,
         "Backlog",
-        skillId,
-        catalog,
         identities,
       );
       expect(firstStage.status).toBe("ok");
       if (firstStage.status !== "ok") throw new Error("first stage setup failed");
-      const secondStage = await createStageWithCatalogSkill(
+      const secondStage = await createStage(
         client,
         firstStage.projection,
         "Doing",
-        skillId,
-        catalog,
         identities,
       );
       expect(secondStage.status).toBe("ok");
@@ -220,7 +216,7 @@ describe("Workflow Board fake typed RPC", () => {
         provider: "codex",
         model: "gpt-5",
         effort: "high",
-        skillOverrideId: null,
+        skillOverrideId: skillId,
         runnable: true,
       } satisfies WorkflowCommand;
       const cardCreated = await executeBoardCommand(client, createCardCommand, identities);
@@ -247,6 +243,10 @@ describe("Workflow Board fake typed RPC", () => {
       expect(moved.status).toBe("ok");
       if (moved.status !== "ok") throw new Error("card move failed");
       expect(moved.projection.cards[0]?.stageId).toBe(targetStageId);
+      expect(moved.projection.cards[0]).toMatchObject({
+        skillOverrideId: null,
+        runnable: false,
+      });
       const movedCard = moved.projection.cards[0]!;
       const running = await boardRpc.executeWorkflowCommand({
         commandId: "card-running",

@@ -55,15 +55,21 @@ import {
   persistReviewEvidence,
   readLatestReviewEvidenceByCard,
   readReviewEvidence,
+  readReviewEvidenceFile,
+  readReviewEvidenceManifest,
   readReviewEvidenceSummary,
   type PersistReviewEvidenceResult,
   type ReviewEvidenceRecord,
+  type ReviewEvidenceFileRecord,
+  type ReviewEvidenceManifestRecord,
   type ReviewEvidenceReference,
   type ReviewEvidenceSummary,
 } from "./reviewEvidencePersistence.ts";
 
 export type {
   ReviewEvidenceFileRecord,
+  ReviewEvidenceFileMetadata,
+  ReviewEvidenceManifestRecord,
   ReviewEvidenceRecord,
   ReviewEvidenceReference,
   ReviewEvidenceSummary,
@@ -324,6 +330,8 @@ export interface EventJournal {
   events(): readonly JournalEvent[];
   eventById(eventId: string): JournalEvent | null;
   reviewEvidence(evidenceId: string): ReviewEvidenceRecord | null;
+  reviewEvidenceManifest(evidenceId: string): ReviewEvidenceManifestRecord | null;
+  reviewEvidenceFile(evidenceId: string, fileId: string): ReviewEvidenceFileRecord | null;
 }
 
 export interface EventJournalTransaction {
@@ -2892,6 +2900,12 @@ export function createEventJournal(database: Database): EventJournal {
     },
     reviewEvidence(evidenceId) {
       return readReviewEvidence(database, evidenceId);
+    },
+    reviewEvidenceManifest(evidenceId) {
+      return readReviewEvidenceManifest(database, evidenceId);
+    },
+    reviewEvidenceFile(evidenceId, fileId) {
+      return readReviewEvidenceFile(database, evidenceId, fileId);
     },
   };
 }

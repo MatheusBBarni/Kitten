@@ -1272,8 +1272,8 @@ function seed(journal: EventJournal, cardIds: readonly CardId[]): void {
       boardId: BOARD_ID,
       label: "Doing",
       position: 0,
-      defaultSkillId: SKILL_ID,
-      configured: true,
+      defaultSkillId: null,
+      configured: false,
       workflowVersion: 1,
       updatedAt: 2,
     },
@@ -1299,7 +1299,7 @@ function card(cardId: CardId, createdAt: number): CardProjection {
     provider: "codex",
     model: "gpt-5",
     effort: "high",
-    skillOverrideId: null,
+    skillOverrideId: SKILL_ID,
     runnable: true,
     executionStatus: "idle",
     version: 1,
@@ -1377,7 +1377,7 @@ function mutateStageAndCard(journal: EventJournal, cardId: CardId, skillId: Skil
     actor: "operator",
     kind: "stage_upserted",
     occurredAt: 500,
-    payload: { ...stage, defaultSkillId: skillId, workflowVersion: 2, updatedAt: 500 },
+    payload: { ...stage, label: "Changed after start", workflowVersion: 2, updatedAt: 500 },
   });
   journal.append({
     eventId: "mutate-card",
@@ -1386,6 +1386,12 @@ function mutateStageAndCard(journal: EventJournal, cardId: CardId, skillId: Skil
     actor: "operator",
     kind: "card_upserted",
     occurredAt: 501,
-    payload: { ...current, title: "Changed after start", version: current.version + 1, updatedAt: 501 },
+    payload: {
+      ...current,
+      title: "Changed after start",
+      skillOverrideId: skillId,
+      version: current.version + 1,
+      updatedAt: 501,
+    },
   });
 }

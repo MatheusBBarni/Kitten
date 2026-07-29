@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, Chip } from "@heroui/react";
+import { Alert, Button, Chip, Drawer } from "@heroui/react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type {
   CardInspectorProjection,
@@ -10,6 +10,7 @@ import type {
   CardInspectorEnvelope,
   ReviewEvidenceManifest,
   ReviewEvidencePrecondition,
+  WorkflowCatalogProjection,
 } from "../../../shared/rpc.ts";
 import type { DesktopRpcClient } from "../../client.ts";
 import { bindCardInspectorRenderer } from "../../client.ts";
@@ -112,6 +113,7 @@ export function CardInspector({
   client,
   card,
   repositoryKey,
+  catalog,
   presentation = "desktop",
   draftSource = "composer",
   isOpen = true,
@@ -124,6 +126,7 @@ export function CardInspector({
   readonly client: DesktopRpcClient;
   readonly card: CardProjection;
   readonly repositoryKey: string;
+  readonly catalog?: WorkflowCatalogProjection;
   readonly presentation?: "desktop" | "narrow";
   readonly draftSource?: DraftSource;
   readonly isOpen?: boolean;
@@ -356,15 +359,28 @@ export function CardInspector({
 
   return (
     <>
-      <aside
-        id="card-workbench"
-        aria-labelledby="card-inspector-title"
-        data-workbench-presentation={presentation}
-        className={`grid h-dvh min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-l border-[var(--kitten-border-subtle)] bg-[var(--kitten-surface-workbench)] text-foreground ${
-          presentation === "narrow" ? "col-start-1 w-full border-l-0" : ""
-        }`}
+      <Drawer.Backdrop
+        isOpen={isOpen}
+        onOpenChange={onOpenChange}
+        isDismissable={!taskBusy && !editing}
       >
-        <header className="grid gap-3 border-b border-[var(--kitten-border-subtle)] bg-[var(--kitten-surface-raised)] px-4 py-3">
+        <Drawer.Content placement="right">
+          <Drawer.Dialog
+            aria-labelledby="card-inspector-title"
+            className={`h-dvh max-w-none rounded-none bg-[var(--kitten-surface-workbench)] p-0 ${
+              presentation === "narrow"
+                ? "w-full"
+                : "w-[min(var(--kitten-workbench-width),calc(100vw-2rem))]"
+            }`}
+          >
+            <Drawer.Body className="h-full min-h-0 p-0">
+              <aside
+                id="card-workbench"
+                aria-labelledby="card-inspector-title"
+                data-workbench-presentation={presentation}
+                className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-l border-[var(--kitten-border-subtle)] bg-[var(--kitten-surface-workbench)] text-foreground"
+              >
+                <header className="grid gap-3 border-b border-[var(--kitten-border-subtle)] bg-[var(--kitten-surface-raised)] px-4 py-3">
           {presentation === "narrow" ? (
             <Button
               id="workbench-back-trigger"
@@ -423,9 +439,9 @@ export function CardInspector({
           {projectedCard.description.trim().length === 0 ? null : (
             <p className="m-0 text-sm text-muted">{projectedCard.description}</p>
           )}
-        </header>
+                </header>
 
-        <div className="task-drawer-body">
+                <div className="task-drawer-body">
               <div
                 className="inspector-history-scroll"
                 ref={historyRef}
@@ -536,12 +552,17 @@ export function CardInspector({
                 onRequestChanges={commands.requestChanges}
                 onRetryInterrupted={commands.retryInterrupted}
               />
-        </div>
-      </aside>
+                </div>
+              </aside>
+            </Drawer.Body>
+          </Drawer.Dialog>
+        </Drawer.Content>
+      </Drawer.Backdrop>
 
       {onSaveTask === undefined ? null : (
         <TaskEditModal
           card={projectedCard}
+          catalog={catalog}
           isOpen={editing}
           busy={taskBusy}
           onOpenChange={setEditing}

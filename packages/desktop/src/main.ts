@@ -717,7 +717,7 @@ export async function main(): Promise<DesktopShell> {
     boardRpc,
     settingsRpc,
     getCardInspector: (cardId) => getCardInspectorProjection(journal, cardId),
-    inspectorRpc: createDesktopInspectorRpc(journal, attemptCoordinator, attention),
+    inspectorRpc: createDesktopInspectorRpc(journal, attemptCoordinator, attention, workflowCommands),
     promptSubmissionRpc: createDesktopPromptSubmissionRpc(
       attemptCoordinator,
       workflowMeasurement,

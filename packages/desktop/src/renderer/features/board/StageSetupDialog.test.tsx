@@ -2,57 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import "../../settings/testDom.ts";
 import { cleanup, render } from "@testing-library/react";
-import type { WorkflowCatalogProjection } from "../../../shared/rpc.ts";
-import { workflowIds } from "../../../workflow/workflowTypes.ts";
 import { StageSetupDialog } from "./StageSetupDialog.tsx";
-
-const validSkillId = workflowIds.skill(`skill:${"a".repeat(64)}`);
-const collisionSkillId = workflowIds.skill(`skill:${"b".repeat(64)}`);
-const diagnostic = {
-  diagnosticId: "diagnostic-collision",
-  code: "name_collision" as const,
-  severity: "error" as const,
-  message: "Two catalog roots expose the name execute.",
-  rootClass: "project" as const,
-  configuredPath: "/repo/.agents/skills",
-  canonicalPath: "/repo/.agents/skills",
-  skillPath: "/repo/.agents/skills/execute/SKILL.md",
-  displayName: "execute",
-  relatedSkillIds: [validSkillId, collisionSkillId],
-};
-const catalog: WorkflowCatalogProjection = {
-  kind: "workflow_catalog_projection",
-  revision: 4,
-  catalog: {
-    catalogId: "default",
-    roots: [],
-    entries: [
-      {
-        skillId: validSkillId,
-        canonicalPath: "/repo/.agents/skills/verify/SKILL.md",
-        rootClass: "project",
-        rootPath: "/repo/.agents/skills",
-        digest: "a".repeat(64),
-        metadata: { name: "verify", description: "Verify changes", frontmatter: {} },
-        order: 0,
-        hasNameCollision: false,
-        diagnostics: [],
-      },
-      {
-        skillId: collisionSkillId,
-        canonicalPath: "/user/skills/execute/SKILL.md",
-        rootClass: "user",
-        rootPath: "/user/skills",
-        digest: "b".repeat(64),
-        metadata: { name: "execute", description: "Execute changes", frontmatter: {} },
-        order: 1,
-        hasNameCollision: true,
-        diagnostics: [diagnostic],
-      },
-    ],
-    diagnostics: [diagnostic],
-  },
-};
 
 const noop = () => {};
 
@@ -71,132 +21,80 @@ function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
 }
 
 describe("StageSetupDialog", () => {
-  test("offers only validated catalog identities and exposes collision diagnostics", () => {
+  test("edits only the stage name and explains task-owned Skills", () => {
     const view = render(
       <StageSetupDialog
-        catalog={catalog}
         label="Doing"
-        selectedSkillId={validSkillId}
         busy={false}
         onLabelChange={noop}
-        onSkillChange={noop}
-        onCreate={noop}
+        onSave={noop}
         onClose={noop}
       />,
     );
 
-    const markup = document.body.innerHTML;
-    expect(document.body.textContent).toContain("Default Workflow Skill");
-    expect((view.getByRole("combobox", { name: "Default Workflow Skill" }) as HTMLInputElement).value)
-      .toBe("verify (project)");
-    expect(markup).not.toContain(collisionSkillId);
-    expect(document.body.textContent).toContain("Name Collision");
-    expect(document.body.textContent).toContain("Two catalog roots expose the name execute.");
-    expect(document.body.textContent).toContain("Add unconfigured stage");
-    expect(document.body.textContent).toContain("Add configured stage");
-    expect(markup).not.toContain("type=\"text\" name=\"skill");
+    expect(document.body.textContent).toContain("Stages define workflow status only.");
+    expect(document.body.textContent).toContain("Each task chooses its own Workflow Skill.");
+    expect(view.getByRole("textbox", { name: "Stage name" })).toBeDefined();
+    expect(view.getByRole("button", { name: "Add stage" })).toBeDefined();
+    expect(document.body.textContent).not.toContain("Default Workflow Skill");
   });
 
-  test("explains why configuration cannot continue when the catalog has no valid identity", () => {
-    const invalidCatalog: WorkflowCatalogProjection = {
-      ...catalog,
-      catalog: { ...catalog.catalog, entries: [], diagnostics: [diagnostic] },
-    };
-    const view = render(
-      <StageSetupDialog
-        mode="configure"
-        catalog={invalidCatalog}
-        label="Doing"
-        selectedSkillId={null}
-        busy={false}
-        onLabelChange={noop}
-        onSkillChange={noop}
-        onCreate={noop}
-        onClose={noop}
-      />,
-    );
-
-    expect(document.body.textContent).toContain("Fix the catalog diagnostics before configuring this stage.");
-    const save = view.getByRole("button", { name: "Save stage Skill" });
-    expect(save.hasAttribute("disabled")).toBeTrue();
-    expect(document.body.textContent).not.toContain("Add unconfigured stage");
-  });
-
-  test("routes form, catalog selection, close, and unconfigured actions through semantic controls", () => {
+  test("routes form, input, and close actions through semantic controls", () => {
     const labels: string[] = [];
-    const skills: Array<typeof validSkillId | null> = [];
-    const creations: boolean[] = [];
+    let saves = 0;
     let closes = 0;
     const view = StageSetupDialog({
-      catalog,
       label: "Doing",
-      selectedSkillId: validSkillId,
       busy: false,
       onLabelChange: (label) => labels.push(label),
-      onSkillChange: (skillId) => skills.push(skillId),
-      onCreate: (configured) => creations.push(configured),
+      onSave: () => saves += 1,
       onClose: () => closes += 1,
     });
 
     const form = descendants(view, "form")[0]!;
     let prevented = 0;
-    (form.props.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault: () => prevented += 1 });
+    (form.props.onSubmit as (event: { preventDefault(): void }) => void)({
+      preventDefault: () => prevented += 1,
+    });
     (view.props.onOpenChange as (open: boolean) => void)(false);
-
     const input = elements(view).find(({ props }) => props.value === "Doing" && typeof props.onChange === "function")!;
     (input.props.onChange as (value: string) => void)("Review");
-    const select = elements(view).find(({ props }) => props.label === "Default Workflow Skill")!;
-    const selectChange = select.props.onChange as (value: string) => void;
-    selectChange("");
-    selectChange(validSkillId);
-
-    const buttons = elements(view).filter(({ props }) => typeof props.onPress === "function");
-    (buttons.find(({ props }) => props.children === "Cancel")!.props.onPress as () => void)();
-    (buttons.find(({ props }) => props.children === "Add unconfigured stage")!.props.onPress as () => void)();
+    const cancel = elements(view).find(({ props }) => props.children === "Cancel")!;
+    (cancel.props.onPress as () => void)();
 
     expect(prevented).toBe(1);
+    expect(saves).toBe(1);
     expect(labels).toEqual(["Review"]);
-    expect(skills).toEqual([null, validSkillId]);
-    expect(creations).toEqual([true, false]);
     expect(closes).toBe(2);
   });
 
-  test("keeps modal actions in a wrapping footer while the form body scrolls", () => {
-    const view = StageSetupDialog({
-      catalog,
-      label: "Doing",
-      selectedSkillId: validSkillId,
-      busy: false,
-      onLabelChange: noop,
-      onSkillChange: noop,
-      onCreate: noop,
-      onClose: noop,
-    });
-    const modalContainer = elements(view).find(({ props }) => props.scroll === "inside");
-    const form = descendants(view, "form")[0];
-    const footer = elements(view).find(({ props }) => (
-      typeof props.className === "string" && props.className.includes("flex-wrap")
-    ));
-
-    expect(modalContainer).toBeDefined();
-    expect(form?.props.className).toBe("contents");
-    expect(footer).toBeDefined();
-  });
-
-  test("does not submit or close while busy or without a valid catalog selection", () => {
+  test("uses the same focused form for renaming and blocks invalid or busy submission", () => {
     let called = 0;
-    const view = StageSetupDialog({
-      catalog,
-      label: "Doing",
-      selectedSkillId: null,
+    const rename = render(
+      <StageSetupDialog
+        mode="configure"
+        label="Doing"
+        busy={false}
+        onLabelChange={noop}
+        onSave={() => called += 1}
+        onClose={noop}
+      />,
+    );
+    expect(rename.getByRole("heading", { name: "Edit Doing" })).toBeDefined();
+    expect(rename.getByRole("button", { name: "Save stage" })).toBeDefined();
+    cleanup();
+
+    const busy = StageSetupDialog({
+      label: " ",
       busy: true,
       onLabelChange: noop,
-      onSkillChange: noop,
-      onCreate: () => called += 1,
+      onSave: () => called += 1,
       onClose: () => called += 1,
     });
-    (descendants(view, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault: noop });
-    (view.props.onOpenChange as (open: boolean) => void)(false);
+    (descendants(busy, "form")[0]!.props.onSubmit as (event: { preventDefault(): void }) => void)({
+      preventDefault: noop,
+    });
+    (busy.props.onOpenChange as (open: boolean) => void)(false);
     expect(called).toBe(0);
   });
 });

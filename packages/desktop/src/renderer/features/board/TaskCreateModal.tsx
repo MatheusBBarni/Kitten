@@ -99,9 +99,7 @@ export function TaskCreateModal({
       : defaultProfile?.efforts[0] ?? defaultProviderProjection?.efforts[0] ?? "",
   );
   const [skillOverrideId, setSkillOverrideId] = useState<string>("");
-  const [runnable, setRunnable] = useState(
-    defaultProfile?.readiness.ready === true && defaultStage?.configured === true,
-  );
+  const [runnable, setRunnable] = useState(false);
   const selectedProviderProjection = providers.find(({ providerId }) => providerId === provider) ?? null;
   const selectedProviderProfiles = profiles.filter((profile) => (
     selectedProviderProjection === null
@@ -121,7 +119,6 @@ export function TaskCreateModal({
       && profile.models.includes(model)
       && profile.efforts.includes(effort)
   )) ?? null;
-  const selectedStage = stages.find((stage) => stage.stageId === stageId) ?? null;
   const valid = title.trim().length > 0
     && stageId.length > 0
     && providerOptions.some(({ value }) => value === provider)
@@ -139,7 +136,7 @@ export function TaskCreateModal({
       model,
       effort,
       skillOverrideId: skillOverrideId.length === 0 ? null : skillOverrideId as SkillId,
-      runnable: runnable && selectedProfile !== null && selectedStage?.configured === true,
+      runnable: runnable && selectedProfile !== null && skillOverrideId.length > 0,
     });
   }
 
@@ -192,8 +189,6 @@ export function TaskCreateModal({
                   options={stages.map((stage) => ({ value: stage.stageId, label: stage.label }))}
                   onChange={(value) => {
                     setStageId(value);
-                    const stage = stages.find(({ stageId: candidate }) => candidate === value);
-                    if (!stage?.configured) setRunnable(false);
                   }}
                 />
 
@@ -266,19 +261,23 @@ export function TaskCreateModal({
 
               <div className="col-span-full">
                 <SearchableSelectField
-                  label="Workflow Skill override"
+                  label="Workflow Skill"
                   value={skillOverrideId}
                   disabled={busy}
                   options={[
-                    { value: "", label: "Use the stage default" },
+                    { value: "", label: "Select a Workflow Skill" },
                     ...selectableCatalogEntries(catalog).map((entry) => ({
                       value: entry.skillId,
                       label: `${entry.metadata.name} (${entry.rootClass})`,
                     })),
                   ]}
-                  onChange={setSkillOverrideId}
+                  onChange={(value) => {
+                    setSkillOverrideId(value);
+                    if (value.length === 0) setRunnable(false);
+                  }}
                   placeholder="Search validated Skills"
                   emptyMessage="No matching Workflow Skills"
+                  description="This Skill belongs to the task. Moving the task to another stage clears it."
                 />
               </div>
 
@@ -286,7 +285,7 @@ export function TaskCreateModal({
                 className="col-span-full"
                 isSelected={runnable}
                 onChange={setRunnable}
-                isDisabled={busy || selectedProfile === null || selectedStage?.configured !== true}
+                isDisabled={busy || selectedProfile === null || skillOverrideId.length === 0}
               >
                 <Checkbox.Content>
                   <Checkbox.Control><Checkbox.Indicator><CheckIcon /></Checkbox.Indicator></Checkbox.Control>

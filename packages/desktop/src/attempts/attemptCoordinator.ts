@@ -291,7 +291,6 @@ interface ResolvedAdmission {
   readonly stage: StageProjection | null;
   readonly repository: RepositoryReadinessEvidence | null;
   readonly skill: SkillSnapshot | null;
-  readonly skillSource: "stage" | "override";
   readonly profile: CertifiedDirectAcpProfile | null;
 }
 
@@ -332,8 +331,7 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
       ? null
       : snapshot.stages.find((candidate) => candidate.stageId === card.stageId) ?? null;
     const repository = board === null ? null : options.verifyRepository(board);
-    const skillSource = card?.skillOverrideId === null || card?.skillOverrideId === undefined ? "stage" : "override";
-    const skillId = card?.skillOverrideId ?? stage?.defaultSkillId ?? null;
+    const skillId = card?.skillOverrideId ?? null;
     let skill: SkillSnapshot | null = null;
     if (board !== null && skillId !== null) {
       try {
@@ -349,7 +347,6 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
       stage,
       repository,
       skill,
-      skillSource,
       profile: card === null ? null : options.resolveProfile(card),
     };
   };
@@ -369,7 +366,6 @@ export function createAttemptCoordinator(options: CreateAttemptCoordinatorOption
     stage: resolved.stage,
     repository: resolved.repository,
     effectiveSkill: resolved.skill,
-    skillSource: resolved.skillSource,
     profile: resolved.profile,
     worktree,
     scheduler: options.scheduler.inspect(resolved.card?.cardId ?? ("missing" as CardId)),

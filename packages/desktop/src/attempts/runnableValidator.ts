@@ -11,9 +11,8 @@ export type RunnableFailureCode =
   | "card_not_runnable"
   | "card_not_idle"
   | "stage_not_found"
-  | "stage_unconfigured"
-  | "invalid_stage_skill"
-  | "invalid_skill_override"
+  | "task_skill_required"
+  | "invalid_task_skill"
   | "profile_unavailable"
   | "profile_not_ready"
   | "model_unavailable"
@@ -38,7 +37,6 @@ export interface RunnableValidationInput {
   readonly stage: StageProjection | null;
   readonly repository: RepositoryReadinessEvidence | null;
   readonly effectiveSkill: SkillSnapshot | null;
-  readonly skillSource: "stage" | "override";
   readonly profile: CertifiedDirectAcpProfile | null;
   readonly worktree: EnsureCardWorktreeResult | null;
   readonly scheduler: SchedulerAdmission;
@@ -69,19 +67,14 @@ export function validateRunnable(input: RunnableValidationInput): RunnableResult
   if (stage === null || stage.stageId !== card.stageId || stage.boardId !== board.boardId) {
     return blocked("stage_not_found", "Move the card to an existing Workflow Stage before starting it.");
   }
-  if (!stage.configured || stage.defaultSkillId === null) {
-    return blocked("stage_unconfigured", "Select a validated default Skill for this Workflow Stage.");
+  if (card.skillOverrideId === null) {
+    return blocked("task_skill_required", "Select a Workflow Skill on this task before starting a run.");
   }
   if (input.effectiveSkill === null) {
-    return input.skillSource === "override"
-      ? blocked("invalid_skill_override", "Select an available catalog Skill override or remove the override.")
-      : blocked("invalid_stage_skill", "Select an available catalog Skill for this Workflow Stage.");
+    return blocked("invalid_task_skill", "The task's Workflow Skill is no longer available. Select another Skill.");
   }
-  const expectedSkillId = card.skillOverrideId ?? stage.defaultSkillId;
-  if (input.effectiveSkill.skillId !== expectedSkillId) {
-    return input.skillSource === "override"
-      ? blocked("invalid_skill_override", "The card's Skill override no longer resolves to its selected catalog identity.")
-      : blocked("invalid_stage_skill", "The stage default no longer resolves to its selected catalog identity.");
+  if (input.effectiveSkill.skillId !== card.skillOverrideId) {
+    return blocked("invalid_task_skill", "The task's Workflow Skill no longer matches its selected catalog identity.");
   }
   if (
     input.profile === null

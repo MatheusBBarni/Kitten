@@ -118,7 +118,32 @@ function selectionScript(fixture: NativeLifecycleMatrixEntry): string {
     : `await waitFor(() => document.getElementById(${JSON.stringify(
         driver.focusTargetId,
       )}), "focus target").then((element) => element.focus());`;
-  return `${routeAction} ${focus}`;
+  const submit = driver.action === undefined
+    ? ""
+    : `{
+        const composer = await waitFor(
+          () => document.getElementById("card-composer-draft"),
+          "card composer"
+        );
+        const setValue = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        )?.set;
+        if (setValue === undefined) throw new Error("textarea value setter unavailable");
+        setValue.call(composer, ${JSON.stringify(driver.text)});
+        composer.dispatchEvent(new Event("input", { bubbles: true }));
+        composer.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true
+        }));
+        await waitFor(
+          () => document.body.textContent?.includes(${JSON.stringify(driver.expectText)}),
+          ${JSON.stringify(`${driver.action} postcondition`)}
+        );
+      }`;
+  return `${routeAction} ${focus} ${submit}`;
 }
 
 export function buildNativeCaptureDriverScript(runtime: NativeCaptureRuntime): string {

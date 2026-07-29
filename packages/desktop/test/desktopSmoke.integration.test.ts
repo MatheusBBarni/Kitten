@@ -61,14 +61,6 @@ describe("desktop governed lifecycle smoke", () => {
         label: "Review",
       });
       execute(commands, {
-        kind: "assign_stage_skill",
-        mutationId: workflowIds.mutation("smoke-skill"),
-        boardId,
-        expectedWorkflowVersion: journal.snapshot().boards[0]!.workflowVersion,
-        stageId,
-        defaultSkillId: skillId,
-      });
-      execute(commands, {
         kind: "create_card",
         mutationId: workflowIds.mutation("smoke-card"),
         boardId,
@@ -80,7 +72,7 @@ describe("desktop governed lifecycle smoke", () => {
         provider: "codex",
         model: "gpt-5",
         effort: "high",
-        skillOverrideId: null,
+        skillOverrideId: skillId,
         runnable: true,
       });
 

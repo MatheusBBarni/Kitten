@@ -206,6 +206,28 @@ describe("selected-card inspector binding", () => {
     expect(open).toBeFalse();
   });
 
+  test("dismisses the desktop side sheet from its backdrop", async () => {
+    const fake = fakeClient();
+    let open = true;
+    const view = renderInspector(
+      <CardInspector
+        client={fake.client}
+        card={inspectorCard()}
+        repositoryKey="/Users/name/projects/kitten"
+        isOpen
+        onOpenChange={(nextOpen) => {
+          open = nextOpen;
+        }}
+      />,
+    );
+
+    await view.findByRole("complementary", { name: "Implement supervision surface" });
+    const backdrop = document.querySelector<HTMLElement>(".drawer__backdrop");
+    expect(backdrop).not.toBeNull();
+    await userEvent.setup().click(backdrop!);
+    await waitFor(() => expect(open).toBeFalse());
+  });
+
   test("keeps idle start available when only inspector history is unavailable", async () => {
     const fake = fakeClient({ unavailable: true });
     const user = userEvent.setup();

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { WorkflowBoardProjection, WorkflowCatalogProjection } from "../../../shared/rpc.ts";
+import type { WorkflowBoardProjection } from "../../../shared/rpc.ts";
 import { workflowIds, type CardProjection, type StageProjection } from "../../../workflow/workflowTypes.ts";
 import { boardInteractionMessage } from "./boardInteractions.ts";
 import { BlankBoardSetup, BoardCanvas } from "./WorkflowBoard.tsx";
@@ -49,26 +49,6 @@ const projection: WorkflowBoardProjection = {
   stages,
   edges: [{ boardId, sourceStageId: backlogId, targetStageId: doingId, workflowVersion: 5 }],
   cards: [runningCard, attentionCard, idleCard],
-};
-const catalog: WorkflowCatalogProjection = {
-  kind: "workflow_catalog_projection",
-  revision: 9,
-  catalog: {
-    catalogId: "default",
-    roots: [],
-    diagnostics: [],
-    entries: [{
-      skillId,
-      canonicalPath: "/repo/.agents/skills/verify/SKILL.md",
-      rootClass: "project",
-      rootPath: "/repo/.agents/skills",
-      digest: "c".repeat(64),
-      metadata: { name: "verify", description: "Verify work", frontmatter: {} },
-      order: 0,
-      hasNameCollision: false,
-      diagnostics: [],
-    }],
-  },
 };
 const noop = () => {};
 
@@ -171,7 +151,6 @@ describe("WorkflowBoard", () => {
     const markup = renderToStaticMarkup(
       <BoardCanvas
         projection={projection}
-        catalog={catalog}
         selectedCardId={idleCard.cardId}
         busy={false}
         draggedStageId={null}
@@ -298,7 +277,6 @@ describe("WorkflowBoard", () => {
     expect(renderToStaticMarkup(
       <BoardCanvas
         projection={{ ...projection, board: null }}
-        catalog={catalog}
         selectedCardId={null}
         busy={false}
         draggedStageId={null}
@@ -321,7 +299,6 @@ describe("WorkflowBoard", () => {
     const markup = renderToStaticMarkup(
       <BoardCanvas
         projection={disconnected}
-        catalog={catalog}
         selectedCardId={null}
         busy={false}
         draggedStageId={backlogId}
@@ -337,7 +314,7 @@ describe("WorkflowBoard", () => {
     );
 
     expect(markup).toContain("Connect path");
-    expect(markup).toContain("Configure Backlog");
+    expect(markup).not.toContain("Default Workflow Skill");
     expect(markup).toContain('aria-label="Open actions for Backlog"');
     expect(markup).toContain("Drag Backlog to reorder");
     expect(markup).toContain("absolute inset-0 z-0 cursor-grab");

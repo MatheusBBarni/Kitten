@@ -11,6 +11,7 @@ afterEach(cleanup);
 
 const boardId = workflowIds.board("task-create-board");
 const stageId = workflowIds.stage("task-create-stage");
+const skillId = workflowIds.skill(`skill:${"a".repeat(64)}`);
 const profileId = "profile-codex" as ProfileId;
 
 describe("TaskCreateModal", () => {
@@ -32,7 +33,22 @@ describe("TaskCreateModal", () => {
         catalog={{
           kind: "workflow_catalog_projection",
           revision: 1,
-          catalog: { catalogId: "default", roots: [], entries: [], diagnostics: [] },
+          catalog: {
+            catalogId: "default",
+            roots: [],
+            diagnostics: [],
+            entries: [{
+              skillId,
+              canonicalPath: "/repo/.agents/skills/execute/SKILL.md",
+              rootClass: "project",
+              rootPath: "/repo/.agents/skills",
+              digest: "a".repeat(64),
+              metadata: { name: "execute-task", description: "Execute", frontmatter: {} },
+              order: 0,
+              hasNameCollision: false,
+              diagnostics: [],
+            }],
+          },
         }}
         profiles={[{
           profileId,
@@ -66,6 +82,9 @@ describe("TaskCreateModal", () => {
     expect(view.getByRole("button", { name: /Agent provider/ })).toBeDefined();
     expect(view.getByRole("button", { name: /Model/ })).toBeDefined();
     expect(view.getByRole("button", { name: /Effort/ })).toBeDefined();
+    await user.click(view.getByRole("button", { name: /Workflow Skill/ }));
+    await user.click(view.getByRole("option", { name: "execute-task (project)" }));
+    await user.click(view.getByRole("checkbox", { name: "Ready to run" }));
     await user.click(view.getByRole("button", { name: "Create task" }));
 
     expect(created).toEqual([{
@@ -75,7 +94,7 @@ describe("TaskCreateModal", () => {
       provider: "Codex",
       model: "gpt-5.6",
       effort: "high",
-      skillOverrideId: null,
+      skillOverrideId: skillId,
       runnable: true,
     }]);
   });
