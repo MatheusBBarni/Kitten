@@ -24,6 +24,7 @@ import type {
 } from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../shell/shellRuntime.ts"
+import { createAppStore } from "../store/appStore.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
 import {
   createTelemetryRecorder,
@@ -40,6 +41,7 @@ import {
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { CONTEXT_PACK_TITLE } from "./ContextPackPanel.tsx"
+import { NEW_THREAD_DIALOG_TITLE } from "./NewThreadDialog.tsx"
 import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -53,6 +55,12 @@ import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.
 import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { STATUSLINE_PREVIEW_LABEL, STATUSLINE_REQUEST_PROMPT, STATUSLINE_TITLE } from "./StatuslineOverlay.tsx"
+import {
+  THREAD_SIDEBAR_FOCUS_HINT,
+  THREAD_SIDEBAR_IDLE_HINT,
+  THREAD_SIDEBAR_NEW_THREAD_LABEL,
+  THREAD_SIDEBAR_TITLE,
+} from "./ThreadSidebar.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 const PROJECT_FOLDER = basename(process.cwd())
@@ -60,6 +68,13 @@ const PROJECT_FOLDER = basename(process.cwd())
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
 function lines(frame: string): string[] {
   return frame.replace(/\n$/, "").split("\n")
+}
+
+function pointOf(frame: string, needle: string): { x: number; y: number } {
+  const rows = lines(frame)
+  const y = rows.findIndex((row) => row.includes(needle))
+  if (y < 0) throw new Error(`Could not find "${needle}" in frame`)
+  return { x: rows[y]!.indexOf(needle), y }
 }
 
 /**
@@ -336,6 +351,84 @@ describe("CockpitApp layout", () => {
     const ready = await waitForFrame((frame) => frame.includes(WELCOME_GREETING))
     expect(ready).not.toContain("This agent is not ready.")
     await destroyMounted(renderer)
+  })
+})
+
+describe("CockpitApp thread sidebar", () => {
+  it("renders project-grouped provider threads by default in a wide terminal", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+    const frame = await setup.waitForFrame((candidate) =>
+      candidate.includes(THREAD_SIDEBAR_TITLE) && candidate.includes(THREAD_SIDEBAR_IDLE_HINT),
+    )
+
+    expect(frame).toContain(PROJECT_FOLDER)
+    expect(frame).toContain("3 threads")
+    expect(frame).toContain(THREAD_SIDEBAR_NEW_THREAD_LABEL)
+    expect(frame).toContain("Claude Code")
+    expect(frame).toContain("claude · Idle")
+    expect(frame).toContain("Codex")
+    expect(frame).toContain("codex · Idle")
+    expect(frame).not.toContain("All projects")
+    expect(frame).not.toContain("[selected]")
+    expectNoOverflow(frame, 140, 30)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses F3 and arrows to focus the sidebar and open another thread", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await actAsync(() => setup.mockInput.pressKey("F3"))
+    await setup.waitForFrame((frame) => frame.includes(THREAD_SIDEBAR_FOCUS_HINT))
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await actAsync(() => setup.mockInput.pressEnter())
+
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+    expect(controller.calls.selectConversation).toEqual(["codex"])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    expect(setup.captureCharFrame()).toContain(THREAD_SIDEBAR_FOCUS_HINT)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps a compact sidebar open and focused after clicking a thread", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 100, 30)
+
+    await actAsync(() => setup.mockInput.pressKey("F3"))
+    const sidebar = await setup.waitForFrame((frame) =>
+      frame.includes(THREAD_SIDEBAR_FOCUS_HINT) && frame.includes("Codex"),
+    )
+    const point = pointOf(sidebar, "Codex")
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+    const stillOpen = await setup.waitForFrame((frame) =>
+      frame.includes(THREAD_SIDEBAR_TITLE) && frame.includes(THREAD_SIDEBAR_FOCUS_HINT),
+    )
+    expect(stillOpen).toContain("codex · Idle")
+    expect(controller.calls.selectConversation).toEqual(["codex"])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the captured rename flow for the highlighted sidebar thread", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await actAsync(() => setup.mockInput.pressKey("F3"))
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes("Rename conversation"))
+    await actAsync(() => {
+      for (const _character of "Claude Code") setup.mockInput.pressBackspace()
+    })
+    await actAsync(async () => setup.mockInput.typeText("API cleanup"))
+    await actAsync(() => setup.mockInput.pressEnter())
+
+    await setup.waitFor(() => controller.calls.renameConversation.length === 1)
+    expect(controller.calls.renameConversation).toEqual([
+      { sessionId: "claude-code", displayName: "API cleanup" },
+    ])
+    await destroyMounted(setup.renderer)
   })
 })
 
@@ -991,10 +1084,19 @@ describe("CockpitApp keymap", () => {
     const setup = await renderCockpitApp(controller)
 
     await runSlashCommand(setup, "new")
+    await setup.waitForFrame((frame) => frame.includes(NEW_THREAD_DIALOG_TITLE))
+    expect(controller.calls.createConversation).toBe(0)
+
+    await actAsync(() => setup.mockInput.pressTab())
+    await actAsync(() => setup.mockInput.pressEnter())
     await setup.waitFor(() => controller.calls.createConversation === 1)
 
     expect(controller.calls.createConversation).toBe(1)
     expect(controller.calls.startNewRun).toBe(0)
+    expect(controller.store.getState().sessions["fake-created-1"]).toMatchObject({
+      providerKind: "codex",
+      cwd: process.cwd(),
+    })
 
     await destroyMounted(setup.renderer)
   })
@@ -1424,7 +1526,20 @@ describe("/statusline cockpit integration", () => {
   })
 
   it("keeps the prompt focused across resize before opening and uses the resized width for preview", async () => {
-    const controller = createFakeController()
+    const statuslineCwd = "/work/kitten"
+    const runtimes = readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd }))
+    const controller = createFakeController({
+      runtimes,
+      store: createAppStore({
+        seeds: runtimes.map((runtime) => ({
+          id: runtime.sessionId,
+          providerKind: runtime.providerKind,
+          title: runtime.title,
+          cwd: runtime.cwd,
+        })),
+        selectedVisibleId: "claude-code",
+      }),
+    })
     controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
     const setup = await renderCockpitApp(controller, 80, 24)
     await actAsync(async () => setup.mockInput.typeText("draft stays here"))
@@ -1446,10 +1561,10 @@ describe("/statusline cockpit integration", () => {
       layout: { separator: " · ", line: ["FULL_PATH"] },
       preset: null,
     }))
-    const resizedPreview = await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    const resizedPreview = await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
     expectNoOverflow(resizedPreview, 48, 24)
     await actAsync(() => setup.resize(80, 24))
-    await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
     await destroyMounted(setup.renderer)
   })
 

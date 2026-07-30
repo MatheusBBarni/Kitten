@@ -46,6 +46,7 @@ export type ClipboardPlatform = "darwin" | "windows-linux"
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
 export type CockpitCommand =
+  | "toggle-sidebar"
   | "toggle-shell"
   | "run-externally"
   | "hand-off"
@@ -87,6 +88,9 @@ export type ClarificationCommand =
 
 /** Every intent the explicit delegation dialog handles while it owns input. */
 export type DelegationCommand = "prev-field" | "next-field" | "confirm" | "cancel"
+
+/** Every intent the new project-thread dialog handles while its path input owns text. */
+export type NewThreadCommand = "prev-provider" | "next-provider" | "confirm" | "cancel"
 
 /** Every intent the rename/close tab dialog handles while it owns the modal slot. */
 export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "cancel"
@@ -219,6 +223,7 @@ export function matchClipboardCommand(key: CockpitKey, platform: ClipboardPlatfo
  * while the help panel is open, leaving Escape free for the editor and overlays.
  */
 export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
+  { command: "toggle-sidebar", name: "sidebar", description: "Show and focus the project thread sidebar" },
   { command: "toggle-shell", name: "shell", description: "Focus the integrated shell" },
   { command: "run-externally", name: "copy", description: "Copy the latest shell command for an external terminal" },
   { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
@@ -243,6 +248,12 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
  * F2 is the terminal-level fallback for keyboards that cannot report Ctrl+`.
  */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
+  {
+    command: "toggle-sidebar",
+    keys: "F3",
+    description: "Show, focus, or hide the project thread sidebar",
+    matches: plain("f3"),
+  },
   {
     command: "previous-tab",
     keys: "Ctrl+H",
@@ -470,6 +481,34 @@ export const DELEGATION_KEYMAP: readonly KeyBinding<DelegationCommand>[] = [
     command: "cancel",
     keys: "Esc",
     description: "Cancel delegation without launching",
+    matches: plain("escape"),
+  },
+]
+
+/** Provider navigation and submission for one explicit project thread. */
+export const NEW_THREAD_KEYMAP: readonly KeyBinding<NewThreadCommand>[] = [
+  {
+    command: "prev-provider",
+    keys: "Shift+Tab",
+    description: "Choose the previous provider",
+    matches: shiftPlain("tab"),
+  },
+  {
+    command: "next-provider",
+    keys: "Tab",
+    description: "Choose the next provider",
+    matches: plain("tab"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Start a thread for this project and provider",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Cancel without creating a thread",
     matches: plain("escape"),
   },
 ]
@@ -873,6 +912,7 @@ export function helpEntries(capability: KeyboardCapability): readonly HelpEntry[
     ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
     ...COCKPIT_KEYMAP.filter((entry) => entry.command === "delegate").map(({ keys, description }) => ({ keys, description })),
     ...directTabBindings.map(({ keys, description }) => ({ keys, description })),
+    { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-sidebar"), description: "Show, focus, or hide the project thread sidebar" },
     { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
     ...EDITOR_KEYMAP,
   ]
@@ -925,6 +965,9 @@ export const CLARIFICATION_HINT =
 
 /** The complete keyboard teaching surface for explicit delegation. */
 export const DELEGATION_HINT = "Tab/Shift+Tab field  Enter launch  Esc cancel"
+
+/** Complete keyboard teaching surface for project/provider thread creation. */
+export const NEW_THREAD_HINT = "Tab/Shift+Tab provider  Enter create  Esc cancel"
 
 /** The hint printed while the rename input owns ordinary text keys. */
 export const TAB_RENAME_HINT = "Enter rename  Esc keep current name"
@@ -1014,6 +1057,9 @@ export const matchClarificationCommand = makeMatcher(CLARIFICATION_KEYMAP)
 
 /** The delegation dialog command a keypress maps to, or null for focused text editing. */
 export const matchDelegationCommand = makeMatcher(DELEGATION_KEYMAP)
+
+/** The new-thread command a keypress names, or null while editing the project path. */
+export const matchNewThreadCommand = makeMatcher(NEW_THREAD_KEYMAP)
 
 /** The rename/close dialog command a keypress maps to, or `null` for input text. */
 export const matchTabDialogCommand = makeMatcher(TAB_DIALOG_KEYMAP)

@@ -9,7 +9,7 @@ import { evaluateExplorePolicy, EXPLORE_RESTRICTIONS } from "../core/explorePoli
 import { createSecretRedactor } from "../core/secretRedactor.ts"
 import { createAppStore, type AppStore } from "../store/appStore.ts"
 import type { PersistedRunRecordV4 } from "./runRecord.ts"
-import { createRunWriter } from "./runWriter.ts"
+import { createRunWriter, type RunWriterOptions } from "./runWriter.ts"
 import { createRunStore, encodeProjectDirectory, type RunStore } from "./runStore.ts"
 
 // Suite: run autosave writer
@@ -82,7 +82,9 @@ function seededStore(): AppStore {
   return store
 }
 
-function writerHarness(): {
+function writerHarness(
+  overrides: Partial<Pick<RunWriterOptions, "runId" | "createdAt" | "now">> = {},
+): {
   store: AppStore
   runStore: ReturnType<typeof recordingRunStore>
   timer: ReturnType<typeof controlledTimer>
@@ -98,6 +100,7 @@ function writerHarness(): {
     projectCwd: "/work/kitten",
     runId: "run-03",
     now: () => times.shift() ?? 3_000,
+    ...overrides,
     setTimer: timer.setTimer,
     clearTimer: timer.clearTimer,
   })
@@ -114,6 +117,21 @@ const HANDOFF_BUNDLE: HandoffBundle = {
 }
 
 describe("createRunWriter", () => {
+  it("continues an existing workspace identity and original creation time", () => {
+    const { runStore, timer } = writerHarness({
+      runId: "global-workspace",
+      createdAt: 123,
+      now: () => 456,
+    })
+    timer.flush()
+
+    expect(runStore.records.at(-1)).toMatchObject({
+      runId: "global-workspace",
+      createdAt: 123,
+      updatedAt: 456,
+    })
+  })
+
   it("keys a whole cockpit run to its launch project rather than the focused session", () => {
     const store = createAppStore({
       seeds: [

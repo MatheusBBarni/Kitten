@@ -580,7 +580,7 @@ describe("mounted cockpit tab navigation", () => {
     const { seeds, runtimes } = fleet(4)
     const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
     const setup = await testRender(<CockpitApp controller={controller} />, {
-      width: 240,
+      width: 120,
       height: 20,
       kittyKeyboard: true,
     })

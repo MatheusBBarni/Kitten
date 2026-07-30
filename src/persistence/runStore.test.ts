@@ -253,6 +253,17 @@ describe("createRunStore", () => {
     })
   })
 
+  it("finds the newest valid workspace across project namespaces", () => {
+    withTempStore((base) => {
+      const store = createRunStore({ enabled: true, path: base })
+      store.save(makeRecord(join(base, "alpha"), { runId: "alpha", updatedAt: 200 }))
+      store.save(makeRecord(join(base, "beta"), { runId: "beta", updatedAt: 900 }))
+      store.save(makeRecord(join(base, "gamma"), { runId: "gamma", updatedAt: 500 }))
+
+      expect(store.latest?.()?.runId).toBe("beta")
+    })
+  })
+
   it("round-trips every fixed V3 checkpoint state", () => {
     const states = [
       "not_required",
@@ -719,6 +730,7 @@ describe("createRunStore", () => {
       store.deleteAll()
 
       expect(store.list(cwd)).toEqual([])
+      expect(store.latest?.()).toBeNull()
       expect(store.load(cwd, "run-1")).toBeNull()
       expect(readdirSync(base)).toEqual([])
     })

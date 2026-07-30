@@ -233,7 +233,7 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     expect(stdout.trim()).toBe("calls=0")
   })
 
-  it("starts configured opening tasks instead of restoring a saved run", async () => {
+  it("restores the saved global workspace without rerunning configured opening tasks", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-opening-task-"))
     const cwd = process.cwd()
     const config = {
@@ -274,11 +274,9 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(prompts).toEqual([
-        { id: "codex", sessionId: "codex-fresh-0", blocks: [{ type: "text", text: "start the build" }] },
-      ])
+      expect(prompts).toEqual([])
       expect(session.controller.store.getState().sessions.codex!.turns).toEqual([
-        expect.objectContaining({ kind: "user", text: "start the build" }),
+        expect.objectContaining({ kind: "agent", text: "restored codex from stored-codex" }),
       ])
     } finally {
       await session?.controller.dispose()
@@ -298,6 +296,9 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
     const unavailableStore: RunStore = {
       save() {},
       list() {
+        throw new Error("state directory is unreadable")
+      },
+      latest() {
         throw new Error("state directory is unreadable")
       },
       load() {
@@ -329,13 +330,15 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       expect(session.controller.runtimes().every((runtime) => runtime.ready)).toBe(true)
-      expect(freshStarts).toHaveLength(3)
+      expect(freshStarts).toEqual([
+        { id: "codex", cwd, generation: 0 },
+      ])
     } finally {
       await session?.controller.dispose()
     }
   })
 
-  it("boots fresh agents even when the project has a saved run", async () => {
+  it("boots the newest saved global workspace when one exists", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-index-resume-"))
     const setup = await createTestRenderer({ width: 100, height: 24 })
     const cwd = process.cwd()
@@ -379,13 +382,12 @@ describe("cockpit entry integration (non-TTY test renderer)", () => {
       })
 
       const fresh = await setup.waitForFrame((frame) => frame.includes(KEYMAP_HINT))
-      expect(fresh).not.toContain("restored codex from stored-codex")
-      expect(freshStarts).toEqual([
-        { id: "codex", cwd, generation: 0 },
-        { id: "claude-code", cwd, generation: 0 },
-        { id: "cursor", cwd, generation: 0 },
+      expect(fresh).toContain("restored codex from stored-codex")
+      expect(freshStarts).toEqual([])
+      expect(booted?.controller.store.getState().workspace.order).toEqual([
+        "codex",
+        "claude-code",
       ])
-      expect(booted?.controller.store.getState().workspace.order).toHaveLength(3)
     } finally {
       if (!setup.renderer.isDestroyed) await destroyMounted(setup.renderer)
       await booted?.closed

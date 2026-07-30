@@ -42,6 +42,8 @@ import {
   selectIsShellFocused,
   selectKeyboardCapability,
   selectRestoration,
+  selectSessionList,
+  type SessionListItem,
 } from "../store/selectors.ts"
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx"
 import { ClarificationPrompt } from "./ClarificationPrompt.tsx"
@@ -54,6 +56,7 @@ import { EmptyWorkspace } from "./EmptyWorkspace.tsx"
 import { HandoffPreview } from "./HandoffPreview.tsx"
 import { HandoffTargetPicker } from "./HandoffTargetPicker.tsx"
 import { ModelSelect } from "./ModelSelect.tsx"
+import { NewThreadDialog } from "./NewThreadDialog.tsx"
 import { PromptEditor } from "./PromptEditor.tsx"
 import { SessionPicker, type SessionPickerSource } from "./SessionPicker.tsx"
 import { ShellPane } from "./ShellPane.tsx"
@@ -62,6 +65,10 @@ import { SettingsView } from "./SettingsView.tsx"
 import { StatusStrip } from "./StatusStrip.tsx"
 import { StatuslineOverlay } from "./StatuslineOverlay.tsx"
 import { TabDialog } from "./TabDialog.tsx"
+import {
+  THREAD_SIDEBAR_DEFAULT_BREAKPOINT,
+  ThreadSidebar,
+} from "./ThreadSidebar.tsx"
 import { helpEntries, matchClipboardCommand, matchCommand, type CockpitCommand } from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
@@ -124,12 +131,19 @@ function CockpitFrame({
   const { width, height } = useTerminalDimensions()
   const [helpOpen, setHelpOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
+  const [newThreadOpen, setNewThreadOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(() => width >= THREAD_SIDEBAR_DEFAULT_BREAKPOINT)
+  const [sidebarFocused, setSidebarFocused] = useState(false)
+  const [sidebarCursorId, setSidebarCursorId] = useState<string | null>(null)
   const [externalRunNotice, setExternalRunNotice] = useState<ExternalRunNotice | null>(null)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
   const keyboardCapability = useAppSelector(selectKeyboardCapability)
   const shellBufferType = useShellBufferType()
   const shellCommandCount = useAppSelector(selectShellCommandCount)
+  const sidebarThreads = useAppSelector(selectSessionList)
+  const sidebarVisible =
+    sidebarOpen && (width >= THREAD_SIDEBAR_DEFAULT_BREAKPOINT || sidebarFocused)
   const shellActivationRecorded = useRef(false)
 
   useEffect(() => {
@@ -149,8 +163,25 @@ function CockpitFrame({
       const state = controller.store.getState()
 
       switch (command) {
+        case "toggle-sidebar":
+          setHelpOpen(false)
+          if (!sidebarOpen) {
+            setSidebarOpen(true)
+            setSidebarFocused(true)
+            setSidebarCursorId(state.workspace.selectedVisibleId ?? sidebarThreads[0]?.id ?? null)
+            return
+          }
+          if (!sidebarFocused) {
+            setSidebarFocused(true)
+            setSidebarCursorId(state.workspace.selectedVisibleId ?? sidebarThreads[0]?.id ?? null)
+            return
+          }
+          setSidebarFocused(false)
+          setSidebarOpen(false)
+          return
         case "toggle-shell":
           setHelpOpen(false)
+          setSidebarFocused(false)
           setExternalRunNotice(null)
           controller.store.setFocusedPane(
             state.focusedPane.kind === "shell"
@@ -227,7 +258,7 @@ function CockpitFrame({
             )
             return
           }
-          void controller.actions.createConversation()
+          setNewThreadOpen(true)
           return
         }
         case "clear-run":
@@ -281,8 +312,42 @@ function CockpitFrame({
           return
       }
     },
-    [controller, handoff, helpOpen, recorder, renderer],
+    [
+      controller,
+      handoff,
+      helpOpen,
+      recorder,
+      renderer,
+      sidebarFocused,
+      sidebarOpen,
+      sidebarThreads,
+    ],
   )
+
+  const openSidebarThread = useCallback((
+    thread: SessionListItem,
+    source: "mouse" | "keyboard" = "mouse",
+  ): void => {
+    const options = source === "mouse" ? { source: "mouse" as const } : undefined
+    if (thread.lifecycle === "background") {
+      controller.actions.reopenConversation(thread.id, {
+        viaOverview: true,
+        ...options,
+      })
+    } else {
+      controller.actions.selectConversation(thread.id, options)
+    }
+    setSidebarCursorId(thread.id)
+    // Thread activation changes the detail pane; it does not dismiss the navigator.
+    // Keeping focus here preserves the sidebar on compact layouts as well as wide ones.
+    setSidebarOpen(true)
+    setSidebarFocused(true)
+  }, [controller])
+
+  const createSidebarThread = useCallback((): void => {
+    setSidebarFocused(false)
+    setNewThreadOpen(true)
+  }, [])
 
   const onKey = useCallback(
     (key: KeyEvent) => {
@@ -305,12 +370,12 @@ function CockpitFrame({
         return
       }
 
-      if (overlayOpen || contextOpen) return
+      if (overlayOpen || contextOpen || newThreadOpen) return
 
       const command = matchCommand(key, keyboardCapability)
       const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
 
-      if (command === "toggle-shell") {
+      if (command === "toggle-shell" || command === "toggle-sidebar") {
         key.preventDefault()
         runCockpitCommand(command)
         return
@@ -332,24 +397,85 @@ function CockpitFrame({
         return
       }
 
+      if (sidebarFocused) {
+        key.preventDefault()
+        const currentIndex = Math.max(
+          0,
+          sidebarThreads.findIndex((thread) => thread.id === sidebarCursorId),
+        )
+        if (key.name === "up" || key.name === "k") {
+          const next = sidebarThreads[Math.max(0, currentIndex - 1)]
+          if (next) setSidebarCursorId(next.id)
+          return
+        }
+        if (key.name === "down" || key.name === "j") {
+          const next = sidebarThreads[Math.min(sidebarThreads.length - 1, currentIndex + 1)]
+          if (next) setSidebarCursorId(next.id)
+          return
+        }
+        if (key.name === "return" || key.name === "kpenter") {
+          const target = sidebarThreads.find((thread) => thread.id === sidebarCursorId)
+          if (target) openSidebarThread(target, "keyboard")
+          return
+        }
+        if (key.name === "n" && !key.ctrl && !key.meta && !key.shift) {
+          createSidebarThread()
+          return
+        }
+        if (key.name === "r" && !key.ctrl && !key.meta && !key.shift) {
+          const target = sidebarThreads.find((thread) => thread.id === sidebarCursorId)
+          if (target) controller.store.openTabDialog({ kind: "rename", sessionId: target.id })
+          return
+        }
+        if (key.name === "d" && !key.ctrl && !key.meta && !key.shift) {
+          const target = sidebarThreads.find((thread) => thread.id === sidebarCursorId)
+          if (target) controller.store.openTabDialog({ kind: "close", sessionId: target.id })
+          return
+        }
+        if (key.name === "escape") {
+          setSidebarFocused(false)
+          return
+        }
+        return
+      }
+
       if (command !== null && command !== "close-help") {
         key.preventDefault()
         runCockpitCommand(command)
       }
     },
-    [contextOpen, controller, helpOpen, keyboardCapability, overlayOpen, renderer, runCockpitCommand],
+    [
+      contextOpen,
+      controller,
+      createSidebarThread,
+      helpOpen,
+      keyboardCapability,
+      newThreadOpen,
+      openSidebarThread,
+      overlayOpen,
+      renderer,
+      runCockpitCommand,
+      sidebarCursorId,
+      sidebarFocused,
+      sidebarThreads,
+    ],
   )
   useKeyboard(onKey)
 
   const onPaste = useCallback(
     (event: PasteEvent) => {
-      if (overlayOpen || contextOpen || controller.store.getState().focusedPane.kind !== "shell") return
+      if (
+        overlayOpen ||
+        contextOpen ||
+        newThreadOpen ||
+        controller.store.getState().focusedPane.kind !== "shell"
+      ) return
       event.preventDefault()
       setExternalRunNotice(null)
       if (!controller.shell.ready) return
       controller.shell.runtime.paste(event.bytes)
     },
-    [contextOpen, controller, overlayOpen],
+    [contextOpen, controller, newThreadOpen, overlayOpen],
   )
   usePaste(onPaste)
 
@@ -387,46 +513,82 @@ function CockpitFrame({
     >
       <box
         style={{
-          position: "relative",
           flexGrow: 1,
           flexShrink: 1,
-          flexDirection: "column",
-          border: true,
-          borderColor: palette.border,
-          backgroundColor: palette.surface,
-          paddingLeft: 1,
-          paddingRight: 1,
+          flexDirection: "row",
           overflow: "hidden",
         }}
-        title={paneTitle}
-        titleColor={palette.accent}
       >
-        {isShellFocused ? (
-          <ShellPane />
-        ) : (
-          <>
-            <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
-              {focusedSessionId === null ? (
-                <EmptyWorkspace />
-              ) : contextOpen ? (
-                <ContextPackPanel sessionId={focusedSessionId} onClose={closeContext} />
-              ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
-                <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
-              ) : (
-                (children ?? <ConversationView welcomeBannerVariant={welcomeBannerVariant} workspaceChrome />)
-              )}
-            </box>
-            {contextOpen ? null : <ConversationActivity />}
-          </>
-        )}
-        {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
+        {sidebarVisible ? (
+          <ThreadSidebar
+            threads={sidebarThreads}
+            cursorId={sidebarCursorId}
+            focused={sidebarFocused}
+            onThread={openSidebarThread}
+            onNewThread={createSidebarThread}
+          />
+        ) : null}
+
+        <box
+          style={{
+            minWidth: 0,
+            flexGrow: 1,
+            flexShrink: 1,
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <box
+            style={{
+              position: "relative",
+              flexGrow: 1,
+              flexShrink: 1,
+              flexDirection: "column",
+              border: true,
+              borderColor: palette.border,
+              backgroundColor: palette.surface,
+              paddingLeft: 1,
+              paddingRight: 1,
+              overflow: "hidden",
+            }}
+            title={paneTitle}
+            titleColor={palette.accent}
+          >
+            {isShellFocused ? (
+              <ShellPane />
+            ) : (
+              <>
+                <box style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column", overflow: "hidden" }}>
+                  {focusedSessionId === null ? (
+                    <EmptyWorkspace />
+                  ) : contextOpen ? (
+                    <ContextPackPanel sessionId={focusedSessionId} onClose={closeContext} />
+                  ) : focusedAvailability !== null && focusedAvailability.kind !== "ready" && focusedRestoration !== "unavailable" ? (
+                    <NotReadyNotice error={focused?.ready === false ? focused.error : "Starting agent session…"} />
+                  ) : (
+                    (children ?? (
+                      <ConversationView
+                        welcomeBannerVariant={welcomeBannerVariant}
+                        workspaceChrome={!sidebarVisible}
+                      />
+                    ))
+                  )}
+                </box>
+                {contextOpen ? null : <ConversationActivity />}
+              </>
+            )}
+            {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
+          </box>
+
+          {shellFullHeight || contextOpen ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
+
+          {shellFullHeight ? null : <StatusStrip />}
+        </box>
       </box>
 
-      {shellFullHeight || contextOpen ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
-
-      {shellFullHeight ? null : <StatusStrip />}
-
       {helpOpen ? <HelpOverlay capability={keyboardCapability} /> : null}
+
+      <NewThreadDialog open={newThreadOpen} onClose={() => setNewThreadOpen(false)} />
 
       <SessionsOverlay />
 

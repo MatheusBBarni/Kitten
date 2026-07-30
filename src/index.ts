@@ -2,7 +2,7 @@
 /**
  * Kitten entry point.
  *
- * Boots the OpenTUI renderer, brings both agents up behind a `SessionController`,
+ * Boots the OpenTUI renderer, opens the startup thread behind a `SessionController`,
  * and mounts the cockpit shell. Importing this module has no side effects: the boot
  * only happens when the file is executed directly (`import.meta.main`), so tests can
  * import it and drive `renderCockpit` against an in-memory test renderer instead.
@@ -49,14 +49,16 @@ import {
   type FirstRunGuidanceOptions,
   type FirstRunReport,
 } from "./config/firstRun.ts"
-import { EFFORT_CATEGORY, MODEL_CATEGORY, type AppConfig, type ProviderKind, type ProviderModelDefault, type SessionId, type ThemePreference } from "./core/types.ts"
+import { EFFORT_CATEGORY, MODEL_CATEGORY, type AppConfig, type ProviderKind, type ProviderModelDefault, type ResolvedSession, type SessionId, type ThemePreference } from "./core/types.ts"
 import type { StatuslineLayout } from "./core/statusline.ts"
 import { createOsNotificationChannel } from "./notify/channel.ts"
 import { createRendererFocusSource } from "./notify/focus.ts"
 import { createNotifier } from "./notify/notifier.ts"
 import {
   createRunStore,
+  migratePersistedRunToV4,
   resolveSessionsBasePath,
+  type PersistedRunRecord,
   type RunStore,
 } from "./persistence/runStore.ts"
 import { createRunWriter } from "./persistence/runWriter.ts"
@@ -84,7 +86,7 @@ const DEFAULT_PERSIST_DEBOUNCE_MS = 100
 /** Factory that produces a ready-to-render OpenTUI renderer. */
 export type RendererFactory = () => Promise<CliRenderer>
 
-/** Factory that produces a booted controller with both agent connections wired up. */
+/** Factory that produces a booted controller with its initial agent connections wired up. */
 export type ControllerFactory = () => Promise<SessionController>
 
 /** A booted controller paired with its telemetry recorder. */
@@ -180,7 +182,117 @@ export interface CockpitSessionDeps {
 }
 
 /**
- * Load the config, bring both agents up, and wire telemetry plus reactive config.
+ * Remove the idle provider placeholders written by the former zero-config boot
+ * model, while preserving every real thread and at least one selected thread when
+ * the saved workspace contains only those placeholders.
+ */
+export function collapseLegacyImplicitProviderFleet(
+  record: PersistedRunRecord,
+  implicitSessions: readonly ResolvedSession[],
+): PersistedRunRecord {
+  if (implicitSessions.length < 2) return record
+  const implicitIds = new Set(implicitSessions.map((session) => session.seed.id))
+
+  if (record.version === 1) {
+    const implicitMemberIds = Object.keys(record.agents).filter((sessionId) => implicitIds.has(sessionId))
+    if (implicitMemberIds.length < 2) return record
+    const placeholderIds = implicitMemberIds.filter((sessionId) => {
+      const stored = record.agents[sessionId]!
+      return stored.messageCount === 0 && stored.lastPrompt.length === 0
+    })
+    if (placeholderIds.length === 0) return record
+
+    const placeholderSet = new Set(placeholderIds)
+    const nonPlaceholderIds = Object.keys(record.agents).filter((sessionId) => !placeholderSet.has(sessionId))
+    if (nonPlaceholderIds.length === 0) {
+      const keep = placeholderSet.has(record.focusedAgentId)
+        ? record.focusedAgentId
+        : placeholderIds[0]!
+      placeholderSet.delete(keep)
+    }
+    if (placeholderSet.size === 0) return record
+
+    const agents = Object.fromEntries(
+      Object.entries(record.agents).filter(([sessionId]) => !placeholderSet.has(sessionId)),
+    )
+    return {
+      ...record,
+      agents,
+      focusedAgentId: placeholderSet.has(record.focusedAgentId)
+        ? Object.keys(agents)[0]!
+        : record.focusedAgentId,
+    }
+  }
+
+  const implicitById = new Map(implicitSessions.map((session) => [session.seed.id, session.seed]))
+  const implicitMemberIds = record.workspace.order.filter((sessionId) => {
+    const seed = implicitById.get(sessionId)
+    const stored = record.conversations[sessionId]
+    const workspace = record.workspace.conversations[sessionId]
+    return seed !== undefined &&
+      stored?.providerKind === seed.providerKind &&
+      stored.cwd === record.cwd &&
+      stored.initialTitle === seed.title &&
+      workspace?.displayName === seed.title
+  })
+  if (implicitMemberIds.length < 2) return record
+
+  const placeholderIds = implicitMemberIds.filter((sessionId) => {
+    const stored = record.conversations[sessionId]!
+    const workspace = record.workspace.conversations[sessionId]!
+    return stored.messageCount === 0 &&
+      stored.lastPrompt.length === 0 &&
+      workspace.lifecycle === "visible"
+  })
+  if (placeholderIds.length === 0) return record
+
+  const placeholderSet = new Set(placeholderIds)
+  const nonPlaceholderIds = record.workspace.order.filter((sessionId) => !placeholderSet.has(sessionId))
+  const keepPlaceholderId = nonPlaceholderIds.length === 0
+    ? (
+        record.workspace.selectedVisibleId && placeholderSet.has(record.workspace.selectedVisibleId)
+          ? record.workspace.selectedVisibleId
+          : placeholderIds[0]!
+      )
+    : null
+  if (keepPlaceholderId) placeholderSet.delete(keepPlaceholderId)
+  if (placeholderSet.size === 0) return record
+
+  const migrated = migratePersistedRunToV4(record)
+  const order = migrated.workspace.order.filter((sessionId) => !placeholderSet.has(sessionId))
+  const conversations = Object.fromEntries(
+    Object.entries(migrated.conversations).filter(([sessionId]) => !placeholderSet.has(sessionId)),
+  )
+  const workspaceConversations = Object.fromEntries(
+    Object.entries(migrated.workspace.conversations).filter(([sessionId]) => !placeholderSet.has(sessionId)),
+  )
+  const selectedVisibleId = (
+    migrated.workspace.selectedVisibleId &&
+    !placeholderSet.has(migrated.workspace.selectedVisibleId)
+  )
+    ? migrated.workspace.selectedVisibleId
+    : order.find((sessionId) => workspaceConversations[sessionId]?.lifecycle === "visible") ?? null
+
+  return {
+    ...migrated,
+    gitBranch: selectedVisibleId === null ? null : migrated.gitBranch,
+    conversations,
+    workspace: {
+      conversations: workspaceConversations,
+      order,
+      selectedVisibleId,
+    },
+    harnessDeliveries: Object.fromEntries(
+      Object.entries(migrated.harnessDeliveries).filter(([sessionId]) => !placeholderSet.has(sessionId)),
+    ),
+    contextPacks: Object.fromEntries(
+      Object.entries(migrated.contextPacks).filter(([sessionId]) => !placeholderSet.has(sessionId)),
+    ),
+  }
+}
+
+/**
+ * Load the config, open the initial thread set, and wire telemetry plus reactive config.
  *
  * `createSessionController` never rejects: an agent that fails to spawn or hand
  * shake becomes a not-ready runtime the status strip explains, and the other agent
@@ -198,8 +310,26 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
   const config = deps.config ?? (await (deps.loadConfig ?? loadAppConfig)())
   const recorder = (deps.createRecorder ?? ((enabled) => createTelemetryRecorder({ enabled })))(config.telemetryEnabled)
   const runStore = (deps.createRunStore ?? ((enabled) => createRunStore({ enabled })))(config.persistenceEnabled)
+  const resolvedSessions = resolveSessions(config, { launchCwd: cwd })
+  const implicitSessions = config.sessions.length === 0 ? resolvedSessions : []
+  let restoredWorkspace: PersistedRunRecord | null = null
+  if (config.persistenceEnabled) {
+    try {
+      restoredWorkspace = runStore.latest?.() ?? null
+      if (restoredWorkspace) {
+        restoredWorkspace = collapseLegacyImplicitProviderFleet(restoredWorkspace, implicitSessions)
+      }
+    } catch {
+      // Global history is an enhancement, not a boot dependency. An unreadable
+      // state directory falls back to a fresh workspace just as agent failures
+      // degrade independently.
+    }
+  }
+  const initialSessions = restoredWorkspace === null
+    ? (config.sessions.length > 0 ? resolvedSessions : resolvedSessions.slice(0, 1))
+    : []
   const store = createAppStore({
-    seeds: resolveSessions(config, { launchCwd: cwd }).map((entry) => entry.seed),
+    seeds: initialSessions.map((entry) => entry.seed),
     preferences: { theme: config.theme, statusline: config.statusline },
   })
   const baseController = await (deps.buildController ?? createSessionController)({
@@ -207,15 +337,24 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     recorder,
     store,
     cwd,
-    // Startup always creates fresh ACP sessions. Saved runs are restored only from
-    // the explicit `/resume` picker, never by selecting one during boot.
-    sendInitialTasks: true,
+    initialSessions,
+    // A persisted workspace is the app's global thread fleet, not merely a picker
+    // entry scoped to the directory Kitten happened to launch from.
+    sendInitialTasks: restoredWorkspace === null,
     applyProviderDefaultsOnFreshSession: true,
   })
+  if (restoredWorkspace) await baseController.restore(restoredWorkspace, "last-run")
 
   recordReadiness(recorder, baseController.runtimes())
   const stopRecorder = recorder.watch(baseController.store)
-  const runWriter = createRunWriter({ enabled: config.persistenceEnabled, runStore, projectCwd: cwd })
+  const runWriter = createRunWriter({
+    enabled: config.persistenceEnabled,
+    runStore,
+    projectCwd: restoredWorkspace?.cwd ?? cwd,
+    ...(restoredWorkspace
+      ? { runId: restoredWorkspace.runId, createdAt: restoredWorkspace.createdAt }
+      : {}),
+  })
   const stopRunWriter = runWriter.watch(baseController.store)
 
   const persistConfig = deps.persistConfig ?? ((patch) => persistUserConfig(patch))
@@ -362,6 +501,7 @@ export async function createCockpitSession(deps: CockpitSessionDeps = {}): Promi
     },
     shell: baseController.shell,
     runtimes: () => baseController.runtimes(),
+    providers: () => baseController.providers?.() ?? [],
     runtime: (sessionId) => baseController.runtime(sessionId),
     isReady: (sessionId) => baseController.isReady(sessionId),
     updateProviderDefaults: (defaults) => baseController.updateProviderDefaults(defaults),

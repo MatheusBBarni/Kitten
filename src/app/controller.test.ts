@@ -7874,6 +7874,70 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(created.at(-1)).not.toBe(created.find((connection) => connection !== created.at(-1) && connection.id === source.providerKind))
   })
 
+  it("starts an independent thread for an explicitly selected project and provider", async () => {
+    const created: StubConnection[] = []
+    const projectCwd = "/workspace/another-project"
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      insideRepo: (candidate) => candidate === projectCwd,
+      newSessionId: () => "explicit-project-thread",
+      sendInitialTasks: false,
+    })
+
+    const sessionId = await controller.actions.createConversation({
+      cwd: projectCwd,
+      providerKind: "claude-code",
+    })
+
+    expect(sessionId).toBe("explicit-project-thread")
+    expect(controller.store.getState().sessions[sessionId!]).toMatchObject({
+      providerKind: "claude-code",
+      cwd: projectCwd,
+    })
+    expect(created.at(-1)?.id).toBe("claude-code")
+    expect(created.at(-1)?.newSessionCwds).toEqual([projectCwd])
+    expect(controller.store.getState().workspaceNotice).toBeNull()
+    await controller.dispose()
+  })
+
+  it("rejects an explicit non-repository project before creating a runtime", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      insideRepo: () => false,
+      newSessionId: () => "must-not-exist",
+      sendInitialTasks: false,
+    })
+    const initialRuntimeCount = created.length
+
+    expect(await controller.actions.createConversation({
+      cwd: "/workspace/not-a-repository",
+      providerKind: "codex",
+    })).toBeNull()
+    expect(controller.store.getState().workspaceNotice).toEqual({
+      code: "project-not-git-repository",
+    })
+    expect(controller.store.getState().sessions["must-not-exist"]).toBeUndefined()
+    expect(created).toHaveLength(initialRuntimeCount)
+    await controller.dispose()
+  })
+
   it("uses the configured default from an empty workspace and reports no-provider without throwing", async () => {
     const created: StubConnection[] = []
     const controller = await createSessionController({

@@ -367,7 +367,11 @@ export interface WorkspaceState {
 }
 
 /** Ephemeral workspace feedback; never persisted or sent to telemetry. */
-export type WorkspaceNotice = { code: "no-provider-available" }
+export type WorkspaceNotice = {
+  code:
+    | "no-provider-available"
+    | "project-not-git-repository"
+}
 
 /**
  * The complete UI projection for an unsafe fresh-conversation start.

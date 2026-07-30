@@ -42,6 +42,7 @@ import {
   matchManagedWorktreeCleanupCommand,
   matchManagedWorktreeReviewCommand,
   matchModelSelectCommand,
+  matchNewThreadCommand,
   matchSessionPickerCommand,
   matchSessionsCommand,
   matchSettingsCommand,
@@ -50,6 +51,8 @@ import {
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
   MENU_KEYMAP,
+  NEW_THREAD_HINT,
+  NEW_THREAD_KEYMAP,
   PROMPT_KEY_BINDINGS,
   SESSION_PICKER_HINT,
   SESSION_PICKER_KEYMAP,
@@ -93,9 +96,10 @@ describe("matchCommand", () => {
     for (const name of ["o", "s", "r", "n", "e", ","]) {
       expect(matchCommand(key(name, { ctrl: true }))).toBeNull()
     }
-    for (const name of ["f1", "f3"]) {
+    for (const name of ["f1"]) {
       expect(matchCommand(key(name))).toBeNull()
     }
+    expect(matchCommand(key("f3"))).toBe("toggle-sidebar")
   })
 
   it("does not steal printable prompt input or modified shell chords", () => {
@@ -156,7 +160,15 @@ describe("matchClipboardCommand", () => {
 describe("COCKPIT_KEYMAP", () => {
   it("registers each conditional tab chord plus the retained hand-off, shell, and help bindings once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["previous-tab", "next-tab", "hand-off", "delegate", "toggle-shell", "close-help"])
+    expect(commands).toEqual([
+      "toggle-sidebar",
+      "previous-tab",
+      "next-tab",
+      "hand-off",
+      "delegate",
+      "toggle-shell",
+      "close-help",
+    ])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -194,6 +206,7 @@ describe("COCKPIT_KEYMAP", () => {
 describe("COCKPIT_COMMANDS", () => {
   it("gives each user-facing cockpit action one unique slash name", () => {
     expect(COCKPIT_COMMANDS.map(({ command, name }) => [command, name])).toEqual([
+      ["toggle-sidebar", "sidebar"],
       ["toggle-shell", "shell"],
       ["run-externally", "copy"],
       ["hand-off", "handoff"],
@@ -309,6 +322,29 @@ describe("MENU_KEYMAP", () => {
   })
 })
 
+describe("NEW_THREAD_KEYMAP", () => {
+  it("cycles providers with Tab while preserving path-editing arrows", () => {
+    expect(matchNewThreadCommand(key("tab"))).toBe("next-provider")
+    expect(matchNewThreadCommand(key("tab", { shift: true }))).toBe("prev-provider")
+    expect(matchNewThreadCommand(key("left"))).toBeNull()
+    expect(matchNewThreadCommand(key("right"))).toBeNull()
+  })
+
+  it("creates or cancels with explicit modal keys", () => {
+    expect(matchNewThreadCommand(key("return"))).toBe("confirm")
+    expect(matchNewThreadCommand(key("kpenter"))).toBe("confirm")
+    expect(matchNewThreadCommand(key("escape"))).toBe("cancel")
+    expect(matchNewThreadCommand(key("n"))).toBeNull()
+    expect(NEW_THREAD_KEYMAP.map(({ command }) => command)).toEqual([
+      "prev-provider",
+      "next-provider",
+      "confirm",
+      "cancel",
+    ])
+    expect(NEW_THREAD_HINT).toBe("Tab/Shift+Tab provider  Enter create  Esc cancel")
+  })
+})
+
 describe("KEYMAP_HINT", () => {
   it("keeps the fixed footer to the help entry point", () => {
     expect(KEYMAP_HINT).toBe("/help")
@@ -346,6 +382,10 @@ describe("HELP_ENTRIES", () => {
         keys: "Ctrl+G",
         description: "Delegate focused child work from the current conversation",
       },
+      {
+        keys: "F3",
+        description: "Show, focus, or hide the project thread sidebar",
+      },
       { keys: "Ctrl+` / F2", description: "Focus or leave the integrated shell" },
       ...EDITOR_KEYMAP,
     ])
@@ -380,9 +420,10 @@ describe("HELP_ENTRIES", () => {
     for (const command of COCKPIT_COMMANDS) {
       expect(keys).toContain(`/${command.name}`)
     }
-    for (const legacy of ["Ctrl+O", "Ctrl+T", "Ctrl+S", "Ctrl+R", "Ctrl+N", "Ctrl+E", "Ctrl+,", "F1", "F2", "F3"]) {
+    for (const legacy of ["Ctrl+O", "Ctrl+T", "Ctrl+S", "Ctrl+R", "Ctrl+N", "Ctrl+E", "Ctrl+,", "F1", "F2"]) {
       expect(keys).not.toContain(legacy)
     }
+    expect(keys).toContain("F3")
   })
 
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {
