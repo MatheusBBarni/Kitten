@@ -240,9 +240,15 @@ export function collapseLegacyImplicitProviderFleet(
   const placeholderIds = implicitMemberIds.filter((sessionId) => {
     const stored = record.conversations[sessionId]!
     const workspace = record.workspace.conversations[sessionId]!
+    const hasHarnessDelivery = (
+      record.version === 3 || record.version === 4
+    ) && record.harnessDeliveries[sessionId] !== undefined
+    const hasContextPack = record.version === 4 && record.contextPacks[sessionId] !== undefined
     return stored.messageCount === 0 &&
       stored.lastPrompt.length === 0 &&
-      workspace.lifecycle === "visible"
+      workspace.lifecycle === "visible" &&
+      !hasHarnessDelivery &&
+      !hasContextPack
   })
   if (placeholderIds.length === 0) return record
 

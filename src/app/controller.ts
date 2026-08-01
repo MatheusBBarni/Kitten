@@ -21,7 +21,7 @@
 import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRequest, PromptBlock } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { CONTEXT_PACK_MCP_INSTRUCTIONS, type ContextPackMcpOperation } from "../agent/contextPackMcp.ts"
-import { lstatSync, realpathSync } from "node:fs"
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs"
 import { isAbsolute, resolve } from "node:path"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
 import { isInsideRepo } from "../config/firstRun.ts"
@@ -396,6 +396,8 @@ export interface SessionControllerOptions {
   repositoryFileSource?: RepositoryFileSource
   /** Git-project admission check for an explicitly selected conversation cwd. */
   insideRepo?: (cwd: string) => boolean
+  /** Existing readable-directory check for an explicitly selected conversation cwd. */
+  projectDirectory?: (cwd: string) => boolean
   /** Controller-owned managed child workspace lifecycle service. */
   managedWorktreeProvisioner?: ManagedWorktreeProvisioner
   /** The telemetry recorder actions report navigation and switch outcomes to. */
@@ -912,6 +914,14 @@ export async function createSessionController(options: SessionControllerOptions)
   const readBranch = options.readBranch ?? readGitBranch
   const repositoryFileSource = options.repositoryFileSource ?? productionRepositoryFileSource
   const insideRepo = options.insideRepo ?? isInsideRepo
+  const projectDirectory = options.projectDirectory ?? ((candidate: string) => {
+    try {
+      accessSync(candidate, constants.R_OK | constants.X_OK)
+      return statSync(candidate).isDirectory()
+    } catch {
+      return false
+    }
+  })
   const managedWorktrees = options.managedWorktreeProvisioner ?? createManagedWorktreeProvisioner()
   const resolveDeliveryCapability = options.resolveHarnessCapability ?? defaultResolveHarnessCapability
   const scheduleClarificationTimeout = options.scheduleClarificationTimeout ?? defaultScheduleClarificationTimeout
@@ -2087,7 +2097,7 @@ export async function createSessionController(options: SessionControllerOptions)
     const projectCwd = requestedCwd
       ? resolve(cwd, requestedCwd)
       : selected?.cwd ?? cwd
-    if (requestedCwd && !insideRepo(projectCwd)) {
+    if (requestedCwd && (!projectDirectory(projectCwd) || !insideRepo(projectCwd))) {
       store.setWorkspaceNotice({ code: "project-not-git-repository" })
       return null
     }

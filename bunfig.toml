@@ -35,6 +35,11 @@ minimumReleaseAgeExcludes = [
   "@opentui/core-linux-arm64-musl",
   "@opentui/core-win32-x64",
   "@opentui/core-win32-arm64",
+  # Exact self-hosted release packages selected by the root package's optional dependency map.
+  "@matheusbbarni/kitten-darwin-arm64",
+  "@matheusbbarni/kitten-darwin-x64",
+  "@matheusbbarni/kitten-linux-arm64",
+  "@matheusbbarni/kitten-linux-x64",
 ]
 
 [test]

@@ -224,6 +224,41 @@ describe("createCockpitSession", () => {
     }
   })
 
+  it("preserves legacy implicit threads with independent harness or Context Pack state", () => {
+    const record = legacyImplicitFleet()
+    record.contextPacks.codex = {
+      draft: {
+        version: 1,
+        revision: 1,
+        instructions: { original: "Preserve this context", mode: "preserve", discovered: "" },
+        budget: { unit: "estimated_tokens", limit: 8_000 },
+        brief: {
+          architecture: "Persisted thread state",
+          selectedContext: "Operator-authored context",
+          relationships: "The thread owns this pack",
+          ambiguities: "None",
+          budgetOmissions: "None",
+        },
+        selections: [],
+      },
+    }
+    record.harnessDeliveries.cursor = { version: "v1", generation: 2, state: "in_flight" }
+
+    const collapsed = collapseLegacyImplicitProviderFleet(
+      record,
+      resolveSessions(defaultAppConfig(), { launchCwd: process.cwd() }),
+    )
+
+    expect(collapsed.version).toBe(4)
+    if (collapsed.version === 4) {
+      expect(collapsed.workspace.order).toEqual(["codex", "cursor"])
+      expect(collapsed.workspace.selectedVisibleId).toBe("codex")
+      expect(collapsed.contextPacks.codex).toEqual(record.contextPacks.codex)
+      expect(collapsed.harnessDeliveries.cursor).toEqual(record.harnessDeliveries.cursor)
+      expect(collapsed.conversations["claude-code"]).toBeUndefined()
+    }
+  })
+
   it("restores the newest global workspace instead of starting disconnected project threads", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-newest-"))
     try {

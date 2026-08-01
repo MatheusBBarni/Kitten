@@ -43,7 +43,7 @@ import {
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { CONTEXT_PACK_TITLE } from "./ContextPackPanel.tsx"
-import { NEW_THREAD_DIALOG_TITLE } from "./NewThreadDialog.tsx"
+import { NEW_THREAD_DIALOG_TITLE, NEW_THREAD_PROJECT_ERROR } from "./NewThreadDialog.tsx"
 import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -398,6 +398,28 @@ describe("CockpitApp thread sidebar", () => {
     await setup.waitFor(() => controller.calls.sendPrompt.length === 1)
     expect(controller.calls.sendPrompt[0]).toEqual({ input: "continue here", sessionId: undefined })
     await destroyMounted(setup.renderer)
+  })
+
+  it("routes focused-sidebar navigation before shell PTY input", async () => {
+    const { controller, runtime, shell } = shellReadyController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    try {
+      await runSlashCommand(setup, "shell")
+      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
+      await actAsync(() => setup.mockInput.pressKey("F3"))
+      await setup.waitForFrame((frame) => frame.includes(THREAD_SIDEBAR_FOCUS_HINT))
+
+      await actAsync(() => setup.mockInput.pressArrow("down"))
+      await actAsync(() => setup.mockInput.pressEnter())
+
+      await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+      expect(controller.calls.selectConversation).toEqual(["codex"])
+      expect(shell.writes).toEqual([])
+    } finally {
+      await destroyMounted(setup.renderer)
+      await runtime.dispose()
+    }
   })
 
   it("keeps a compact sidebar open and returns prompt focus after clicking a thread", async () => {
@@ -1180,6 +1202,32 @@ describe("CockpitApp keymap", () => {
     })
 
     await destroyMounted(setup.renderer)
+  })
+
+  it("validates a blank new-thread project and cancels without creating a runtime", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    try {
+      await runSlashCommand(setup, "new")
+      await setup.waitForFrame((frame) => frame.includes(NEW_THREAD_DIALOG_TITLE))
+      await actAsync(() => {
+        for (const _character of process.cwd()) setup.mockInput.pressBackspace()
+      })
+      await actAsync(() => setup.mockInput.pressEnter())
+
+      await setup.waitForFrame((frame) => frame.includes(NEW_THREAD_PROJECT_ERROR))
+      expect(controller.calls.createConversation).toBe(0)
+
+      await actAsync(async () => setup.mockInput.typeText("/tmp/project"))
+      await setup.waitForFrame((frame) => !frame.includes(NEW_THREAD_PROJECT_ERROR))
+      await actAsync(() => setup.mockInput.pressEscape())
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+      await setup.waitForFrame((frame) => !frame.includes(NEW_THREAD_DIALOG_TITLE))
+      expect(controller.calls.createConversation).toBe(0)
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
   })
 
   it("clears the current run through /clear", async () => {

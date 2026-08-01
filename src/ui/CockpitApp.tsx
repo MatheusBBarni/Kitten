@@ -451,17 +451,6 @@ function CockpitFrame({
         return
       }
 
-      // Once the explicit shell-toggle chord has been consumed, every encodable key
-      // belongs to the PTY. This preserves real foreground Ctrl+C semantics.
-      if (shellFocusedNow) {
-        key.preventDefault()
-        setExternalRunNotice(null)
-        const bytes = encodeKey(key)
-        if (!bytes || !controller.shell.ready) return
-        controller.shell.runtime.write(bytes)
-        return
-      }
-
       if (sidebarFocused) {
         key.preventDefault()
         const currentIndex = Math.max(
@@ -501,6 +490,18 @@ function CockpitFrame({
           setSidebarFocused(false)
           return
         }
+        return
+      }
+
+      // Once the explicit shell-toggle chord has been consumed, every encodable key
+      // belongs to the PTY unless the sidebar explicitly owns keyboard focus. This
+      // preserves real foreground Ctrl+C semantics without bypassing sidebar input.
+      if (shellFocusedNow) {
+        key.preventDefault()
+        setExternalRunNotice(null)
+        const bytes = encodeKey(key)
+        if (!bytes || !controller.shell.ready) return
+        controller.shell.runtime.write(bytes)
         return
       }
 
