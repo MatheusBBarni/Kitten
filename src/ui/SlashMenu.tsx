@@ -58,6 +58,19 @@ export const SLASH_MENU_SCROLLBOX_ID = "slash-menu-list"
 /** OpenTUI otherwise reserves a row for a horizontal scrollbar. */
 const HIDDEN_HORIZONTAL_SCROLLBAR = { visible: false } as const
 
+/** Group whose flattened row owns the highlight; used by the constrained sticky subtitle. */
+export function slashMenuGroupAtIndex(
+  groups: readonly SlashMenuGroup[],
+  highlightedIndex: number,
+): SlashMenuGroup | null {
+  let offset = 0
+  for (const group of groups) {
+    if (highlightedIndex >= offset && highlightedIndex < offset + group.rows.length) return group
+    offset += group.rows.length
+  }
+  return null
+}
+
 /** A stateless grouped command list; PromptEditor handles all activation. */
 export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: SlashMenuProps): ReactNode {
   const palette = usePalette()
@@ -70,6 +83,7 @@ export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: Sla
   const intrinsicHeight = rowCount === 0 ? 3 : rowCount + groups.length + 2
   const viewportHeight = Math.max(1, Math.min(intrinsicHeight, maxHeight, terminalHeight))
   const constrained = intrinsicHeight > viewportHeight
+  const stickyGroup = constrained ? slashMenuGroupAtIndex(groups, highlightedIndex) : null
   let offset = 0
   const attachScrollbox = useCallback((node: ScrollBoxRenderable | null): void => {
     scrollbox.current = node
@@ -102,37 +116,37 @@ export function SlashMenu({ groups, highlightedIndex, maxHeight, onSelect }: Sla
         height: viewportHeight,
         overflow: "hidden",
       }}
-      title="Commands"
-      titleColor={palette.accent}
     >
       {rowCount === 0 ? (
         <text fg={palette.muted}>{NO_COMMANDS_MATCH}</text>
       ) : constrained ? (
-        <scrollbox
-          id={SLASH_MENU_SCROLLBOX_ID}
-          ref={attachScrollbox}
-          // `height: 100%` makes the ScrollBox viewport fill the bounded menu.
-          // Keep ScrollBox's own row layout intact: it places the content wrapper
-          // beside its vertical scrollbar. Overriding it to a column stacks the
-          // scrollbar beneath the list instead.
-          style={{ height: "100%", flexGrow: 1, flexShrink: 1 }}
-          scrollX={false}
-          horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
-        >
-          {groups.map((group) => {
-            const groupOffset = offset
-            offset += group.rows.length
-            return (
-              <SlashMenuGroupView
-                key={group.source}
-                group={group}
-                highlightedIndex={highlightedIndex}
-                offset={groupOffset}
-                onSelect={onSelect}
-              />
-            )
-          })}
-        </scrollbox>
+        <>
+          <text style={{ height: 1, flexShrink: 0 }} fg={palette.accent} wrapMode="none">
+            {stickyGroup?.source ?? ""}
+          </text>
+          <scrollbox
+            id={SLASH_MENU_SCROLLBOX_ID}
+            ref={attachScrollbox}
+            style={{ flexGrow: 1, flexShrink: 1 }}
+            scrollX={false}
+            horizontalScrollbarOptions={HIDDEN_HORIZONTAL_SCROLLBAR}
+          >
+            {groups.map((group) => {
+              const groupOffset = offset
+              offset += group.rows.length
+              return (
+                <SlashMenuGroupView
+                  key={group.source}
+                  group={group}
+                  highlightedIndex={highlightedIndex}
+                  offset={groupOffset}
+                  showHeading={false}
+                  onSelect={onSelect}
+                />
+              )
+            })}
+          </scrollbox>
+        </>
       ) : (
         groups.map((group) => {
           const groupOffset = offset
@@ -156,17 +170,19 @@ function SlashMenuGroupView({
   group,
   highlightedIndex,
   offset,
+  showHeading = true,
   onSelect,
 }: {
   group: SlashMenuGroup
   highlightedIndex: number
   offset: number
+  showHeading?: boolean
   onSelect: (row: MenuRow) => void
 }): ReactNode {
   const palette = usePalette()
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
-      <text fg={palette.accent}>{group.source}</text>
+      {showHeading ? <text fg={palette.accent}>{group.source}</text> : null}
       {group.rows.map((row, index) => (
         <SlashMenuRow
           key={row.source === "cockpit" ? `cockpit:${row.command}` : `agent:${row.name}`}

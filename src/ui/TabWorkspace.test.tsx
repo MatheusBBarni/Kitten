@@ -17,6 +17,7 @@ import {
 } from "../store/selectors.ts"
 import { CockpitApp } from "./CockpitApp.tsx"
 import { CockpitProvider } from "./cockpitContext.tsx"
+import { THREAD_SIDEBAR_TITLE } from "./ThreadSidebar.tsx"
 import {
   layoutTabStrip,
   SHARED_WORKSPACE_LABEL,
@@ -575,21 +576,23 @@ describe("TabWorkspace presentation", () => {
   })
 })
 
-describe("mounted cockpit tab navigation", () => {
-  it("keeps visible tabs in the cockpit frame with direct mouse navigation", async () => {
+describe("mounted cockpit sidebar navigation", () => {
+  it("replaces cockpit tabs with direct sidebar mouse navigation", async () => {
     const { seeds, runtimes } = fleet(4)
     const controller = createFakeController({ store: createAppStore({ seeds }), runtimes })
     const setup = await testRender(<CockpitApp controller={controller} />, {
-      width: 120,
+      width: 140,
       height: 20,
       kittyKeyboard: true,
     })
 
     const cockpit = await setup.waitForFrame((frame) => frame.includes("Kitten"))
-    expect(cockpit).toContain(`${TAB_SELECTED_MARKER} Session 1`)
-    expect(cockpit).toContain(`${TAB_MARKER} Session 2`)
+    expect(cockpit).toContain(THREAD_SIDEBAR_TITLE)
+    expect(cockpit).toContain("Session 1")
+    expect(cockpit).toContain("Session 2")
+    expect(cockpit).not.toContain(`${TAB_SELECTED_MARKER} Session 1`)
 
-    const point = pointOf(cockpit, `${TAB_MARKER} Session 2`)
+    const point = pointOf(cockpit, "Session 2")
     await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("s2")
     expect(controller.calls.selectConversationOptions).toEqual([{ source: "mouse" }])

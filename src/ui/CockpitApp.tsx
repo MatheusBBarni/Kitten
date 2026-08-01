@@ -24,7 +24,7 @@
  * outside the new viewport.
  */
 
-import type { KeyEvent, PasteEvent } from "@opentui/core"
+import type { KeyEvent, PasteEvent, ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
@@ -68,12 +68,22 @@ import { TabDialog } from "./TabDialog.tsx"
 import {
   THREAD_SIDEBAR_DEFAULT_BREAKPOINT,
   ThreadSidebar,
+  threadsInSidebarOrder,
 } from "./ThreadSidebar.tsx"
-import { helpEntries, matchClipboardCommand, matchCommand, type CockpitCommand } from "./keymap.ts"
+import {
+  directThreadIndex,
+  helpEntries,
+  matchClipboardCommand,
+  matchCommand,
+  matchThreadNavigationCommand,
+  type CockpitCommand,
+} from "./keymap.ts"
 import { usePalette } from "./theme.ts"
 
 /** Bottom title of the help overlay; also the phrase the help toggle test looks for. */
 export const HELP_TITLE = "Commands"
+export const HELP_SCROLLBOX_ID = "cockpit-help-scrollbox"
+export const HELP_SCROLL_HINT = "↑↓ scroll · PgUp/PgDn · Home/End · Esc close"
 
 /** Copy-result labels are exported so the rendered action stays an explicit UI contract. */
 export const EXTERNAL_RUN_COPIED_PREFIX = "Copied for external terminal:"
@@ -135,6 +145,7 @@ function CockpitFrame({
   const [sidebarOpen, setSidebarOpen] = useState(() => width >= THREAD_SIDEBAR_DEFAULT_BREAKPOINT)
   const [sidebarFocused, setSidebarFocused] = useState(false)
   const [sidebarCursorId, setSidebarCursorId] = useState<string | null>(null)
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0)
   const [externalRunNotice, setExternalRunNotice] = useState<ExternalRunNotice | null>(null)
   const overlayOpen = useAppSelector(selectHasOpenOverlay)
   const isShellFocused = useAppSelector(selectIsShellFocused)
@@ -142,9 +153,13 @@ function CockpitFrame({
   const shellBufferType = useShellBufferType()
   const shellCommandCount = useAppSelector(selectShellCommandCount)
   const sidebarThreads = useAppSelector(selectSessionList)
-  const sidebarVisible =
-    sidebarOpen && (width >= THREAD_SIDEBAR_DEFAULT_BREAKPOINT || sidebarFocused)
+  const sidebarDisplayThreads = useMemo(() => threadsInSidebarOrder(sidebarThreads), [sidebarThreads])
+  const sidebarVisible = sidebarOpen
   const shellActivationRecorded = useRef(false)
+  const helpScrollbox = useRef<ScrollBoxRenderable | null>(null)
+  const attachHelpScrollbox = useCallback((scrollbox: ScrollBoxRenderable | null): void => {
+    helpScrollbox.current = scrollbox
+  }, [])
 
   useEffect(() => {
     if (shellCommandCount === 0 || shellActivationRecorded.current) return
@@ -338,10 +353,17 @@ function CockpitFrame({
       controller.actions.selectConversation(thread.id, options)
     }
     setSidebarCursorId(thread.id)
-    // Thread activation changes the detail pane; it does not dismiss the navigator.
-    // Keeping focus here preserves the sidebar on compact layouts as well as wide ones.
+    // Thread activation changes the detail pane without dismissing the navigator.
+    // Return keyboard ownership to the composer so the next printable key is prompt text.
     setSidebarOpen(true)
-    setSidebarFocused(true)
+    setSidebarFocused(false)
+    setComposerFocusRequest((request) => request + 1)
+  }, [controller])
+
+  const closeSidebarThread = useCallback((thread: SessionListItem): void => {
+    setSidebarCursorId(thread.id)
+    setSidebarFocused(false)
+    controller.store.openTabDialog({ kind: "close", sessionId: thread.id })
   }, [controller])
 
   const createSidebarThread = useCallback((): void => {
@@ -373,6 +395,49 @@ function CockpitFrame({
       if (overlayOpen || contextOpen || newThreadOpen) return
 
       const command = matchCommand(key, keyboardCapability)
+      if (helpOpen && !key.ctrl && !key.meta && !key.shift && key.super !== true) {
+        const scrollbox = helpScrollbox.current
+        const pageSize = Math.max(1, (scrollbox?.viewport.height ?? 1) - 1)
+        const scrollTarget = (() => {
+          switch (key.name) {
+            case "up": return Math.max(0, (scrollbox?.scrollTop ?? 0) - 1)
+            case "down": return (scrollbox?.scrollTop ?? 0) + 1
+            case "pageup": return Math.max(0, (scrollbox?.scrollTop ?? 0) - pageSize)
+            case "pagedown": return (scrollbox?.scrollTop ?? 0) + pageSize
+            case "home": return 0
+            case "end": return scrollbox?.scrollHeight ?? 0
+            default: return null
+          }
+        })()
+        if (scrollTarget !== null) {
+          key.preventDefault()
+          scrollbox?.scrollTo(scrollTarget)
+          return
+        }
+      }
+
+      const threadNavigation = matchThreadNavigationCommand(key, keyboardCapability)
+      if (threadNavigation !== null) {
+        key.preventDefault()
+        if (sidebarDisplayThreads.length === 0) return
+        const directIndex = directThreadIndex(threadNavigation)
+        if (directIndex !== null) {
+          const target = sidebarDisplayThreads[directIndex]
+          if (target) openSidebarThread(target, "keyboard")
+          return
+        }
+        const selectedId = controller.store.getState().workspace.selectedVisibleId
+        const currentIndex = sidebarDisplayThreads.findIndex((thread) => thread.id === selectedId)
+        const baseIndex = currentIndex < 0
+          ? (threadNavigation === "previous-thread" ? 0 : sidebarDisplayThreads.length - 1)
+          : currentIndex
+        const offset = threadNavigation === "previous-thread" ? -1 : 1
+        const nextIndex = (baseIndex + offset + sidebarDisplayThreads.length) % sidebarDisplayThreads.length
+        const target = sidebarDisplayThreads[nextIndex]
+        if (target) openSidebarThread(target, "keyboard")
+        return
+      }
+
       const shellFocusedNow = controller.store.getState().focusedPane.kind === "shell"
 
       if (command === "toggle-shell" || command === "toggle-sidebar") {
@@ -401,20 +466,20 @@ function CockpitFrame({
         key.preventDefault()
         const currentIndex = Math.max(
           0,
-          sidebarThreads.findIndex((thread) => thread.id === sidebarCursorId),
+          sidebarDisplayThreads.findIndex((thread) => thread.id === sidebarCursorId),
         )
         if (key.name === "up" || key.name === "k") {
-          const next = sidebarThreads[Math.max(0, currentIndex - 1)]
+          const next = sidebarDisplayThreads[Math.max(0, currentIndex - 1)]
           if (next) setSidebarCursorId(next.id)
           return
         }
         if (key.name === "down" || key.name === "j") {
-          const next = sidebarThreads[Math.min(sidebarThreads.length - 1, currentIndex + 1)]
+          const next = sidebarDisplayThreads[Math.min(sidebarDisplayThreads.length - 1, currentIndex + 1)]
           if (next) setSidebarCursorId(next.id)
           return
         }
         if (key.name === "return" || key.name === "kpenter") {
-          const target = sidebarThreads.find((thread) => thread.id === sidebarCursorId)
+          const target = sidebarDisplayThreads.find((thread) => thread.id === sidebarCursorId)
           if (target) openSidebarThread(target, "keyboard")
           return
         }
@@ -423,12 +488,12 @@ function CockpitFrame({
           return
         }
         if (key.name === "r" && !key.ctrl && !key.meta && !key.shift) {
-          const target = sidebarThreads.find((thread) => thread.id === sidebarCursorId)
+          const target = sidebarDisplayThreads.find((thread) => thread.id === sidebarCursorId)
           if (target) controller.store.openTabDialog({ kind: "rename", sessionId: target.id })
           return
         }
         if (key.name === "d" && !key.ctrl && !key.meta && !key.shift) {
-          const target = sidebarThreads.find((thread) => thread.id === sidebarCursorId)
+          const target = sidebarDisplayThreads.find((thread) => thread.id === sidebarCursorId)
           if (target) controller.store.openTabDialog({ kind: "close", sessionId: target.id })
           return
         }
@@ -456,8 +521,8 @@ function CockpitFrame({
       renderer,
       runCockpitCommand,
       sidebarCursorId,
+      sidebarDisplayThreads,
       sidebarFocused,
-      sidebarThreads,
     ],
   )
   useKeyboard(onKey)
@@ -525,6 +590,7 @@ function CockpitFrame({
             cursorId={sidebarCursorId}
             focused={sidebarFocused}
             onThread={openSidebarThread}
+            onCloseThread={closeSidebarThread}
             onNewThread={createSidebarThread}
           />
         ) : null}
@@ -569,7 +635,6 @@ function CockpitFrame({
                     (children ?? (
                       <ConversationView
                         welcomeBannerVariant={welcomeBannerVariant}
-                        workspaceChrome={!sidebarVisible}
                       />
                     ))
                   )}
@@ -580,13 +645,21 @@ function CockpitFrame({
             {externalRunNotice ? <ExternalRunNoticeView notice={externalRunNotice} /> : null}
           </box>
 
-          {shellFullHeight || contextOpen ? null : <PromptEditor onRunCommand={runCockpitCommand} />}
+          {shellFullHeight || contextOpen
+            ? null
+            : (
+              <PromptEditor
+                focusRequest={composerFocusRequest}
+                keyboardActive={!sidebarFocused}
+                onRunCommand={runCockpitCommand}
+              />
+            )}
 
           {shellFullHeight ? null : <StatusStrip />}
         </box>
       </box>
 
-      {helpOpen ? <HelpOverlay capability={keyboardCapability} /> : null}
+      {helpOpen ? <HelpOverlay capability={keyboardCapability} scrollboxRef={attachHelpScrollbox} /> : null}
 
       <NewThreadDialog open={newThreadOpen} onClose={() => setNewThreadOpen(false)} />
 
@@ -660,33 +733,53 @@ function NotReadyNotice({ error }: { error: string }): ReactNode {
  * Escape appears twice, and in precedence order: while the panel is open it closes
  * the panel, and only once the panel is gone does it reach the editor.
  */
-export function HelpOverlay({ capability = "unknown" }: { capability?: KeyboardCapability }): ReactNode {
+export function HelpOverlay({
+  capability = "unknown",
+  scrollboxRef,
+}: {
+  capability?: KeyboardCapability
+  scrollboxRef?: (scrollbox: ScrollBoxRenderable | null) => void
+}): ReactNode {
   const palette = usePalette()
+  const { height } = useTerminalDimensions()
   const entries = helpEntries(capability)
   const keysColumnWidth = Math.max(...entries.map((entry) => entry.keys.length)) + 2
   return (
     <box
       style={{
         position: "absolute",
-        top: 1,
-        left: 2,
-        right: 2,
+        top: 2,
+        left: 4,
+        right: 4,
+        height: Math.max(height - 4, 1),
         flexDirection: "column",
         border: true,
         borderColor: palette.accent,
         backgroundColor: palette.surface,
         paddingLeft: 1,
         paddingRight: 1,
+        overflow: "hidden",
       }}
       title={HELP_TITLE}
       titleColor={palette.accent}
     >
-      {entries.map((entry) => (
-        <text key={entry.description}>
-          <span fg={palette.accent}>{entry.keys.padEnd(keysColumnWidth)}</span>
-          <span fg={palette.text}>{entry.description}</span>
-        </text>
-      ))}
+      <scrollbox
+        id={HELP_SCROLLBOX_ID}
+        ref={scrollboxRef}
+        style={{ flexGrow: 1, flexShrink: 1, flexDirection: "column" }}
+        scrollX={false}
+        horizontalScrollbarOptions={{ visible: false }}
+      >
+        {entries.map((entry) => (
+          <text key={entry.description} style={{ flexShrink: 0 }}>
+            <span fg={palette.accent}>{entry.keys.padEnd(keysColumnWidth)}</span>
+            <span fg={palette.text}>{entry.description}</span>
+          </text>
+        ))}
+      </scrollbox>
+      <text style={{ height: 1, flexShrink: 0 }} fg={palette.muted} wrapMode="none">
+        {HELP_SCROLL_HINT}
+      </text>
     </box>
   )
 }

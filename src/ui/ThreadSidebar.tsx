@@ -21,7 +21,8 @@ export const THREAD_SIDEBAR_WIDTH = 36
 export const THREAD_SIDEBAR_DEFAULT_BREAKPOINT = 121
 export const THREAD_SIDEBAR_TITLE = "Threads"
 export const THREAD_SIDEBAR_NEW_THREAD_LABEL = "New thread"
-export const THREAD_SIDEBAR_FOCUS_HINT = "↑↓ move · Enter open · Esc leave"
+export const THREAD_SIDEBAR_CLOSE_LABEL = "×"
+export const THREAD_SIDEBAR_FOCUS_HINT = "↑↓ · Enter open · d close · Esc"
 export const THREAD_SIDEBAR_IDLE_HINT = "F3 focus · /new create"
 
 const STATUS_LABELS: Readonly<Record<SessionStatus, string>> = {
@@ -84,6 +85,13 @@ export function groupThreadsByProject(
   })
 }
 
+/** The exact top-to-bottom thread order rendered by the grouped sidebar. */
+export function threadsInSidebarOrder(
+  threads: readonly SessionListItem[],
+): readonly SessionListItem[] {
+  return groupThreadsByProject(threads).flatMap((project) => project.threads)
+}
+
 /** Monochrome-readable row text; color supplements rather than carries status. */
 export function threadSidebarRowLabel(thread: SessionListItem): string {
   return `${thread.label}  ${threadSidebarMetadataLabel(thread)}`
@@ -100,6 +108,7 @@ export interface ThreadSidebarProps {
   readonly cursorId: string | null
   readonly focused: boolean
   readonly onThread: (session: SessionListItem) => void
+  readonly onCloseThread: (session: SessionListItem) => void
   readonly onNewThread: () => void
 }
 
@@ -109,6 +118,7 @@ export function ThreadSidebar({
   cursorId,
   focused,
   onThread,
+  onCloseThread,
   onNewThread,
 }: ThreadSidebarProps): ReactNode {
   const palette = usePalette()
@@ -194,6 +204,7 @@ export function ThreadSidebar({
                 thread={thread}
                 highlighted={focused ? cursorId === thread.id : thread.selected}
                 onThread={onThread}
+                onCloseThread={onCloseThread}
               />
             ))}
           </box>
@@ -211,10 +222,12 @@ function ThreadSidebarRow({
   thread,
   highlighted,
   onThread,
+  onCloseThread,
 }: {
   readonly thread: SessionListItem
   readonly highlighted: boolean
   readonly onThread: (session: SessionListItem) => void
+  readonly onCloseThread: (session: SessionListItem) => void
 }): ReactNode {
   const palette = usePalette()
   const marker = thread.selected
@@ -240,12 +253,36 @@ function ThreadSidebarRow({
         onThread(thread)
       }}
     >
-      <text fg={palette.text} attributes={highlighted ? 1 : 0} wrapMode="none">
-        <span fg={thread.needsAttention ? palette.status[thread.status] : palette.muted}>
-          {`${marker} `}
-        </span>
-        {thread.label}
-      </text>
+      <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+        <text
+          style={{ flexGrow: 1, flexShrink: 1, overflow: "hidden" }}
+          fg={palette.text}
+          attributes={highlighted ? 1 : 0}
+          wrapMode="none"
+        >
+          <span fg={thread.needsAttention ? palette.status[thread.status] : palette.muted}>
+            {`${marker} `}
+          </span>
+          {thread.label}
+        </text>
+        <box
+          style={{
+            width: 2,
+            height: 1,
+            flexShrink: 0,
+            justifyContent: "flex-end",
+          }}
+          onMouseDown={(event: MouseEvent) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onCloseThread(thread)
+          }}
+        >
+          <text fg={highlighted ? palette.text : palette.muted}>
+            {THREAD_SIDEBAR_CLOSE_LABEL}
+          </text>
+        </box>
+      </box>
       <text style={{ paddingLeft: 2 }} fg={palette.muted} wrapMode="none">
         <span fg={palette.muted}>{`${PROVIDER_LABELS[thread.providerKind]} · `}</span>
         <span fg={palette.status[thread.status]}>

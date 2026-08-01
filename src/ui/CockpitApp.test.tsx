@@ -7,7 +7,7 @@ import { describe, expect, it, spyOn } from "bun:test"
 import { basename } from "node:path"
 
 import { createTestRenderer } from "@opentui/core/testing"
-import { KeyEvent } from "@opentui/core"
+import { KeyEvent, type ScrollBoxRenderable } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
@@ -37,6 +37,8 @@ import {
   CockpitApp,
   EXTERNAL_RUN_COPIED_PREFIX,
   EXTERNAL_RUN_EMPTY,
+  HELP_SCROLLBOX_ID,
+  HELP_SCROLL_HINT,
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
@@ -56,6 +58,7 @@ import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { STATUSLINE_PREVIEW_LABEL, STATUSLINE_REQUEST_PROMPT, STATUSLINE_TITLE } from "./StatuslineOverlay.tsx"
 import {
+  THREAD_SIDEBAR_CLOSE_LABEL,
   THREAD_SIDEBAR_FOCUS_HINT,
   THREAD_SIDEBAR_IDLE_HINT,
   THREAD_SIDEBAR_NEW_THREAD_LABEL,
@@ -258,8 +261,8 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
-    expect(frame).toContain("[selected] Claude Code")
-    expect(frame).toContain("shared×3 Sessions +2")
+    expect(frame).not.toContain("[selected] Claude Code")
+    expect(frame).not.toContain("shared×3 Sessions +2")
 
     // The strip keeps selected-provider context only; live work is transcript-local.
     const strip = rows.at(-1) ?? ""
@@ -369,6 +372,7 @@ describe("CockpitApp thread sidebar", () => {
     expect(frame).toContain("claude · Idle")
     expect(frame).toContain("Codex")
     expect(frame).toContain("codex · Idle")
+    expect(frame).toContain(THREAD_SIDEBAR_CLOSE_LABEL)
     expect(frame).not.toContain("All projects")
     expect(frame).not.toContain("[selected]")
     expectNoOverflow(frame, 140, 30)
@@ -387,11 +391,16 @@ describe("CockpitApp thread sidebar", () => {
     await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
     expect(controller.calls.selectConversation).toEqual(["codex"])
     expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
-    expect(setup.captureCharFrame()).toContain(THREAD_SIDEBAR_FOCUS_HINT)
+    await setup.waitForFrame((frame) => frame.includes(THREAD_SIDEBAR_IDLE_HINT))
+
+    await actAsync(async () => setup.mockInput.typeText("continue here"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitFor(() => controller.calls.sendPrompt.length === 1)
+    expect(controller.calls.sendPrompt[0]).toEqual({ input: "continue here", sessionId: undefined })
     await destroyMounted(setup.renderer)
   })
 
-  it("keeps a compact sidebar open and focused after clicking a thread", async () => {
+  it("keeps a compact sidebar open and returns prompt focus after clicking a thread", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller, 100, 30)
 
@@ -404,10 +413,32 @@ describe("CockpitApp thread sidebar", () => {
 
     await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
     const stillOpen = await setup.waitForFrame((frame) =>
-      frame.includes(THREAD_SIDEBAR_TITLE) && frame.includes(THREAD_SIDEBAR_FOCUS_HINT),
+      frame.includes(THREAD_SIDEBAR_TITLE) && frame.includes(THREAD_SIDEBAR_IDLE_HINT),
     )
     expect(stillOpen).toContain("codex · Idle")
     expect(controller.calls.selectConversation).toEqual(["codex"])
+    expect(setup.renderer.currentFocusedEditor).not.toBeNull()
+
+    await actAsync(async () => setup.mockInput.typeText("prompt survives sidebar"))
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("prompt survives sidebar")
+    await setup.waitForFrame((frame) => frame.includes("prompt survives sidebar"))
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the safe close flow from each thread's visible close button", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(THREAD_SIDEBAR_CLOSE_LABEL))
+    const point = pointOf(frame, THREAD_SIDEBAR_CLOSE_LABEL)
+
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+
+    const dialog = await setup.waitForFrame((candidate) => candidate.includes("Close conversation"))
+    expect(dialog).toContain("Claude Code")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({
+      kind: "close",
+      sessionId: "claude-code",
+    })
     await destroyMounted(setup.renderer)
   })
 
@@ -594,6 +625,56 @@ describe("CockpitApp alternate-screen layout", () => {
 })
 
 describe("CockpitApp keymap", () => {
+  it("opens numbered threads and cycles in the sidebar's grouped display order", async () => {
+    const store = createAppStore({
+      selectedVisibleId: "a-1",
+      seeds: [
+        { id: "a-1", providerKind: "claude-code", title: "A one", cwd: "/workspace/a" },
+        { id: "b-1", providerKind: "codex", title: "B one", cwd: "/workspace/b" },
+        { id: "a-2", providerKind: "cursor", title: "A two", cwd: "/workspace/a" },
+      ],
+    })
+    const runtimes: AgentRuntimeState[] = [
+      { sessionId: "a-1", providerKind: "claude-code", displayName: "A one", title: "A one", cwd: "/workspace/a", ready: true, acpSessionId: "session-a-1", mcp: { loaded: [], skipped: [] } },
+      { sessionId: "b-1", providerKind: "codex", displayName: "B one", title: "B one", cwd: "/workspace/b", ready: true, acpSessionId: "session-b-1", mcp: { loaded: [], skipped: [] } },
+      { sessionId: "a-2", providerKind: "cursor", displayName: "A two", title: "A two", cwd: "/workspace/a", ready: true, acpSessionId: "session-a-2", mcp: { loaded: [], skipped: [] } },
+    ]
+    const controller = createFakeController({ store, runtimes })
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+
+    const second = keyEvent("2", { super: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", second)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "a-2")
+    expect(second.defaultPrevented).toBe(true)
+
+    const next = keyEvent("]", { super: true, shift: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", next)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "b-1")
+    expect(next.defaultPrevented).toBe(true)
+
+    const previous = keyEvent("[", { super: true, shift: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", previous)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "a-2")
+    expect(previous.defaultPrevented).toBe(true)
+
+    const first = keyEvent("1", { super: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", first)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "a-1")
+    expect(first.defaultPrevented).toBe(true)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("ignores the first Kitty tab chord, then dispatches one cyclic action per confirmed Kitty event", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
@@ -1168,7 +1249,7 @@ describe("CockpitApp keymap", () => {
 
   it("shows the full command list through /help", async () => {
     const controller = createFakeController()
-    const setup = await renderCockpitApp(controller, 80, 30)
+    const setup = await renderCockpitApp(controller, 120, 60)
 
     expect(setup.captureCharFrame()).not.toContain(HELP_TITLE)
 
@@ -1185,6 +1266,39 @@ describe("CockpitApp keymap", () => {
     expect(fileDiscoveryHelp).toBeDefined()
     expect(opened).toContain(fileDiscoveryHelp!.description)
     expect(opened).not.toContain("Ctrl+O")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps confirmed Kitty help reachable in a bounded 80x30 overlay", async () => {
+    const controller = createFakeController()
+    controller.store.confirmKittyKeyboard()
+    const setup = await renderCockpitApp(controller, 80, 30)
+    const editorBeforeHelp = setup.renderer.currentFocusedEditor
+
+    await runSlashCommand(setup, "help")
+    const opened = await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
+    const scrollbox = setup.renderer.root.findDescendantById(HELP_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await setup.waitFor(() => scrollbox!.scrollHeight > scrollbox!.viewport.height)
+    expectNoOverflow(opened, 80, 30)
+    expect(opened).toContain(HELP_SCROLL_HINT)
+    expect(setup.renderer.currentFocusedEditor).toBe(editorBeforeHelp)
+
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", keyEvent("end"))
+    })
+    const finalEntries = await setup.waitForFrame((frame) => frame.includes("Interrupt the agent while it is working"))
+    expect(finalEntries).toContain("Esc")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
+
+    await actAsync(async () => {
+      setup.mockInput.pressEscape()
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+    })
+    await setup.waitForFrame((frame) => !frame.includes(HELP_TITLE))
+    expect(setup.renderer.currentFocusedEditor).toBe(editorBeforeHelp)
 
     await destroyMounted(setup.renderer)
   })
@@ -1215,7 +1329,7 @@ describe("CockpitApp keymap", () => {
     await runSlashCommand(setup, "help")
     const opened = await setup.waitForFrame((f) => f.includes(HELP_TITLE))
     expect(opened).toContain("/shell")
-    expect(opened).toContain("Focus or leave the integrated shell")
+    expect(opened).toContain("Focus the integrated shell")
     expect(opened).toContain("/resume")
 
     await actAsync(async () => {

@@ -19,6 +19,7 @@ import {
   CONTEXT_PACK_KEYMAP,
   DELEGATION_HINT,
   DELEGATION_KEYMAP,
+  directThreadIndex,
   EDITOR_KEYMAP,
   HANDOFF_CONFIG_HINT,
   HANDOFF_EDIT_HINT,
@@ -47,6 +48,7 @@ import {
   matchSessionsCommand,
   matchSettingsCommand,
   matchStatuslineCommand,
+  matchThreadNavigationCommand,
   MODEL_SELECT_CONFIRM_HINT,
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
@@ -66,6 +68,7 @@ import {
   STATUSLINE_HINT,
   STATUSLINE_KEYMAP,
   tabNavigationHint,
+  THREAD_NAVIGATION_KEYMAP,
   type CockpitKey,
 } from "./keymap.ts"
 
@@ -154,6 +157,50 @@ describe("matchClipboardCommand", () => {
     expect(matchClipboardCommand(key("v", { ctrl: true }), "windows-linux")).toBeNull()
     expect(matchClipboardCommand(key("c", { meta: true, super: true }), "darwin")).toBeNull()
     expect(matchClipboardCommand(key("v", { ctrl: true, shift: true, meta: true }), "windows-linux")).toBeNull()
+  })
+})
+
+describe("thread navigation keymap", () => {
+  it("maps Command-number and Command-Shift-brackets only after Kitty confirmation", () => {
+    const first = key("1", { super: true, source: "kitty" })
+    const previous = key("[", { super: true, shift: true, source: "kitty" })
+    const next = key("rightbracket", { super: true, shift: true, source: "kitty" })
+
+    expect(matchThreadNavigationCommand(first, "unknown")).toBeNull()
+    expect(matchThreadNavigationCommand(first, "kittyConfirmed")).toBe("thread-1")
+    expect(matchThreadNavigationCommand(previous, "kittyConfirmed")).toBe("previous-thread")
+    expect(matchThreadNavigationCommand(next, "kittyConfirmed")).toBe("next-thread")
+    expect(directThreadIndex("thread-1")).toBe(0)
+    expect(directThreadIndex("thread-9")).toBe(8)
+    expect(directThreadIndex("next-thread")).toBeNull()
+  })
+
+  it("rejects raw, Option, Ctrl, and incomplete Command chords", () => {
+    for (const event of [
+      key("1", { super: true, source: "raw" }),
+      key("1", { meta: true, source: "kitty" }),
+      key("1", { ctrl: true, source: "kitty" }),
+      key("[", { super: true, source: "kitty" }),
+      key("]", { super: true, shift: true, meta: true, source: "kitty" }),
+    ]) {
+      expect(matchThreadNavigationCommand(event, "kittyConfirmed")).toBeNull()
+    }
+  })
+
+  it("documents nine direct positions plus adjacent traversal", () => {
+    expect(THREAD_NAVIGATION_KEYMAP.map(({ command }) => command)).toEqual([
+      "thread-1",
+      "thread-2",
+      "thread-3",
+      "thread-4",
+      "thread-5",
+      "thread-6",
+      "thread-7",
+      "thread-8",
+      "thread-9",
+      "previous-thread",
+      "next-thread",
+    ])
   })
 })
 
@@ -411,6 +458,10 @@ describe("HELP_ENTRIES", () => {
     expect(unknown).not.toContain("Ctrl+L")
     expect(confirmed).toContain("Ctrl+H")
     expect(confirmed).toContain("Ctrl+L")
+    expect(confirmed).toContain("Cmd+1")
+    expect(confirmed).toContain("Cmd+Shift+[")
+    expect(confirmed).toContain("Cmd+Shift+]")
+    expect(unknown).not.toContain("Cmd+1")
     expect(tabNavigationHint("unknown")).toBe("/sessions → n next attention")
     expect(tabNavigationHint("kittyConfirmed")).toBe("Ctrl+H/Ctrl+L tabs")
   })

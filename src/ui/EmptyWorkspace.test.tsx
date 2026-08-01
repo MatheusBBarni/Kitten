@@ -130,7 +130,7 @@ describe("EmptyWorkspace", () => {
     expect(controller.calls.sendPrompt).toEqual([{ input: "continue background work", sessionId: undefined }])
 
     await actAsync(async () => setup.mockInput.typeText("/model"))
-    await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/model"))
+    await setup.waitForFrame((frame) => frame.includes("Cockpit") && frame.includes("/model"))
     await actAsync(() => {
       setup.mockInput.pressEnter()
     })

@@ -270,11 +270,26 @@ function correctedReferenceSession(
 }
 
 /** The multi-line prompt editor, bound to whichever agent currently has focus. */
-export function PromptEditor({ onRunCommand = NOOP_RUN_COMMAND }: { onRunCommand?: (command: CockpitCommand) => void }): ReactNode {
+export function PromptEditor({
+  focusRequest = 0,
+  keyboardActive = true,
+  onRunCommand = NOOP_RUN_COMMAND,
+}: {
+  focusRequest?: number
+  keyboardActive?: boolean
+  onRunCommand?: (command: CockpitCommand) => void
+}): ReactNode {
   const selectedSessionId = useAppSelector(selectFocusedSessionId)
   return selectedSessionId === null
     ? <WorkspacePromptEditor />
-    : <SelectedPromptEditor sessionId={selectedSessionId} onRunCommand={onRunCommand} />
+    : (
+      <SelectedPromptEditor
+        sessionId={selectedSessionId}
+        focusRequest={focusRequest}
+        keyboardActive={keyboardActive}
+        onRunCommand={onRunCommand}
+      />
+    )
 }
 
 /** A non-editable composer surface for the valid no-selection workspace state. */
@@ -309,9 +324,13 @@ function WorkspacePromptEditor(): ReactNode {
 /** The editable composer for one real selected Visible conversation. */
 function SelectedPromptEditor({
   sessionId: focusedSessionId,
+  focusRequest,
+  keyboardActive,
   onRunCommand,
 }: {
   sessionId: SessionId
+  focusRequest: number
+  keyboardActive: boolean
   onRunCommand: (command: CockpitCommand) => void
 }): ReactNode {
   const controller = useController()
@@ -364,6 +383,13 @@ function SelectedPromptEditor({
   const restorationContextOpen = restoration === "unavailable" && restorationBundle !== null
 
   const textarea = useRef<TextareaRenderable | null>(null)
+  useEffect(() => {
+    if (!keyboardActive || overlayOpen || isShellFocused) return
+    // Mouse dispatch may assign native focus after React effects have committed.
+    // Reassert on the following microtask so selecting a sidebar row reliably
+    // returns the next printable key to the composer.
+    queueMicrotask(() => textarea.current?.focus())
+  }, [focusRequest, isShellFocused, keyboardActive, overlayOpen])
   const previousSession = useRef(focusedSessionId)
   const recalledSession = useRef<SessionId | null>(null)
   const focusedSession = useRef(focusedSessionId)
@@ -1198,7 +1224,7 @@ function SelectedPromptEditor({
       <text fg={ready ? palette.accent : palette.status.not_ready}>{PROMPT_CHEVRON}</text>
       <textarea
         ref={textarea}
-        focused={!overlayOpen && !isShellFocused}
+        focused={keyboardActive && !overlayOpen && !isShellFocused}
         style={{
           flexGrow: 1,
           height: rows,

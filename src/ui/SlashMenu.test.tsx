@@ -18,6 +18,7 @@ import {
   SLASH_MENU_ID,
   SLASH_MENU_SCROLLBOX_ID,
   SlashMenu,
+  slashMenuGroupAtIndex,
   type MenuRow,
 } from "./SlashMenu.tsx"
 import { DARK_PALETTE } from "./theme.ts"
@@ -81,6 +82,7 @@ describe("SlashMenu", () => {
     expect(frame).toContain(handoffRow.shortcut)
     expect(frame).toContain(reviewRow.label)
     expect(frame).toContain(reviewRow.hint!)
+    expect(frame).not.toContain("Commands")
     // Two headings, two rows, and the top/bottom border: the menu must hug
     // its content rather than filling the available terminal height.
     expect(menu?.height).toBe(6)
@@ -153,14 +155,20 @@ describe("SlashMenu", () => {
     const scrollbox = setup.renderer.root.findDescendantById(SLASH_MENU_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
     expect(frame.replace(/\n$/, "").split("\n")).toHaveLength(10)
     expect(frame).not.toContain("਀")
+    expect(frame).toContain("Agent commands")
     expect(menu?.height).toBe(6)
-    // The content and vertical scrollbar share the same row, so the viewport
-    // retains the full interior height instead of stacking the bar below it.
-    expect(scrollbox?.height).toBe(menu!.height - 2)
+    // The active group subtitle stays outside the scroll viewport.
+    expect(scrollbox?.height).toBe(menu!.height - 3)
     expect(scrollbox?.viewport.height).toBe(scrollbox!.height)
     expect(scrollbox?.verticalScrollBar.height).toBe(scrollbox?.height)
     expect(scrollbox?.verticalScrollBar.y).toBe(scrollbox?.y)
 
     await destroyMounted(setup.renderer)
+  })
+
+  it("derives the sticky subtitle from the flattened highlighted row", () => {
+    expect(slashMenuGroupAtIndex(groups, 0)?.source).toBe("Cockpit")
+    expect(slashMenuGroupAtIndex(groups, 1)?.source).toBe("Codex")
+    expect(slashMenuGroupAtIndex(groups, 2)).toBeNull()
   })
 })

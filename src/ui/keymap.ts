@@ -2,9 +2,9 @@
  * The cockpit's global keymap.
  *
  * Global bindings are deliberately sparse: every cockpit operation is available as
- * a slash command in the prompt, and only the terminal-level shell toggle remains
- * a global chord. The prompt editor owns the printable `/` trigger, so composing
- * normal agent input remains predictable.
+ * a slash command in the prompt, while terminal-level focus and direct thread
+ * navigation retain dedicated chords. The prompt editor owns the printable `/`
+ * trigger, so composing normal agent input remains predictable.
  *
  * The table is the single source of truth for both dispatch and the help panel, so
  * a binding can never drift out of the documentation the user reads. The prompt
@@ -43,6 +43,20 @@ export type ClipboardCommand = "copy" | "paste"
 
 /** Platform families with distinct conventional terminal clipboard chords. */
 export type ClipboardPlatform = "darwin" | "windows-linux"
+
+/** Direct thread navigation reported through the Kitty keyboard protocol. */
+export type ThreadNavigationCommand =
+  | "previous-thread"
+  | "next-thread"
+  | "thread-1"
+  | "thread-2"
+  | "thread-3"
+  | "thread-4"
+  | "thread-5"
+  | "thread-6"
+  | "thread-7"
+  | "thread-8"
+  | "thread-9"
 
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
 export type CockpitCommand =
@@ -196,6 +210,17 @@ function kittyCtrl(name: string): (key: CockpitKey) => boolean {
   return (key) => key.source === "kitty" && ctrl(name)(key)
 }
 
+/** A disambiguated macOS Command chord from the Kitty parser path. */
+function kittySuper(names: readonly string[], shift = false): (key: CockpitKey) => boolean {
+  return (key) =>
+    key.source === "kitty" &&
+    names.includes(key.name) &&
+    key.super === true &&
+    key.shift === shift &&
+    !key.ctrl &&
+    !key.meta
+}
+
 /** Match when any one of the supplied predicates claims the key. */
 function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: CockpitKey) => boolean {
   return (key) => predicates.some((predicate) => predicate(key))
@@ -291,6 +316,31 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Esc",
     description: "Close the help panel",
     matches: plain("escape"),
+  },
+]
+
+/** Command-number selection and Command-Shift-bracket traversal for sidebar threads. */
+export const THREAD_NAVIGATION_KEYMAP: readonly KeyBinding<ThreadNavigationCommand>[] = [
+  ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((index) => ({
+    command: `thread-${index}` as const,
+    keys: `Cmd+${index}`,
+    description: `Open thread ${index}`,
+    matches: kittySuper([String(index)]),
+    requiresKittyConfirmation: true,
+  })),
+  {
+    command: "previous-thread",
+    keys: "Cmd+Shift+[",
+    description: "Open the previous thread",
+    matches: kittySuper(["[", "leftbracket"], true),
+    requiresKittyConfirmation: true,
+  },
+  {
+    command: "next-thread",
+    keys: "Cmd+Shift+]",
+    description: "Open the next thread",
+    matches: kittySuper(["]", "rightbracket"], true),
+    requiresKittyConfirmation: true,
   },
 ]
 
@@ -908,10 +958,14 @@ export function helpEntries(capability: KeyboardCapability): readonly HelpEntry[
   const directTabBindings = capability === "kittyConfirmed"
     ? COCKPIT_KEYMAP.filter((entry) => entry.command === "previous-tab" || entry.command === "next-tab")
     : []
+  const directThreadBindings = capability === "kittyConfirmed"
+    ? THREAD_NAVIGATION_KEYMAP
+    : []
   return [
     ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
     ...COCKPIT_KEYMAP.filter((entry) => entry.command === "delegate").map(({ keys, description }) => ({ keys, description })),
     ...directTabBindings.map(({ keys, description }) => ({ keys, description })),
+    ...directThreadBindings.map(({ keys, description }) => ({ keys, description })),
     { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-sidebar"), description: "Show, focus, or hide the project thread sidebar" },
     { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
     ...EDITOR_KEYMAP,
@@ -1045,6 +1099,15 @@ function makeMatcher<Command extends string>(
 
 /** The command a keypress maps to, or `null` when the shell does not claim it. */
 export const matchCommand = makeMatcher(COCKPIT_KEYMAP)
+
+/** A direct thread shortcut, or null when the terminal cannot report it safely. */
+export const matchThreadNavigationCommand = makeMatcher(THREAD_NAVIGATION_KEYMAP)
+
+/** Zero-based sidebar position named by a direct Command-number shortcut. */
+export function directThreadIndex(command: ThreadNavigationCommand): number | null {
+  if (!command.startsWith("thread-")) return null
+  return Number.parseInt(command.slice("thread-".length), 10) - 1
+}
 
 /** The prompt-local menu command a keypress names, or null while normal typing continues. */
 export const matchMenuCommand = makeMatcher(MENU_KEYMAP)
