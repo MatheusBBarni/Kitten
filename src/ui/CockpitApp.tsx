@@ -174,7 +174,7 @@ function CockpitFrame({
 
   /** One cockpit dispatch path shared by `/commands` and the remaining global chord. */
   const runCockpitCommand = useCallback(
-    (command: CockpitCommand): void => {
+    (command: CockpitCommand, renameDisplayName?: string | null): void => {
       const state = controller.store.getState()
 
       switch (command) {
@@ -276,6 +276,17 @@ function CockpitFrame({
           setNewThreadOpen(true)
           return
         }
+        case "rename": {
+          const sessionId = state.workspace.selectedVisibleId
+          if (!sessionId) return
+          const displayName = renameDisplayName?.trim()
+          if (displayName) {
+            controller.actions.renameConversation(sessionId, displayName)
+            return
+          }
+          controller.store.openTabDialog({ kind: "rename", sessionId })
+          return
+        }
         case "clear-run":
           setHelpOpen(false)
           void controller.actions.startNewRun()
@@ -364,6 +375,12 @@ function CockpitFrame({
     setSidebarCursorId(thread.id)
     setSidebarFocused(false)
     controller.store.openTabDialog({ kind: "close", sessionId: thread.id })
+  }, [controller])
+
+  const renameSidebarThread = useCallback((thread: SessionListItem): void => {
+    setSidebarCursorId(thread.id)
+    setSidebarFocused(false)
+    controller.store.openTabDialog({ kind: "rename", sessionId: thread.id })
   }, [controller])
 
   const createSidebarThread = useCallback((): void => {
@@ -592,6 +609,7 @@ function CockpitFrame({
             focused={sidebarFocused}
             onThread={openSidebarThread}
             onCloseThread={closeSidebarThread}
+            onRenameThread={renameSidebarThread}
             onNewThread={createSidebarThread}
           />
         ) : null}
@@ -749,10 +767,10 @@ export function HelpOverlay({
     <box
       style={{
         position: "absolute",
-        top: 2,
+        top: 1,
         left: 4,
         right: 4,
-        height: Math.max(height - 4, 1),
+        height: Math.max(height - 2, 1),
         flexDirection: "column",
         border: true,
         borderColor: palette.accent,

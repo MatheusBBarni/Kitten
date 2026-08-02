@@ -91,7 +91,7 @@ export const PROMPT_WORKSPACE_PLACEHOLDER = "Select a visible conversation to se
 /** The composer's visual prompt marker. */
 export const PROMPT_CHEVRON = "❯"
 
-const NOOP_RUN_COMMAND = (_command: CockpitCommand): void => {}
+const NOOP_RUN_COMMAND = (_command: CockpitCommand, _renameDisplayName?: string | null): void => {}
 
 /**
  * How tall the editor is when empty.
@@ -183,16 +183,36 @@ export function slashTokenAt(text: string, cursorOffset: number): SlashToken | n
  *
  * The menu normally owns Enter. This exact-draft fallback covers the tiny interval
  * where native textarea submission arrives before React has committed the menu state,
- * without claiming agent commands or slash text with arguments. Trailing whitespace
- * is accepted because it dismisses the menu while the developer still intends to run
- * the cockpit command.
+ * without claiming agent commands or slash text with arguments. `/rename` is the one
+ * intentional exception: a whitespace-separated title renames immediately, while a
+ * bare command opens its captured-target dialog. Trailing whitespace is accepted
+ * because it dismisses the menu while the developer still intends to run the cockpit
+ * command.
  */
-export function cockpitCommandForDraft(text: string, cursorOffset: number): CockpitCommand | null {
+export type CockpitCommandInvocation =
+  | { readonly command: Exclude<CockpitCommand, "rename"> }
+  | { readonly command: "rename"; readonly displayName: string | null }
+
+export function cockpitCommandForDraft(text: string, cursorOffset: number): CockpitCommandInvocation | null {
   if (cursorOffset !== text.length) return null
+
+  const renamePrefix = "/rename"
+  if (text.startsWith(renamePrefix)) {
+    const title = text.slice(renamePrefix.length)
+    if (title.length === 0 || /^\s/.test(title)) {
+      const displayName = title.trim()
+      return { command: "rename", displayName: displayName || null }
+    }
+  }
+
   const commandEnd = text.trimEnd().length
   const token = slashTokenAt(text.slice(0, commandEnd), commandEnd)
   if (!token || token.start !== 0 || token.end !== commandEnd) return null
-  return COCKPIT_COMMANDS.find((command) => command.name === token.filter)?.command ?? null
+  const command = COCKPIT_COMMANDS.find((candidate) => candidate.name === token.filter)?.command
+  if (!command) return null
+  return command === "rename"
+    ? { command, displayName: null }
+    : { command }
 }
 
 /** Build the deterministic cockpit-first command rows, filtering a slash token. */
@@ -277,7 +297,7 @@ export function PromptEditor({
 }: {
   focusRequest?: number
   keyboardActive?: boolean
-  onRunCommand?: (command: CockpitCommand) => void
+  onRunCommand?: (command: CockpitCommand, renameDisplayName?: string | null) => void
 }): ReactNode {
   const selectedSessionId = useAppSelector(selectFocusedSessionId)
   return selectedSessionId === null
@@ -331,7 +351,7 @@ function SelectedPromptEditor({
   sessionId: SessionId
   focusRequest: number
   keyboardActive: boolean
-  onRunCommand: (command: CockpitCommand) => void
+  onRunCommand: (command: CockpitCommand, renameDisplayName?: string | null) => void
 }): ReactNode {
   const controller = useController()
   const palette = usePalette()
@@ -776,7 +796,10 @@ function SelectedPromptEditor({
       pendingQueryRenderMetric.current = null
       commitCompletion(null)
       setRows(MIN_EDITOR_ROWS)
-      onRunCommand(cockpitCommand)
+      onRunCommand(
+        cockpitCommand.command,
+        cockpitCommand.command === "rename" ? cockpitCommand.displayName : undefined,
+      )
       return
     }
     if (!ready || restorationContextOpen) return

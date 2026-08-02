@@ -22,6 +22,7 @@ export const THREAD_SIDEBAR_DEFAULT_BREAKPOINT = 121
 export const THREAD_SIDEBAR_TITLE = "Threads"
 export const THREAD_SIDEBAR_NEW_THREAD_LABEL = "New thread"
 export const THREAD_SIDEBAR_CLOSE_LABEL = "×"
+export const THREAD_SIDEBAR_RENAME_LABEL = "✎"
 export const THREAD_SIDEBAR_FOCUS_HINT = "↑↓ · Enter open · d close · Esc"
 export const THREAD_SIDEBAR_IDLE_HINT = "F3 focus · /new create"
 
@@ -109,6 +110,7 @@ export interface ThreadSidebarProps {
   readonly focused: boolean
   readonly onThread: (session: SessionListItem) => void
   readonly onCloseThread: (session: SessionListItem) => void
+  readonly onRenameThread: (session: SessionListItem) => void
   readonly onNewThread: () => void
 }
 
@@ -119,6 +121,7 @@ export function ThreadSidebar({
   focused,
   onThread,
   onCloseThread,
+  onRenameThread,
   onNewThread,
 }: ThreadSidebarProps): ReactNode {
   const palette = usePalette()
@@ -205,6 +208,7 @@ export function ThreadSidebar({
                 highlighted={focused ? cursorId === thread.id : thread.selected}
                 onThread={onThread}
                 onCloseThread={onCloseThread}
+                onRenameThread={onRenameThread}
               />
             ))}
           </box>
@@ -223,11 +227,13 @@ function ThreadSidebarRow({
   highlighted,
   onThread,
   onCloseThread,
+  onRenameThread,
 }: {
   readonly thread: SessionListItem
   readonly highlighted: boolean
   readonly onThread: (session: SessionListItem) => void
   readonly onCloseThread: (session: SessionListItem) => void
+  readonly onRenameThread: (session: SessionListItem) => void
 }): ReactNode {
   const palette = usePalette()
   const marker = thread.selected
@@ -283,12 +289,35 @@ function ThreadSidebarRow({
           </text>
         </box>
       </box>
-      <text style={{ paddingLeft: 2 }} fg={palette.muted} wrapMode="none">
-        <span fg={palette.muted}>{`${PROVIDER_LABELS[thread.providerKind]} · `}</span>
-        <span fg={palette.status[thread.status]}>
-          {thread.lifecycle === "background" ? "bg" : STATUS_LABELS[thread.status]}
-        </span>
-      </text>
+      <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
+        <text
+          style={{ flexGrow: 1, flexShrink: 1, overflow: "hidden", paddingLeft: 2 }}
+          fg={palette.muted}
+          wrapMode="none"
+        >
+          <span fg={palette.muted}>{`${PROVIDER_LABELS[thread.providerKind]} · `}</span>
+          <span fg={palette.status[thread.status]}>
+            {thread.lifecycle === "background" ? "bg" : STATUS_LABELS[thread.status]}
+          </span>
+        </text>
+        <box
+          style={{
+            width: 2,
+            height: 1,
+            flexShrink: 0,
+            justifyContent: "flex-end",
+          }}
+          onMouseDown={(event: MouseEvent) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onRenameThread(thread)
+          }}
+        >
+          <text fg={highlighted ? palette.text : palette.muted}>
+            {THREAD_SIDEBAR_RENAME_LABEL}
+          </text>
+        </box>
+      </box>
     </box>
   )
 }

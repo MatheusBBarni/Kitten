@@ -68,6 +68,7 @@ export type CockpitCommand =
   | "sessions"
   | "resume-session"
   | "start-new-run"
+  | "rename"
   | "clear-run"
   | "model-select"
   | "statusline"
@@ -258,6 +259,7 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "next-tab", name: "next-tab", description: "Select the next visible conversation" },
   { command: "resume-session", name: "resume", description: "Find and resume a saved run for this project" },
   { command: "start-new-run", name: "new", description: "Create a new conversation with the selected provider" },
+  { command: "rename", name: "rename", description: "Rename the selected conversation" },
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
   { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
   { command: "statusline", name: "statusline", description: "Describe and review your personal statusline" },

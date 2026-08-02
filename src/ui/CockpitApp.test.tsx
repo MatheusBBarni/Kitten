@@ -62,6 +62,7 @@ import {
   THREAD_SIDEBAR_FOCUS_HINT,
   THREAD_SIDEBAR_IDLE_HINT,
   THREAD_SIDEBAR_NEW_THREAD_LABEL,
+  THREAD_SIDEBAR_RENAME_LABEL,
   THREAD_SIDEBAR_TITLE,
 } from "./ThreadSidebar.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
@@ -78,6 +79,16 @@ function pointOf(frame: string, needle: string): { x: number; y: number } {
   const y = rows.findIndex((row) => row.includes(needle))
   if (y < 0) throw new Error(`Could not find "${needle}" in frame`)
   return { x: rows[y]!.indexOf(needle), y }
+}
+
+function pointBelow(frame: string, rowNeedle: string, action: string): { x: number; y: number } {
+  const rows = lines(frame)
+  const row = rows.findIndex((line) => line.includes(rowNeedle))
+  if (row < 0) throw new Error(`Could not find "${rowNeedle}" in frame`)
+  const actionRow = rows[row + 1]
+  const x = actionRow?.indexOf(action) ?? -1
+  if (x < 0) throw new Error(`Could not find "${action}" below "${rowNeedle}" in frame`)
+  return { x, y: row + 1 }
 }
 
 /**
@@ -464,6 +475,29 @@ describe("CockpitApp thread sidebar", () => {
     await destroyMounted(setup.renderer)
   })
 
+  it("opens the clicked thread's prefilled rename dialog without switching conversations", async () => {
+    const controller = createFakeController()
+    controller.store.renameConversation("codex", "Second thread")
+    const setup = await renderCockpitApp(controller, 140, 30)
+    const frame = await setup.waitForFrame((candidate) =>
+      candidate.includes("Second thread") && candidate.includes(THREAD_SIDEBAR_RENAME_LABEL),
+    )
+    const point = pointBelow(frame, "Second thread", THREAD_SIDEBAR_RENAME_LABEL)
+
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+
+    const dialog = await setup.waitForFrame((candidate) => candidate.includes("Rename conversation"))
+    expect(dialog).toContain("Second thread")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "codex",
+    })
+    expect(controller.calls.selectConversation).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("Second thread")
+    await destroyMounted(setup.renderer)
+  })
+
   it("opens the captured rename flow for the highlighted sidebar thread", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller, 140, 30)
@@ -481,6 +515,39 @@ describe("CockpitApp thread sidebar", () => {
     expect(controller.calls.renameConversation).toEqual([
       { sessionId: "claude-code", displayName: "API cleanup" },
     ])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the selected thread's rename dialog for a bare /rename command", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await runSlashCommand(setup, "rename")
+
+    const dialog = await setup.waitForFrame((frame) => frame.includes("Rename conversation"))
+    expect(dialog).toContain("Claude Code")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "claude-code",
+    })
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("Claude Code")
+    expect(controller.calls.renameConversation).toEqual([])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renames the selected thread immediately for /rename with a title", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await runSlashCommand(setup, "rename   API  cleanup  ")
+
+    await setup.waitFor(() => controller.calls.renameConversation.length === 1)
+    expect(controller.calls.renameConversation).toEqual([
+      { sessionId: "claude-code", displayName: "API  cleanup" },
+    ])
+    expect(controller.store.getState().workspace.conversations["claude-code"]?.displayName).toBe("API  cleanup")
+    expect(controller.store.getState().overlays.tabDialog).toBeNull()
+    expect(controller.calls.sendPrompt).toEqual([])
     await destroyMounted(setup.renderer)
   })
 })

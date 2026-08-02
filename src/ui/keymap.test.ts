@@ -263,6 +263,7 @@ describe("COCKPIT_COMMANDS", () => {
       ["next-tab", "next-tab"],
       ["resume-session", "resume"],
       ["start-new-run", "new"],
+      ["rename", "rename"],
       ["clear-run", "clear"],
       ["model-select", "model"],
       ["statusline", "statusline"],

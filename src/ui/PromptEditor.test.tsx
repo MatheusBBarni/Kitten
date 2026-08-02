@@ -56,7 +56,7 @@ import { DARK_PALETTE } from "./theme.ts"
 async function renderEditor(
   controller: FakeController,
   height = 10,
-  onRunCommand?: (command: CockpitCommand) => void,
+  onRunCommand?: (command: CockpitCommand, renameDisplayName?: string | null) => void,
   dockPromptAtBottom = false,
 ): Promise<TestRendererSetup> {
   const editor = <PromptEditor onRunCommand={onRunCommand} />
@@ -662,18 +662,25 @@ describe("PromptEditor slash commands", () => {
   })
 
   it("recognizes only complete cockpit-command drafts for immediate submission", () => {
-    expect(cockpitCommandForDraft("/sessions", 9)).toBe("sessions")
-    expect(cockpitCommandForDraft("/new", 4)).toBe("start-new-run")
-    expect(cockpitCommandForDraft("/clear", 6)).toBe("clear-run")
-    expect(cockpitCommandForDraft("/model ", 7)).toBe("model-select")
-    expect(cockpitCommandForDraft("/statusline", 11)).toBe("statusline")
-    expect(cockpitCommandForDraft("/history", 8)).toBe("reveal-history")
-    expect(cockpitCommandForDraft("/latest", 7)).toBe("return-to-live")
+    expect(cockpitCommandForDraft("/sessions", 9)).toEqual({ command: "sessions" })
+    expect(cockpitCommandForDraft("/new", 4)).toEqual({ command: "start-new-run" })
+    expect(cockpitCommandForDraft("/clear", 6)).toEqual({ command: "clear-run" })
+    expect(cockpitCommandForDraft("/model ", 7)).toEqual({ command: "model-select" })
+    expect(cockpitCommandForDraft("/statusline", 11)).toEqual({ command: "statusline" })
+    expect(cockpitCommandForDraft("/history", 8)).toEqual({ command: "reveal-history" })
+    expect(cockpitCommandForDraft("/latest", 7)).toEqual({ command: "return-to-live" })
+    expect(cockpitCommandForDraft("/rename", 7)).toEqual({ command: "rename", displayName: null })
+    const directRename = "/rename   API  cleanup  "
+    expect(cockpitCommandForDraft(directRename, directRename.length)).toEqual({
+      command: "rename",
+      displayName: "API  cleanup",
+    })
     expect(cockpitCommandForDraft("/history now", 12)).toBeNull()
     expect(cockpitCommandForDraft("/latest now", 11)).toBeNull()
     expect(cockpitCommandForDraft("/statusline describe compact", 28)).toBeNull()
     expect(cockpitCommandForDraft("/review", 7)).toBeNull()
     expect(cockpitCommandForDraft("/sessions now", 13)).toBeNull()
+    expect(cockpitCommandForDraft("/rename-now", 11)).toBeNull()
   })
 
   it("produces no candidates for an unmatched token", () => {
@@ -808,6 +815,21 @@ describe("PromptEditor slash commands", () => {
 
     await setup.waitFor(() => dispatched.length === 1)
     expect(dispatched).toEqual(["sessions"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("dispatches a normalized direct /rename title without sending it to the agent", async () => {
+    const controller = createFakeController()
+    const dispatched: { command: CockpitCommand; displayName?: string | null }[] = []
+    const setup = await renderEditor(controller, 32, (command, displayName) => dispatched.push({ command, displayName }), true)
+
+    await type(setup, "/rename   API  cleanup  ")
+    await pressEnter(setup)
+
+    await setup.waitFor(() => dispatched.length === 1)
+    expect(dispatched).toEqual([{ command: "rename", displayName: "API  cleanup" }])
     expect(controller.calls.sendPrompt).toEqual([])
     expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
     await destroyMounted(setup.renderer)
