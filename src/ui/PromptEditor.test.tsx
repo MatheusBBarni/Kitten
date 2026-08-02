@@ -56,7 +56,7 @@ import { DARK_PALETTE } from "./theme.ts"
 async function renderEditor(
   controller: FakeController,
   height = 10,
-  onRunCommand?: (command: CockpitCommand) => void,
+  onRunCommand?: (command: CockpitCommand, renameDisplayName?: string | null) => void,
   dockPromptAtBottom = false,
 ): Promise<TestRendererSetup> {
   const editor = <PromptEditor onRunCommand={onRunCommand} />
@@ -616,7 +616,7 @@ describe("PromptEditor post-interrupt continuation", () => {
     await pressEnter(setup)
 
     await type(setup, "/")
-    await frameWith(setup, "Commands")
+    await frameWith(setup, "Cockpit")
     await pressEscape(setup)
     expect(controller.calls.recoverPostInterruptContinuation).toEqual([])
 
@@ -662,18 +662,25 @@ describe("PromptEditor slash commands", () => {
   })
 
   it("recognizes only complete cockpit-command drafts for immediate submission", () => {
-    expect(cockpitCommandForDraft("/sessions", 9)).toBe("sessions")
-    expect(cockpitCommandForDraft("/new", 4)).toBe("start-new-run")
-    expect(cockpitCommandForDraft("/clear", 6)).toBe("clear-run")
-    expect(cockpitCommandForDraft("/model ", 7)).toBe("model-select")
-    expect(cockpitCommandForDraft("/statusline", 11)).toBe("statusline")
-    expect(cockpitCommandForDraft("/history", 8)).toBe("reveal-history")
-    expect(cockpitCommandForDraft("/latest", 7)).toBe("return-to-live")
+    expect(cockpitCommandForDraft("/sessions", 9)).toEqual({ command: "sessions" })
+    expect(cockpitCommandForDraft("/new", 4)).toEqual({ command: "start-new-run" })
+    expect(cockpitCommandForDraft("/clear", 6)).toEqual({ command: "clear-run" })
+    expect(cockpitCommandForDraft("/model ", 7)).toEqual({ command: "model-select" })
+    expect(cockpitCommandForDraft("/statusline", 11)).toEqual({ command: "statusline" })
+    expect(cockpitCommandForDraft("/history", 8)).toEqual({ command: "reveal-history" })
+    expect(cockpitCommandForDraft("/latest", 7)).toEqual({ command: "return-to-live" })
+    expect(cockpitCommandForDraft("/rename", 7)).toEqual({ command: "rename", displayName: null })
+    const directRename = "/rename   API  cleanup  "
+    expect(cockpitCommandForDraft(directRename, directRename.length)).toEqual({
+      command: "rename",
+      displayName: "API  cleanup",
+    })
     expect(cockpitCommandForDraft("/history now", 12)).toBeNull()
     expect(cockpitCommandForDraft("/latest now", 11)).toBeNull()
     expect(cockpitCommandForDraft("/statusline describe compact", 28)).toBeNull()
     expect(cockpitCommandForDraft("/review", 7)).toBeNull()
     expect(cockpitCommandForDraft("/sessions now", 13)).toBeNull()
+    expect(cockpitCommandForDraft("/rename-now", 11)).toBeNull()
   })
 
   it("produces no candidates for an unmatched token", () => {
@@ -686,7 +693,7 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    const menu = await frameWith(setup, "Commands", "Cockpit", "/handoff")
+    const menu = await frameWith(setup, "Cockpit", "/handoff")
 
     expect(menu.indexOf("/handoff")).toBeLessThan(menu.indexOf("/shell"))
     expect(menu).toContain("▸ /handoff")
@@ -701,12 +708,12 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "Cockpit")
+    await frameWith(setup, "Cockpit")
     const menu = setup.renderer.root.findDescendantById(SLASH_MENU_ID) as Renderable | undefined
     const scrollbox = setup.renderer.root.findDescendantById(SLASH_MENU_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
 
     expect(menu?.height).toBe(MAX_SLASH_MENU_ROWS)
-    expect(scrollbox?.height).toBe(menu!.height - 2)
+    expect(scrollbox?.height).toBe(menu!.height - 3)
     expect(scrollbox?.verticalScrollBar.height).toBe(scrollbox?.height)
     expect(scrollbox?.verticalScrollBar.y).toBe(scrollbox?.y)
     expect(scrollbox?.scrollTop).toBe(0)
@@ -719,7 +726,7 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "Cockpit", "▸ /handoff")
+    await frameWith(setup, "Cockpit", "▸ /handoff")
     // Native key events arrive one at a time. Flush each one so the next menu
     // selection observes the preceding state transition instead of every
     // handler closing over the same index in one React batch.
@@ -743,7 +750,7 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/rev")
-    const menu = await frameWith(setup, "Commands", "Agent commands", "/review", "[scope]")
+    const menu = await frameWith(setup, "Agent commands", "/review", "[scope]")
     expect(menu).not.toContain("/settings")
     expect(menu).toContain("▸ /review")
 
@@ -751,7 +758,7 @@ describe("PromptEditor slash commands", () => {
     expect(controller.calls.sendPrompt).toEqual([])
     expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/review ")
     expect(setup.renderer.currentFocusedEditor?.cursorOffset).toBe(8)
-    expect(await setup.waitForFrame((frame) => frame.includes("/review ") && !frame.includes("Commands"))).not.toContain("Commands")
+    expect(await setup.waitForFrame((frame) => frame.includes("/review ") && !frame.includes("/handoff"))).not.toContain("/handoff")
 
     // Selecting an agent command owns the separating space; subsequent prompt text
     // must append directly instead of creating an accidental double space.
@@ -768,7 +775,7 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, (command) => dispatched.push(command), true)
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "▸ /handoff")
+    await frameWith(setup, "▸ /handoff")
     await pressEnter(setup)
 
     expect(dispatched).toEqual(["hand-off"])
@@ -788,7 +795,7 @@ describe("PromptEditor slash commands", () => {
       const setup = await renderEditor(controller, 32, (intent) => dispatched.push(intent), true)
 
       await type(setup, `/${name}`)
-      expect(await frameWith(setup, "Commands", `/${name}`)).toContain(`/${name}`)
+      expect(await frameWith(setup, `/${name}`)).toContain(`/${name}`)
       await pressEnter(setup)
 
       await setup.waitFor(() => dispatched.length === 1)
@@ -808,6 +815,21 @@ describe("PromptEditor slash commands", () => {
 
     await setup.waitFor(() => dispatched.length === 1)
     expect(dispatched).toEqual(["sessions"])
+    expect(controller.calls.sendPrompt).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("dispatches a normalized direct /rename title without sending it to the agent", async () => {
+    const controller = createFakeController()
+    const dispatched: { command: CockpitCommand; displayName?: string | null }[] = []
+    const setup = await renderEditor(controller, 32, (command, displayName) => dispatched.push({ command, displayName }), true)
+
+    await type(setup, "/rename   API  cleanup  ")
+    await pressEnter(setup)
+
+    await setup.waitFor(() => dispatched.length === 1)
+    expect(dispatched).toEqual([{ command: "rename", displayName: "API  cleanup" }])
     expect(controller.calls.sendPrompt).toEqual([])
     expect(setup.renderer.currentFocusedEditor?.plainText).toBe("")
     await destroyMounted(setup.renderer)
@@ -833,11 +855,11 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "/handoff")
+    await frameWith(setup, "/handoff")
     await pressEscape(setup)
 
     expect(setup.renderer.currentFocusedEditor?.plainText).toBe("/")
-    expect(await setup.waitForFrame((frame) => frame.includes("/") && !frame.includes("Commands"))).not.toContain("Commands")
+    expect(await setup.waitForFrame((frame) => frame.includes("/") && !frame.includes("/handoff"))).not.toContain("/handoff")
     await pressEnter(setup)
     expect(sentText(controller)).toBe("/")
 
@@ -879,7 +901,7 @@ describe("PromptEditor slash commands", () => {
     const baselineCommits = transcriptCommits
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "Cockpit", "/handoff")
+    await frameWith(setup, "Cockpit", "/handoff")
     await actAsync(() => {
       setup.mockInput.pressArrow("down")
       setup.mockInput.pressArrow("down")
@@ -898,7 +920,7 @@ describe("PromptEditor slash commands", () => {
     const setup = await renderEditor(controller, 32, undefined, true)
 
     await type(setup, "/")
-    await frameWith(setup, "Commands", "▸ /handoff")
+    await frameWith(setup, "▸ /handoff")
     await pressArrow(setup, "down")
     await pressArrow(setup, "up")
 

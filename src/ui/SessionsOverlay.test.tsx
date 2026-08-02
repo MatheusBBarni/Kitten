@@ -662,7 +662,8 @@ describe("SessionsOverlay routing", () => {
     controller.actions.selectConversation("a", { source: "kitty_chord" })
     const setup = await renderCockpit(controller, { width: 180, height: 40 })
 
-    expect(setup.captureCharFrame()).toContain("Child of Alpha · Running · explore")
+    expect(setup.captureCharFrame()).toContain("Child running")
+    expect(setup.captureCharFrame()).toContain("codex · Working")
     await openOverview(setup)
     await actAsync(() => {
       for (let index = 0; index < FLEET.length; index += 1) setup.mockInput.pressArrow("down")

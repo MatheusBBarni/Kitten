@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 import {
+  collapseLegacyImplicitProviderFleet,
   createCockpitSession as createRealCockpitSession,
   type CockpitSessionDeps,
 } from "../src/index.ts"
@@ -11,9 +12,13 @@ import type { AgentConnection } from "../src/agent/agentConnection.ts"
 import { createControllerActions } from "../src/app/actions.ts"
 import type { SessionController } from "../src/app/controller.ts"
 import type { ConfigWatcher } from "../src/config/configWatcher.ts"
-import { defaultAppConfig } from "../src/config/configLoader.ts"
+import { defaultAppConfig, resolveSessions } from "../src/config/configLoader.ts"
 import type { AppConfig, ConfigOption, ThemePreference } from "../src/core/types.ts"
-import type { PersistedRunRecord, PersistedRunRecordV1 } from "../src/persistence/runRecord.ts"
+import type {
+  PersistedRunRecord,
+  PersistedRunRecordV1,
+  PersistedRunRecordV4,
+} from "../src/persistence/runRecord.ts"
 import { createRunStore } from "../src/persistence/runStore.ts"
 import { createAppStore } from "../src/store/appStore.ts"
 import { selectThemePreference } from "../src/store/selectors.ts"
@@ -151,8 +156,110 @@ function persistedRun(runId: string, updatedAt: number, cwd = process.cwd()): Pe
   }
 }
 
+function legacyImplicitFleet(cwd = process.cwd()): PersistedRunRecordV4 {
+  const descriptors = [
+    { sessionId: "codex", providerKind: "codex" as const, title: "Codex", ordinal: 0 },
+    { sessionId: "claude-code", providerKind: "claude-code" as const, title: "Claude Code", ordinal: 1 },
+    { sessionId: "cursor", providerKind: "cursor" as const, title: "Cursor", ordinal: 2 },
+  ]
+  return {
+    version: 4,
+    runId: "legacy-implicit-fleet",
+    cwd,
+    gitBranch: null,
+    createdAt: 1_000,
+    updatedAt: 9_000,
+    conversations: Object.fromEntries(descriptors.map(({ sessionId, providerKind, title }) => [
+      sessionId,
+      {
+        sessionId,
+        providerKind,
+        cwd,
+        initialTitle: title,
+        acpSessionId: `stored-${sessionId}`,
+        lastPrompt: "",
+        messageCount: 0,
+        status: "idle" as const,
+      },
+    ])),
+    workspace: {
+      conversations: Object.fromEntries(descriptors.map(({ sessionId, title, ordinal }) => [
+        sessionId,
+        {
+          sessionId,
+          displayName: title,
+          lifecycle: "visible" as const,
+          createdOrdinal: ordinal,
+          attention: { seen: true, sequence: 0 },
+        },
+      ])),
+      order: descriptors.map(({ sessionId }) => sessionId),
+      selectedVisibleId: "claude-code",
+    },
+    handoffBundle: null,
+    harnessDeliveries: {},
+    contextPacks: {},
+  }
+}
+
 describe("createCockpitSession", () => {
-  it("starts a fresh run even when the project has persisted runs", async () => {
+  it("also collapses a legacy V1 implicit fleet without prompt history", () => {
+    const record = persistedRun("legacy-v1", 9_000, "/saved/kitten")
+    record.focusedAgentId = "cursor"
+    record.agents = {
+      codex: { sessionId: "stored-codex", lastPrompt: "", messageCount: 0, status: "idle" },
+      "claude-code": { sessionId: "stored-claude", lastPrompt: "", messageCount: 0, status: "idle" },
+      cursor: { sessionId: "stored-cursor", lastPrompt: "", messageCount: 0, status: "idle" },
+    }
+
+    const collapsed = collapseLegacyImplicitProviderFleet(
+      record,
+      resolveSessions(defaultAppConfig(), { launchCwd: process.cwd() }),
+    )
+
+    expect(collapsed.version).toBe(1)
+    if (collapsed.version === 1) {
+      expect(Object.keys(collapsed.agents)).toEqual(["cursor"])
+      expect(collapsed.focusedAgentId).toBe("cursor")
+    }
+  })
+
+  it("preserves legacy implicit threads with independent harness or Context Pack state", () => {
+    const record = legacyImplicitFleet()
+    record.contextPacks.codex = {
+      draft: {
+        version: 1,
+        revision: 1,
+        instructions: { original: "Preserve this context", mode: "preserve", discovered: "" },
+        budget: { unit: "estimated_tokens", limit: 8_000 },
+        brief: {
+          architecture: "Persisted thread state",
+          selectedContext: "Operator-authored context",
+          relationships: "The thread owns this pack",
+          ambiguities: "None",
+          budgetOmissions: "None",
+        },
+        selections: [],
+      },
+    }
+    record.harnessDeliveries.cursor = { version: "v1", generation: 2, state: "in_flight" }
+
+    const collapsed = collapseLegacyImplicitProviderFleet(
+      record,
+      resolveSessions(defaultAppConfig(), { launchCwd: process.cwd() }),
+    )
+
+    expect(collapsed.version).toBe(4)
+    if (collapsed.version === 4) {
+      expect(collapsed.workspace.order).toEqual(["codex", "cursor"])
+      expect(collapsed.workspace.selectedVisibleId).toBe("codex")
+      expect(collapsed.contextPacks.codex).toEqual(record.contextPacks.codex)
+      expect(collapsed.harnessDeliveries.cursor).toEqual(record.harnessDeliveries.cursor)
+      expect(collapsed.conversations["claude-code"]).toBeUndefined()
+    }
+  })
+
+  it("restores the newest global workspace instead of starting disconnected project threads", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-newest-"))
     try {
       const runStore = createRunStore({ enabled: true, path: base })
@@ -175,24 +282,28 @@ describe("createCockpitSession", () => {
         watchConfig: () => NOOP_WATCHER,
       })
 
-      expect(restored).toEqual([])
-      expect(sendInitialTasks).toBe(true)
+      expect(restored.map((record) => record.runId)).toEqual(["newest"])
+      expect(sendInitialTasks).toBe(false)
       await session.controller.dispose()
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
   })
 
-  it("keeps the fresh controller untouched when the project has no persisted runs", async () => {
+  it("starts only the first implicit provider when the project has no persisted threads", async () => {
     const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-resume-empty-"))
     try {
       let restoreCalls = 0
       let buildCalls = 0
+      let initialSessionIds: string[] = []
+      let seededSessionIds: string[] = []
       const session = await createCockpitSession({
         loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: true }),
         createRunStore: () => createRunStore({ enabled: true, path: base }),
         buildController: async (options) => {
           buildCalls += 1
+          initialSessionIds = options.initialSessions?.map(({ seed }) => seed.id) ?? []
+          seededSessionIds = [...options.store!.getState().workspace.order]
           return controllerOver(options.store!, () => {
             restoreCalls += 1
           })
@@ -203,6 +314,41 @@ describe("createCockpitSession", () => {
 
       expect(buildCalls).toBe(1)
       expect(restoreCalls).toBe(0)
+      expect(initialSessionIds).toEqual(["codex"])
+      expect(seededSessionIds).toEqual(["codex"])
+      await session.controller.dispose()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it("collapses the legacy three-provider placeholder fleet to its selected thread", async () => {
+    const base = mkdtempSync(join(tmpdir(), "kitten-cockpit-legacy-fleet-"))
+    try {
+      const runStore = createRunStore({ enabled: true, path: base })
+      runStore.save(legacyImplicitFleet("/saved/kitten"))
+      const restored: PersistedRunRecord[] = []
+      let initialSessionIds: string[] | undefined
+
+      const session = await createCockpitSession({
+        loadConfig: async () => ({ ...defaultAppConfig(), persistenceEnabled: true }),
+        createRunStore: () => runStore,
+        buildController: async (options) => {
+          initialSessionIds = options.initialSessions?.map(({ seed }) => seed.id)
+          return controllerOver(options.store!, (record) => restored.push(record))
+        },
+        persistConfig: async () => {},
+        watchConfig: () => NOOP_WATCHER,
+      })
+
+      expect(initialSessionIds).toEqual([])
+      expect(restored).toHaveLength(1)
+      expect(restored[0]?.version).toBe(4)
+      if (restored[0]?.version === 4) {
+        expect(restored[0].workspace.order).toEqual(["claude-code"])
+        expect(restored[0].workspace.selectedVisibleId).toBe("claude-code")
+        expect(Object.keys(restored[0].conversations)).toEqual(["claude-code"])
+      }
       await session.controller.dispose()
     } finally {
       rmSync(base, { recursive: true, force: true })
@@ -302,12 +448,13 @@ describe("createCockpitSession", () => {
       })
       await first.controller.dispose()
 
-      expect(runStore.list(launchCwd)).toHaveLength(1)
+      const firstRun = runStore.list(launchCwd)
+      expect(firstRun).toHaveLength(1)
       expect(runStore.list(alphaCwd)).toEqual([])
       expect(runStore.list(betaCwd)).toEqual([])
 
       const second = await createCockpitSession({
-        cwd: launchCwd,
+        cwd: betaCwd,
         config,
         createRunStore: () => runStore,
         buildController: async (options) => controllerOver(options.store!, (record) => {
@@ -317,8 +464,13 @@ describe("createCockpitSession", () => {
         watchConfig: () => NOOP_WATCHER,
       })
 
-      expect(restored).toEqual([])
+      expect(restored).toHaveLength(1)
+      expect(restored[0]?.cwd).toBe(resolve(launchCwd))
       await second.controller.dispose()
+      expect(runStore.list(launchCwd).map(({ runId }) => runId)).toEqual([
+        firstRun[0]!.runId,
+      ])
+      expect(runStore.list(betaCwd)).toEqual([])
     } finally {
       rmSync(stateBase, { recursive: true, force: true })
       rmSync(launchCwd, { recursive: true, force: true })
@@ -360,8 +512,8 @@ describe("createCockpitSession", () => {
     expect(records.find((record) => record.type === "max_concurrent_sessions")).toMatchObject({ count: 2 })
 
     // The store is watched: a prompt/response pair now produces a first-response event.
-    controller.store.applyEvent("claude-code", { kind: "user_message", messageId: "m1", text: "hi" })
-    controller.store.applyEvent("claude-code", { kind: "agent_message", messageId: "m2", textDelta: "hey" })
+    controller.store.applyEvent("codex", { kind: "user_message", messageId: "m1", text: "hi" })
+    controller.store.applyEvent("codex", { kind: "agent_message", messageId: "m2", textDelta: "hey" })
     expect(records.some((record) => record.type === "first_response_ms")).toBe(true)
     await controller.dispose()
   })

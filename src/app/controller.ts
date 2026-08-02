@@ -21,9 +21,10 @@
 import type { AgentConnection, AgentPromptInput, PermissionOutcome, PermissionRequest, PromptBlock } from "../agent/agentConnection.ts"
 import { createAgentConnection } from "../agent/agentConnection.ts"
 import { CONTEXT_PACK_MCP_INSTRUCTIONS, type ContextPackMcpOperation } from "../agent/contextPackMcp.ts"
-import { lstatSync, realpathSync } from "node:fs"
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs"
 import { isAbsolute, resolve } from "node:path"
 import { findAgentConfig, resolveSessions } from "../config/configLoader.ts"
+import { isInsideRepo } from "../config/firstRun.ts"
 import {
   CONTEXT_BUILD_OPERATIONS,
   resolveContextBuildCapability,
@@ -51,7 +52,7 @@ import {
 } from "../config/readiness.ts"
 import { readGitBranch } from "../config/gitBranch.ts"
 import { resolveMcpServers, type McpResolutionResult } from "../config/mcpResolver.ts"
-import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type CursorRecoveryState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
+import { DEFAULT_PROVIDER_ORDER, MODEL_CATEGORY, type AgentConfig, type AppConfig, type ClarificationCapability, type ClarificationOutcome, type ClarificationPayload, type ContextBuildAvailability, type ContextBuildBinding, type ContextBuildOperation, type ContextPackMutationResult, type ContextPackReviewCandidate, type ContextPackSealedState, type ContextPackState, type CursorRecoveryState, type DomainSessionEvent, type DraftContextPack, type DurableSealedContextPack, type HandoffBundle, type HandoffSourceIdentityIndex, type ManagedWorktreeBinding, type ManagedWorktreeReason, type ProviderKind, type ProviderModelDefault, type RecipientFit, type RecipientFitEvidence, type RecipientProfileAvailability, type ResolvedAgentConfig, type ResolvedRecipientProfile, type ResolvedSession, type RevisionFencedContextPackMutation, type SessionId, type SessionSeed, type SessionState, type SessionStatus, type WorkspaceConversationSeed } from "../core/types.ts"
 import type { HardStopContinuationCapability } from "../core/types.ts"
 import { renderHarnessPrompt } from "../core/harnessPrompt.ts"
 import type { ExploreDenialReason } from "../core/explorePolicy.ts"
@@ -121,6 +122,7 @@ import {
   type AgentSession,
   type CloseChoice,
   type CloseConversationResult,
+  type CreateConversationInput,
   type ControllerActions,
   type ContextBuildAvailabilityResult,
   type ContextBuildDenialReason,
@@ -360,6 +362,11 @@ export interface SessionControllerOptions {
   cwd?: string
   /** The store to drive. Defaults to one seeded from the config's providers. */
   store?: AppStore
+  /**
+   * Exact sessions to open during boot. Omitted preserves the config-resolved fleet;
+   * an empty list is valid while a persisted workspace is about to be restored.
+   */
+  initialSessions?: readonly ResolvedSession[]
   /** How to build a connection for a provider. Defaults to a real spawning connection. */
   createConnection?: (config: ResolvedAgentConfig) => AgentConnection
   /** How to build the restricted Context Build child connection. Defaults to ACP filesystem disabled. */
@@ -387,6 +394,10 @@ export interface SessionControllerOptions {
   readBranch?: (cwd: string) => Promise<string | null>
   /** Repository file discovery source. Defaults to the fail-soft production source. */
   repositoryFileSource?: RepositoryFileSource
+  /** Git-project admission check for an explicitly selected conversation cwd. */
+  insideRepo?: (cwd: string) => boolean
+  /** Existing readable-directory check for an explicitly selected conversation cwd. */
+  projectDirectory?: (cwd: string) => boolean
   /** Controller-owned managed child workspace lifecycle service. */
   managedWorktreeProvisioner?: ManagedWorktreeProvisioner
   /** The telemetry recorder actions report navigation and switch outcomes to. */
@@ -446,6 +457,8 @@ export interface SessionController {
   readonly shell: ShellRuntimeState
   /** Every session's standing, in display order. */
   runtimes(): AgentRuntimeState[]
+  /** Configured provider recipes available for a fresh project thread. */
+  providers?(): readonly ProviderKind[]
   /** One session's standing, or `undefined` when no session has that id. */
   runtime(sessionId: SessionId): AgentRuntimeState | undefined
   /** Whether the session completed its handshake and holds a live ACP session. */
@@ -900,6 +913,15 @@ export async function createSessionController(options: SessionControllerOptions)
   const onError = options.onError ?? (() => {})
   const readBranch = options.readBranch ?? readGitBranch
   const repositoryFileSource = options.repositoryFileSource ?? productionRepositoryFileSource
+  const insideRepo = options.insideRepo ?? isInsideRepo
+  const projectDirectory = options.projectDirectory ?? ((candidate: string) => {
+    try {
+      accessSync(candidate, constants.R_OK | constants.X_OK)
+      return statSync(candidate).isDirectory()
+    } catch {
+      return false
+    }
+  })
   const managedWorktrees = options.managedWorktreeProvisioner ?? createManagedWorktreeProvisioner()
   const resolveDeliveryCapability = options.resolveHarnessCapability ?? defaultResolveHarnessCapability
   const scheduleClarificationTimeout = options.scheduleClarificationTimeout ?? defaultScheduleClarificationTimeout
@@ -912,10 +934,12 @@ export async function createSessionController(options: SessionControllerOptions)
     ? options.usageSeenSink ?? createUsageSeenJsonlFileSink(resolveTelemetryPath())
     : undefined
 
-  // The resolved fleet, in declared order (ADR-005): one session per configured
-  // provider in the launch directory when the config declares none, else each
-  // declared session with its own `cwd`/`title`/`task` and a distinct session id.
-  const initialPlan: { seed: SessionSeed; config: ResolvedAgentConfig }[] = resolveSessions(options.config, { launchCwd: cwd }).map(
+  // The resolved startup set, in declared order. The app shell may narrow the
+  // implicit zero-config provider fleet to one thread, or pass an empty set while
+  // it prepares to restore a persisted workspace.
+  const initialPlan: { seed: SessionSeed; config: ResolvedAgentConfig }[] = (
+    options.initialSessions ?? resolveSessions(options.config, { launchCwd: cwd })
+  ).map(
     (resolved) => ({ seed: resolved.seed, config: resolved.spawn }),
   )
 
@@ -2055,17 +2079,26 @@ export async function createSessionController(options: SessionControllerOptions)
     return teardownConversation(runtime, status)
   }
 
-  async function createConversation(): Promise<SessionId | null> {
+  async function createConversation(input: CreateConversationInput = {}): Promise<SessionId | null> {
     if (disposed) return null
     const state = store.getState()
     const selectedId = state.workspace.selectedVisibleId
     const selected = selectedId ? state.sessions[selectedId] : undefined
-    const providerKind = selected?.providerKind ?? DEFAULT_PROVIDER_ORDER.find(
+    const providerKind = input.providerKind ?? selected?.providerKind ?? DEFAULT_PROVIDER_ORDER.find(
       (kind) => findAgentConfig(options.config, kind) !== undefined,
     )
     const config = providerKind ? findAgentConfig(options.config, providerKind) : undefined
     if (!providerKind || !config) {
       store.setWorkspaceNotice({ code: "no-provider-available" })
+      return null
+    }
+
+    const requestedCwd = input.cwd?.trim()
+    const projectCwd = requestedCwd
+      ? resolve(cwd, requestedCwd)
+      : selected?.cwd ?? cwd
+    if (requestedCwd && (!projectDirectory(projectCwd) || !insideRepo(projectCwd))) {
+      store.setWorkspaceNotice({ code: "project-not-git-repository" })
       return null
     }
 
@@ -2078,7 +2111,7 @@ export async function createSessionController(options: SessionControllerOptions)
       id: sessionId,
       providerKind,
       title: config.displayName,
-      cwd: selected?.cwd ?? cwd,
+      cwd: projectCwd,
     }
     store.setWorkspaceNotice(null)
     store.addSession(seed, { displayName: seed.title, availability: { kind: "starting" } })
@@ -4069,6 +4102,9 @@ export async function createSessionController(options: SessionControllerOptions)
     actions,
     shell,
     runtimes: () => orderedRuntimes(store, runtimes).map((runtime) => runtime.state),
+    providers: () => DEFAULT_PROVIDER_ORDER.filter(
+      (providerKind) => findAgentConfig(options.config, providerKind) !== undefined,
+    ),
     runtime: (sessionId) => runtimes.get(sessionId)?.state,
     isReady: (sessionId) => runtimes.get(sessionId)?.state.ready === true,
     handoffSourceIdentities,

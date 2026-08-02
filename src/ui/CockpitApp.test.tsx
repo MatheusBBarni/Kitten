@@ -7,7 +7,7 @@ import { describe, expect, it, spyOn } from "bun:test"
 import { basename } from "node:path"
 
 import { createTestRenderer } from "@opentui/core/testing"
-import { KeyEvent } from "@opentui/core"
+import { KeyEvent, type ScrollBoxRenderable } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 
 import { createFakeController, readyRuntimes, type FakeController } from "../../test/fakeController.ts"
@@ -24,6 +24,7 @@ import type {
 } from "../persistence/runRecord.ts"
 import type { RunStore } from "../persistence/runStore.ts"
 import { createInMemoryShellRuntimeFactory } from "../shell/shellRuntime.ts"
+import { createAppStore } from "../store/appStore.ts"
 import { selectHasOpenOverlay } from "../store/selectors.ts"
 import {
   createTelemetryRecorder,
@@ -36,10 +37,13 @@ import {
   CockpitApp,
   EXTERNAL_RUN_COPIED_PREFIX,
   EXTERNAL_RUN_EMPTY,
+  HELP_SCROLLBOX_ID,
+  HELP_SCROLL_HINT,
   HELP_TITLE,
 } from "./CockpitApp.tsx"
 import { EMPTY_TRANSCRIPT_HINT } from "./ConversationView.tsx"
 import { CONTEXT_PACK_TITLE } from "./ContextPackPanel.tsx"
+import { NEW_THREAD_DIALOG_TITLE, NEW_THREAD_PROJECT_ERROR } from "./NewThreadDialog.tsx"
 import { EDITOR_KEYMAP, HELP_ENTRIES, KEYMAP_HINT, SHELL_EXIT_HINT } from "./keymap.ts"
 import { renderCockpit } from "./main.tsx"
 import { PROMPT_PLACEHOLDER } from "./PromptEditor.tsx"
@@ -53,6 +57,14 @@ import { SESSION_PICKER_TITLE, type SessionPickerSource } from "./SessionPicker.
 import { SESSIONS_TITLE } from "./SessionsOverlay.tsx"
 import { STATUS_LABELS } from "./StatusStrip.tsx"
 import { STATUSLINE_PREVIEW_LABEL, STATUSLINE_REQUEST_PROMPT, STATUSLINE_TITLE } from "./StatuslineOverlay.tsx"
+import {
+  THREAD_SIDEBAR_CLOSE_LABEL,
+  THREAD_SIDEBAR_FOCUS_HINT,
+  THREAD_SIDEBAR_IDLE_HINT,
+  THREAD_SIDEBAR_NEW_THREAD_LABEL,
+  THREAD_SIDEBAR_RENAME_LABEL,
+  THREAD_SIDEBAR_TITLE,
+} from "./ThreadSidebar.tsx"
 import { WELCOME_GREETING, WELCOME_KITTEN, WELCOME_ON_RAMP } from "./WelcomeBanner.tsx"
 
 const PROJECT_FOLDER = basename(process.cwd())
@@ -60,6 +72,23 @@ const PROJECT_FOLDER = basename(process.cwd())
 /** The frame's rows. `captureCharFrame` terminates the last row with a newline. */
 function lines(frame: string): string[] {
   return frame.replace(/\n$/, "").split("\n")
+}
+
+function pointOf(frame: string, needle: string): { x: number; y: number } {
+  const rows = lines(frame)
+  const y = rows.findIndex((row) => row.includes(needle))
+  if (y < 0) throw new Error(`Could not find "${needle}" in frame`)
+  return { x: rows[y]!.indexOf(needle), y }
+}
+
+function pointBelow(frame: string, rowNeedle: string, action: string): { x: number; y: number } {
+  const rows = lines(frame)
+  const row = rows.findIndex((line) => line.includes(rowNeedle))
+  if (row < 0) throw new Error(`Could not find "${rowNeedle}" in frame`)
+  const actionRow = rows[row + 1]
+  const x = actionRow?.indexOf(action) ?? -1
+  if (x < 0) throw new Error(`Could not find "${action}" below "${rowNeedle}" in frame`)
+  return { x, y: row + 1 }
 }
 
 /**
@@ -243,8 +272,8 @@ describe("CockpitApp layout", () => {
     expect(frame).toContain(WELCOME_GREETING)
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).not.toContain(EMPTY_TRANSCRIPT_HINT)
-    expect(frame).toContain("[selected] Claude Code")
-    expect(frame).toContain("shared×3 Sessions +2")
+    expect(frame).not.toContain("[selected] Claude Code")
+    expect(frame).not.toContain("shared×3 Sessions +2")
 
     // The strip keeps selected-provider context only; live work is transcript-local.
     const strip = rows.at(-1) ?? ""
@@ -336,6 +365,190 @@ describe("CockpitApp layout", () => {
     const ready = await waitForFrame((frame) => frame.includes(WELCOME_GREETING))
     expect(ready).not.toContain("This agent is not ready.")
     await destroyMounted(renderer)
+  })
+})
+
+describe("CockpitApp thread sidebar", () => {
+  it("renders project-grouped provider threads by default in a wide terminal", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+    const frame = await setup.waitForFrame((candidate) =>
+      candidate.includes(THREAD_SIDEBAR_TITLE) && candidate.includes(THREAD_SIDEBAR_IDLE_HINT),
+    )
+
+    expect(frame).toContain(PROJECT_FOLDER)
+    expect(frame).toContain("3 threads")
+    expect(frame).toContain(THREAD_SIDEBAR_NEW_THREAD_LABEL)
+    expect(frame).toContain("Claude Code")
+    expect(frame).toContain("claude · Idle")
+    expect(frame).toContain("Codex")
+    expect(frame).toContain("codex · Idle")
+    expect(frame).toContain(THREAD_SIDEBAR_CLOSE_LABEL)
+    expect(frame).not.toContain("All projects")
+    expect(frame).not.toContain("[selected]")
+    expectNoOverflow(frame, 140, 30)
+    await destroyMounted(setup.renderer)
+  })
+
+  it("uses F3 and arrows to focus the sidebar and open another thread", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await actAsync(() => setup.mockInput.pressKey("F3"))
+    await setup.waitForFrame((frame) => frame.includes(THREAD_SIDEBAR_FOCUS_HINT))
+    await actAsync(() => setup.mockInput.pressArrow("down"))
+    await actAsync(() => setup.mockInput.pressEnter())
+
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+    expect(controller.calls.selectConversation).toEqual(["codex"])
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("codex")
+    await setup.waitForFrame((frame) => frame.includes(THREAD_SIDEBAR_IDLE_HINT))
+
+    await actAsync(async () => setup.mockInput.typeText("continue here"))
+    await actAsync(() => setup.mockInput.pressEnter())
+    await setup.waitFor(() => controller.calls.sendPrompt.length === 1)
+    expect(controller.calls.sendPrompt[0]).toEqual({ input: "continue here", sessionId: undefined })
+    await destroyMounted(setup.renderer)
+  })
+
+  it("routes focused-sidebar navigation before shell PTY input", async () => {
+    const { controller, runtime, shell } = shellReadyController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    try {
+      await runSlashCommand(setup, "shell")
+      await setup.waitForFrame((frame) => frame.includes("Shell · focused"))
+      await actAsync(() => setup.mockInput.pressKey("F3"))
+      await setup.waitForFrame((frame) => frame.includes(THREAD_SIDEBAR_FOCUS_HINT))
+
+      await actAsync(() => setup.mockInput.pressArrow("down"))
+      await actAsync(() => setup.mockInput.pressEnter())
+
+      await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+      expect(controller.calls.selectConversation).toEqual(["codex"])
+      expect(shell.writes).toEqual([])
+    } finally {
+      await destroyMounted(setup.renderer)
+      await runtime.dispose()
+    }
+  })
+
+  it("keeps a compact sidebar open and returns prompt focus after clicking a thread", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 100, 30)
+
+    await actAsync(() => setup.mockInput.pressKey("F3"))
+    const sidebar = await setup.waitForFrame((frame) =>
+      frame.includes(THREAD_SIDEBAR_FOCUS_HINT) && frame.includes("Codex"),
+    )
+    const point = pointOf(sidebar, "Codex")
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "codex")
+    const stillOpen = await setup.waitForFrame((frame) =>
+      frame.includes(THREAD_SIDEBAR_TITLE) && frame.includes(THREAD_SIDEBAR_IDLE_HINT),
+    )
+    expect(stillOpen).toContain("codex · Idle")
+    expect(controller.calls.selectConversation).toEqual(["codex"])
+    expect(setup.renderer.currentFocusedEditor).not.toBeNull()
+
+    await actAsync(async () => setup.mockInput.typeText("prompt survives sidebar"))
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("prompt survives sidebar")
+    await setup.waitForFrame((frame) => frame.includes("prompt survives sidebar"))
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the safe close flow from each thread's visible close button", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+    const frame = await setup.waitForFrame((candidate) => candidate.includes(THREAD_SIDEBAR_CLOSE_LABEL))
+    const point = pointOf(frame, THREAD_SIDEBAR_CLOSE_LABEL)
+
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+
+    const dialog = await setup.waitForFrame((candidate) => candidate.includes("Close conversation"))
+    expect(dialog).toContain("Claude Code")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({
+      kind: "close",
+      sessionId: "claude-code",
+    })
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the clicked thread's prefilled rename dialog without switching conversations", async () => {
+    const controller = createFakeController()
+    controller.store.renameConversation("codex", "Second thread")
+    const setup = await renderCockpitApp(controller, 140, 30)
+    const frame = await setup.waitForFrame((candidate) =>
+      candidate.includes("Second thread") && candidate.includes(THREAD_SIDEBAR_RENAME_LABEL),
+    )
+    const point = pointBelow(frame, "Second thread", THREAD_SIDEBAR_RENAME_LABEL)
+
+    await actAsync(async () => setup.mockMouse.pressDown(point.x, point.y))
+
+    const dialog = await setup.waitForFrame((candidate) => candidate.includes("Rename conversation"))
+    expect(dialog).toContain("Second thread")
+    expect(controller.store.getState().workspace.selectedVisibleId).toBe("claude-code")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "codex",
+    })
+    expect(controller.calls.selectConversation).toEqual([])
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("Second thread")
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the captured rename flow for the highlighted sidebar thread", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await actAsync(() => setup.mockInput.pressKey("F3"))
+    await actAsync(() => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes("Rename conversation"))
+    await actAsync(() => {
+      for (const _character of "Claude Code") setup.mockInput.pressBackspace()
+    })
+    await actAsync(async () => setup.mockInput.typeText("API cleanup"))
+    await actAsync(() => setup.mockInput.pressEnter())
+
+    await setup.waitFor(() => controller.calls.renameConversation.length === 1)
+    expect(controller.calls.renameConversation).toEqual([
+      { sessionId: "claude-code", displayName: "API cleanup" },
+    ])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("opens the selected thread's rename dialog for a bare /rename command", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await runSlashCommand(setup, "rename")
+
+    const dialog = await setup.waitForFrame((frame) => frame.includes("Rename conversation"))
+    expect(dialog).toContain("Claude Code")
+    expect(controller.store.getState().overlays.tabDialog).toEqual({
+      kind: "rename",
+      sessionId: "claude-code",
+    })
+    expect(setup.renderer.currentFocusedEditor?.plainText).toBe("Claude Code")
+    expect(controller.calls.renameConversation).toEqual([])
+    await destroyMounted(setup.renderer)
+  })
+
+  it("renames the selected thread immediately for /rename with a title", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await runSlashCommand(setup, "rename   API  cleanup  ")
+
+    await setup.waitFor(() => controller.calls.renameConversation.length === 1)
+    expect(controller.calls.renameConversation).toEqual([
+      { sessionId: "claude-code", displayName: "API  cleanup" },
+    ])
+    expect(controller.store.getState().workspace.conversations["claude-code"]?.displayName).toBe("API  cleanup")
+    expect(controller.store.getState().overlays.tabDialog).toBeNull()
+    expect(controller.calls.sendPrompt).toEqual([])
+    await destroyMounted(setup.renderer)
   })
 })
 
@@ -501,6 +714,56 @@ describe("CockpitApp alternate-screen layout", () => {
 })
 
 describe("CockpitApp keymap", () => {
+  it("opens numbered threads and cycles in the sidebar's grouped display order", async () => {
+    const store = createAppStore({
+      selectedVisibleId: "a-1",
+      seeds: [
+        { id: "a-1", providerKind: "claude-code", title: "A one", cwd: "/workspace/a" },
+        { id: "b-1", providerKind: "codex", title: "B one", cwd: "/workspace/b" },
+        { id: "a-2", providerKind: "cursor", title: "A two", cwd: "/workspace/a" },
+      ],
+    })
+    const runtimes: AgentRuntimeState[] = [
+      { sessionId: "a-1", providerKind: "claude-code", displayName: "A one", title: "A one", cwd: "/workspace/a", ready: true, acpSessionId: "session-a-1", mcp: { loaded: [], skipped: [] } },
+      { sessionId: "b-1", providerKind: "codex", displayName: "B one", title: "B one", cwd: "/workspace/b", ready: true, acpSessionId: "session-b-1", mcp: { loaded: [], skipped: [] } },
+      { sessionId: "a-2", providerKind: "cursor", displayName: "A two", title: "A two", cwd: "/workspace/a", ready: true, acpSessionId: "session-a-2", mcp: { loaded: [], skipped: [] } },
+    ]
+    const controller = createFakeController({ store, runtimes })
+    const setup = await renderCockpitApp(controller, 140, 30)
+
+    await actAsync(() => controller.store.confirmKittyKeyboard())
+
+    const second = keyEvent("2", { super: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", second)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "a-2")
+    expect(second.defaultPrevented).toBe(true)
+
+    const next = keyEvent("]", { super: true, shift: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", next)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "b-1")
+    expect(next.defaultPrevented).toBe(true)
+
+    const previous = keyEvent("[", { super: true, shift: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", previous)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "a-2")
+    expect(previous.defaultPrevented).toBe(true)
+
+    const first = keyEvent("1", { super: true, source: "kitty" })
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", first)
+    })
+    await setup.waitFor(() => controller.store.getState().workspace.selectedVisibleId === "a-1")
+    expect(first.defaultPrevented).toBe(true)
+
+    await destroyMounted(setup.renderer)
+  })
+
   it("ignores the first Kitty tab chord, then dispatches one cyclic action per confirmed Kitty event", async () => {
     const controller = createFakeController()
     const setup = await renderCockpitApp(controller)
@@ -991,12 +1254,47 @@ describe("CockpitApp keymap", () => {
     const setup = await renderCockpitApp(controller)
 
     await runSlashCommand(setup, "new")
+    await setup.waitForFrame((frame) => frame.includes(NEW_THREAD_DIALOG_TITLE))
+    expect(controller.calls.createConversation).toBe(0)
+
+    await actAsync(() => setup.mockInput.pressTab())
+    await actAsync(() => setup.mockInput.pressEnter())
     await setup.waitFor(() => controller.calls.createConversation === 1)
 
     expect(controller.calls.createConversation).toBe(1)
     expect(controller.calls.startNewRun).toBe(0)
+    expect(controller.store.getState().sessions["fake-created-1"]).toMatchObject({
+      providerKind: "codex",
+      cwd: process.cwd(),
+    })
 
     await destroyMounted(setup.renderer)
+  })
+
+  it("validates a blank new-thread project and cancels without creating a runtime", async () => {
+    const controller = createFakeController()
+    const setup = await renderCockpitApp(controller)
+
+    try {
+      await runSlashCommand(setup, "new")
+      await setup.waitForFrame((frame) => frame.includes(NEW_THREAD_DIALOG_TITLE))
+      await actAsync(() => {
+        for (const _character of process.cwd()) setup.mockInput.pressBackspace()
+      })
+      await actAsync(() => setup.mockInput.pressEnter())
+
+      await setup.waitForFrame((frame) => frame.includes(NEW_THREAD_PROJECT_ERROR))
+      expect(controller.calls.createConversation).toBe(0)
+
+      await actAsync(async () => setup.mockInput.typeText("/tmp/project"))
+      await setup.waitForFrame((frame) => !frame.includes(NEW_THREAD_PROJECT_ERROR))
+      await actAsync(() => setup.mockInput.pressEscape())
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+      await setup.waitForFrame((frame) => !frame.includes(NEW_THREAD_DIALOG_TITLE))
+      expect(controller.calls.createConversation).toBe(0)
+    } finally {
+      await destroyMounted(setup.renderer)
+    }
   })
 
   it("clears the current run through /clear", async () => {
@@ -1066,7 +1364,7 @@ describe("CockpitApp keymap", () => {
 
   it("shows the full command list through /help", async () => {
     const controller = createFakeController()
-    const setup = await renderCockpitApp(controller, 80, 30)
+    const setup = await renderCockpitApp(controller, 120, 60)
 
     expect(setup.captureCharFrame()).not.toContain(HELP_TITLE)
 
@@ -1083,6 +1381,39 @@ describe("CockpitApp keymap", () => {
     expect(fileDiscoveryHelp).toBeDefined()
     expect(opened).toContain(fileDiscoveryHelp!.description)
     expect(opened).not.toContain("Ctrl+O")
+
+    await destroyMounted(setup.renderer)
+  })
+
+  it("keeps confirmed Kitty help reachable in a bounded 80x30 overlay", async () => {
+    const controller = createFakeController()
+    controller.store.confirmKittyKeyboard()
+    const setup = await renderCockpitApp(controller, 80, 30)
+    const editorBeforeHelp = setup.renderer.currentFocusedEditor
+
+    await runSlashCommand(setup, "help")
+    const opened = await setup.waitForFrame((frame) => frame.includes(HELP_TITLE))
+    const scrollbox = setup.renderer.root.findDescendantById(HELP_SCROLLBOX_ID) as ScrollBoxRenderable | undefined
+
+    expect(scrollbox).toBeDefined()
+    await setup.waitFor(() => scrollbox!.scrollHeight > scrollbox!.viewport.height)
+    expectNoOverflow(opened, 80, 30)
+    expect(opened).toContain(HELP_SCROLL_HINT)
+    expect(setup.renderer.currentFocusedEditor).toBe(editorBeforeHelp)
+
+    await actAsync(() => {
+      setup.renderer.keyInput.emit("keypress", keyEvent("end"))
+    })
+    const finalEntries = await setup.waitForFrame((frame) => frame.includes("Interrupt the agent while it is working"))
+    expect(finalEntries).toContain("Esc")
+    expect(scrollbox!.scrollTop).toBeGreaterThan(0)
+
+    await actAsync(async () => {
+      setup.mockInput.pressEscape()
+      await sleep(ESCAPE_DISAMBIGUATION_MS)
+    })
+    await setup.waitForFrame((frame) => !frame.includes(HELP_TITLE))
+    expect(setup.renderer.currentFocusedEditor).toBe(editorBeforeHelp)
 
     await destroyMounted(setup.renderer)
   })
@@ -1113,7 +1444,7 @@ describe("CockpitApp keymap", () => {
     await runSlashCommand(setup, "help")
     const opened = await setup.waitForFrame((f) => f.includes(HELP_TITLE))
     expect(opened).toContain("/shell")
-    expect(opened).toContain("Focus or leave the integrated shell")
+    expect(opened).toContain("Focus the integrated shell")
     expect(opened).toContain("/resume")
 
     await actAsync(async () => {
@@ -1424,7 +1755,20 @@ describe("/statusline cockpit integration", () => {
   })
 
   it("keeps the prompt focused across resize before opening and uses the resized width for preview", async () => {
-    const controller = createFakeController()
+    const statuslineCwd = "/work/kitten"
+    const runtimes = readyRuntimes().map((runtime) => ({ ...runtime, cwd: statuslineCwd }))
+    const controller = createFakeController({
+      runtimes,
+      store: createAppStore({
+        seeds: runtimes.map((runtime) => ({
+          id: runtime.sessionId,
+          providerKind: runtime.providerKind,
+          title: runtime.title,
+          cwd: runtime.cwd,
+        })),
+        selectedVisibleId: "claude-code",
+      }),
+    })
     controller.store.setStatuslinePreference({ llmDisclosureAcknowledged: true, layout: null })
     const setup = await renderCockpitApp(controller, 80, 24)
     await actAsync(async () => setup.mockInput.typeText("draft stays here"))
@@ -1446,10 +1790,10 @@ describe("/statusline cockpit integration", () => {
       layout: { separator: " · ", line: ["FULL_PATH"] },
       preset: null,
     }))
-    const resizedPreview = await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    const resizedPreview = await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
     expectNoOverflow(resizedPreview, 48, 24)
     await actAsync(() => setup.resize(80, 24))
-    await setup.waitForFrame((frame) => frame.includes(process.cwd()))
+    await setup.waitForFrame((frame) => frame.includes(statuslineCwd))
     await destroyMounted(setup.renderer)
   })
 

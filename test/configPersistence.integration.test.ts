@@ -3,7 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createCockpitSession } from "../src/index.ts"
+import {
+  createCockpitSession as createRealCockpitSession,
+  type CockpitSessionDeps,
+} from "../src/index.ts"
 import { loadAppConfig } from "../src/config/configLoader.ts"
 import { watchUserConfig } from "../src/config/configWatcher.ts"
 import { persistUserConfig } from "../src/config/configWriter.ts"
@@ -14,10 +17,19 @@ import type { SessionController } from "../src/app/controller.ts"
 import type { AgentConnection } from "../src/agent/agentConnection.ts"
 import { EFFORT_CATEGORY, MODEL_CATEGORY, type ConfigOption } from "../src/core/types.ts"
 import { normalizeStatuslineLayout } from "../src/core/statusline.ts"
+import { createRunStore } from "../src/persistence/runStore.ts"
 import { readyRuntimes } from "./fakeController.ts"
 
 const tempDirs: string[] = []
 const CONNECTION_STUB = { prompt: async () => ({ stopReason: "end_turn" as const }), cancel: async () => {} } as unknown as AgentConnection
+
+/** This suite owns config bytes only; saved user conversations must not enter it. */
+function createCockpitSession(deps: CockpitSessionDeps = {}) {
+  return createRealCockpitSession({
+    ...deps,
+    createRunStore: deps.createRunStore ?? (() => createRunStore({ enabled: false })),
+  })
+}
 
 function controllerOver(store: ReturnType<typeof createAppStore>, connection = CONNECTION_STUB): SessionController {
   const runtimes = readyRuntimes()

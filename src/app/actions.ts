@@ -50,6 +50,14 @@ import type { ContextPackExportResult } from "./contextPackExport.ts"
 /** What a caller may send: raw text, or already-composed prompt blocks (hand-off). */
 export type PromptInput = string | PromptBlock[]
 
+/** Explicit project/provider context for one independently managed conversation. */
+export interface CreateConversationInput {
+  /** User-selected project directory. Relative paths resolve from Kitten's launch directory. */
+  readonly cwd?: string
+  /** Provider recipe to use instead of inheriting the selected thread's provider. */
+  readonly providerKind?: ProviderKind
+}
+
 /** Closed admission result for one live post-interrupt ordinary continuation. */
 export type PostInterruptContinuationResult =
   | { readonly kind: "queued"; readonly requestId: string }
@@ -415,7 +423,7 @@ export interface ActionDeps {
   /** Recheck one eligible unavailable Cursor runtime without exposing controller internals. */
   recheckCursor?: (sessionId: SessionId) => Promise<void>
   /** Create and start one controller-owned conversation runtime. */
-  createConversation?: () => Promise<SessionId | null>
+  createConversation?: (input?: CreateConversationInput) => Promise<SessionId | null>
   /** Create, register, and dispatch one controller-owned delegated child. */
   startDelegatedChild?: (input: StartDelegatedChildInput) => Promise<SessionId | null>
   /** Remove one verified terminal managed child workspace after controller gating. */
@@ -461,7 +469,7 @@ export interface ControllerActions {
   /** Deliberately recheck one unavailable configured Cursor session without throwing into the UI. */
   recheckCursor(sessionId: SessionId): void
   /** Create a fresh visible conversation, or return `null` when none can be created. */
-  createConversation(): Promise<SessionId | null>
+  createConversation(input?: CreateConversationInput): Promise<SessionId | null>
   /** Start explicit child work in the background while retaining parent focus. */
   startDelegatedChild(input: StartDelegatedChildInput): Promise<SessionId | null>
   /** Explicitly clean one managed terminal non-live child workspace. */
@@ -927,12 +935,12 @@ export function createControllerActions(deps: ActionDeps): ControllerActions {
       }
     },
 
-    async createConversation(): Promise<SessionId | null> {
+    async createConversation(input?: CreateConversationInput): Promise<SessionId | null> {
       const creationSource: TabCreationSource = store.getState().workspace.selectedVisibleId
         ? "inherited"
         : "default"
       try {
-        const sessionId = await createConversation()
+        const sessionId = await createConversation(input)
         if (sessionId) {
           const provider = store.getState().sessions[sessionId]?.providerKind
           if (provider) recorder.tabCreated?.(provider, creationSource)

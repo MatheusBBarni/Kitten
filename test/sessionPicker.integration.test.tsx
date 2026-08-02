@@ -166,7 +166,7 @@ async function openResumePicker(setup: TestRendererSetup): Promise<void> {
   await actAsync(async () => {
     await setup.mockInput.typeText("/resume")
   })
-  await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/resume"))
+  await setup.waitForFrame((frame) => frame.includes("Cockpit") && frame.includes("/resume"))
   await actAsync(() => setup.mockInput.pressEnter())
   await setup.waitForFrame((frame) => frame.includes(SESSION_PICKER_TITLE))
 }

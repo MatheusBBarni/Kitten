@@ -16,6 +16,7 @@ import {
   previousSessionId,
   type CloseChoice,
   type CloseConversationResult,
+  type CreateConversationInput,
   type ContextBuildAvailabilityResult,
   type ContextBuildStartResult,
   type ContextPackDraftCreationResult,
@@ -345,9 +346,10 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
     transcriptWindowingEnabled: options.transcriptWindowingEnabled ?? false,
     shell: options.shell ?? { ready: false, error: "shell unavailable in controller test double" },
     calls,
+    providers: () => [...new Set(runtimes.map((runtime) => runtime.providerKind))],
     actions: {
       recheckCursor(): void {},
-      async createConversation(): Promise<SessionId | null> {
+      async createConversation(input: CreateConversationInput = {}): Promise<SessionId | null> {
         calls.createConversation++
         const selected = store.getState().workspace.selectedVisibleId
         const source = selected
@@ -357,20 +359,22 @@ export function createFakeController(options: FakeControllerOptions = {}): FakeC
           store.setWorkspaceNotice({ code: "no-provider-available" })
           return null
         }
+        const providerKind = input.providerKind ?? source.providerKind
+        const projectCwd = input.cwd?.trim() || source.cwd
         created += 1
         const sessionId = `fake-created-${created}`
         store.addSession({
           id: sessionId,
-          providerKind: source.providerKind,
+          providerKind,
           title: `Conversation ${created}`,
-          cwd: source.cwd,
+          cwd: projectCwd,
         }, { availability: { kind: "ready" } })
         runtimes.push({
           sessionId,
-          providerKind: source.providerKind,
+          providerKind,
           displayName: `Conversation ${created}`,
           title: `Conversation ${created}`,
-          cwd: source.cwd,
+          cwd: projectCwd,
           ready: true,
           acpSessionId: `fake-acp-${created}`,
           mcp: { loaded: [], skipped: [] },

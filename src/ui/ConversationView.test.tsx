@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { basename } from "node:path"
 
 import { destroyTreeSitterClient, getTreeSitterClient, RGBA, type KeyEvent, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import { createMockMouse, type TestRenderer, type TestRendererSetup } from "@opentui/core/testing"
@@ -134,7 +135,8 @@ describe("ConversationView turns", () => {
     expect(frame).toContain(WELCOME_KITTEN[1])
     expect(frame).toContain(WELCOME_KITTEN[2])
     expect(frame).toContain("Agents: ready · ready")
-    expect(frame).toContain(`Working directory: ${process.cwd()}`)
+    expect(frame).toContain("Working directory:")
+    expect(frame).toContain(basename(process.cwd()))
     expect(frame).toContain(WELCOME_ON_RAMP)
     expect(frame).toContain("[selected] Claude Code")
     expect(frame).not.toContain("Codex")

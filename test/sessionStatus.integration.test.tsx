@@ -23,7 +23,8 @@ import { actAsync, destroyMounted } from "./reactTui.ts"
  * in-process mock ACP agent, driven through the controller, so a genuine `end_turn`
  * prompt turn decides the session status the store and visible tab show. This exercises
  * the adapter's stop-reason mapping (ADR-006) end to end - the store must read
- * `finished`, and the visible workspace must paint that state for the session.
+ * `finished`, and the visible sidebar must paint that state for the session without
+ * reviving the retired tab/status header.
  */
 
 const PROVIDERS = {
@@ -96,7 +97,7 @@ function connectionToMockAgent(
 }
 
 describe("session status integration (end_turn -> finished)", () => {
-  it("drives a mock session to end_turn and renders the finished state in its visible tab", async () => {
+  it("drives a mock session to end_turn and renders the finished state in the sidebar", async () => {
     const connections = {
       "claude-code": endTurnConnection({ id: "claude-code", ...PROVIDERS["claude-code"] }),
       codex: endTurnConnection({ id: "codex", ...PROVIDERS.codex }),
@@ -109,7 +110,7 @@ describe("session status integration (end_turn -> finished)", () => {
     })
 
     const { renderer, waitForFrame } = await testRender(<CockpitApp controller={controller} />, {
-      width: 80,
+      width: 140,
       height: 20,
       kittyKeyboard: true,
     })
@@ -122,12 +123,14 @@ describe("session status integration (end_turn -> finished)", () => {
     // The store reflects the terminal stop reason: the turn ended, your move.
     expect(controller.store.getState().sessions.codex!.status).toBe("finished")
 
-    // The selected tab owns execution state; the footer remains provider-only.
-    const frame = await waitForFrame((f) => f.includes("Codex · finished"))
+    // The sidebar owns the compact lifecycle label; the legacy tab/status header
+    // stays absent and the footer remains provider-only.
+    const frame = await waitForFrame((f) => f.includes("codex · Done"))
     expect(frame).toContain("Codex:—")
     expect(frame).not.toContain("Claude:—")
     expect(frame).not.toContain("Claude Code:")
     expect(frame).not.toContain("Codex: finished")
+    expect(frame).not.toContain("Codex · finished")
 
     await destroyMounted(renderer)
     await controller.dispose()

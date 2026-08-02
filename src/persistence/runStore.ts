@@ -46,6 +46,8 @@ export const SESSIONS_PATH_ENV_VAR = "KITTEN_SESSIONS_PATH"
 export interface RunStore {
   save(record: PersistedRunRecord): void
   list(cwd: string): PersistedRunSummary[]
+  /** Most recently updated valid workspace, regardless of its launch project. */
+  latest?(): PersistedRunRecord | null
   load(cwd: string, runId: string): PersistedRunRecord | null
   delete(cwd: string, runId: string): void
   deleteAll(): void
@@ -70,6 +72,9 @@ const NOOP_RUN_STORE: RunStore = {
   save() {},
   list() {
     return []
+  },
+  latest() {
+    return null
   },
   load() {
     return null
@@ -145,6 +150,35 @@ class FileRunStore implements RunStore {
       .map(toSummary)
       .filter((summary): summary is PersistedRunSummary => summary !== null)
       .sort((left, right) => right.updatedAt - left.updatedAt)
+  }
+
+  latest(): PersistedRunRecord | null {
+    let projectEntries: Dirent[]
+    try {
+      projectEntries = readdirSync(this.sessionsRoot, { withFileTypes: true })
+    } catch (error) {
+      if (isMissing(error)) return null
+      throw error
+    }
+
+    let latest: PersistedRunRecord | null = null
+    for (const projectEntry of projectEntries) {
+      if (!projectEntry.isDirectory()) continue
+      const projectPath = join(this.sessionsRoot, projectEntry.name)
+      let runEntries: Dirent[]
+      try {
+        runEntries = readdirSync(projectPath, { withFileTypes: true })
+      } catch (error) {
+        if (isMissing(error)) continue
+        throw error
+      }
+      for (const runEntry of runEntries) {
+        if (!runEntry.isFile() || !runEntry.name.endsWith(".json")) continue
+        const record = this.readRecord(join(projectPath, runEntry.name))
+        if (record && (latest === null || record.updatedAt > latest.updatedAt)) latest = record
+      }
+    }
+    return latest
   }
 
   load(cwd: string, runId: string): PersistedRunRecord | null {

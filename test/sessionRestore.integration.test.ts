@@ -507,7 +507,7 @@ describe("unavailable-pane fresh-start integration", () => {
     await actAsync(async () => {
       await setup.mockInput.typeText("/new")
     })
-    await setup.waitForFrame((frame) => frame.includes("Commands") && frame.includes("/new"))
+    await setup.waitForFrame((frame) => frame.includes("Cockpit") && frame.includes("/new"))
     await actAsync(() => setup.mockInput.pressEnter())
     await setup.waitFor(() => prompts.length === 1)
 

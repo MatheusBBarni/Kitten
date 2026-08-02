@@ -19,6 +19,7 @@ import {
   CONTEXT_PACK_KEYMAP,
   DELEGATION_HINT,
   DELEGATION_KEYMAP,
+  directThreadIndex,
   EDITOR_KEYMAP,
   HANDOFF_CONFIG_HINT,
   HANDOFF_EDIT_HINT,
@@ -42,14 +43,18 @@ import {
   matchManagedWorktreeCleanupCommand,
   matchManagedWorktreeReviewCommand,
   matchModelSelectCommand,
+  matchNewThreadCommand,
   matchSessionPickerCommand,
   matchSessionsCommand,
   matchSettingsCommand,
   matchStatuslineCommand,
+  matchThreadNavigationCommand,
   MODEL_SELECT_CONFIRM_HINT,
   MODEL_SELECT_HINT,
   MODEL_SELECT_KEYMAP,
   MENU_KEYMAP,
+  NEW_THREAD_HINT,
+  NEW_THREAD_KEYMAP,
   PROMPT_KEY_BINDINGS,
   SESSION_PICKER_HINT,
   SESSION_PICKER_KEYMAP,
@@ -63,6 +68,7 @@ import {
   STATUSLINE_HINT,
   STATUSLINE_KEYMAP,
   tabNavigationHint,
+  THREAD_NAVIGATION_KEYMAP,
   type CockpitKey,
 } from "./keymap.ts"
 
@@ -93,9 +99,10 @@ describe("matchCommand", () => {
     for (const name of ["o", "s", "r", "n", "e", ","]) {
       expect(matchCommand(key(name, { ctrl: true }))).toBeNull()
     }
-    for (const name of ["f1", "f3"]) {
+    for (const name of ["f1"]) {
       expect(matchCommand(key(name))).toBeNull()
     }
+    expect(matchCommand(key("f3"))).toBe("toggle-sidebar")
   })
 
   it("does not steal printable prompt input or modified shell chords", () => {
@@ -153,10 +160,62 @@ describe("matchClipboardCommand", () => {
   })
 })
 
+describe("thread navigation keymap", () => {
+  it("maps Command-number and Command-Shift-brackets only after Kitty confirmation", () => {
+    const first = key("1", { super: true, source: "kitty" })
+    const previous = key("[", { super: true, shift: true, source: "kitty" })
+    const next = key("rightbracket", { super: true, shift: true, source: "kitty" })
+
+    expect(matchThreadNavigationCommand(first, "unknown")).toBeNull()
+    expect(matchThreadNavigationCommand(first, "kittyConfirmed")).toBe("thread-1")
+    expect(matchThreadNavigationCommand(previous, "kittyConfirmed")).toBe("previous-thread")
+    expect(matchThreadNavigationCommand(next, "kittyConfirmed")).toBe("next-thread")
+    expect(directThreadIndex("thread-1")).toBe(0)
+    expect(directThreadIndex("thread-9")).toBe(8)
+    expect(directThreadIndex("next-thread")).toBeNull()
+  })
+
+  it("rejects raw, Option, Ctrl, and incomplete Command chords", () => {
+    for (const event of [
+      key("1", { super: true, source: "raw" }),
+      key("1", { meta: true, source: "kitty" }),
+      key("1", { ctrl: true, source: "kitty" }),
+      key("[", { super: true, source: "kitty" }),
+      key("]", { super: true, shift: true, meta: true, source: "kitty" }),
+    ]) {
+      expect(matchThreadNavigationCommand(event, "kittyConfirmed")).toBeNull()
+    }
+  })
+
+  it("documents nine direct positions plus adjacent traversal", () => {
+    expect(THREAD_NAVIGATION_KEYMAP.map(({ command }) => command)).toEqual([
+      "thread-1",
+      "thread-2",
+      "thread-3",
+      "thread-4",
+      "thread-5",
+      "thread-6",
+      "thread-7",
+      "thread-8",
+      "thread-9",
+      "previous-thread",
+      "next-thread",
+    ])
+  })
+})
+
 describe("COCKPIT_KEYMAP", () => {
   it("registers each conditional tab chord plus the retained hand-off, shell, and help bindings once", () => {
     const commands = COCKPIT_KEYMAP.map((binding) => binding.command)
-    expect(commands).toEqual(["previous-tab", "next-tab", "hand-off", "delegate", "toggle-shell", "close-help"])
+    expect(commands).toEqual([
+      "toggle-sidebar",
+      "previous-tab",
+      "next-tab",
+      "hand-off",
+      "delegate",
+      "toggle-shell",
+      "close-help",
+    ])
     expect(new Set(commands).size).toBe(commands.length)
   })
 
@@ -194,6 +253,7 @@ describe("COCKPIT_KEYMAP", () => {
 describe("COCKPIT_COMMANDS", () => {
   it("gives each user-facing cockpit action one unique slash name", () => {
     expect(COCKPIT_COMMANDS.map(({ command, name }) => [command, name])).toEqual([
+      ["toggle-sidebar", "sidebar"],
       ["toggle-shell", "shell"],
       ["run-externally", "copy"],
       ["hand-off", "handoff"],
@@ -203,6 +263,7 @@ describe("COCKPIT_COMMANDS", () => {
       ["next-tab", "next-tab"],
       ["resume-session", "resume"],
       ["start-new-run", "new"],
+      ["rename", "rename"],
       ["clear-run", "clear"],
       ["model-select", "model"],
       ["statusline", "statusline"],
@@ -309,6 +370,29 @@ describe("MENU_KEYMAP", () => {
   })
 })
 
+describe("NEW_THREAD_KEYMAP", () => {
+  it("cycles providers with Tab while preserving path-editing arrows", () => {
+    expect(matchNewThreadCommand(key("tab"))).toBe("next-provider")
+    expect(matchNewThreadCommand(key("tab", { shift: true }))).toBe("prev-provider")
+    expect(matchNewThreadCommand(key("left"))).toBeNull()
+    expect(matchNewThreadCommand(key("right"))).toBeNull()
+  })
+
+  it("creates or cancels with explicit modal keys", () => {
+    expect(matchNewThreadCommand(key("return"))).toBe("confirm")
+    expect(matchNewThreadCommand(key("kpenter"))).toBe("confirm")
+    expect(matchNewThreadCommand(key("escape"))).toBe("cancel")
+    expect(matchNewThreadCommand(key("n"))).toBeNull()
+    expect(NEW_THREAD_KEYMAP.map(({ command }) => command)).toEqual([
+      "prev-provider",
+      "next-provider",
+      "confirm",
+      "cancel",
+    ])
+    expect(NEW_THREAD_HINT).toBe("Tab/Shift+Tab provider  Enter create  Esc cancel")
+  })
+})
+
 describe("KEYMAP_HINT", () => {
   it("keeps the fixed footer to the help entry point", () => {
     expect(KEYMAP_HINT).toBe("/help")
@@ -346,6 +430,10 @@ describe("HELP_ENTRIES", () => {
         keys: "Ctrl+G",
         description: "Delegate focused child work from the current conversation",
       },
+      {
+        keys: "F3",
+        description: "Show, focus, or hide the project thread sidebar",
+      },
       { keys: "Ctrl+` / F2", description: "Focus or leave the integrated shell" },
       ...EDITOR_KEYMAP,
     ])
@@ -371,6 +459,10 @@ describe("HELP_ENTRIES", () => {
     expect(unknown).not.toContain("Ctrl+L")
     expect(confirmed).toContain("Ctrl+H")
     expect(confirmed).toContain("Ctrl+L")
+    expect(confirmed).toContain("Cmd+1")
+    expect(confirmed).toContain("Cmd+Shift+[")
+    expect(confirmed).toContain("Cmd+Shift+]")
+    expect(unknown).not.toContain("Cmd+1")
     expect(tabNavigationHint("unknown")).toBe("/sessions → n next attention")
     expect(tabNavigationHint("kittyConfirmed")).toBe("Ctrl+H/Ctrl+L tabs")
   })
@@ -380,9 +472,10 @@ describe("HELP_ENTRIES", () => {
     for (const command of COCKPIT_COMMANDS) {
       expect(keys).toContain(`/${command.name}`)
     }
-    for (const legacy of ["Ctrl+O", "Ctrl+T", "Ctrl+S", "Ctrl+R", "Ctrl+N", "Ctrl+E", "Ctrl+,", "F1", "F2", "F3"]) {
+    for (const legacy of ["Ctrl+O", "Ctrl+T", "Ctrl+S", "Ctrl+R", "Ctrl+N", "Ctrl+E", "Ctrl+,", "F1", "F2"]) {
       expect(keys).not.toContain(legacy)
     }
+    expect(keys).toContain("F3")
   })
 
   it("omits every overlay's keys, which are unreachable from the cockpit", () => {

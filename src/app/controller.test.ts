@@ -5,6 +5,8 @@
 
 import { describe, expect, it } from "bun:test"
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
@@ -7872,6 +7874,110 @@ describe("createSessionController - dynamic conversation actions", () => {
     expect(controller.store.getState().workspace.selectedVisibleId).toBe(sessionId)
     expect(created.at(-1)?.newSessionCwds).toEqual([source.cwd])
     expect(created.at(-1)).not.toBe(created.find((connection) => connection !== created.at(-1) && connection.id === source.providerKind))
+  })
+
+  it("starts an independent thread for an explicitly selected project and provider", async () => {
+    const created: StubConnection[] = []
+    const projectCwd = "/workspace/another-project"
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      insideRepo: (candidate) => candidate === projectCwd,
+      projectDirectory: (candidate) => candidate === projectCwd,
+      newSessionId: () => "explicit-project-thread",
+      sendInitialTasks: false,
+    })
+
+    const sessionId = await controller.actions.createConversation({
+      cwd: projectCwd,
+      providerKind: "claude-code",
+    })
+
+    expect(sessionId).toBe("explicit-project-thread")
+    expect(controller.store.getState().sessions[sessionId!]).toMatchObject({
+      providerKind: "claude-code",
+      cwd: projectCwd,
+    })
+    expect(created.at(-1)?.id).toBe("claude-code")
+    expect(created.at(-1)?.newSessionCwds).toEqual([projectCwd])
+    expect(controller.store.getState().workspaceNotice).toBeNull()
+    await controller.dispose()
+  })
+
+  it("rejects an explicit non-repository project before creating a runtime", async () => {
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: CWD,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      insideRepo: () => false,
+      newSessionId: () => "must-not-exist",
+      sendInitialTasks: false,
+    })
+    const initialRuntimeCount = created.length
+
+    expect(await controller.actions.createConversation({
+      cwd: "/workspace/not-a-repository",
+      providerKind: "codex",
+    })).toBeNull()
+    expect(controller.store.getState().workspaceNotice).toEqual({
+      code: "project-not-git-repository",
+    })
+    expect(controller.store.getState().sessions["must-not-exist"]).toBeUndefined()
+    expect(created).toHaveLength(initialRuntimeCount)
+    await controller.dispose()
+  })
+
+  it("rejects nonexistent paths and regular files before repository admission", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "kitten-project-admission-"))
+    const regularFile = join(repo, "README.md")
+    mkdirSync(join(repo, ".git"))
+    writeFileSync(regularFile, "not a project directory")
+    const created: StubConnection[] = []
+    const controller = await createSessionController({
+      config: APP_CONFIG,
+      cwd: repo,
+      createConnection: (config) => {
+        const connection = createStubConnection(config.id)
+        created.push(connection)
+        return connection
+      },
+      createShellRuntime: createTestShellFactory(),
+      readBranch: async () => null,
+      newSessionId: () => "invalid-project-thread",
+      sendInitialTasks: false,
+    })
+    const initialRuntimeCount = created.length
+
+    try {
+      for (const projectCwd of [join(repo, "missing"), regularFile]) {
+        expect(await controller.actions.createConversation({
+          cwd: projectCwd,
+          providerKind: "codex",
+        })).toBeNull()
+        expect(controller.store.getState().workspaceNotice).toEqual({
+          code: "project-not-git-repository",
+        })
+      }
+      expect(controller.store.getState().sessions["invalid-project-thread"]).toBeUndefined()
+      expect(created).toHaveLength(initialRuntimeCount)
+    } finally {
+      await controller.dispose()
+      rmSync(repo, { recursive: true, force: true })
+    }
   })
 
   it("uses the configured default from an empty workspace and reports no-provider without throwing", async () => {

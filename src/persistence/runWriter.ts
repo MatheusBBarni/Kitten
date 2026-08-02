@@ -22,6 +22,8 @@ export interface RunWriterOptions {
   debounceMs?: number
   now?: () => number
   runId?: string
+  /** Original creation time when continuing an existing global workspace. */
+  createdAt?: number
   setTimer?: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer?: (timer: TimerHandle) => void
   onError?: (error: unknown) => void
@@ -73,7 +75,7 @@ class ActiveRunWriter implements RunWriter {
     this.debounceMs = options.debounceMs ?? DEFAULT_RUN_WRITE_DEBOUNCE_MS
     this.now = options.now ?? (() => Date.now())
     this.runId = options.runId ?? crypto.randomUUID()
-    this.createdAt = this.now()
+    this.createdAt = options.createdAt ?? this.now()
     this.setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs))
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer))
     this.onError = options.onError ?? (() => {})

@@ -2,9 +2,9 @@
  * The cockpit's global keymap.
  *
  * Global bindings are deliberately sparse: every cockpit operation is available as
- * a slash command in the prompt, and only the terminal-level shell toggle remains
- * a global chord. The prompt editor owns the printable `/` trigger, so composing
- * normal agent input remains predictable.
+ * a slash command in the prompt, while terminal-level focus and direct thread
+ * navigation retain dedicated chords. The prompt editor owns the printable `/`
+ * trigger, so composing normal agent input remains predictable.
  *
  * The table is the single source of truth for both dispatch and the help panel, so
  * a binding can never drift out of the documentation the user reads. The prompt
@@ -44,8 +44,23 @@ export type ClipboardCommand = "copy" | "paste"
 /** Platform families with distinct conventional terminal clipboard chords. */
 export type ClipboardPlatform = "darwin" | "windows-linux"
 
+/** Direct thread navigation reported through the Kitty keyboard protocol. */
+export type ThreadNavigationCommand =
+  | "previous-thread"
+  | "next-thread"
+  | "thread-1"
+  | "thread-2"
+  | "thread-3"
+  | "thread-4"
+  | "thread-5"
+  | "thread-6"
+  | "thread-7"
+  | "thread-8"
+  | "thread-9"
+
 /** Every intent the shell itself handles. Overlays and the editor own their own keys. */
 export type CockpitCommand =
+  | "toggle-sidebar"
   | "toggle-shell"
   | "run-externally"
   | "hand-off"
@@ -53,6 +68,7 @@ export type CockpitCommand =
   | "sessions"
   | "resume-session"
   | "start-new-run"
+  | "rename"
   | "clear-run"
   | "model-select"
   | "statusline"
@@ -87,6 +103,9 @@ export type ClarificationCommand =
 
 /** Every intent the explicit delegation dialog handles while it owns input. */
 export type DelegationCommand = "prev-field" | "next-field" | "confirm" | "cancel"
+
+/** Every intent the new project-thread dialog handles while its path input owns text. */
+export type NewThreadCommand = "prev-provider" | "next-provider" | "confirm" | "cancel"
 
 /** Every intent the rename/close tab dialog handles while it owns the modal slot. */
 export type TabDialogCommand = "prev-choice" | "next-choice" | "confirm" | "cancel"
@@ -192,6 +211,17 @@ function kittyCtrl(name: string): (key: CockpitKey) => boolean {
   return (key) => key.source === "kitty" && ctrl(name)(key)
 }
 
+/** A disambiguated macOS Command chord from the Kitty parser path. */
+function kittySuper(names: readonly string[], shift = false): (key: CockpitKey) => boolean {
+  return (key) =>
+    key.source === "kitty" &&
+    names.includes(key.name) &&
+    key.super === true &&
+    key.shift === shift &&
+    !key.ctrl &&
+    !key.meta
+}
+
 /** Match when any one of the supplied predicates claims the key. */
 function any(...predicates: readonly ((key: CockpitKey) => boolean)[]): (key: CockpitKey) => boolean {
   return (key) => predicates.some((predicate) => predicate(key))
@@ -219,6 +249,7 @@ export function matchClipboardCommand(key: CockpitKey, platform: ClipboardPlatfo
  * while the help panel is open, leaving Escape free for the editor and overlays.
  */
 export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
+  { command: "toggle-sidebar", name: "sidebar", description: "Show and focus the project thread sidebar" },
   { command: "toggle-shell", name: "shell", description: "Focus the integrated shell" },
   { command: "run-externally", name: "copy", description: "Copy the latest shell command for an external terminal" },
   { command: "hand-off", name: "handoff", description: "Curate and send a hand-off to another agent" },
@@ -228,6 +259,7 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
   { command: "next-tab", name: "next-tab", description: "Select the next visible conversation" },
   { command: "resume-session", name: "resume", description: "Find and resume a saved run for this project" },
   { command: "start-new-run", name: "new", description: "Create a new conversation with the selected provider" },
+  { command: "rename", name: "rename", description: "Rename the selected conversation" },
   { command: "clear-run", name: "clear", description: "Clear this run and start fresh agent sessions" },
   { command: "model-select", name: "model", description: "Choose a provider, model, and reasoning effort" },
   { command: "statusline", name: "statusline", description: "Describe and review your personal statusline" },
@@ -243,6 +275,12 @@ export const COCKPIT_COMMANDS: readonly CockpitCommandDefinition[] = [
  * F2 is the terminal-level fallback for keyboards that cannot report Ctrl+`.
  */
 export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
+  {
+    command: "toggle-sidebar",
+    keys: "F3",
+    description: "Show, focus, or hide the project thread sidebar",
+    matches: plain("f3"),
+  },
   {
     command: "previous-tab",
     keys: "Ctrl+H",
@@ -280,6 +318,31 @@ export const COCKPIT_KEYMAP: readonly KeyBinding[] = [
     keys: "Esc",
     description: "Close the help panel",
     matches: plain("escape"),
+  },
+]
+
+/** Command-number selection and Command-Shift-bracket traversal for sidebar threads. */
+export const THREAD_NAVIGATION_KEYMAP: readonly KeyBinding<ThreadNavigationCommand>[] = [
+  ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((index) => ({
+    command: `thread-${index}` as const,
+    keys: `Cmd+${index}`,
+    description: `Open thread ${index}`,
+    matches: kittySuper([String(index)]),
+    requiresKittyConfirmation: true,
+  })),
+  {
+    command: "previous-thread",
+    keys: "Cmd+Shift+[",
+    description: "Open the previous thread",
+    matches: kittySuper(["[", "leftbracket"], true),
+    requiresKittyConfirmation: true,
+  },
+  {
+    command: "next-thread",
+    keys: "Cmd+Shift+]",
+    description: "Open the next thread",
+    matches: kittySuper(["]", "rightbracket"], true),
+    requiresKittyConfirmation: true,
   },
 ]
 
@@ -470,6 +533,34 @@ export const DELEGATION_KEYMAP: readonly KeyBinding<DelegationCommand>[] = [
     command: "cancel",
     keys: "Esc",
     description: "Cancel delegation without launching",
+    matches: plain("escape"),
+  },
+]
+
+/** Provider navigation and submission for one explicit project thread. */
+export const NEW_THREAD_KEYMAP: readonly KeyBinding<NewThreadCommand>[] = [
+  {
+    command: "prev-provider",
+    keys: "Shift+Tab",
+    description: "Choose the previous provider",
+    matches: shiftPlain("tab"),
+  },
+  {
+    command: "next-provider",
+    keys: "Tab",
+    description: "Choose the next provider",
+    matches: plain("tab"),
+  },
+  {
+    command: "confirm",
+    keys: "Enter",
+    description: "Start a thread for this project and provider",
+    matches: plainAny("return", "kpenter"),
+  },
+  {
+    command: "cancel",
+    keys: "Esc",
+    description: "Cancel without creating a thread",
     matches: plain("escape"),
   },
 ]
@@ -869,10 +960,15 @@ export function helpEntries(capability: KeyboardCapability): readonly HelpEntry[
   const directTabBindings = capability === "kittyConfirmed"
     ? COCKPIT_KEYMAP.filter((entry) => entry.command === "previous-tab" || entry.command === "next-tab")
     : []
+  const directThreadBindings = capability === "kittyConfirmed"
+    ? THREAD_NAVIGATION_KEYMAP
+    : []
   return [
     ...COCKPIT_COMMANDS.map(({ name, description }) => ({ keys: `/${name}`, description })),
     ...COCKPIT_KEYMAP.filter((entry) => entry.command === "delegate").map(({ keys, description }) => ({ keys, description })),
     ...directTabBindings.map(({ keys, description }) => ({ keys, description })),
+    ...directThreadBindings.map(({ keys, description }) => ({ keys, description })),
+    { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-sidebar"), description: "Show, focus, or hide the project thread sidebar" },
     { keys: bindingKeys(COCKPIT_KEYMAP, "toggle-shell"), description: "Focus or leave the integrated shell" },
     ...EDITOR_KEYMAP,
   ]
@@ -925,6 +1021,9 @@ export const CLARIFICATION_HINT =
 
 /** The complete keyboard teaching surface for explicit delegation. */
 export const DELEGATION_HINT = "Tab/Shift+Tab field  Enter launch  Esc cancel"
+
+/** Complete keyboard teaching surface for project/provider thread creation. */
+export const NEW_THREAD_HINT = "Tab/Shift+Tab provider  Enter create  Esc cancel"
 
 /** The hint printed while the rename input owns ordinary text keys. */
 export const TAB_RENAME_HINT = "Enter rename  Esc keep current name"
@@ -1003,6 +1102,15 @@ function makeMatcher<Command extends string>(
 /** The command a keypress maps to, or `null` when the shell does not claim it. */
 export const matchCommand = makeMatcher(COCKPIT_KEYMAP)
 
+/** A direct thread shortcut, or null when the terminal cannot report it safely. */
+export const matchThreadNavigationCommand = makeMatcher(THREAD_NAVIGATION_KEYMAP)
+
+/** Zero-based sidebar position named by a direct Command-number shortcut. */
+export function directThreadIndex(command: ThreadNavigationCommand): number | null {
+  if (!command.startsWith("thread-")) return null
+  return Number.parseInt(command.slice("thread-".length), 10) - 1
+}
+
 /** The prompt-local menu command a keypress names, or null while normal typing continues. */
 export const matchMenuCommand = makeMatcher(MENU_KEYMAP)
 
@@ -1014,6 +1122,9 @@ export const matchClarificationCommand = makeMatcher(CLARIFICATION_KEYMAP)
 
 /** The delegation dialog command a keypress maps to, or null for focused text editing. */
 export const matchDelegationCommand = makeMatcher(DELEGATION_KEYMAP)
+
+/** The new-thread command a keypress names, or null while editing the project path. */
+export const matchNewThreadCommand = makeMatcher(NEW_THREAD_KEYMAP)
 
 /** The rename/close dialog command a keypress maps to, or `null` for input text. */
 export const matchTabDialogCommand = makeMatcher(TAB_DIALOG_KEYMAP)
