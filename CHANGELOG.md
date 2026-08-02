@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.6.1...kitten-v0.7.0) (2026-08-02)
+
+
+### Features
+
+* add persistent project thread sidebar ([d30c9c7](https://github.com/MatheusBBarni/Kitten/commit/d30c9c7f952642da31d43a2a2fbd5feb12d76bd2))
+* add persistent project thread sidebar ([4b430e5](https://github.com/MatheusBBarni/Kitten/commit/4b430e503cc51c9c9d0c1a6c69ebbd5b4590d190))
+* add thread rename command and sidebar action ([90bb705](https://github.com/MatheusBBarni/Kitten/commit/90bb7053e33e826d37c9d63c053172c5b62f1158))
+
+
+### Fixes
+
+* address thread sidebar review feedback ([3ffeabc](https://github.com/MatheusBBarni/Kitten/commit/3ffeabc7f2ced5f15c9211b50a212e21063578d8))
+* refine thread sidebar navigation and command menu ([2c948af](https://github.com/MatheusBBarni/Kitten/commit/2c948af4335aabd8e446a6a47925d2b10dee28da))
+
 ## [0.6.1](https://github.com/MatheusBBarni/Kitten/compare/kitten-v0.6.0...kitten-v0.6.1) (2026-07-21)
 
 
